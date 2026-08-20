@@ -24,7 +24,10 @@ class InternalStateBody(BaseModel):
 class AgentMessageBody(BaseModel):
     type: str
     execution_id: int | None = None
-    payload: dict | None = None
+    model_config = {"extra": "allow"}
+
+    def as_dict(self) -> dict:
+        return {k: v for k, v in self.model_dump().items() if v is not None}
 
 
 @router.post("/executions/{execution_id}/state")
@@ -55,10 +58,13 @@ async def forward_to_agent(
     _token: str = Depends(_check_internal_token),
     db: AsyncSession = Depends(get_db),
 ):
-    """Worker → Agent 消息中转。Step 18 接入 WS 网关后实现真正的转发。"""
+    """Worker → Agent 消息中转：经 WS 网关转发给 Agent。"""
     agent = await db.get(Agent, agent_id)
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent 不存在")
-    if agent.status != "online":
+    from app.ws.managers import agent_manager
+
+    sent = await agent_manager.send(agent_id, body.as_dict())
+    if not sent:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent 不在线")
-    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="WS 网关未就绪（Step 18 实现）")
+    return {"sent": True, "agent_id": agent_id, "type": body.type}

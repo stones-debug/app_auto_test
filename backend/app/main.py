@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.agent import router as agent_router
 from app.api.auth import router as auth_router
 from app.api.cases import router as cases_router
 from app.api.elements import router as elements_router
@@ -10,6 +11,7 @@ from app.api.projects import router as projects_router
 from app.api.suites import router as suites_router
 from app.api.variables import router as variables_router
 from app.core.config import settings
+from app.ws.routes import router as ws_router
 
 app = FastAPI(
     title="APP 自动化测试平台",
@@ -33,7 +35,9 @@ app.include_router(cases_router, prefix="/api")
 app.include_router(suites_router, prefix="/api")
 app.include_router(variables_router, prefix="/api")
 app.include_router(executions_router, prefix="/api")
+app.include_router(agent_router, prefix="/api")
 app.include_router(internal_router)
+app.include_router(ws_router)
 
 
 @app.get("/api/health")

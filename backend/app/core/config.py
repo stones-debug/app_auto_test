@@ -5,6 +5,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 
+def reports_dir() -> Path:
+    base = Path(settings.reports_base_path)
+    return base if base.is_absolute() else BASE_DIR / base
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
@@ -37,8 +42,9 @@ class Settings(BaseSettings):
     worker_claim_stale_minutes: int = 10
 
     # 存储
-    reports_base_path: str = "/data/reports"
+    reports_base_path: str = "./data/reports"
     max_upload_size: int = 524288000  # 500MB
+    max_screenshot_size: int = 10485760  # 10MB
 
     # 清理
     report_retention_days: int = 90

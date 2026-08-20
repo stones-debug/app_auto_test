@@ -1,0 +1,126 @@
+from datetime import UTC, datetime
+
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
+from app.core.security import decode_token
+from app.models import Execution, Project, ProjectMember, User
+from app.ws.handlers import (
+    handle_device_list,
+    handle_execution_result,
+    handle_heartbeat,
+    handle_log,
+    handle_register,
+    handle_step_result,
+    mark_agent_offline,
+)
+from app.ws.managers import agent_manager, execution_manager
+
+router = APIRouter(tags=["WebSocket"])
+
+
+async def _can_access_execution(db: AsyncSession, user: User, execution: Execution) -> bool:
+    project = await db.get(Project, execution.project_id)
+    if project is None:
+        return False
+    if project.owner_id == user.id:
+        return True
+    member = (
+        await db.execute(
+            select(ProjectMember).where(
+                ProjectMember.project_id == project.id,
+                ProjectMember.user_id == user.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if member is not None:
+        return True
+    return project.visibility == "public"
+
+
+@router.websocket("/ws/executions/{execution_id}")
+async def execution_ws(
+    websocket: WebSocket,
+    execution_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    token = websocket.query_params.get("token")
+    payload = decode_token(token) if token else None
+    if payload is None or payload.get("type") != "access":
+        await websocket.close(code=1008, reason="认证失败")
+        return
+    user = await db.get(User, int(payload["sub"]))
+    if user is None or user.status != "active":
+        await websocket.close(code=1008, reason="用户不存在或已禁用")
+        return
+    execution = await db.get(Execution, execution_id)
+    if execution is None:
+        await websocket.close(code=1008, reason="执行记录不存在")
+        return
+    if not await _can_access_execution(db, user, execution):
+        await websocket.close(code=1008, reason="无权访问该执行")
+        return
+
+    await websocket.accept()
+    await execution_manager.connect(execution_id, websocket)
+    await websocket.send_json(
+        {
+            "type": "status",
+            "execution_id": execution_id,
+            "status": execution.status,
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+    )
+    try:
+        while True:
+            data = await websocket.receive_json()
+            msg_type = data.get("type")
+            if msg_type == "ping":
+                await websocket.send_json({"type": "pong"})
+            elif msg_type == "close":
+                break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await execution_manager.disconnect(execution_id, websocket)
+
+
+@router.websocket("/ws/agent")
+async def agent_ws(websocket: WebSocket, db: AsyncSession = Depends(get_db)):
+    await websocket.accept()
+    current_agent_id: int | None = None
+    try:
+        while True:
+            data = await websocket.receive_json()
+            msg_type = data.get("type")
+            if msg_type == "register":
+                reply = await handle_register(db, websocket, data)
+                if reply is None:
+                    return
+                current_agent_id = reply["agent_id"]
+                await websocket.send_json(reply)
+            elif msg_type == "heartbeat":
+                if current_agent_id is not None:
+                    await handle_heartbeat(db, current_agent_id, data)
+            elif msg_type == "device_list":
+                if current_agent_id is not None:
+                    await handle_device_list(db, current_agent_id, data)
+            elif msg_type == "log":
+                if current_agent_id is not None:
+                    await handle_log(db, current_agent_id, data)
+            elif msg_type == "step_result":
+                if current_agent_id is not None:
+                    await handle_step_result(db, current_agent_id, data)
+            elif msg_type == "execution_result":
+                if current_agent_id is not None:
+                    await handle_execution_result(db, current_agent_id, data)
+            elif msg_type == "ping":
+                await websocket.send_json({"type": "pong"})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if current_agent_id is not None:
+            await agent_manager.disconnect(current_agent_id)
+            await mark_agent_offline(db, current_agent_id)
