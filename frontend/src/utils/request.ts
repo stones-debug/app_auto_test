@@ -1,4 +1,4 @@
-import axios, { type AxiosError, type AxiosRequestConfig, type AxiosResponse } from 'axios'
+import axios, { type AxiosError, type AxiosRequestConfig } from 'axios'
 
 const TOKEN_KEY = 'access_token'
 const REFRESH_KEY = 'refresh_token'
@@ -41,23 +41,29 @@ instance.interceptors.response.use(
   },
 )
 
+// 先捕获原始方法引用，避免覆盖实例方法造成递归
+const _get = instance.get.bind(instance)
+const _post = instance.post.bind(instance)
+const _put = instance.put.bind(instance)
+const _delete = instance.delete.bind(instance)
+
 export interface RequestInstance {
-  <T = unknown>(config: AxiosRequestConfig): Promise<T>
   get<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<T>
   post<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T>
   put<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T>
   delete<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<T>
 }
 
-const request = instance as unknown as RequestInstance & ((config: AxiosRequestConfig) => Promise<unknown>)
-;(request as unknown as { get: unknown }).get = ((url: string, config?: AxiosRequestConfig) =>
-  instance.get(url, config).then((r) => r)) as never
-;(request as unknown as { post: unknown }).post = ((url: string, data?: unknown, config?: AxiosRequestConfig) =>
-  instance.post(url, data, config).then((r) => r)) as never
-;(request as unknown as { put: unknown }).put = ((url: string, data?: unknown, config?: AxiosRequestConfig) =>
-  instance.put(url, data, config).then((r) => r)) as never
-;(request as unknown as { delete: unknown }).delete = ((url: string, config?: AxiosRequestConfig) =>
-  instance.delete(url, config).then((r) => r)) as never
+const request: RequestInstance = {
+  get: <T>(url: string, config?: AxiosRequestConfig) =>
+    _get(url, config) as unknown as Promise<T>,
+  post: <T>(url: string, data?: unknown, config?: AxiosRequestConfig) =>
+    _post(url, data, config) as unknown as Promise<T>,
+  put: <T>(url: string, data?: unknown, config?: AxiosRequestConfig) =>
+    _put(url, data, config) as unknown as Promise<T>,
+  delete: <T>(url: string, config?: AxiosRequestConfig) =>
+    _delete(url, config) as unknown as Promise<T>,
+}
 
 export async function refreshToken(): Promise<boolean> {
   const refresh = localStorage.getItem(REFRESH_KEY)
@@ -75,5 +81,3 @@ export async function refreshToken(): Promise<boolean> {
 }
 
 export default request
-
-export type { AxiosResponse }
