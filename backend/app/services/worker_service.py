@@ -6,7 +6,7 @@ from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 
 import httpx
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -150,6 +150,20 @@ async def _resolve_cases(db: AsyncSession, execution: Execution) -> list[TestCas
 
 
 async def create_execution_cases_from_execution(db: AsyncSession, execution: Execution) -> list[ExecutionCase]:
+    # 幂等：先清除该执行已存在的快照（避免重复执行/重试导致重复行）
+    existing = (
+        await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == execution.id))
+    ).scalars().all()
+    for ec in existing:
+        steps = (
+            await db.execute(select(ExecutionStep).where(ExecutionStep.execution_case_id == ec.id))
+        ).scalars().all()
+        for step in steps:
+            await db.execute(delete(ExecutionAssertion).where(ExecutionAssertion.execution_step_id == step.id))
+            await db.delete(step)
+        await db.delete(ec)
+    await db.flush()
+
     cases = await _resolve_cases(db, execution)
     created: list[ExecutionCase] = []
     for case in cases:

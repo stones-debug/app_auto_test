@@ -1,6 +1,6 @@
 ﻿<script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -18,9 +18,11 @@ import {
   type ExecutionStatus,
 } from '@/api/executions'
 import { useExecutionSocket } from '@/composables/useExecutionSocket'
+import { findReportByExecution } from '@/api/reports'
 import { getToken } from '@/utils/request'
 
 const route = useRoute()
+const router = useRouter()
 
 const loading = ref(false)
 const items = ref<ExecutionListItem[]>([])
@@ -160,6 +162,19 @@ async function retry(id: number) {
   await openDetail(exec.id)
 }
 
+async function viewReport(id: number) {
+  const reportId = await findReportByExecution(id)
+  if (reportId == null) {
+    ElMessage.info('该执行暂无报告（需执行完成）')
+    return
+  }
+  router.push(`/reports/${reportId}`)
+}
+
+async function viewReportDetail() {
+  if (detail.value) await viewReport(detail.value.id)
+}
+
 function onSearch() {
   page.value = 1
   load()
@@ -237,6 +252,7 @@ onBeforeUnmount(() => {
             {{ executionStatusMeta(detail.status).label }}
           </el-tag>
           <div class="drawer-actions">
+            <el-button size="small" type="success" @click="viewReportDetail">查看报告</el-button>
             <el-button size="small" type="warning" @click="detail && stop(detail.id)">停止</el-button>
             <el-button size="small" type="primary" @click="detail && retry(detail.id)">重试</el-button>
           </div>

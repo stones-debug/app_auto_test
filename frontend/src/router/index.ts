@@ -74,6 +74,12 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/Report.vue'),
         meta: { title: '报告管理' },
       },
+      {
+        path: 'reports/:id',
+        name: 'ReportDetail',
+        component: () => import('@/views/ReportDetail.vue'),
+        meta: { title: '报告详情' },
+      },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/projects' },
