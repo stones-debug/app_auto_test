@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# uv
+.uv/
+
+# Node
+node_modules/
+dist/
+*.local
+.vite/
+
+# 环境与密钥
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# 测试产物与报告
+reports/
+data/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 系统
+Thumbs.db
+.DS_Store
