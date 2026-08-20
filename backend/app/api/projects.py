@@ -10,7 +10,7 @@ from app.api.deps import (
     require_project_role,
 )
 from app.core.database import get_db
-from app.models import Project, ProjectMember, User
+from app.models import Project, ProjectMember, TestCase, TestElement, TestSuite, User
 from app.schemas.project import (
     PageResult,
     ProjectCreate,
@@ -24,9 +24,41 @@ from app.utils.pagination import get_pagination, paginate
 router = APIRouter(prefix="/projects", tags=["项目管理"])
 
 
-async def _project_out(project: Project, role: str | None = None) -> ProjectOut:
+async def _project_counts(db: AsyncSession, project_ids: list[int]) -> dict[int, dict]:
+    """批量统计项目下的用例/元素/套件数量（含软删除过滤）。"""
+    result: dict[int, dict] = {
+        pid: {"case_count": 0, "element_count": 0, "suite_count": 0} for pid in project_ids
+    }
+    if not project_ids:
+        return result
+    for model, key in (
+        (TestCase, "case_count"),
+        (TestElement, "element_count"),
+        (TestSuite, "suite_count"),
+    ):
+        rows = (
+            await db.execute(
+                select(model.project_id, func.count())
+                .where(model.project_id.in_(project_ids), model.deleted_at.is_(None))
+                .group_by(model.project_id)
+            )
+        ).all()
+        for pid, count in rows:
+            result[pid][key] = count
+    return result
+
+
+async def _project_out(
+    project: Project,
+    role: str | None = None,
+    counts: dict | None = None,
+) -> ProjectOut:
     out = ProjectOut.model_validate(project)
     out.role = role
+    if counts:
+        out.case_count = counts.get("case_count", 0)
+        out.element_count = counts.get("element_count", 0)
+        out.suite_count = counts.get("suite_count", 0)
     return out
 
 
@@ -81,11 +113,14 @@ async def list_projects(
     ).scalars().all()
 
     items = []
+    kept: list[tuple[Project, str]] = []
     for project in rows:
         role = await _resolve_role(project, user, db)
-        if role == "none":
-            continue
-        items.append(await _project_out(project, role))
+        if role != "none":
+            kept.append((project, role))
+    counts_map = await _project_counts(db, [p.id for p, _r in kept])
+    for project, role in kept:
+        items.append(await _project_out(project, role, counts_map.get(project.id)))
     return await paginate(items, total or 0, pagination)
 
 
@@ -111,9 +146,11 @@ async def create_project(
 async def get_project(
     project_id: int,
     perm: tuple[Project, str | None] = Depends(get_project_permission),
+    db: AsyncSession = Depends(get_db),
 ):
     project, role = perm
-    return await _project_out(project, role)
+    counts = (await _project_counts(db, [project.id])).get(project.id)
+    return await _project_out(project, role, counts)
 
 
 @router.put("/{project_id}", response_model=ProjectOut)

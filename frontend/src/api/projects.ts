@@ -8,6 +8,9 @@ export interface Project {
   visibility: string
   status: string
   role?: string | null
+  case_count?: number
+  element_count?: number
+  suite_count?: number
   created_at: string
   updated_at: string
 }

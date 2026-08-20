@@ -71,20 +71,21 @@ onMounted(load)
 
 <template>
   <div>
-    <div class="toolbar">
+    <div class="toolbar-card">
       <el-radio-group v-model="scope" @change="load">
         <el-radio-button value="project">项目变量</el-radio-button>
         <el-radio-button value="global">全局变量</el-radio-button>
       </el-radio-group>
+      <span class="spacer"></span>
       <el-button type="primary" @click="openCreate">新建变量</el-button>
     </div>
 
-    <el-table :data="items">
+    <el-table :data="items" stripe>
       <el-table-column prop="name" label="变量名" min-width="160" />
       <el-table-column prop="value" label="值" min-width="200" show-overflow-tooltip />
       <el-table-column label="作用域" width="100">
         <template #default="{ row }">
-          <el-tag size="small">{{ scopeLabel(row.scope) }}</el-tag>
+          <el-tag :type="row.scope === 'global' ? 'info' : 'success'" size="small">{{ scopeLabel(row.scope) }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column prop="description" label="描述" min-width="180" show-overflow-tooltip />
@@ -115,11 +116,3 @@ onMounted(load)
     </el-dialog>
   </div>
 </template>
-
-<style scoped>
-.toolbar {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 16px;
-}
-</style>

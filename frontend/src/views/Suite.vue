@@ -127,8 +127,8 @@ onMounted(loadSuites)
   <el-row :gutter="16">
     <el-col :span="9">
       <div class="suite-list">
-        <div class="toolbar">
-          <el-button type="primary" plain @click="openCreate">新建套件</el-button>
+        <div class="toolbar-card">
+          <el-button type="primary" @click="openCreate">新建套件</el-button>
         </div>
         <div
           v-for="s in suites"
@@ -153,8 +153,9 @@ onMounted(loadSuites)
 
     <el-col :span="15">
       <template v-if="activeSuite">
-        <div class="toolbar">
+        <div class="toolbar-card">
           <el-button type="primary" @click="openAddCase">添加用例</el-button>
+          <span class="spacer"></span>
         </div>
         <Draggable v-model="suiteCases" item-key="id" handle=".drag-handle" @end="onReorder">
           <template #item="{ element }">
@@ -215,29 +216,26 @@ onMounted(loadSuites)
 </template>
 
 <style scoped>
-.toolbar {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 12px;
-}
 .suite-list {
-  border-right: 1px solid #eee;
+  border-right: 1px solid var(--border);
   padding-right: 12px;
 }
 .suite-item {
-  padding: 10px 12px;
-  border: 1px solid #eee;
-  border-radius: 6px;
-  margin-bottom: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 10px;
   cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
 }
 .suite-item.active {
-  border-color: #409eff;
-  background: #ecf5ff;
+  border-color: var(--primary);
+  background: var(--primary-light);
 }
 .suite-name {
   font-weight: 600;
   margin-bottom: 6px;
+  color: var(--text);
 }
 .suite-meta {
   display: flex;
@@ -246,6 +244,8 @@ onMounted(loadSuites)
 }
 .case-item {
   margin-bottom: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
 }
 .case-row {
   display: flex;
@@ -255,6 +255,9 @@ onMounted(loadSuites)
 .drag-handle {
   cursor: move;
   color: #999;
+}
+.drag-handle:hover {
+  color: var(--primary);
 }
 .case-name {
   flex: 1;

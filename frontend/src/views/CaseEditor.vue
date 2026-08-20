@@ -134,94 +134,109 @@ onMounted(async () => {
 
 <template>
   <div v-loading="loading">
-    <el-form label-width="80px" class="basic-form">
-      <el-form-item label="名称" required>
-        <el-input v-model="form.name" />
-      </el-form-item>
-      <el-form-item label="模块">
-        <el-select v-model="form.module_id" clearable placeholder="选择模块" class="w-200">
-          <el-option v-for="m in modules" :key="m.id" :label="m.name" :value="m.id" />
-        </el-select>
-      </el-form-item>
-      <el-form-item label="状态">
-        <el-radio-group v-model="form.status">
-          <el-radio v-for="s in CASE_STATUS" :key="s.value" :value="s.value">{{ s.label }}</el-radio>
-        </el-radio-group>
-      </el-form-item>
-      <el-form-item label="描述">
-        <el-input v-model="form.description" type="textarea" :rows="2" />
-      </el-form-item>
-    </el-form>
-
-    <el-divider content-position="left">执行步骤</el-divider>
-    <el-button type="primary" plain size="small" @click="addStep">添加步骤</el-button>
-    <Draggable v-model="form.steps" item-key="order" handle=".drag-handle" class="step-list" @end="reorderSteps">
-      <template #item="{ element, index }">
-        <el-card class="step-card" shadow="never">
-          <div class="step-head">
-            <span class="drag-handle">⠿</span>
-            <span class="step-no">步骤 {{ index + 1 }}</span>
-            <el-select v-model="element.action" class="action-select">
-              <el-option v-for="a in ACTIONS" :key="a.value" :label="a.label" :value="a.value" />
-            </el-select>
-            <el-button type="danger" text size="small" @click="removeStep(index)">删除</el-button>
-          </div>
-          <div class="step-body">
-            <div v-if="element.action !== 'sleep'" class="step-row">
-              <span class="field-label">元素</span>
-              <ElementSelector :project-id="projectId" v-model="element.element_id" />
-            </div>
-            <div class="step-row">
-              <span class="field-label">参数</span>
-              <el-input v-model="element.params!.value" placeholder="如 ${username} / duration=2（可选）" />
-            </div>
-            <div class="step-row">
-              <span class="field-label">描述</span>
-              <el-input v-model="element.description" placeholder="步骤说明（可选）" />
-            </div>
-          </div>
-        </el-card>
-      </template>
-    </Draggable>
-
-    <el-divider content-position="left">断言</el-divider>
-    <el-button type="primary" plain size="small" @click="addAssertion">添加断言</el-button>
-    <Draggable v-model="form.assertions" item-key="order" handle=".drag-handle" class="step-list" @end="reorderAssertions">
-      <template #item="{ element, index }">
-        <el-card class="step-card" shadow="never">
-          <div class="step-head">
-            <span class="drag-handle">⠿</span>
-            <span class="step-no">断言 {{ index + 1 }}</span>
-            <el-select v-model="element.type" class="action-select">
-              <el-option v-for="a in ASSERTION_TYPES" :key="a.value" :label="a.label" :value="a.value" />
-            </el-select>
-            <el-button type="danger" text size="small" @click="removeAssertion(index)">删除</el-button>
-          </div>
-          <div class="step-body">
-            <div v-if="element.type !== 'element_exists'" class="step-row">
-              <span class="field-label">元素</span>
-              <ElementSelector :project-id="projectId" v-model="element.element_id" />
-            </div>
-            <div class="step-row">
-              <span class="field-label">参数</span>
-              <el-input v-model="element.params!.expected" placeholder="期望值，如 登录成功" />
-            </div>
-            <div class="step-row">
-              <span class="field-label">描述</span>
-              <el-input v-model="element.description" placeholder="断言说明（可选）" />
-            </div>
-          </div>
-        </el-card>
-      </template>
-    </Draggable>
-
-    <el-divider content-position="left">用例变量</el-divider>
-    <div v-for="(entry, idx) in variableEntries" :key="idx" class="variable-row">
-      <el-input v-model="entry.key" placeholder="变量名" class="var-name" />
-      <el-input v-model="entry.value" placeholder="变量值" class="var-value" />
-      <el-button type="danger" text @click="removeVariable(idx)">删除</el-button>
+    <div class="content-card mb16">
+      <div class="section-title">基本信息</div>
+      <el-form label-width="80px" class="basic-form">
+        <el-form-item label="名称" required>
+          <el-input v-model="form.name" />
+        </el-form-item>
+        <el-form-item label="模块">
+          <el-select v-model="form.module_id" clearable placeholder="选择模块" class="w-200">
+            <el-option v-for="m in modules" :key="m.id" :label="m.name" :value="m.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-radio-group v-model="form.status">
+            <el-radio v-for="s in CASE_STATUS" :key="s.value" :value="s.value">{{ s.label }}</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input v-model="form.description" type="textarea" :rows="2" />
+        </el-form-item>
+      </el-form>
     </div>
-    <el-button type="primary" plain size="small" @click="addVariable">添加变量</el-button>
+
+    <div class="content-card mb16">
+      <div class="section-title-row">
+        <span class="section-title">执行步骤</span>
+        <el-button type="primary" size="small" @click="addStep">添加步骤</el-button>
+      </div>
+      <Draggable v-model="form.steps" item-key="order" handle=".drag-handle" class="step-list" @end="reorderSteps">
+        <template #item="{ element, index }">
+          <el-card class="step-card step" shadow="never">
+            <div class="step-head">
+              <span class="drag-handle">⠿</span>
+              <span class="step-badge step">{{ index + 1 }}</span>
+              <el-select v-model="element.action" class="action-select">
+                <el-option v-for="a in ACTIONS" :key="a.value" :label="a.label" :value="a.value" />
+              </el-select>
+              <el-button type="danger" text size="small" @click="removeStep(index)">删除</el-button>
+            </div>
+            <div class="step-body">
+              <div v-if="element.action !== 'sleep'" class="step-row">
+                <span class="field-label">元素</span>
+                <ElementSelector :project-id="projectId" v-model="element.element_id" />
+              </div>
+              <div class="step-row">
+                <span class="field-label">参数</span>
+                <el-input v-model="element.params!.value" placeholder="如 ${username} / duration=2（可选）" />
+              </div>
+              <div class="step-row">
+                <span class="field-label">描述</span>
+                <el-input v-model="element.description" placeholder="步骤说明（可选）" />
+              </div>
+            </div>
+          </el-card>
+        </template>
+      </Draggable>
+    </div>
+
+    <div class="content-card mb16">
+      <div class="section-title-row">
+        <span class="section-title">断言</span>
+        <el-button type="primary" size="small" @click="addAssertion">添加断言</el-button>
+      </div>
+      <Draggable v-model="form.assertions" item-key="order" handle=".drag-handle" class="step-list" @end="reorderAssertions">
+        <template #item="{ element, index }">
+          <el-card class="step-card assertion" shadow="never">
+            <div class="step-head">
+              <span class="drag-handle">⠿</span>
+              <span class="step-badge assertion">{{ index + 1 }}</span>
+              <el-select v-model="element.type" class="action-select">
+                <el-option v-for="a in ASSERTION_TYPES" :key="a.value" :label="a.label" :value="a.value" />
+              </el-select>
+              <el-button type="danger" text size="small" @click="removeAssertion(index)">删除</el-button>
+            </div>
+            <div class="step-body">
+              <div v-if="element.type !== 'element_exists'" class="step-row">
+                <span class="field-label">元素</span>
+                <ElementSelector :project-id="projectId" v-model="element.element_id" />
+              </div>
+              <div class="step-row">
+                <span class="field-label">参数</span>
+                <el-input v-model="element.params!.expected" placeholder="期望值，如 登录成功" />
+              </div>
+              <div class="step-row">
+                <span class="field-label">描述</span>
+                <el-input v-model="element.description" placeholder="断言说明（可选）" />
+              </div>
+            </div>
+          </el-card>
+        </template>
+      </Draggable>
+    </div>
+
+    <div class="content-card mb16">
+      <div class="section-title-row">
+        <span class="section-title">用例变量</span>
+        <el-button type="primary" size="small" @click="addVariable">添加变量</el-button>
+      </div>
+      <div v-for="(entry, idx) in variableEntries" :key="idx" class="variable-row">
+        <el-input v-model="entry.key" placeholder="变量名" class="var-name" />
+        <el-input v-model="entry.value" placeholder="变量值" class="var-value" />
+        <el-button type="danger" text @click="removeVariable(idx)">删除</el-button>
+      </div>
+    </div>
 
     <div class="footer">
       <el-button @click="router.push(`/projects/${projectId}/cases`)">返回</el-button>
@@ -231,6 +246,30 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.mb16 {
+  margin-bottom: 16px;
+}
+.content-card {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+}
+.section-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 14px;
+}
+.section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.section-title-row .section-title {
+  margin-bottom: 0;
+}
 .basic-form {
   max-width: 720px;
 }
@@ -238,10 +277,19 @@ onMounted(async () => {
   width: 200px;
 }
 .step-list {
-  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .step-card {
-  margin-bottom: 8px;
+  margin-bottom: 0;
+  border-radius: 8px;
+}
+.step-card.step {
+  border-left: 3px solid var(--primary);
+}
+.step-card.assertion {
+  border-left: 3px solid var(--success);
 }
 .step-head {
   display: flex;
@@ -252,9 +300,27 @@ onMounted(async () => {
   cursor: move;
   color: #999;
 }
-.step-no {
+.drag-handle:hover {
+  color: var(--primary);
+}
+.step-badge {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
   font-weight: 600;
-  white-space: nowrap;
+  flex-shrink: 0;
+}
+.step-badge.step {
+  background: var(--primary-light);
+  color: var(--primary);
+}
+.step-badge.assertion {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--success);
 }
 .action-select {
   flex: 1;
@@ -287,9 +353,15 @@ onMounted(async () => {
   flex: 1;
 }
 .footer {
+  position: sticky;
+  bottom: 0;
+  background: #fff;
+  border-top: 1px solid var(--border);
+  padding: 14px 0;
   margin-top: 24px;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  z-index: 10;
 }
 </style>

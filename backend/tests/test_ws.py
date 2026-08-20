@@ -1,11 +1,11 @@
-import uuid
+﻿import uuid
 from datetime import UTC, datetime
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
-from app.core.config import reports_dir
+from app.core.config import reports_dir, settings
 from app.core.database import SessionLocal
 from app.main import app
 from app.models import (
@@ -225,7 +225,7 @@ async def test_internal_forward_offline_409(client: AsyncClient):
     resp = await client.post(
         f"/internal/ws/agents/{agent_id}/send",
         json={"type": "start_test", "execution_id": 1},
-        headers={"X-Internal-Token": "dev-internal-token-change-me"},
+        headers={"X-Internal-Token": settings.internal_token},
     )
     assert resp.status_code == 409
 
@@ -237,7 +237,7 @@ async def test_internal_forward_online_200(client: AsyncClient):
     resp = await client.post(
         f"/internal/ws/agents/{agent_id}/send",
         json={"type": "start_test", "execution_id": 1, "device": {"udid": "u1"}},
-        headers={"X-Internal-Token": "dev-internal-token-change-me"},
+        headers={"X-Internal-Token": settings.internal_token},
     )
     assert resp.status_code == 200
     assert fake.sent[0]["type"] == "start_test"

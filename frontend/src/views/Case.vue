@@ -76,7 +76,7 @@ function statusTag(s: string) {
 }
 
 function statusType(s: string) {
-  return s === 'active' ? 'success' : s === 'disabled' ? 'info' : 'warning'
+  return s === 'active' ? 'success' : s === 'disabled' ? 'danger' : 'warning'
 }
 
 onMounted(() => {
@@ -87,7 +87,7 @@ onMounted(() => {
 
 <template>
   <div>
-    <div class="toolbar">
+    <div class="toolbar-card">
       <el-select v-model="moduleId" placeholder="按模块筛选" clearable class="module" @change="page = 1; load()">
         <el-option v-for="m in modules" :key="m.id" :label="m.name" :value="m.id" />
       </el-select>
@@ -96,10 +96,11 @@ onMounted(() => {
         <el-option v-for="s in CASE_STATUS" :key="s.value" :label="s.label" :value="s.value" />
       </el-select>
       <el-button type="primary" @click="page = 1; load()">搜索</el-button>
-      <el-button type="primary" plain @click="openCreate">新建用例</el-button>
+      <span class="spacer"></span>
+      <el-button type="primary" @click="openCreate">新建用例</el-button>
     </div>
 
-    <el-table v-loading="loading" :data="items">
+    <el-table v-loading="loading" :data="items" stripe>
       <el-table-column prop="id" label="ID" width="70" />
       <el-table-column prop="name" label="名称" min-width="200" show-overflow-tooltip />
       <el-table-column prop="module_name" label="模块" width="130" />
@@ -140,11 +141,6 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.toolbar {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 16px;
-}
 .module {
   width: 150px;
 }
@@ -153,9 +149,5 @@ onMounted(() => {
 }
 .status {
   width: 110px;
-}
-.pager {
-  margin-top: 16px;
-  justify-content: flex-end;
 }
 </style>

@@ -23,6 +23,9 @@ class ProjectOut(BaseModel):
     visibility: str
     status: str
     role: str | None = None  # 当前用户在项目中的角色
+    case_count: int = 0
+    element_count: int = 0
+    suite_count: int = 0
     created_at: datetime
     updated_at: datetime
 

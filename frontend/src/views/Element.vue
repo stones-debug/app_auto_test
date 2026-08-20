@@ -113,12 +113,20 @@ function locatorLabel(type: string) {
   return LOCATOR_TYPES.find((t) => t.value === type)?.label ?? type
 }
 
+function platformType(p: string) {
+  return ({ both: 'success', android: 'primary', ios: 'warning' } as Record<string, string>)[p] ?? 'info'
+}
+
+function platformLabel(p: string) {
+  return ({ both: '通用', android: 'Android', ios: 'iOS' } as Record<string, string>)[p] ?? p
+}
+
 onMounted(load)
 </script>
 
 <template>
   <div>
-    <div class="toolbar">
+    <div class="toolbar-card">
       <el-input v-model="keyword" placeholder="按名称搜索" clearable class="search" @keyup.enter="page = 1; load()" />
       <el-select v-model="platform" placeholder="平台" clearable class="platform" @change="page = 1; load()">
         <el-option label="Android" value="android" />
@@ -126,15 +134,16 @@ onMounted(load)
         <el-option label="通用" value="both" />
       </el-select>
       <el-button type="primary" @click="page = 1; load()">搜索</el-button>
-      <el-button type="primary" plain @click="openCreate">新建元素</el-button>
+      <span class="spacer"></span>
+      <el-button type="primary" @click="openCreate">新建元素</el-button>
     </div>
 
-    <el-table v-loading="loading" :data="items">
+    <el-table v-loading="loading" :data="items" stripe>
       <el-table-column prop="name" label="名称" min-width="150" />
       <el-table-column prop="page_name" label="页面" min-width="120" />
       <el-table-column label="平台" width="90">
         <template #default="{ row }">
-          <el-tag size="small">{{ row.platform }}</el-tag>
+          <el-tag :type="platformType(row.platform)" size="small">{{ platformLabel(row.platform) }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column label="定位方式" width="160">
@@ -203,20 +212,11 @@ onMounted(load)
 </template>
 
 <style scoped>
-.toolbar {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 16px;
-}
 .search {
   width: 220px;
 }
 .platform {
   width: 130px;
-}
-.pager {
-  margin-top: 16px;
-  justify-content: flex-end;
 }
 .full {
   width: 100%;

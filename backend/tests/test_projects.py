@@ -108,3 +108,37 @@ async def test_project_permission(client: AsyncClient):
     assert members.status_code == 200
     usernames = [m["username"] for m in members.json()]
     assert BOB["username"] in usernames
+
+
+async def test_project_counts(client: AsyncClient):
+    token, _ = await _register(client, ALICE)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    project = await client.post("/api/projects", json={"name": "计数项目", "visibility": "private"}, headers=headers)
+    project_id = project.json()["id"]
+    # 建 1 元素 + 1 用例 + 1 套件
+    element = await client.post(
+        f"/api/projects/{project_id}/elements",
+        json={"name": "按钮", "locator_type": "id", "locator_value": "btn"},
+        headers=headers,
+    )
+    element_id = element.json()["id"]
+    await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={"name": "用例", "steps": [{"order": 1, "action": "click", "element_id": element_id, "params": {}}], "assertions": []},
+        headers=headers,
+    )
+    await client.post(
+        f"/api/projects/{project_id}/suites", json={"name": "套件"}, headers=headers
+    )
+
+    listing = await client.get("/api/projects", headers=headers)
+    item = next(p for p in listing.json()["items"] if p["id"] == project_id)
+    assert item["case_count"] == 1
+    assert item["element_count"] == 1
+    assert item["suite_count"] == 1
+
+    detail = await client.get(f"/api/projects/{project_id}", headers=headers)
+    assert detail.json()["case_count"] == 1
+    assert detail.json()["element_count"] == 1
+    assert detail.json()["suite_count"] == 1
