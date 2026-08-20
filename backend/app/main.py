@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth import router as auth_router
+from app.api.cases import router as cases_router
 from app.api.elements import router as elements_router
 from app.api.projects import router as projects_router
 from app.core.config import settings
@@ -24,6 +25,7 @@ app.add_middleware(
 app.include_router(auth_router, prefix="/api")
 app.include_router(projects_router, prefix="/api")
 app.include_router(elements_router, prefix="/api")
+app.include_router(cases_router, prefix="/api")
 
 
 @app.get("/api/health")
