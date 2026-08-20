@@ -38,8 +38,17 @@ def start_scans(scheduler: AsyncIOScheduler) -> None:
     scheduler.add_job(
         _job(worker_service.agent_heartbeat_scan), "interval", seconds=60, id="agent_heartbeat_scan"
     )
+    scheduler.add_job(_job(_daily_cleanup), "cron", hour=3, id="daily_cleanup")
     scheduler.start()
-    logger.info("扫描任务已启用（reclaim/timeout/heartbeat）")
+    logger.info("扫描任务已启用（reclaim/timeout/heartbeat/每日清理）")
+
+
+async def _daily_cleanup(db) -> None:
+    from app.services import cleanup_service
+
+    await cleanup_service.cleanup_old_reports(db)
+    await cleanup_service.cleanup_old_logs(db)
+    logger.info("每日清理完成")
 
 
 async def main() -> None:

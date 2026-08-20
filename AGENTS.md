@@ -13,17 +13,30 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 
 ## 后端 backend/（FastAPI + SQLAlchemy 2.0 async + asyncpg）
 命令均需在 `backend/` 目录下执行：
-- 启动：`uv run uvicorn app.main:app --host 127.0.0.1 --port 8000`（长驻进程，用 `Start-Process ... -WindowStyle Hidden` 后台启动后再 curl 验证）
+- 启动：`uv run uvicorn app.main:app --host 127.0.0.1 --port 8001`（**端口 8001**，本机 8000 被 C-Lodop 打印服务占用；长驻进程用 `Start-Process ... -WindowStyle Hidden` 后台启动，或用 `start-backend.ps1 -NoReload`）
+- Worker：`uv run python worker.py --worker-id worker-001 --enable-scans`（独立进程，可用 `start-worker.ps1`；扫描任务仅 worker-001 启用）
 - 迁移：`uv run alembic revision --autogenerate -m "..."` → 审阅生成的迁移 → `uv run alembic upgrade head`
 - 测试：`uv run pytest tests/ -q`（pytest-asyncio `asyncio_mode=auto`）
-- Lint：`uv run ruff check app/ tests/ --fix`（选 `E,F,W,I,UP,B`，忽略 `E501,B008`；B008 是 FastAPI 的 `Depends` 默认参数惯例，勿"修复"）
+- Lint：`uv run ruff check app/ tests/ worker.py scripts/ --fix`（选 `E,F,W,I,UP,B`，忽略 `E501,B008`；B008 是 FastAPI 的 `Depends` 默认参数惯例，勿"修复"）
 - 种子：`uv run python -m app.seed`（创建 admin / admin123）
+- 清理：`uv run python scripts/cleanup_reports.py [--dry-run]`（按保留天数删报告/截图/日志，Worker 每日 3 点自动执行）
 
 关键点：
 - `pyproject.toml` 中 `[tool.uv] package=false`：`app/` 是普通可导入包，运行必须 cwd=backend/，不存在 `src` 布局
-- 目录：`app/api`（路由）、`app/models`（19 张业务表）、`app/core`（config/database/security）、`app/schemas`、`app/services`、`app/utils`、`alembic/`、`worker.py`（尚未创建）
+- 目录：`app/api`（路由）、`app/models`（19 张业务表）、`app/core`（config/database/security）、`app/schemas`、`app/services`（execution/worker/report/cleanup）、`app/ws`（WS 网关）、`app/templates/reports`（报告 HTML 模板）、`scripts/`、`worker.py`、`start-backend.ps1`/`start-worker.ps1`
 - 权限依赖在 `app/api/deps.py`：`require_project_role("owner","admin")` 返回**元组 `(project, role)`**，必须解包 `project, role = perm`——最常见的接线 bug（曾把元组当 Project 用导致 AttributeError）
 - 路由注册用 `app.include_router(router, prefix="/api")`。FastAPI 0.141 路由延迟解析，打印 `app.routes` 只见 `_IncludedRouter` 属正常
+
+## Agent agent/（独立 uv 环境）
+- 启动：在 `agent/` 下 `uv run python main.py --config config.yaml`（或 `start-agent.ps1`）；`config.yaml.example` 为模板，需填 `server/agent_key/agent_id`
+- 驱动：`driver: mock`（默认，本地联调）/ `appium`（真实 Appium，需 `pip install 'agent[appium]'`）
+- 测试：`uv run pytest tests/ -q`；Lint：`uv run ruff check .`
+- 上报设备：mock 模式用 `config.yaml` 的 `mock_devices`；appium 模式走 `adb devices`
+
+## 前端 frontend/
+- 启动：`npm run dev`（vite 代理 `/api` 与 `/ws` → 127.0.0.1:8001）
+- 构建：`npm run build`（vue-tsc + vite，TS 类型即校验）
+- WS 封装在 `src/composables/useExecutionSocket.ts`（VueUse useWebSocket + 自动重连 + 心跳）
 
 ## 测试注意
 - 测试直接连真实 dev 库（无独立测试库），数据会落库
@@ -36,7 +49,8 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 - 软删除用 `deleted_at`（projects/test_modules/test_elements/test_cases/test_suites），其余表硬删
 
 ## 架构要点（V1.1 §10，务必遵守）
-- 进程职责三分：**FastAPI** = WS 网关 + 执行细节落库(execution_steps/assertions/logs) + 广播；**Worker** = 队列消费(SKIP LOCKED) + 设备原子锁 + 报告生成；**Agent** = Action/Assertion Registry 实际执行
+- 进程职责三分：**FastAPI** = WS 网关 + 执行细节落库(execution_steps/assertions/logs) + 广播；**Worker** = 队列消费(SKIP LOCKED) + 设备原子锁 + 终态汇总(reports 统计行) + 扫描/每日清理；**Agent** = Action/Assertion Registry 实际执行
+- 报告：查看由前端渲染 `GET /api/reports/{id}/detail` 聚合数据；HTML 仅用户点下载时按需生成（`report_service.render_report_html`，截图 base64 内嵌、幂等缓存）
 - Worker 与 Agent **无直接 WS**：经 `/internal/ws/agents/{id}/send` 由 FastAPI 转发（`X-Internal-Token`）
 - 执行状态机**全小写**：`queued / running / stopping / passed / failed / error / stopped / cancelled`
 - Action/Assertion Registry 属于 agent 包，不属于 backend（backend/app/executor 目录可能废弃）

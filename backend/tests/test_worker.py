@@ -218,6 +218,34 @@ async def test_create_execution_snapshots(client: AsyncClient):
         assert ec.elements_snapshot[element_id]["locator_value"] == "btn_login"
 
 
+async def test_create_execution_snapshots_idempotent(client: AsyncClient):
+    """重复创建快照不产生重复行，且删除旧快照不触发 FK 错误（含已注入步骤）。"""
+    token, case_id = await _setup_case(client)
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        ec = (await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )).scalar_one()
+        db.add(ExecutionStep(execution_case_id=ec.id, step_order=1, action="click", status="passed"))
+        await db.commit()
+
+        cases = await worker_service.create_execution_cases_from_execution(db, execution)
+        assert len(cases) == 1
+
+    async with SessionLocal() as db:
+        ecs = (await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )).scalars().all()
+        assert len(ecs) == 1
+        steps = (await db.execute(
+            select(ExecutionStep).where(ExecutionStep.execution_case_id == ecs[0].id)
+        )).scalars().all()
+        assert len(steps) == 0
+
+
 # ---------- 扫描任务 ----------
 
 
