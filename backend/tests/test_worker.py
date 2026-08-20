@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -11,8 +12,10 @@ from app.models import (
     Agent,
     Device,
     Execution,
+    ExecutionCase,
     ExecutionLog,
     ExecutionQueue,
+    ExecutionStep,
     Report,
 )
 from app.services import worker_service
@@ -262,6 +265,91 @@ async def test_reclaim_stale_claimed(client: AsyncClient):
         assert queue.status == "pending"
         assert queue.retry_count == 1
         assert queue.claimed_by is None
+
+
+async def test_mark_terminal_derives_case_status(client: AsyncClient):
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        ec = (await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )).scalar_one()
+        # 模拟步骤已执行：passed
+        step = ExecutionStep(execution_case_id=ec.id, step_order=1, action="click", status="passed")
+        db.add(step)
+        execution.status = "running"
+        execution.started_at = datetime.now(UTC) - timedelta(minutes=10)
+        execution.timeout_seconds = 60
+        await db.commit()
+
+        await worker_service.timeout_scan(db)  # 触发终态（超时时间短）
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution.status == "error"
+        ec = (await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )).scalar_one()
+        # 步骤全 passed，无失败 → 归为 passed（不因执行超时而误判为 skipped）
+        assert ec.status == "passed"
+
+
+async def test_run_execution_finalizes_on_terminal(client: AsyncClient):
+    """Agent 回传 execution_result（另一会话设置终态）后，Worker 轮询应能检测并 finalize。"""
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "btn_login"}})
+
+    async with SessionLocal() as db:
+        item = await worker_service.claim_next_queue(db, "worker-test")
+        assert item is not None
+
+    async def sender(agent_id, payload):
+        return True
+
+    async def run_worker():
+        async with SessionLocal() as wdb:
+            await worker_service.run_execution(
+                wdb, execution_id, "worker-test", agent_sender=sender, poll_interval=0.05
+            )
+
+    task = asyncio.create_task(run_worker())
+
+    # 主测试用独立会话轮询设备，等待 worker 锁定并进入轮询
+    async with SessionLocal() as poll_db:
+        for _ in range(100):
+            device = await poll_db.get(Device, device_id)
+            if device is not None and device.status == "busy":
+                break
+            await asyncio.sleep(0.05)
+
+    # 模拟 FastAPI（Agent 回传 execution_result）在另一会话设置终态
+    async with SessionLocal() as db2:
+        execution = await db2.get(Execution, execution_id)
+        execution.status = "passed"
+        execution.finished_at = datetime.now(UTC)
+        await db2.commit()
+
+    await asyncio.wait_for(task, timeout=5)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution.status == "passed"
+        queue = (await db.execute(select(ExecutionQueue).where(ExecutionQueue.execution_id == execution_id))).scalar_one()
+        assert queue.status == "done"
+        device = await db.get(Device, device_id)
+        assert device.status == "idle"
+        assert device.locked_by_execution is None
+        report = (await db.execute(select(Report).where(Report.execution_id == execution_id))).scalar_one()
+        assert report.total == 1
+        ec = (await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )).scalar_one()
+        assert ec.status == "passed"
 
 
 async def test_agent_heartbeat_scan(client: AsyncClient):

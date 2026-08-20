@@ -14,9 +14,11 @@ from app.models import (
     Agent,
     Device,
     Execution,
+    ExecutionAssertion,
     ExecutionCase,
     ExecutionLog,
     ExecutionQueue,
+    ExecutionStep,
     Report,
     TestCase,
     TestElement,
@@ -257,8 +259,26 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
         await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == execution.id))
     ).scalars().all()
     for c in cases:
-        if c.status == "pending":
-            c.status = "skipped"
+        if c.status in ("pending", "running"):
+            steps = (
+                await db.execute(select(ExecutionStep).where(ExecutionStep.execution_case_id == c.id))
+            ).scalars().all()
+            assertions = (
+                await db.execute(
+                    select(ExecutionAssertion)
+                    .join(ExecutionStep, ExecutionAssertion.execution_step_id == ExecutionStep.id)
+                    .where(ExecutionStep.execution_case_id == c.id)
+                )
+            ).scalars().all()
+            failed = any(s.status == "failed" for s in steps) or any(
+                a.status in ("fail", "failed") for a in assertions
+            )
+            if failed:
+                c.status = "failed"
+            elif steps or assertions:
+                c.status = "passed"
+            else:
+                c.status = "passed" if status_ == "passed" else "skipped"
     now = datetime.now(UTC)
     execution.status = status_
     execution.finished_at = now
@@ -334,12 +354,33 @@ async def run_execution(
     await db.commit()
     logger.info("[%s] execution=%s 开始执行，设备=%s", worker_id, execution.id, device.name)
 
+    case_rows = (
+        await db.execute(
+            select(ExecutionCase)
+            .where(ExecutionCase.execution_id == execution.id)
+            .order_by(ExecutionCase.id)
+        )
+    ).scalars().all()
+    payload_cases = [
+        {
+            "execution_case_id": c.id,
+            "case_id": c.case_id,
+            "case_name": c.case_name,
+            "module_name": c.module_name,
+            "steps_snapshot": c.steps_snapshot,
+            "assertions_snapshot": c.assertions_snapshot,
+            "elements_snapshot": c.elements_snapshot,
+        }
+        for c in case_rows
+    ]
     ok = await agent_sender(
         device.agent_id,
         {
             "type": "start_test",
             "execution_id": execution.id,
+            "parameters": execution.parameters,
             "device": {"udid": device.udid, "platform": device.platform},
+            "cases": payload_cases,
         },
     )
     if not ok:
@@ -348,12 +389,14 @@ async def run_execution(
 
     # Agent 经 WS 回传状态由 FastAPI 落库（§10.1）；Worker 轮询终态
     while True:
-        current = await db.get(Execution, execution.id)
+        current = await db.get(Execution, execution.id, populate_existing=True)
         if current is None:
             return
         if current.status in TERMINAL_STATES:
             await _mark_terminal(db, current, current.status)
             return
+        if current.status == "stopping":
+            await agent_sender(device.agent_id, {"type": "stop_test", "execution_id": execution.id})
         await asyncio.sleep(poll_interval)
 
 

@@ -12,6 +12,7 @@ from app.models import (
     Agent,
     Device,
     Execution,
+    ExecutionAssertion,
     ExecutionCase,
     ExecutionLog,
     ExecutionStep,
@@ -297,3 +298,41 @@ async def test_agent_upload_ok_and_cleanup():
         import shutil
 
         shutil.rmtree(target)
+
+
+async def test_handle_assertion_result(client: AsyncClient):
+    token, case_id, execution_id = await _setup_case_execution(client)
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+
+    async with SessionLocal() as db:
+        agent_id = await _create_agent()
+        await handlers.handle_step_result(
+            db,
+            agent_id,
+            {"execution_id": execution_id, "case_id": case_id, "step_order": 1, "action": "input", "status": "passed"},
+        )
+        await handlers.handle_assertion_result(
+            db,
+            agent_id,
+            {
+                "execution_id": execution_id,
+                "case_id": case_id,
+                "assertions": [{"type": "text_equals", "expected": "admin", "actual": "admin", "status": "pass"}],
+            },
+        )
+
+    async with SessionLocal() as db:
+        ec = (await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )).scalar_one()
+        step = (await db.execute(
+            select(ExecutionStep).where(ExecutionStep.execution_case_id == ec.id)
+        )).scalar_one()
+        rows = (await db.execute(
+            select(ExecutionAssertion).where(ExecutionAssertion.execution_step_id == step.id)
+        )).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].assertion_type == "text_equals"
+        assert rows[0].status == "pass"

@@ -8,6 +8,7 @@ from app.core.database import get_db
 from app.core.security import decode_token
 from app.models import Execution, Project, ProjectMember, User
 from app.ws.handlers import (
+    handle_assertion_result,
     handle_device_list,
     handle_execution_result,
     handle_heartbeat,
@@ -113,6 +114,9 @@ async def agent_ws(websocket: WebSocket, db: AsyncSession = Depends(get_db)):
             elif msg_type == "step_result":
                 if current_agent_id is not None:
                     await handle_step_result(db, current_agent_id, data)
+            elif msg_type == "assertion_result":
+                if current_agent_id is not None:
+                    await handle_assertion_result(db, current_agent_id, data)
             elif msg_type == "execution_result":
                 if current_agent_id is not None:
                     await handle_execution_result(db, current_agent_id, data)

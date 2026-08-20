@@ -206,6 +206,54 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
     )
 
 
+async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict) -> None:
+    execution_id = payload.get("execution_id")
+    case_id = payload.get("case_id")
+    if execution_id is None or case_id is None:
+        return
+    execution_case = (
+        await db.execute(
+            select(ExecutionCase).where(
+                ExecutionCase.execution_id == execution_id,
+                ExecutionCase.case_id == case_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if execution_case is None:
+        return
+    last_step = (
+        await db.execute(
+            select(ExecutionStep)
+            .where(ExecutionStep.execution_case_id == execution_case.id)
+            .order_by(ExecutionStep.step_order.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if last_step is None:
+        db.add(
+            ExecutionLog(
+                execution_id=execution_id,
+                level="WARN",
+                message=f"assertion_result 无步骤可关联 (case_id={case_id})",
+                source="agent",
+            )
+        )
+        await db.commit()
+        return
+    for assertion in payload.get("assertions") or []:
+        db.add(
+            ExecutionAssertion(
+                execution_step_id=last_step.id,
+                assertion_type=assertion.get("type") or "",
+                expected_value=str(assertion.get("expected") or ""),
+                actual_value=str(assertion.get("actual") or ""),
+                status=assertion.get("status") or "fail",
+                error_message=assertion.get("error_message"),
+            )
+        )
+    await db.commit()
+
+
 async def handle_execution_result(db: AsyncSession, agent_id: int, payload: dict) -> None:
     execution_id = payload.get("execution_id")
     execution = await db.get(Execution, execution_id)

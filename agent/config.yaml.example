@@ -1,0 +1,20 @@
+# 服务器连接
+server: "ws://127.0.0.1:8001/ws/agent"
+agent_key: "sk-agent-change-me"
+agent_id: "agent-001"
+
+# 可选配置
+heartbeat_interval: 30
+log_level: "INFO"
+appium_host: "127.0.0.1"
+appium_port: 4723
+
+# 驱动模式：mock（默认，无需真机）/ appium（真实 Appium）
+driver: "mock"
+
+# mock 模式下默认上报的设备（可多个）
+mock_devices:
+  - udid: "mock-android-1"
+    name: "Mock Android Emulator"
+    platform: "android"
+    device_type: "emulator"
