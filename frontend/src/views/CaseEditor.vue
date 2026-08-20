@@ -1,0 +1,295 @@
+<script setup lang="ts">
+import { computed, onMounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+
+import { ElMessage } from 'element-plus'
+import Draggable from 'vuedraggable'
+
+import {
+  ACTIONS,
+  ASSERTION_TYPES,
+  CASE_STATUS,
+  createCase,
+  getCase,
+  updateCase,
+  type Assertion,
+  type Step,
+  type TestCase,
+} from '@/api/cases'
+import { listModules } from '@/api/elements'
+import ElementSelector from '@/components/ElementSelector.vue'
+
+const route = useRoute()
+const router = useRouter()
+const projectId = Number(route.params.projectId)
+const caseId = route.params.caseId === 'new' ? null : Number(route.params.caseId)
+
+const loading = ref(false)
+const modules = ref<{ id: number; name: string }[]>([])
+
+const form = reactive<Partial<TestCase>>({
+  name: '',
+  module_id: null,
+  description: '',
+  status: 'draft',
+  steps: [] as Step[],
+  assertions: [] as Assertion[],
+  variables: {} as Record<string, unknown>,
+})
+
+const variableEntries = ref<{ key: string; value: string }[]>([])
+const isEdit = computed(() => caseId !== null)
+
+function addStep() {
+  const steps = form.steps as Step[]
+  steps.push({ order: steps.length + 1, action: 'click', params: {}, element_id: null, description: '' })
+}
+
+function removeStep(index: number) {
+  ;(form.steps as Step[]).splice(index, 1)
+  reorderSteps()
+}
+
+function reorderSteps() {
+  ;(form.steps as Step[]).forEach((s, i) => (s.order = i + 1))
+}
+
+function addAssertion() {
+  const assertions = form.assertions as Assertion[]
+  assertions.push({ order: assertions.length + 1, type: 'element_exists', params: {}, element_id: null, description: '' })
+}
+
+function removeAssertion(index: number) {
+  ;(form.assertions as Assertion[]).splice(index, 1)
+  reorderAssertions()
+}
+
+function reorderAssertions() {
+  ;(form.assertions as Assertion[]).forEach((a, i) => (a.order = i + 1))
+}
+
+function addVariable() {
+  variableEntries.value.push({ key: '', value: '' })
+}
+
+function removeVariable(index: number) {
+  variableEntries.value.splice(index, 1)
+}
+
+function collectVariables(): Record<string, unknown> {
+  const vars: Record<string, unknown> = {}
+  for (const entry of variableEntries.value) {
+    if (entry.key) vars[entry.key] = entry.value
+  }
+  return vars
+}
+
+async function save() {
+  if (!form.name) {
+    ElMessage.warning('请输入用例名称')
+    return
+  }
+  loading.value = true
+  try {
+    const payload: Partial<TestCase> = {
+      name: form.name,
+      module_id: form.module_id,
+      description: form.description,
+      status: form.status,
+      steps: form.steps as Step[],
+      assertions: form.assertions as Assertion[],
+      variables: collectVariables(),
+    }
+    if (isEdit.value) {
+      await updateCase(caseId!, payload)
+      ElMessage.success('已保存')
+    } else {
+      await createCase(projectId, payload)
+      ElMessage.success('已创建')
+    }
+    router.push(`/projects/${projectId}/cases`)
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(async () => {
+  modules.value = await listModules(projectId)
+  if (isEdit.value) {
+    const data = await getCase(caseId!)
+    form.name = data.name
+    form.module_id = data.module_id
+    form.description = data.description ?? ''
+    form.status = data.status
+    form.steps = data.steps
+    form.assertions = data.assertions
+    form.variables = data.variables
+    variableEntries.value = Object.entries(data.variables).map(([key, value]) => ({
+      key,
+      value: String(value),
+    }))
+  }
+})
+</script>
+
+<template>
+  <div v-loading="loading">
+    <el-form label-width="80px" class="basic-form">
+      <el-form-item label="名称" required>
+        <el-input v-model="form.name" />
+      </el-form-item>
+      <el-form-item label="模块">
+        <el-select v-model="form.module_id" clearable placeholder="选择模块" class="w-200">
+          <el-option v-for="m in modules" :key="m.id" :label="m.name" :value="m.id" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="状态">
+        <el-radio-group v-model="form.status">
+          <el-radio v-for="s in CASE_STATUS" :key="s.value" :value="s.value">{{ s.label }}</el-radio>
+        </el-radio-group>
+      </el-form-item>
+      <el-form-item label="描述">
+        <el-input v-model="form.description" type="textarea" :rows="2" />
+      </el-form-item>
+    </el-form>
+
+    <el-divider content-position="left">执行步骤</el-divider>
+    <el-button type="primary" plain size="small" @click="addStep">添加步骤</el-button>
+    <Draggable v-model="form.steps" item-key="order" handle=".drag-handle" class="step-list" @end="reorderSteps">
+      <template #item="{ element, index }">
+        <el-card class="step-card" shadow="never">
+          <div class="step-head">
+            <span class="drag-handle">⠿</span>
+            <span class="step-no">步骤 {{ index + 1 }}</span>
+            <el-select v-model="element.action" class="action-select">
+              <el-option v-for="a in ACTIONS" :key="a.value" :label="a.label" :value="a.value" />
+            </el-select>
+            <el-button type="danger" text size="small" @click="removeStep(index)">删除</el-button>
+          </div>
+          <div class="step-body">
+            <div v-if="element.action !== 'sleep'" class="step-row">
+              <span class="field-label">元素</span>
+              <ElementSelector :project-id="projectId" v-model="element.element_id" />
+            </div>
+            <div class="step-row">
+              <span class="field-label">参数</span>
+              <el-input v-model="element.params!.value" placeholder="如 ${username} / duration=2（可选）" />
+            </div>
+            <div class="step-row">
+              <span class="field-label">描述</span>
+              <el-input v-model="element.description" placeholder="步骤说明（可选）" />
+            </div>
+          </div>
+        </el-card>
+      </template>
+    </Draggable>
+
+    <el-divider content-position="left">断言</el-divider>
+    <el-button type="primary" plain size="small" @click="addAssertion">添加断言</el-button>
+    <Draggable v-model="form.assertions" item-key="order" handle=".drag-handle" class="step-list" @end="reorderAssertions">
+      <template #item="{ element, index }">
+        <el-card class="step-card" shadow="never">
+          <div class="step-head">
+            <span class="drag-handle">⠿</span>
+            <span class="step-no">断言 {{ index + 1 }}</span>
+            <el-select v-model="element.type" class="action-select">
+              <el-option v-for="a in ASSERTION_TYPES" :key="a.value" :label="a.label" :value="a.value" />
+            </el-select>
+            <el-button type="danger" text size="small" @click="removeAssertion(index)">删除</el-button>
+          </div>
+          <div class="step-body">
+            <div v-if="element.type !== 'element_exists'" class="step-row">
+              <span class="field-label">元素</span>
+              <ElementSelector :project-id="projectId" v-model="element.element_id" />
+            </div>
+            <div class="step-row">
+              <span class="field-label">参数</span>
+              <el-input v-model="element.params!.expected" placeholder="期望值，如 登录成功" />
+            </div>
+            <div class="step-row">
+              <span class="field-label">描述</span>
+              <el-input v-model="element.description" placeholder="断言说明（可选）" />
+            </div>
+          </div>
+        </el-card>
+      </template>
+    </Draggable>
+
+    <el-divider content-position="left">用例变量</el-divider>
+    <div v-for="(entry, idx) in variableEntries" :key="idx" class="variable-row">
+      <el-input v-model="entry.key" placeholder="变量名" class="var-name" />
+      <el-input v-model="entry.value" placeholder="变量值" class="var-value" />
+      <el-button type="danger" text @click="removeVariable(idx)">删除</el-button>
+    </div>
+    <el-button type="primary" plain size="small" @click="addVariable">添加变量</el-button>
+
+    <div class="footer">
+      <el-button @click="router.push(`/projects/${projectId}/cases`)">返回</el-button>
+      <el-button type="primary" @click="save">保存</el-button>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.basic-form {
+  max-width: 720px;
+}
+.w-200 {
+  width: 200px;
+}
+.step-list {
+  margin-top: 12px;
+}
+.step-card {
+  margin-bottom: 8px;
+}
+.step-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.drag-handle {
+  cursor: move;
+  color: #999;
+}
+.step-no {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.action-select {
+  flex: 1;
+  max-width: 220px;
+}
+.step-body {
+  margin-top: 8px;
+}
+.step-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.field-label {
+  width: 40px;
+  color: #888;
+  flex-shrink: 0;
+}
+.variable-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  max-width: 560px;
+}
+.var-name {
+  width: 180px;
+}
+.var-value {
+  flex: 1;
+}
+.footer {
+  margin-top: 24px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+</style>

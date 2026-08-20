@@ -21,28 +21,40 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '项目管理' },
       },
       {
-        path: 'projects/:projectId/elements',
-        name: 'Elements',
-        component: () => import('@/views/Element.vue'),
-        meta: { title: '元素管理' },
-      },
-      {
-        path: 'projects/:projectId/cases',
-        name: 'Cases',
-        component: () => import('@/views/Case.vue'),
-        meta: { title: '用例管理' },
-      },
-      {
-        path: 'projects/:projectId/suites',
-        name: 'Suites',
-        component: () => import('@/views/Suite.vue'),
-        meta: { title: '套件管理' },
-      },
-      {
-        path: 'projects/:projectId/variables',
-        name: 'Variables',
-        component: () => import('@/views/Variable.vue'),
-        meta: { title: '变量管理' },
+        path: 'projects/:projectId',
+        component: () => import('@/layouts/ProjectLayout.vue'),
+        children: [
+          {
+            path: 'elements',
+            name: 'Elements',
+            component: () => import('@/views/Element.vue'),
+            meta: { title: '元素管理' },
+          },
+          {
+            path: 'cases',
+            name: 'Cases',
+            component: () => import('@/views/Case.vue'),
+            meta: { title: '用例管理' },
+          },
+          {
+            path: 'cases/:caseId/edit',
+            name: 'CaseEdit',
+            component: () => import('@/views/CaseEditor.vue'),
+            meta: { title: '用例编辑' },
+          },
+          {
+            path: 'suites',
+            name: 'Suites',
+            component: () => import('@/views/Suite.vue'),
+            meta: { title: '套件管理' },
+          },
+          {
+            path: 'variables',
+            name: 'Variables',
+            component: () => import('@/views/Variable.vue'),
+            meta: { title: '变量管理' },
+          },
+        ],
       },
       {
         path: 'executions',
