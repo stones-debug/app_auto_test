@@ -1,5 +1,7 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.agent import router as agent_router
 from app.api.agents import router as agents_router
@@ -12,7 +14,7 @@ from app.api.projects import router as projects_router
 from app.api.reports import router as reports_router
 from app.api.suites import router as suites_router
 from app.api.variables import router as variables_router
-from app.core.config import settings
+from app.core.config import BASE_DIR, settings
 from app.ws.routes import router as ws_router
 
 app = FastAPI(
@@ -47,6 +49,25 @@ app.include_router(ws_router)
 @app.get("/api/health")
 async def health() -> dict:
     return {"status": "ok", "version": "0.1.0"}
+
+
+# ---------- 前端静态托管（本地部署：单端口 8001 提供页面 + API + WS） ----------
+_FRONTEND_DIST = BASE_DIR.parent / "frontend" / "dist"
+
+if _FRONTEND_DIST.exists():
+    _assets_dir = _FRONTEND_DIST / "assets"
+    if _assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        # /api、/ws 由路由处理，未匹配的返回 404 而非回退 index.html
+        if full_path.startswith(("api", "ws")):
+            raise HTTPException(status_code=404)
+        index = _FRONTEND_DIST / "index.html"
+        if not index.exists():
+            raise HTTPException(status_code=404)
+        return FileResponse(index)
 
 
 if __name__ == "__main__":
