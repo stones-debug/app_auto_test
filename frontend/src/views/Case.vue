@@ -6,6 +6,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { CASE_STATUS, cloneCase, deleteCase, listCases, type TestCase } from '@/api/cases'
 import { listModules } from '@/api/elements'
+import RunDialog from '@/components/RunDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -20,9 +21,16 @@ const keyword = ref('')
 const statusFilter = ref('')
 const modules = ref<{ id: number; name: string }[]>([])
 const moduleId = ref<number | null>(null)
+const runDialog = ref<{ open: () => void } | null>(null)
+const runningCase = ref<TestCase | null>(null)
 
 async function loadModules() {
   modules.value = await listModules(projectId)
+}
+
+function openRun(row: TestCase) {
+  runningCase.value = row
+  runDialog.value?.open()
 }
 
 async function load() {
@@ -102,14 +110,23 @@ onMounted(() => {
         </template>
       </el-table-column>
       <el-table-column prop="updated_at" label="更新时间" width="180" />
-      <el-table-column label="操作" width="220" fixed="right">
+      <el-table-column label="操作" width="260" fixed="right">
         <template #default="{ row }">
+          <el-button size="small" type="success" text @click="openRun(row)">运行</el-button>
           <el-button size="small" type="primary" text @click="openEdit(row)">编辑</el-button>
           <el-button size="small" text @click="clone(row)">克隆</el-button>
           <el-button size="small" type="danger" text @click="remove(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
+
+    <RunDialog
+      v-if="runningCase"
+      ref="runDialog"
+      :type="'case'"
+      :id="runningCase.id"
+      :name="runningCase.name"
+    />
 
     <el-pagination
       v-model:current-page="page"

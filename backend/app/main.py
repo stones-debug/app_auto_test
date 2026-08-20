@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.agent import router as agent_router
+from app.api.agents import router as agents_router
 from app.api.auth import router as auth_router
 from app.api.cases import router as cases_router
 from app.api.elements import router as elements_router
@@ -36,6 +37,7 @@ app.include_router(suites_router, prefix="/api")
 app.include_router(variables_router, prefix="/api")
 app.include_router(executions_router, prefix="/api")
 app.include_router(agent_router, prefix="/api")
+app.include_router(agents_router, prefix="/api")
 app.include_router(internal_router)
 app.include_router(ws_router)
 

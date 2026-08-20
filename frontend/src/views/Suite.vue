@@ -18,6 +18,7 @@ import {
   type SuiteCase,
 } from '@/api/suites'
 import { listCases } from '@/api/cases'
+import RunDialog from '@/components/RunDialog.vue'
 
 const route = useRoute()
 const projectId = Number(route.params.projectId)
@@ -25,6 +26,8 @@ const projectId = Number(route.params.projectId)
 const suites = ref<Suite[]>([])
 const activeSuite = ref<number | null>(null)
 const suiteCases = ref<SuiteCase[]>([])
+const runDialog = ref<{ open: () => void } | null>(null)
+const runningSuite = ref<Suite | null>(null)
 
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
@@ -112,6 +115,11 @@ async function onReorder() {
   await selectSuite(activeSuite.value)
 }
 
+function openRun(suite: Suite) {
+  runningSuite.value = suite
+  runDialog.value?.open()
+}
+
 onMounted(loadSuites)
 </script>
 
@@ -133,6 +141,7 @@ onMounted(loadSuites)
           <div class="suite-meta">
             <el-tag size="small" type="info">{{ s.case_count }} 个用例</el-tag>
             <span class="suite-actions">
+              <el-button size="small" type="success" text @click.stop="openRun(s)">运行</el-button>
               <el-button size="small" text @click.stop="openEdit(s)">编辑</el-button>
               <el-button size="small" type="danger" text @click.stop="remove(s)">删除</el-button>
             </span>
@@ -195,6 +204,14 @@ onMounted(loadSuites)
       <el-button type="primary" @click="addCase">添加</el-button>
     </template>
   </el-dialog>
+
+  <RunDialog
+    v-if="runningSuite"
+    ref="runDialog"
+    :type="'suite'"
+    :id="runningSuite.id"
+    :name="runningSuite.name"
+  />
 </template>
 
 <style scoped>
