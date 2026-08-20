@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import jwt
 from argon2 import PasswordHasher
@@ -20,23 +21,28 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def create_access_token(user_id: int, username: str) -> str:
-    payload = {
+def _base_payload(user_id: int, username: str, token_type: str) -> dict:
+    return {
         "sub": str(user_id),
         "username": username,
-        "type": "access",
-        "exp": datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_access_token_expire_minutes),
+        "type": token_type,
+        "jti": uuid4().hex,
     }
+
+
+def create_access_token(user_id: int, username: str) -> str:
+    payload = _base_payload(user_id, username, "access")
+    payload["exp"] = datetime.now(UTC) + timedelta(
+        minutes=settings.jwt_access_token_expire_minutes
+    )
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
 def create_refresh_token(user_id: int, username: str) -> str:
-    payload = {
-        "sub": str(user_id),
-        "username": username,
-        "type": "refresh",
-        "exp": datetime.now(timezone.utc) + timedelta(days=settings.jwt_refresh_token_expire_days),
-    }
+    payload = _base_payload(user_id, username, "refresh")
+    payload["exp"] = datetime.now(UTC) + timedelta(
+        days=settings.jwt_refresh_token_expire_days
+    )
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
