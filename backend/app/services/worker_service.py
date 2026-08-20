@@ -1,0 +1,425 @@
+import asyncio
+import logging
+import re
+from collections.abc import Callable
+from copy import deepcopy
+from datetime import UTC, datetime, timedelta
+
+import httpx
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.models import (
+    Agent,
+    Device,
+    Execution,
+    ExecutionCase,
+    ExecutionLog,
+    ExecutionQueue,
+    Report,
+    TestCase,
+    TestElement,
+    TestSuiteCase,
+    Variable,
+)
+
+logger = logging.getLogger("worker")
+
+_VAR_RE = re.compile(r"\$\{(\w+)\}")
+TERMINAL_STATES = {"passed", "failed", "error", "stopped", "cancelled"}
+
+
+# ---------- 变量渲染（§10.6：优先级 执行参数 > 套件 > 用例 > 项目 > 全局） ----------
+
+
+def render_text(text: str, variables: dict) -> str:
+    def repl(match: re.Match) -> str:
+        name = match.group(1)
+        if name not in variables:
+            raise ValueError(f"未定义变量: ${{{name}}}")
+        return str(variables[name])
+
+    return _VAR_RE.sub(repl, text)
+
+
+def render_value(value, variables: dict):
+    if isinstance(value, str):
+        return render_text(value, variables)
+    if isinstance(value, dict):
+        return {k: render_value(v, variables) for k, v in value.items()}
+    if isinstance(value, list):
+        return [render_value(v, variables) for v in value]
+    return value
+
+
+async def build_variable_map(
+    db: AsyncSession,
+    execution: Execution,
+    case: TestCase | None = None,
+) -> dict:
+    merged: dict = {}
+    for v in (
+        await db.execute(select(Variable).where(Variable.scope == "global"))
+    ).scalars().all():
+        merged[v.name] = v.value
+    for v in (
+        await db.execute(
+            select(Variable).where(Variable.scope == "project", Variable.project_id == execution.project_id)
+        )
+    ).scalars().all():
+        merged[v.name] = v.value
+    if case is not None and case.variables:
+        merged.update(case.variables)
+    if execution.type == "suite" and execution.suite_id is not None:
+        for v in (
+            await db.execute(
+                select(Variable).where(Variable.scope == "suite", Variable.suite_id == execution.suite_id)
+            )
+        ).scalars().all():
+            merged[v.name] = v.value
+    merged.update((execution.parameters or {}).get("variables") or {})
+    return merged
+
+
+# ---------- 快照（§10.3：元素定位快照） ----------
+
+
+async def _collect_element_ids(steps: list, assertions: list) -> set[int]:
+    ids: set[int] = set()
+    for item in [*steps, *assertions]:
+        element_id = item.get("element_id") if isinstance(item, dict) else None
+        if element_id is not None:
+            try:
+                ids.add(int(element_id))
+            except (TypeError, ValueError):
+                continue
+    return ids
+
+
+async def build_case_snapshot(db: AsyncSession, case: TestCase, variable_map: dict) -> dict:
+    steps = render_value(deepcopy(case.steps or []), variable_map)
+    assertions = render_value(deepcopy(case.assertions or []), variable_map)
+
+    element_ids = await _collect_element_ids(steps, assertions)
+    elements: dict = {}
+    if element_ids:
+        rows = (
+            await db.execute(select(TestElement).where(TestElement.id.in_(element_ids)))
+        ).scalars().all()
+        for el in rows:
+            elements[str(el.id)] = {
+                "name": el.name,
+                "platform": el.platform,
+                "locator_type": el.locator_type,
+                "locator_value": render_value(el.locator_value, variable_map),
+            }
+    return {"steps": steps, "assertions": assertions, "elements": elements}
+
+
+async def _resolve_cases(db: AsyncSession, execution: Execution) -> list[TestCase]:
+    if execution.type == "case" and execution.case_id is not None:
+        case = await db.get(TestCase, execution.case_id)
+        return [case] if case is not None else []
+    suite_ids: list[int] = []
+    if execution.type == "suite" and execution.suite_id is not None:
+        suite_ids = [execution.suite_id]
+    elif execution.type == "batch":
+        suite_ids = (execution.parameters or {}).get("suite_ids") or []
+    if not suite_ids:
+        return []
+    case_ids: list[int] = []
+    for sid in suite_ids:
+        rows = (
+            await db.execute(
+                select(TestSuiteCase.case_id)
+                .where(TestSuiteCase.suite_id == sid)
+                .order_by(TestSuiteCase.sort_order)
+            )
+        ).scalars().all()
+        case_ids.extend(rows)
+    case_ids = list(dict.fromkeys(case_ids))
+    cases: list[TestCase] = []
+    for cid in case_ids:
+        case = await db.get(TestCase, cid)
+        if case is not None:
+            cases.append(case)
+    return cases
+
+
+async def create_execution_cases_from_execution(db: AsyncSession, execution: Execution) -> list[ExecutionCase]:
+    cases = await _resolve_cases(db, execution)
+    created: list[ExecutionCase] = []
+    for case in cases:
+        variable_map = await build_variable_map(db, execution, case)
+        snapshot = await build_case_snapshot(db, case, variable_map)
+        ec = ExecutionCase(
+            execution_id=execution.id,
+            case_id=case.id,
+            case_name=case.name,
+            module_name=None,
+            status="pending",
+            steps_snapshot=snapshot["steps"],
+            assertions_snapshot=snapshot["assertions"],
+            elements_snapshot=snapshot["elements"],
+        )
+        db.add(ec)
+        created.append(ec)
+    await db.commit()
+    for ec in created:
+        await db.refresh(ec)
+    return created
+
+
+# ---------- 队列认领（SKIP LOCKED） ----------
+
+
+async def claim_next_queue(db: AsyncSession, worker_id: str) -> ExecutionQueue | None:
+    stmt = (
+        select(ExecutionQueue)
+        .where(ExecutionQueue.status == "pending")
+        .order_by(ExecutionQueue.created_at)
+        .with_for_update(skip_locked=True)
+        .limit(1)
+    )
+    row = (await db.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        return None
+    row.status = "claimed"
+    row.claimed_by = worker_id
+    row.claimed_at = datetime.now(UTC)
+    await db.commit()
+    return row
+
+
+# ---------- 设备原子抢占（§10.5） ----------
+
+
+async def _lock_device(db: AsyncSession, device_id: int, execution_id: int) -> bool:
+    result = await db.execute(
+        update(Device)
+        .where(
+            Device.id == device_id,
+            Device.status == "idle",
+            Device.locked_by_execution.is_(None),
+        )
+        .values(status="busy", locked_by_execution=execution_id, updated_at=datetime.now(UTC))
+        .returning(Device.id)
+    )
+    await db.commit()
+    return result.scalar_one_or_none() is not None
+
+
+async def select_and_lock_device(db: AsyncSession, execution: Execution) -> Device | None:
+    if execution.device_id is not None:
+        device = await db.get(Device, execution.device_id)
+        if (
+            device is not None
+            and device.status == "idle"
+            and device.locked_by_execution is None
+        ):
+            agent = await db.get(Agent, device.agent_id)
+            if agent is not None and agent.status == "online":
+                if await _lock_device(db, device.id, execution.id):
+                    return device
+        return None
+
+    for _ in range(5):
+        stmt = (
+            select(Device)
+            .join(Agent, Device.agent_id == Agent.id)
+            .where(
+                Agent.status == "online",
+                Device.status == "idle",
+                Device.locked_by_execution.is_(None),
+            )
+            .order_by(Agent.last_heartbeat.desc())
+        )
+        device = (await db.execute(stmt)).scalars().first()
+        if device is None:
+            return None
+        if await _lock_device(db, device.id, execution.id):
+            return device
+    return None
+
+
+# ---------- 终态处理 ----------
+
+
+def _add_log(db: AsyncSession, execution_id: int, level: str, message: str) -> None:
+    db.add(ExecutionLog(execution_id=execution_id, level=level, message=message, source="worker"))
+
+
+async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, message: str | None = None) -> None:
+    if message:
+        _add_log(db, execution.id, "ERROR" if status_ == "error" else "INFO", message)
+    cases = (
+        await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == execution.id))
+    ).scalars().all()
+    for c in cases:
+        if c.status == "pending":
+            c.status = "skipped"
+    now = datetime.now(UTC)
+    execution.status = status_
+    execution.finished_at = now
+    if execution.started_at is not None:
+        execution.duration = int((now - execution.started_at).total_seconds() * 1000)
+
+    total = len(cases)
+    passed = sum(1 for c in cases if c.status == "passed")
+    failed = sum(1 for c in cases if c.status == "failed")
+    error_count = sum(1 for c in cases if c.status == "error")
+    skipped = sum(1 for c in cases if c.status == "skipped")
+    db.add(
+        Report(
+            execution_id=execution.id,
+            total=total,
+            passed=passed,
+            failed=failed,
+            error_count=error_count,
+            skipped=skipped,
+            success_rate=round(passed / total * 100, 2) if total else 0,
+            duration=execution.duration,
+        )
+    )
+    if execution.device_id is not None:
+        await db.execute(
+            update(Device)
+            .where(Device.id == execution.device_id, Device.locked_by_execution == execution.id)
+            .values(status="idle", locked_by_execution=None, updated_at=now)
+        )
+    await db.execute(
+        update(ExecutionQueue).where(ExecutionQueue.execution_id == execution.id).values(status="done")
+    )
+    await db.commit()
+
+
+async def _default_agent_sender(agent_id: int, payload: dict) -> bool:
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(
+            f"{settings.backend_base_url}/internal/ws/agents/{agent_id}/send",
+            json=payload,
+            headers={"X-Internal-Token": settings.internal_token},
+        )
+        return resp.status_code in (200, 202)
+
+
+async def run_execution(
+    db: AsyncSession,
+    execution_id: int,
+    worker_id: str,
+    *,
+    agent_sender: Callable[[int, dict], bool] | None = None,
+    poll_interval: float = 5.0,
+) -> None:
+    agent_sender = agent_sender or _default_agent_sender
+    execution = await db.get(Execution, execution_id)
+    if execution is None:
+        return
+
+    try:
+        await create_execution_cases_from_execution(db, execution)
+    except ValueError as exc:
+        await _mark_terminal(db, execution, "error", f"变量渲染失败: {exc}")
+        return
+
+    device = await select_and_lock_device(db, execution)
+    if device is None:
+        await _mark_terminal(db, execution, "error", "无可用的在线 Agent/设备")
+        return
+
+    execution.device_id = device.id
+    execution.status = "running"
+    execution.started_at = datetime.now(UTC)
+    await db.commit()
+    logger.info("[%s] execution=%s 开始执行，设备=%s", worker_id, execution.id, device.name)
+
+    ok = await agent_sender(
+        device.agent_id,
+        {
+            "type": "start_test",
+            "execution_id": execution.id,
+            "device": {"udid": device.udid, "platform": device.platform},
+        },
+    )
+    if not ok:
+        await _mark_terminal(db, execution, "error", "Agent 不在线或未连接 WS，无法开始执行")
+        return
+
+    # Agent 经 WS 回传状态由 FastAPI 落库（§10.1）；Worker 轮询终态
+    while True:
+        current = await db.get(Execution, execution.id)
+        if current is None:
+            return
+        if current.status in TERMINAL_STATES:
+            await _mark_terminal(db, current, current.status)
+            return
+        await asyncio.sleep(poll_interval)
+
+
+# ---------- 扫描任务（仅 worker-001 启用） ----------
+
+
+async def reclaim_stale_claimed(db: AsyncSession, stale_minutes: int = 10) -> None:
+    threshold = datetime.now(UTC) - timedelta(minutes=stale_minutes)
+    rows = (
+        await db.execute(
+            select(ExecutionQueue).where(
+                ExecutionQueue.status == "claimed",
+                ExecutionQueue.claimed_at < threshold,
+            )
+        )
+    ).scalars().all()
+    for row in rows:
+        execution = await db.get(Execution, row.execution_id)
+        if execution is not None and execution.status == "running":
+            continue
+        if row.retry_count >= 2:
+            row.status = "failed"
+            if execution is not None and execution.status == "queued":
+                await _mark_terminal(db, execution, "error", "队列认领超时，重试次数超限")
+                continue
+        else:
+            row.retry_count += 1
+            row.status = "pending"
+            row.claimed_by = None
+            row.claimed_at = None
+    await db.commit()
+
+
+async def timeout_scan(db: AsyncSession) -> None:
+    now = datetime.now(UTC)
+    running = (
+        await db.execute(select(Execution).where(Execution.status == "running"))
+    ).scalars().all()
+    for execution in running:
+        if execution.started_at is None:
+            continue
+        elapsed = (now - execution.started_at).total_seconds()
+        if elapsed > execution.timeout_seconds:
+            await _mark_terminal(db, execution, "error", f"执行超时（>{execution.timeout_seconds}s）")
+
+
+async def agent_heartbeat_scan(db: AsyncSession) -> None:
+    threshold = datetime.now(UTC) - timedelta(seconds=settings.agent_heartbeat_timeout)
+    stale_agents = (
+        await db.execute(
+            select(Agent).where(
+                Agent.status == "online",
+                Agent.last_heartbeat < threshold,
+            )
+        )
+    ).scalars().all()
+    for agent in stale_agents:
+        agent.status = "offline"
+        devices = (
+            await db.execute(select(Device).where(Device.agent_id == agent.id))
+        ).scalars().all()
+        for device in devices:
+            if device.locked_by_execution is not None:
+                execution = await db.get(Execution, device.locked_by_execution)
+                if execution is not None and execution.status == "running":
+                    await _mark_terminal(db, execution, "error", "Agent 心跳超时失联")
+            device.status = "idle"
+            device.locked_by_execution = None
+    await db.commit()

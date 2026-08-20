@@ -1,0 +1,203 @@
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from app.main import app
+
+REG = {"username": "pytest_exec_user", "email": "pytest_exec@tl-tek.com", "password": "test123"}
+
+
+@pytest.fixture
+async def client():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+async def _register_and_login(client: AsyncClient) -> str:
+    await client.post("/api/auth/register", json=REG)
+    login = await client.post(
+        "/api/auth/login",
+        json={"username": REG["username"], "password": REG["password"]},
+    )
+    return login.json()["access_token"]
+
+
+async def _create_project(client: AsyncClient, token: str, name: str = "执行测试项目") -> int:
+    resp = await client.post(
+        "/api/projects",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"name": name, "visibility": "private"},
+    )
+    assert resp.status_code == 201
+    return resp.json()["id"]
+
+
+async def _create_element(client: AsyncClient, token: str, project_id: int) -> int:
+    resp = await client.post(
+        f"/api/projects/{project_id}/elements",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"name": "登录按钮", "locator_type": "id", "locator_value": "${btn_id}"},
+    )
+    assert resp.status_code == 201
+    return resp.json()["id"]
+
+
+async def _create_case(client: AsyncClient, token: str, project_id: int, element_id: int) -> int:
+    resp = await client.post(
+        f"/api/projects/{project_id}/cases",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "name": "登录用例",
+            "steps": [
+                {"order": 1, "action": "click", "element_id": element_id, "params": {"wait_timeout": 5}},
+                {"order": 2, "action": "sleep", "params": {"duration": 1}},
+            ],
+            "assertions": [
+                {"order": 1, "type": "element_exists", "element_id": element_id, "params": {}}
+            ],
+        },
+    )
+    assert resp.status_code == 201
+    return resp.json()["id"]
+
+
+async def _create_suite(client: AsyncClient, token: str, project_id: int, case_id: int) -> int:
+    resp = await client.post(
+        f"/api/projects/{project_id}/suites",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"name": "执行测试套件"},
+    )
+    assert resp.status_code == 201
+    suite_id = resp.json()["id"]
+    add = await client.post(
+        f"/api/suites/{suite_id}/cases",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"case_id": case_id},
+    )
+    assert add.status_code in (200, 201)
+    return suite_id
+
+
+async def test_create_case_execution(client: AsyncClient):
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+    element_id = await _create_element(client, token, project_id)
+    case_id = await _create_case(client, token, project_id, element_id)
+
+    resp = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"device_id": None, "parameters": {"variables": {"btn_id": "btn_login"}}, "timeout_seconds": 300},
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["type"] == "case"
+    assert body["case_id"] == case_id
+    assert body["status"] == "queued"
+    assert body["timeout_seconds"] == 300
+    assert body["parameters"]["variables"]["btn_id"] == "btn_login"
+
+
+async def test_create_suite_and_batch_execution(client: AsyncClient):
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+    element_id = await _create_element(client, token, project_id)
+    case_id = await _create_case(client, token, project_id, element_id)
+    suite_id = await _create_suite(client, token, project_id, case_id)
+
+    suite_run = await client.post(
+        f"/api/executions/suites/{suite_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"parameters": {}},
+    )
+    assert suite_run.status_code == 201
+    assert suite_run.json()["type"] == "suite"
+
+    batch = await client.post(
+        "/api/executions/suites/batch",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"suite_ids": [suite_id], "parameters": {}},
+    )
+    assert batch.status_code == 201
+    assert batch.json()["type"] == "batch"
+    assert batch.json()["parameters"]["suite_ids"] == [suite_id]
+
+
+async def test_batch_requires_same_project(client: AsyncClient):
+    token = await _register_and_login(client)
+    p1 = await _create_project(client, token, "批处理项目A")
+    p2 = await _create_project(client, token, "批处理项目B")
+    s1 = (await client.post(
+        f"/api/projects/{p1}/suites",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"name": "套件A"},
+    )).json()["id"]
+    s2 = (await client.post(
+        f"/api/projects/{p2}/suites",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"name": "套件B"},
+    )).json()["id"]
+    resp = await client.post(
+        "/api/executions/suites/batch",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"suite_ids": [s1, s2], "parameters": {}},
+    )
+    assert resp.status_code == 400
+
+
+async def test_list_get_logs_stop_retry(client: AsyncClient):
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+    element_id = await _create_element(client, token, project_id)
+    case_id = await _create_case(client, token, project_id, element_id)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    created = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers=headers,
+        json={"parameters": {}},
+    )
+    execution_id = created.json()["id"]
+
+    listed = await client.get(f"/api/executions?project_id={project_id}", headers=headers)
+    assert listed.status_code == 200
+    assert any(i["id"] == execution_id for i in listed.json()["items"])
+    assert listed.json()["items"][0]["case_name"] == "登录用例"
+
+    detail = await client.get(f"/api/executions/{execution_id}", headers=headers)
+    assert detail.status_code == 200
+    assert detail.json()["status"] == "queued"
+
+    logs = await client.get(f"/api/executions/{execution_id}/logs", headers=headers)
+    assert logs.status_code == 200
+    assert logs.json()["total"] == 0
+
+    stopped = await client.post(f"/api/executions/{execution_id}/stop", headers=headers)
+    assert stopped.status_code == 200
+    assert stopped.json()["status"] == "cancelled"
+
+    again = await client.post(f"/api/executions/{execution_id}/stop", headers=headers)
+    assert again.status_code == 409
+
+    retried = await client.post(f"/api/executions/{execution_id}/retry", headers=headers)
+    assert retried.status_code == 201
+    assert retried.json()["retry_of"] == execution_id
+    assert retried.json()["status"] == "queued"
+
+
+async def test_execution_permission_denied(client: AsyncClient):
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+    element_id = await _create_element(client, token, project_id)
+    case_id = await _create_case(client, token, project_id, element_id)
+
+    await client.post("/api/auth/register", json={"username": "pytest_other", "email": "o@t.com", "password": "x12345678"})
+    other_login = await client.post(
+        "/api/auth/login", json={"username": "pytest_other", "password": "x12345678"}
+    )
+    other_headers = {"Authorization": f"Bearer {other_login.json()['access_token']}"}
+
+    resp = await client.post(
+        f"/api/executions/cases/{case_id}", headers=other_headers, json={"parameters": {}}
+    )
+    assert resp.status_code == 403

@@ -1,0 +1,100 @@
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+
+class ExecutionCreate(BaseModel):
+    device_id: int | None = None
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    timeout_seconds: int | None = Field(default=None, ge=60, le=7200)
+
+
+class BatchExecutionCreate(BaseModel):
+    suite_ids: list[int] = Field(min_length=1)
+    device_id: int | None = None
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    timeout_seconds: int | None = Field(default=None, ge=60, le=7200)
+
+
+class ExecutionCaseOut(BaseModel):
+    id: int
+    case_id: int
+    case_name: str
+    module_name: str | None
+    status: str
+    started_at: datetime | None
+    finished_at: datetime | None
+    duration: int | None
+    error_message: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class ExecutionOut(BaseModel):
+    id: int
+    project_id: int
+    type: str
+    suite_id: int | None
+    case_id: int | None
+    device_id: int | None
+    status: str
+    parameters: dict[str, Any]
+    timeout_seconds: int
+    started_at: datetime | None
+    finished_at: datetime | None
+    duration: int | None
+    created_by: int | None
+    retry_of: int | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ExecutionDetail(ExecutionOut):
+    cases: list[ExecutionCaseOut] = Field(default_factory=list)
+
+
+class ExecutionListItem(BaseModel):
+    id: int
+    project_id: int
+    type: str
+    suite_id: int | None
+    case_id: int | None
+    device_id: int | None
+    status: str
+    timeout_seconds: int
+    started_at: datetime | None
+    finished_at: datetime | None
+    duration: int | None
+    retry_of: int | None
+    created_at: datetime
+    case_name: str | None = None
+    suite_name: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class ExecutionPage(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[ExecutionListItem]
+
+
+class ExecutionLogOut(BaseModel):
+    id: int
+    execution_id: int
+    level: str
+    message: str
+    source: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ExecutionLogPage(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[ExecutionLogOut]

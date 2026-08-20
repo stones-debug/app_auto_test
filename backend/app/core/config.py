@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     agent_heartbeat_timeout: int = 120
     min_agent_version: str = "1.0.0"
     internal_token: str = "dev-internal-token-change-me"
+    backend_base_url: str = "http://127.0.0.1:8001"
+
+    # Worker
+    worker_poll_interval: int = 2
+    worker_claim_stale_minutes: int = 10
 
     # 存储
     reports_base_path: str = "/data/reports"

@@ -1,8 +1,9 @@
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from app.core.database import SessionLocal
 from app.models import (
+    Agent,
     Device,
     Execution,
     ExecutionAssertion,
@@ -66,9 +67,11 @@ async def _cleanup_test_data():
                     await session.execute(delete(ExecutionLog).where(ExecutionLog.execution_id.in_(exec_ids)))
                     await session.execute(delete(ExecutionQueue).where(ExecutionQueue.execution_id.in_(exec_ids)))
                     await session.execute(delete(Report).where(Report.execution_id.in_(exec_ids)))
-                    # 释放设备锁再删 executions
+                    # 循环 FK（devices↔executions）：先清锁再删 executions，设备留给末尾 agent 清理段
                     await session.execute(
-                        delete(Device).where(Device.locked_by_execution.in_(exec_ids))
+                        update(Device)
+                        .where(Device.locked_by_execution.in_(exec_ids))
+                        .values(locked_by_execution=None)
                     )
                     await session.execute(delete(Execution).where(Execution.id.in_(exec_ids)))
 
@@ -99,6 +102,10 @@ async def _cleanup_test_data():
 
             await session.execute(delete(RefreshToken).where(RefreshToken.user_id == user.id))
             await session.execute(delete(User).where(User.id == user.id))
+        # 清理测试创建的 Agent 及其设备（含未上锁的 idle 设备）
+        test_agent_ids = select(Agent.id).where(Agent.agent_id.like("pytest_%"))
+        await session.execute(delete(Device).where(Device.agent_id.in_(test_agent_ids)))
+        await session.execute(delete(Agent).where(Agent.agent_id.like("pytest_%")))
         await session.commit()
     yield
     from app.core.database import engine
