@@ -136,21 +136,15 @@ const router = createRouter({
   routes,
 })
 
-const WRITE_META = new Set(['CaseNew', 'CaseEdit'])
-
 router.beforeEach((to) => {
   const authed = !!getToken()
   if (!to.meta.public && !authed) {
     return { name: 'Login', query: { redirect: to.fullPath } }
   }
-  // viewer 写页守卫：后端仍为最终防线；此处按项目角色二次校验由 F4 usePermission 负责，
-  // 路由层先只做登录态兜底，403 由后端响应跳转处理。
-  if (authed && to.name && WRITE_META.has(String(to.name)) && to.meta.roleRequired) {
-    // 预留：F6 接入 projectContextStore 后按角色跳 /403
-  }
   if (authed && to.name === 'Login') {
     return { name: 'Dashboard' }
   }
+  // 项目角色级权限（viewer 写页）由后端 403 作为最终防线；前端组件用 PermissionGate/usePermission 控制入口。
   return true
 })
 
