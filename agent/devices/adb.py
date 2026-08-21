@@ -7,6 +7,7 @@
 
 import ipaddress
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -76,7 +77,8 @@ def validate_port(port: int | str) -> bool:
 
 
 def _run(args: list[str], timeout: int = ADB_TIMEOUT_SECONDS) -> subprocess.CompletedProcess:
-    """执行 adb 命令（参数数组 + shell=False + 超时）。"""
+    """执行 adb 命令（参数数组 + shell=False + 超时，GUI 宿主下不弹黑色控制台窗口）。"""
+    kwargs = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
     try:
         return subprocess.run(
             [_ADB_EXE, *args],
@@ -84,6 +86,7 @@ def _run(args: list[str], timeout: int = ADB_TIMEOUT_SECONDS) -> subprocess.Comp
             text=True,
             shell=False,
             timeout=timeout,
+            **kwargs,
         )
     except FileNotFoundError as exc:
         raise AdbError("未找到 adb，请确认 platform-tools 已随 Agent 安装") from exc
