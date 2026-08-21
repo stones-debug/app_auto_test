@@ -2,7 +2,6 @@
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
   EXECUTION_STATUS,

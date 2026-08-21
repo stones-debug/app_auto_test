@@ -1,8 +1,7 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { CASE_STATUS, cloneCase, deleteCase, listCases, type TestCase } from '@/api/cases'
 import { listModules } from '@/api/elements'
@@ -113,10 +112,10 @@ onMounted(() => {
       <el-table-column prop="updated_at" label="更新时间" width="180" />
       <el-table-column label="操作" width="260" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" type="success" text @click="openRun(row)">运行</el-button>
-          <el-button size="small" type="primary" text @click="openEdit(row)">编辑</el-button>
-          <el-button size="small" text @click="clone(row)">克隆</el-button>
-          <el-button size="small" type="danger" text @click="remove(row)">删除</el-button>
+          <el-button size="small" type="success" text @click="openRun(row as TestCase)">运行</el-button>
+          <el-button size="small" type="primary" text @click="openEdit(row as TestCase)">编辑</el-button>
+          <el-button size="small" text @click="clone(row as TestCase)">克隆</el-button>
+          <el-button size="small" type="danger" text @click="remove(row as TestCase)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>

@@ -1,8 +1,7 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
-import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
   LOCATOR_TYPES,
@@ -27,10 +26,10 @@ const platform = ref('')
 
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
-const form = ref<Partial<TestElement>>({
+const form = ref({
   name: '',
   page_name: '',
-  platform: 'both',
+  platform: 'both' as string,
   locator_type: 'id',
   locator_value: '',
   description: '',
@@ -113,8 +112,10 @@ function locatorLabel(type: string) {
   return LOCATOR_TYPES.find((t) => t.value === type)?.label ?? type
 }
 
-function platformType(p: string) {
-  return ({ both: 'success', android: 'primary', ios: 'warning' } as Record<string, string>)[p] ?? 'info'
+type TagType = 'primary' | 'success' | 'info' | 'warning' | 'danger'
+
+function platformType(p: string): TagType {
+  return ({ both: 'success', android: 'primary', ios: 'warning' } as Record<string, TagType>)[p] ?? 'info'
 }
 
 function platformLabel(p: string) {
@@ -152,9 +153,9 @@ onMounted(load)
       <el-table-column prop="locator_value" label="定位值" min-width="180" show-overflow-tooltip />
       <el-table-column label="操作" width="220" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" text @click="showUsage(row)">引用</el-button>
-          <el-button size="small" text @click="openEdit(row)">编辑</el-button>
-          <el-button size="small" type="danger" text @click="remove(row)">删除</el-button>
+          <el-button size="small" text @click="showUsage(row as TestElement)">引用</el-button>
+          <el-button size="small" text @click="openEdit(row as TestElement)">编辑</el-button>
+          <el-button size="small" type="danger" text @click="remove(row as TestElement)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>

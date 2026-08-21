@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -14,14 +16,23 @@ from app.api.projects import router as projects_router
 from app.api.reports import router as reports_router
 from app.api.suites import router as suites_router
 from app.api.variables import router as variables_router
-from app.core.config import BASE_DIR, settings
+from app.core.config import BASE_DIR, settings, validate_security_baseline
 from app.ws.routes import router as ws_router
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # CR-21：生产环境启动前校验安全基线（默认密钥/弱配置直接拒绝启动）
+    validate_security_baseline()
+    yield
+
 
 app = FastAPI(
     title="APP 自动化测试平台",
     version="0.1.0",
     docs_url="/api/docs",
     openapi_url="/api/openapi.json",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

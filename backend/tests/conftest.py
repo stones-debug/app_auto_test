@@ -2,6 +2,7 @@ import pytest
 from sqlalchemy import delete, select, update
 
 from app.core.database import SessionLocal
+from app.core.ratelimit import reset_rate_limits
 from app.models import (
     Agent,
     Device,
@@ -27,6 +28,7 @@ from app.models import (
 
 @pytest.fixture(autouse=True)
 async def _cleanup_test_data():
+    reset_rate_limits()  # CR-21：每个测试前清空限流计数
     async with SessionLocal() as session:
         users = (await session.execute(select(User).where(User.username.like("pytest_%")))).scalars().all()
         for user in users:

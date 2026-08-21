@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import reports_dir, settings
 from app.core.database import get_db
+from app.core.ratelimit import rate_limit
 from app.core.security import verify_psk
 from app.models import Agent, Device, Execution
 from app.services.screenshot_store import new_screenshot_filename
@@ -49,6 +50,7 @@ async def upload_agent_file(
     agent_id: str = Form(...),
     session_token: str | None = Form(None),
     file_type: str = Form("screenshot"),
+    _rl: None = Depends(rate_limit("upload")),  # CR-21：上传接口限流
     db: AsyncSession = Depends(get_db),
 ):
     """Agent 经 HTTP 上传截图/附件（§10.7）。返回相对路径，由 Worker 更新 execution_steps.screenshot_path。"""

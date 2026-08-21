@@ -1,9 +1,11 @@
+import re
 from datetime import UTC, datetime
 
 from fastapi import WebSocket
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.security import verify_psk
 from app.models import (
     Agent,
@@ -54,6 +56,18 @@ async def mark_agent_offline(db: AsyncSession, agent_id: int) -> None:
         await db.commit()
 
 
+def version_supported(version: str | None, minimum: str) -> bool:
+    """CR-21：Agent 注册语义化版本比较（major.minor.patch）。未上报版本宽松放行。"""
+    if not version:
+        return True
+
+    def _parts(v: str) -> tuple[int, ...]:
+        nums = [int(p) for p in re.split(r"[^\d]+", v.strip()) if p.isdigit()][:3]
+        return tuple(nums) or (0,)
+
+    return _parts(version) >= _parts(minimum)
+
+
 async def handle_register(db: AsyncSession, ws: WebSocket, payload: dict) -> dict | None:
     agent_id_str = payload.get("agent_id")
     agent_key = payload.get("agent_key")
@@ -65,6 +79,13 @@ async def handle_register(db: AsyncSession, ws: WebSocket, payload: dict) -> dic
     ).scalar_one_or_none()
     if agent is None or not verify_psk(agent_key, agent.agent_key):
         await ws.close(code=1008, reason="Agent 认证失败")
+        return None
+    # CR-21：注册时语义化版本比较（min_agent_version）
+    if not version_supported(payload.get("version"), settings.min_agent_version):
+        await ws.close(
+            code=1008,
+            reason=f"Agent 版本过低，最低要求 {settings.min_agent_version}",
+        )
         return None
 
     agent.status = "online"

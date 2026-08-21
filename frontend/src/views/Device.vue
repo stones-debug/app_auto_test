@@ -1,7 +1,6 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
   agentStatusType,
@@ -109,7 +108,7 @@ onBeforeUnmount(() => {
               </el-table-column>
               <el-table-column label="操作" width="120">
                 <template #default="{ row: d }">
-                  <el-button v-if="isAdmin" size="small" type="warning" text @click="release(d)">释放锁</el-button>
+                  <el-button v-if="isAdmin" size="small" type="warning" text @click="release(d as Device)">释放锁</el-button>
                 </template>
               </el-table-column>
             </el-table>
@@ -131,7 +130,7 @@ onBeforeUnmount(() => {
       <el-table-column prop="device_count" label="设备数" width="80" />
       <el-table-column label="操作" width="100" fixed="right">
         <template #default="{ row }">
-          <el-button v-if="isAdmin" size="small" type="danger" text @click="remove(row)">注销</el-button>
+          <el-button v-if="isAdmin" size="small" type="danger" text @click="remove(row as Agent)">注销</el-button>
         </template>
       </el-table-column>
     </el-table>

@@ -2,7 +2,6 @@
 import { onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
-import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
   VARIABLE_SCOPES,
@@ -96,8 +95,8 @@ onMounted(load)
       <el-table-column prop="description" label="描述" min-width="180" show-overflow-tooltip />
       <el-table-column label="操作" width="160" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" text @click="openEdit(row)">编辑</el-button>
-          <el-button size="small" type="danger" text @click="remove(row)">删除</el-button>
+          <el-button size="small" text @click="openEdit(row as Variable)">编辑</el-button>
+          <el-button size="small" type="danger" text @click="remove(row as Variable)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>

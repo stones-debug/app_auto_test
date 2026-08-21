@@ -1,10 +1,25 @@
 import { fileURLToPath, URL } from 'node:url'
 
+import AutoImport from 'unplugin-auto-import/vite'
+import Components from 'unplugin-vue-components/vite'
+import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vite'
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    // CR-23：Element Plus 按需自动引入（样式仍走 main.ts 的全局 index.css）
+    AutoImport({
+      imports: ['vue', 'vue-router', 'pinia'],
+      resolvers: [ElementPlusResolver({ importStyle: false })],
+      dts: 'src/auto-imports.d.ts',
+    }),
+    Components({
+      resolvers: [ElementPlusResolver({ importStyle: false })],
+      dts: 'src/components.d.ts',
+    }),
+  ],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
@@ -16,7 +31,6 @@ export default defineConfig({
       output: {
         manualChunks: {
           vue: ['vue', 'vue-router', 'pinia'],
-          'element-plus': ['element-plus', '@element-plus/icons-vue'],
           vueuse: ['@vueuse/core'],
           draggable: ['vuedraggable'],
         },

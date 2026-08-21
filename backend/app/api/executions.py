@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_project_permission, require_project_write
 from app.core.database import get_db
+from app.core.ratelimit import rate_limit
 from app.models import Execution, ExecutionCase, TestCase, TestSuite, User
 from app.schemas.execution import (
     BatchExecutionCreate,
@@ -64,6 +65,7 @@ async def create_case_execution(
     case_id: int,
     body: ExecutionCreate,
     user: User = Depends(get_current_user),
+    _rl: None = Depends(rate_limit("execution")),  # CR-21：执行创建限流
     db: AsyncSession = Depends(get_db),
 ):
     case = await _get_case_or_404(case_id, db)
@@ -81,6 +83,7 @@ async def create_case_execution(
 async def create_batch_execution(
     body: BatchExecutionCreate,
     user: User = Depends(get_current_user),
+    _rl: None = Depends(rate_limit("execution")),  # CR-21：执行创建限流
     db: AsyncSession = Depends(get_db),
 ):
     suites: list[TestSuite] = []
@@ -108,6 +111,7 @@ async def create_suite_execution(
     suite_id: int,
     body: ExecutionCreate,
     user: User = Depends(get_current_user),
+    _rl: None = Depends(rate_limit("execution")),  # CR-21：执行创建限流
     db: AsyncSession = Depends(get_db),
 ):
     suite = await _get_suite_or_404(suite_id, db)

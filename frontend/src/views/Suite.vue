@@ -2,7 +2,6 @@
 import { onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
-import { ElMessage, ElMessageBox } from 'element-plus'
 import Draggable from 'vuedraggable'
 
 import {

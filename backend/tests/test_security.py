@@ -1,0 +1,137 @@
+"""CR-21：部署安全基线（限流 / 版本校验 / 生产默认密钥拒绝）。"""
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from app.core.config import settings, validate_security_baseline
+from app.core.database import SessionLocal
+from app.core.ratelimit import reset_rate_limits
+from app.main import app
+from app.models import Agent
+from app.ws.handlers import handle_register, version_supported
+
+REG = {"username": "pytest_sec_user", "email": "sec@tl-tek.com", "password": "test123"}
+
+
+@pytest.fixture
+async def client():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+# ---------- 限流 ----------
+
+
+async def test_login_rate_limited(client: AsyncClient):
+    """CR-21：认证接口超限返回 429。"""
+    old = settings.rate_limit_auth_per_minute
+    settings.rate_limit_auth_per_minute = 3
+    try:
+        codes = []
+        for _ in range(4):
+            resp = await client.post(
+                "/api/auth/login", json={"username": "nobody", "password": "wrong"}
+            )
+            codes.append(resp.status_code)
+        assert codes[:3] == [401, 401, 401]  # 认证失败本身 401
+        assert codes[3] == 429  # 第 4 次被限流
+    finally:
+        settings.rate_limit_auth_per_minute = old
+        reset_rate_limits()
+
+
+async def test_rate_limits_reset_between_tests(client: AsyncClient):
+    """限流计数在测试间被清空（conftest）。"""
+    resp = await client.post(
+        "/api/auth/login", json={"username": "nobody", "password": "wrong"}
+    )
+    assert resp.status_code == 401  # 未被上一测试的限流影响
+
+
+# ---------- Agent 版本比较 ----------
+
+
+def test_version_supported_semver():
+    assert version_supported("1.0.0", "1.0.0") is True
+    assert version_supported("1.2.3", "1.0.0") is True
+    assert version_supported("0.9.9", "1.0.0") is False
+    assert version_supported("1.1.0-beta.1", "1.0.0") is True
+    assert version_supported(None, "1.0.0") is True  # 未上报版本宽松放行
+    assert version_supported("2.0", "1.0.0") is True
+
+
+class FakeWS:
+    def __init__(self) -> None:
+        self.closed: tuple[int, str] | None = None
+
+    async def close(self, code: int = 1000, reason: str = "") -> None:
+        self.closed = (code, reason)
+
+
+async def test_register_rejects_old_agent_version():
+    """CR-21：低于 min_agent_version 的 Agent 注册被拒绝。"""
+    from sqlalchemy import delete
+
+    from app.core.security import hash_psk
+
+    async with SessionLocal() as db:
+        agent = Agent(agent_key=hash_psk("sk-sec"), agent_id="pytest_sec_agent", status="offline")
+        db.add(agent)
+        await db.commit()
+        agent_id_db = agent.id
+
+    try:
+        # 旧版本 → 拒绝
+        async with SessionLocal() as db:
+            ws_old = FakeWS()
+            reply = await handle_register(
+                db, ws_old,
+                {"type": "register", "agent_id": "pytest_sec_agent", "agent_key": "sk-sec", "version": "0.9.0"},
+            )
+        assert reply is None
+        assert ws_old.closed is not None and ws_old.closed[0] == 1008
+
+        # 新版本 → 接受
+        async with SessionLocal() as db:
+            ws_new = FakeWS()
+            reply = await handle_register(
+                db, ws_new,
+                {"type": "register", "agent_id": "pytest_sec_agent", "agent_key": "sk-sec", "version": "1.2.0"},
+            )
+        assert reply is not None and reply["status"] == "ok"
+        assert ws_new.closed is None
+    finally:
+        async with SessionLocal() as cleanup:
+            await cleanup.execute(delete(Agent).where(Agent.id == agent_id_db))
+            await cleanup.commit()
+
+
+# ---------- 生产环境基线 ----------
+
+
+def test_validate_security_baseline_production_rejects_defaults(monkeypatch):
+    monkeypatch.setattr(settings, "environment", "production")
+    try:
+        with pytest.raises(RuntimeError, match="部署安全基线未通过"):
+            validate_security_baseline()
+    finally:
+        monkeypatch.setattr(settings, "environment", "development")
+
+
+def test_validate_security_baseline_production_accepts_strong(monkeypatch):
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "jwt_secret_key", "x" * 40)
+    monkeypatch.setattr(settings, "internal_token", "x" * 40)
+    monkeypatch.setattr(settings, "database_url", "postgresql+asyncpg://u:strong-pw@db:5432/test_platform")
+    try:
+        validate_security_baseline()  # 不应抛异常
+    finally:
+        monkeypatch.setattr(settings, "environment", "development")
+        monkeypatch.setattr(settings, "jwt_secret_key", "dev-secret-key-change-me-in-production-at-least-32-chars")
+        monkeypatch.setattr(settings, "internal_token", "dev-internal-token-change-me")
+        monkeypatch.setattr(settings, "database_url", "postgresql+asyncpg://dev:dev123@127.0.0.1:5432/test_platform")
+
+
+def test_validate_security_baseline_development_always_passes(monkeypatch):
+    monkeypatch.setattr(settings, "environment", "development")
+    validate_security_baseline()  # 默认密钥在 development 下允许

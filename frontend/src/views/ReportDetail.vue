@@ -1,8 +1,7 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { ElMessage } from 'element-plus'
 
 import { executionStatusMeta } from '@/api/executions'
 import { downloadReport, getReportDetail, reportFileUrl, type ReportDetail, type ReportStep } from '@/api/reports'

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.ratelimit import rate_limit
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -47,7 +48,11 @@ async def _issue_tokens(db: AsyncSession, user: User) -> TokenResponse:
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+async def register(
+    body: RegisterRequest,
+    _rl: None = Depends(rate_limit("auth")),  # CR-21：认证接口限流
+    db: AsyncSession = Depends(get_db),
+) -> TokenResponse:
     existing = await db.execute(
         select(User).where((User.username == body.username) | (User.email == body.email))
     )
@@ -65,7 +70,11 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)) ->
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+async def login(
+    body: LoginRequest,
+    _rl: None = Depends(rate_limit("auth")),  # CR-21：认证接口限流
+    db: AsyncSession = Depends(get_db),
+) -> TokenResponse:
     user = await db.execute(select(User).where(User.username == body.username))
     user = user.scalar_one_or_none()
     if user is None or not verify_password(body.password, user.password_hash):
@@ -81,7 +90,11 @@ async def me(user: User = Depends(get_current_user)) -> User:
 
 
 @router.post("/refresh", response_model=TokenResponse)
-async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+async def refresh(
+    body: RefreshRequest,
+    _rl: None = Depends(rate_limit("auth")),  # CR-21：认证接口限流
+    db: AsyncSession = Depends(get_db),
+) -> TokenResponse:
     payload = decode_token(body.refresh_token)
     if payload is None or payload.get("type") != "refresh":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的 Refresh Token")
