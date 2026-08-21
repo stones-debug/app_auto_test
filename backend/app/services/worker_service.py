@@ -354,6 +354,30 @@ async def run_execution(
     if execution is None:
         return
 
+    # CR-12：原子认领 queued → running，杜绝与「取消 queued」竞争；
+    # rowcount 为 0 说明已被取消/已非排队态，直接结束队列项。
+    claimed = await db.execute(
+        update(Execution)
+        .where(Execution.id == execution_id, Execution.status == "queued")
+        .values(
+            status="running",
+            session_token=secrets.token_urlsafe(32),
+            started_at=datetime.now(UTC),
+        )
+        .returning(Execution.id)
+    )
+    await db.commit()
+    if claimed.scalar_one_or_none() is None:
+        logger.info("[%s] execution=%s 已非 queued（可能已被取消），跳过", worker_id, execution_id)
+        await db.execute(
+            update(ExecutionQueue)
+            .where(ExecutionQueue.execution_id == execution_id)
+            .values(status="done")
+        )
+        await db.commit()
+        return
+    await db.refresh(execution)
+
     try:
         await create_execution_cases_from_execution(db, execution)
     except ValueError as exc:
@@ -366,9 +390,6 @@ async def run_execution(
         return
 
     execution.device_id = device.id
-    execution.status = "running"
-    execution.session_token = secrets.token_urlsafe(32)
-    execution.started_at = datetime.now(UTC)
     await db.commit()
     logger.info("[%s] execution=%s 开始执行，设备=%s", worker_id, execution.id, device.name)
 
@@ -416,6 +437,15 @@ async def run_execution(
             return
         if current.status == "stopping":
             await agent_sender(device.agent_id, {"type": "stop_test", "execution_id": execution.id})
+            # CR-06：停止宽限期超时强制终态（与 timeout_scan 同口径）
+            if current.started_at is not None:
+                elapsed = (datetime.now(UTC) - current.started_at).total_seconds()
+                if elapsed > current.timeout_seconds + settings.execution_stop_grace_seconds:
+                    await _mark_terminal(
+                        db, current, "stopped",
+                        f"停止宽限期超时（>{settings.execution_stop_grace_seconds}s），强制结束",
+                    )
+                    return
         await asyncio.sleep(poll_interval)
 
 
@@ -451,14 +481,22 @@ async def reclaim_stale_claimed(db: AsyncSession, stale_minutes: int = 10) -> No
 
 async def timeout_scan(db: AsyncSession) -> None:
     now = datetime.now(UTC)
-    running = (
-        await db.execute(select(Execution).where(Execution.status == "running"))
+    active = (
+        await db.execute(select(Execution).where(Execution.status.in_(["running", "stopping"])))
     ).scalars().all()
-    for execution in running:
+    for execution in active:
         if execution.started_at is None:
             continue
         elapsed = (now - execution.started_at).total_seconds()
-        if elapsed > execution.timeout_seconds:
+        if execution.status == "stopping":
+            # CR-06：stopping 使用统一 deadline（超时 + 停止宽限期），到点强制 stopped
+            deadline = execution.timeout_seconds + settings.execution_stop_grace_seconds
+            if elapsed > deadline:
+                await _mark_terminal(
+                    db, execution, "stopped",
+                    f"停止宽限期超时（>{settings.execution_stop_grace_seconds}s），强制结束",
+                )
+        elif elapsed > execution.timeout_seconds:
             await _mark_terminal(db, execution, "error", f"执行超时（>{execution.timeout_seconds}s）")
 
 
@@ -482,6 +520,9 @@ async def agent_heartbeat_scan(db: AsyncSession) -> None:
                 execution = await db.get(Execution, device.locked_by_execution)
                 if execution is not None and execution.status == "running":
                     await _mark_terminal(db, execution, "error", "Agent 心跳超时失联")
+                elif execution is not None and execution.status == "stopping":
+                    # CR-06：失联的 stopping 同样要终结，避免永久卡住
+                    await _mark_terminal(db, execution, "stopped", "Agent 心跳超时失联（停止中）")
             device.status = "idle"
             device.locked_by_execution = None
     await db.commit()

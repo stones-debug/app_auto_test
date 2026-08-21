@@ -9,7 +9,10 @@ import {
   ACTIONS,
   ASSERTION_TYPES,
   CASE_STATUS,
+  actionMeta,
+  assertionMeta,
   createCase,
+  defaultParams,
   getCase,
   updateCase,
   type Assertion,
@@ -40,9 +43,28 @@ const form = reactive<Partial<TestCase>>({
 const variableEntries = ref<{ key: string; value: string }[]>([])
 const isEdit = computed(() => caseId !== null)
 
+function stepMeta(step: Step) {
+  return actionMeta(step.action)
+}
+
+function assertMeta(assertion: Assertion) {
+  return assertionMeta(assertion.type)
+}
+
 function addStep() {
   const steps = form.steps as Step[]
-  steps.push({ order: steps.length + 1, action: 'click', params: {}, element_id: null, description: '' })
+  steps.push({
+    order: steps.length + 1,
+    action: 'click',
+    params: defaultParams(actionMeta('click').fields),
+    element_id: null,
+    description: '',
+  })
+}
+
+function onStepActionChange(step: Step) {
+  // CR-09：切换动作后按元数据重建参数
+  step.params = defaultParams(actionMeta(step.action).fields)
 }
 
 function removeStep(index: number) {
@@ -56,7 +78,17 @@ function reorderSteps() {
 
 function addAssertion() {
   const assertions = form.assertions as Assertion[]
-  assertions.push({ order: assertions.length + 1, type: 'element_exists', params: {}, element_id: null, description: '' })
+  assertions.push({
+    order: assertions.length + 1,
+    type: 'element_exists',
+    params: defaultParams(assertionMeta('element_exists').fields),
+    element_id: null,
+    description: '',
+  })
+}
+
+function onAssertionTypeChange(assertion: Assertion) {
+  assertion.params = defaultParams(assertionMeta(assertion.type).fields)
 }
 
 function removeAssertion(index: number) {
@@ -121,8 +153,8 @@ onMounted(async () => {
     form.module_id = data.module_id
     form.description = data.description ?? ''
     form.status = data.status
-    form.steps = data.steps
-    form.assertions = data.assertions
+    form.steps = data.steps.map((s) => ({ ...s, params: s.params ?? {} }))
+    form.assertions = data.assertions.map((a) => ({ ...a, params: a.params ?? {} }))
     form.variables = data.variables
     variableEntries.value = Object.entries(data.variables).map(([key, value]) => ({
       key,
@@ -167,19 +199,37 @@ onMounted(async () => {
             <div class="step-head">
               <span class="drag-handle">⠿</span>
               <span class="step-badge step">{{ index + 1 }}</span>
-              <el-select v-model="element.action" class="action-select">
+              <el-select
+                v-model="element.action"
+                class="action-select"
+                @change="onStepActionChange(element)"
+              >
                 <el-option v-for="a in ACTIONS" :key="a.value" :label="a.label" :value="a.value" />
               </el-select>
               <el-button type="danger" text size="small" @click="removeStep(index)">删除</el-button>
             </div>
             <div class="step-body">
-              <div v-if="element.action !== 'sleep'" class="step-row">
+              <div v-if="stepMeta(element).needsElement" class="step-row">
                 <span class="field-label">元素</span>
                 <ElementSelector :project-id="projectId" v-model="element.element_id" />
               </div>
-              <div class="step-row">
-                <span class="field-label">参数</span>
-                <el-input v-model="element.params!.value" placeholder="如 ${username} / duration=2（可选）" />
+              <div v-for="f in stepMeta(element).fields" :key="f.key" class="step-row">
+                <span class="field-label">{{ f.label }}</span>
+                <el-select
+                  v-if="f.type === 'select'"
+                  v-model="element.params![f.key]"
+                  class="w-200"
+                >
+                  <el-option v-for="o in f.options" :key="o.value" :label="o.label" :value="o.value" />
+                </el-select>
+                <el-switch v-else-if="f.type === 'switch'" v-model="element.params![f.key]" />
+                <el-input
+                  v-else
+                  v-model="element.params![f.key]"
+                  :type="f.type === 'number' ? 'number' : 'text'"
+                  :placeholder="f.placeholder"
+                  class="w-200"
+                />
               </div>
               <div class="step-row">
                 <span class="field-label">描述</span>
@@ -202,19 +252,37 @@ onMounted(async () => {
             <div class="step-head">
               <span class="drag-handle">⠿</span>
               <span class="step-badge assertion">{{ index + 1 }}</span>
-              <el-select v-model="element.type" class="action-select">
+              <el-select
+                v-model="element.type"
+                class="action-select"
+                @change="onAssertionTypeChange(element)"
+              >
                 <el-option v-for="a in ASSERTION_TYPES" :key="a.value" :label="a.label" :value="a.value" />
               </el-select>
               <el-button type="danger" text size="small" @click="removeAssertion(index)">删除</el-button>
             </div>
             <div class="step-body">
-              <div v-if="element.type !== 'element_exists'" class="step-row">
+              <div v-if="assertMeta(element).needsElement" class="step-row">
                 <span class="field-label">元素</span>
                 <ElementSelector :project-id="projectId" v-model="element.element_id" />
               </div>
-              <div class="step-row">
-                <span class="field-label">参数</span>
-                <el-input v-model="element.params!.expected" placeholder="期望值，如 登录成功" />
+              <div v-for="f in assertMeta(element).fields" :key="f.key" class="step-row">
+                <span class="field-label">{{ f.label }}</span>
+                <el-select
+                  v-if="f.type === 'select'"
+                  v-model="element.params![f.key]"
+                  class="w-200"
+                >
+                  <el-option v-for="o in f.options" :key="o.value" :label="o.label" :value="o.value" />
+                </el-select>
+                <el-switch v-else-if="f.type === 'switch'" v-model="element.params![f.key]" />
+                <el-input
+                  v-else
+                  v-model="element.params![f.key]"
+                  :type="f.type === 'number' ? 'number' : 'text'"
+                  :placeholder="f.placeholder"
+                  class="w-200"
+                />
               </div>
               <div class="step-row">
                 <span class="field-label">描述</span>
@@ -336,7 +404,7 @@ onMounted(async () => {
   margin-bottom: 6px;
 }
 .field-label {
-  width: 40px;
+  width: 80px;
   color: #888;
   flex-shrink: 0;
 }

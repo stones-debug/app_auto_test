@@ -37,6 +37,12 @@ const routes: RouteRecordRaw[] = [
             meta: { title: '用例管理' },
           },
           {
+            path: 'cases/new',
+            name: 'CaseNew',
+            component: () => import('@/views/CaseEditor.vue'),
+            meta: { title: '新建用例' },
+          },
+          {
             path: 'cases/:caseId/edit',
             name: 'CaseEdit',
             component: () => import('@/views/CaseEditor.vue'),

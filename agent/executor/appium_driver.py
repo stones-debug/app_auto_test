@@ -6,12 +6,54 @@ logger = logging.getLogger("agent.appium")
 
 
 class AppiumDriver(BaseDriver):
-    """真实 Appium WebDriver 封装（需安装 appium-python-client）。"""
+    """真实 Appium WebDriver 封装（需安装 appium-python-client）。
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 4723, capabilities: dict | None = None) -> None:
+    CR-08：host/port/通用 capabilities 来自 config；设备信息（udid/platform）
+    来自 Worker 下发的 start_test.device，据此构造 UiAutomator2/XCUITest options。
+    """
+
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 4723,
+        capabilities: dict | None = None,
+        device: dict | None = None,
+        command_timeout: int | None = None,
+    ) -> None:
         self.command_executor = f"http://{host}:{port}"
         self.capabilities = capabilities or {}
+        self.device = device or {}
+        self.command_timeout = command_timeout
         self.driver = None
+
+    def _device_caps(self) -> dict:
+        """由 Worker 下发的设备信息构造平台能力（CR-08）。"""
+        caps: dict = {}
+        udid = self.device.get("udid")
+        if udid:
+            caps["udid"] = udid
+        platform = (self.device.get("platform") or "").lower()
+        if platform == "ios":
+            caps["platformName"] = "iOS"
+            caps["automationName"] = "XCUITest"
+        elif platform == "android":
+            caps["platformName"] = "Android"
+            caps["automationName"] = "UiAutomator2"
+        return caps
+
+    def _build_caps(self, package: str, activity: str | None, no_reset: bool) -> dict:
+        caps = dict(self.capabilities)
+        caps.update(self._device_caps())
+        if self.command_timeout:
+            caps["newCommandTimeout"] = self.command_timeout
+        caps.update(
+            {
+                "appPackage": package,
+                "appActivity": activity,
+                "noReset": no_reset,
+            }
+        )
+        return caps
 
     def _ensure(self):
         if self.driver is None:
@@ -22,14 +64,7 @@ class AppiumDriver(BaseDriver):
             from appium import webdriver as appium_webdriver
         except ImportError as exc:
             raise RuntimeError("未安装 appium-python-client，无法使用 Appium 驱动（pip install 'agent[appium]'）") from exc
-        caps = dict(self.capabilities)
-        caps.update(
-            {
-                "appPackage": package,
-                "appActivity": activity,
-                "noReset": no_reset,
-            }
-        )
+        caps = self._build_caps(package, activity, no_reset)
         self.driver = appium_webdriver.Remote(self.command_executor, caps)
         logger.info("Appium 会话已创建: %s", self.driver.session_id)
 
@@ -105,3 +140,19 @@ class AppiumDriver(BaseDriver):
             except Exception as exc:
                 logger.warning("driver.quit 失败: %s", exc)
             self.driver = None
+
+    def interrupt(self) -> None:
+        """CR-06：stop_test 时终止当前 app 会话，打断阻塞中的 Appium 命令。"""
+        if self.driver is None:
+            return
+        try:
+            package = None
+            try:
+                package = self.driver.current_package
+            except Exception:
+                package = None
+            if package:
+                self.driver.terminate_app(package)
+                logger.info("已终止 app 会话: %s", package)
+        except Exception as exc:
+            logger.warning("interrupt 终止 Appium 会话失败: %s", exc)

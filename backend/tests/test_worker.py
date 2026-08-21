@@ -406,3 +406,119 @@ async def test_agent_heartbeat_scan(client: AsyncClient):
         device = await db.get(Device, device_id)
         assert device.status == "idle"
         assert device.locked_by_execution is None
+
+
+# ---------- CR-06：stopping 宽限期与失联终结 ----------
+
+
+async def test_timeout_scan_forces_stopped_after_grace(client: AsyncClient):
+    """CR-06：stopping 超过 deadline（超时 + 宽限期）被强制 stopped 并释放设备。"""
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        execution.status = "stopping"
+        execution.device_id = device_id
+        execution.started_at = datetime.now(UTC) - timedelta(minutes=10)
+        execution.timeout_seconds = 60
+        await db.commit()
+        device = await db.get(Device, device_id)
+        device.status = "busy"
+        device.locked_by_execution = execution_id
+        await db.commit()
+
+        await worker_service.timeout_scan(db)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution.status == "stopped"
+        log = (await db.execute(
+            select(ExecutionLog).where(ExecutionLog.execution_id == execution_id)
+        )).scalar_one()
+        assert "宽限期" in log.message
+        device = await db.get(Device, device_id)
+        assert device.status == "idle"
+        assert device.locked_by_execution is None
+
+
+async def test_timeout_scan_keeps_stopping_within_grace(client: AsyncClient):
+    """CR-06：宽限期内 stopping 不被误终态。"""
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        execution.status = "stopping"
+        execution.device_id = device_id
+        execution.started_at = datetime.now(UTC) - timedelta(seconds=5)
+        execution.timeout_seconds = 60
+        await db.commit()
+
+        await worker_service.timeout_scan(db)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution.status == "stopping"
+
+
+async def test_agent_heartbeat_scan_terminates_stopping(client: AsyncClient):
+    """CR-06：Agent 失联时 stopping 执行也被终结为 stopped。"""
+    token, case_id = await _setup_case(client)
+    agent_id, device_id = await _create_agent_device(stale=True)
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        execution.status = "stopping"
+        execution.device_id = device_id
+        execution.started_at = datetime.now(UTC)
+        await db.commit()
+        device = await db.get(Device, device_id)
+        device.status = "busy"
+        device.locked_by_execution = execution_id
+        await db.commit()
+
+        await worker_service.agent_heartbeat_scan(db)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution.status == "stopped"
+
+
+# ---------- CR-12：queued 取消与 Worker 原子认领竞争 ----------
+
+
+async def test_cancelled_queued_execution_not_started_by_worker(client: AsyncClient):
+    """CR-12：queued 执行被取消后，Worker 认领不得将其反写为 running。"""
+    token, case_id = await _setup_case(client)
+    await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+
+    # 用户取消 queued 执行
+    cancelled = await client.post(
+        f"/api/executions/{execution_id}/stop",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+
+    # Worker 尝试执行：原子认领应失败（status != queued），不得覆盖 cancelled
+    async with SessionLocal() as db:
+        await worker_service.claim_next_queue(db, "worker-test")
+
+        async def sender(agent_id, payload):
+            return True
+
+        await worker_service.run_execution(db, execution_id, "worker-test", agent_sender=sender)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution.status == "cancelled"
+        assert execution.started_at is None  # 从未被认领启动
+        queue = (await db.execute(select(ExecutionQueue).where(ExecutionQueue.execution_id == execution_id))).scalar_one()
+        assert queue.status == "done"
+        # 不应生成报告
+        assert (await db.execute(select(Report).where(Report.execution_id == execution_id))).scalars().all() == []

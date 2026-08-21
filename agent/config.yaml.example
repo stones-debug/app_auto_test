@@ -8,6 +8,10 @@ heartbeat_interval: 30
 log_level: "INFO"
 appium_host: "127.0.0.1"
 appium_port: 4723
+appium_command_timeout: 300
+# appium_capabilities:
+#   appium:options:
+#     noReset: true
 
 # 驱动模式：mock（默认，无需真机）/ appium（真实 Appium）
 driver: "mock"

@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     # 执行
     default_execution_timeout: int = 1800
     max_execution_timeout: int = 7200
+    # CR-06：停止宽限期（stopping 超过该期限强制终态并释放设备）
+    execution_stop_grace_seconds: int = 60
 
     # Agent
     agent_heartbeat_interval: int = 30

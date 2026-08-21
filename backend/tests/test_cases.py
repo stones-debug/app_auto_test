@@ -5,14 +5,6 @@ from app.main import app
 
 OWNER = {"username": "pytest_caseowner", "email": "caseowner@tl-tek.com", "password": "test123"}
 
-STEPS = [
-    {"order": 1, "action": "launch_app", "params": {"package": "com.demo.app"}, "description": "启动应用"},
-    {"order": 2, "action": "click", "element_id": 1001, "params": {"wait_timeout": 10}},
-]
-ASSERTIONS = [
-    {"order": 1, "type": "element_exists", "element_id": 1003, "params": {"expected": True}},
-]
-
 
 @pytest.fixture
 async def client():
@@ -29,8 +21,26 @@ async def _setup(client: AsyncClient) -> tuple[dict, int]:
     return headers, created.json()["id"]
 
 
+async def _create_element(client: AsyncClient, headers: dict, project_id: int) -> int:
+    resp = await client.post(
+        f"/api/projects/{project_id}/elements",
+        json={"name": "登录按钮", "locator_type": "id", "locator_value": "btn_login"},
+        headers=headers,
+    )
+    assert resp.status_code == 201
+    return resp.json()["id"]
+
+
 async def test_case_crud(client: AsyncClient):
     headers, project_id = await _setup(client)
+    element_id = await _create_element(client, headers, project_id)
+    steps = [
+        {"order": 1, "action": "launch_app", "params": {"package": "com.demo.app"}, "description": "启动应用"},
+        {"order": 2, "action": "click", "element_id": element_id, "params": {"wait_timeout": 10}},
+    ]
+    assertions = [
+        {"order": 1, "type": "element_exists", "element_id": element_id, "params": {"expected": "exists"}},
+    ]
 
     created = await client.post(
         f"/api/projects/{project_id}/cases",
@@ -38,8 +48,8 @@ async def test_case_crud(client: AsyncClient):
             "name": "登录用例",
             "description": "测试登录",
             "status": "active",
-            "steps": STEPS,
-            "assertions": ASSERTIONS,
+            "steps": steps,
+            "assertions": assertions,
             "variables": {"username": "u1"},
         },
         headers=headers,
@@ -63,7 +73,7 @@ async def test_case_crud(client: AsyncClient):
     # 更新
     updated = await client.put(
         f"/api/cases/{case_id}",
-        json={"name": "登录用例V2", "steps": STEPS + [{"order": 3, "action": "sleep", "params": {"duration": 1}}]},
+        json={"name": "登录用例V2", "steps": steps + [{"order": 3, "action": "sleep", "params": {"duration": 1}}]},
         headers=headers,
     )
     assert updated.status_code == 200
@@ -87,13 +97,112 @@ async def test_case_crud(client: AsyncClient):
 async def test_case_jsonb_validation(client: AsyncClient):
     """用例可按 JSONB 结构校验 steps。"""
     headers, project_id = await _setup(client)
+    element_id = await _create_element(client, headers, project_id)
     created = await client.post(
         f"/api/projects/{project_id}/cases",
         json={
             "name": "断言用例",
-            "assertions": [{"order": 1, "type": "text_equals", "params": {"expected": "成功"}}],
+            "assertions": [{"order": 1, "type": "text_equals", "element_id": element_id, "params": {"expected": "成功"}}],
         },
         headers=headers,
     )
     assert created.status_code == 201
     assert created.json()["assertions"][0]["type"] == "text_equals"
+
+
+# ---------- CR-09：严格 schema ----------
+
+
+async def test_unknown_action_rejected(client: AsyncClient):
+    """CR-09：未知动作返回 422。"""
+    headers, project_id = await _setup(client)
+    resp = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "坏用例",
+            "steps": [{"order": 1, "action": "hack_device", "params": {}}],
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 422
+
+
+async def test_unknown_assertion_rejected(client: AsyncClient):
+    headers, project_id = await _setup(client)
+    resp = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "坏断言用例",
+            "assertions": [{"order": 1, "type": "hack_assert", "params": {}}],
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 422
+
+
+async def test_bad_param_type_rejected(client: AsyncClient):
+    """CR-09：参数类型错误返回 422（tap_coordinate 需要整数 x/y）。"""
+    headers, project_id = await _setup(client)
+    resp = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "坐标用例",
+            "steps": [{"order": 1, "action": "tap_coordinate", "params": {"x": "abc", "y": 10}}],
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 422
+
+
+async def test_regex_match_uses_pattern(client: AsyncClient):
+    """CR-09：regex_match 使用 pattern 字段（前端曾误用 expected）。"""
+    headers, project_id = await _setup(client)
+    element_id = await _create_element(client, headers, project_id)
+    created = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "正则用例",
+            "assertions": [
+                {"order": 1, "type": "regex_match", "element_id": element_id, "params": {"pattern": r"^\d{4}$"}}
+            ],
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201
+    params = created.json()["assertions"][0]["params"]
+    assert params.get("pattern") == r"^\d{4}$"
+
+
+async def test_cross_project_element_rejected(client: AsyncClient):
+    """CR-09：步骤引用其他项目的元素返回 400。"""
+    headers, project_id = await _setup(client)
+    element_id = await _create_element(client, headers, project_id)
+
+    # 第二个项目
+    p2 = await client.post("/api/projects", json={"name": "另一个项目"}, headers=headers)
+    project2_id = p2.json()["id"]
+
+    resp = await client.post(
+        f"/api/projects/{project2_id}/cases",
+        json={
+            "name": "越权元素用例",
+            "steps": [{"order": 1, "action": "click", "element_id": element_id, "params": {}}],
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 400
+    assert "元素不属于该项目" in resp.json()["detail"]
+
+
+async def test_nonexistent_element_rejected(client: AsyncClient):
+    headers, project_id = await _setup(client)
+    resp = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "幽灵元素用例",
+            "steps": [{"order": 1, "action": "click", "element_id": 999999, "params": {}}],
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 400
+    assert "元素不存在" in resp.json()["detail"]

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
 from sqlalchemy import select, update
@@ -113,15 +113,24 @@ async def create_batch_execution(
 
 
 async def stop_execution(db: AsyncSession, execution: Execution) -> str:
-    """queued → cancelled；running → stopping；其他状态拒绝。"""
+    """queued → cancelled；running → stopping；其他状态拒绝。
+
+    CR-12：queued 取消使用条件更新，与 Worker 原子认领竞争时只有一个赢家。
+    """
     if execution.status == "queued":
+        result = await db.execute(
+            update(Execution)
+            .where(Execution.id == execution.id, Execution.status == "queued")
+            .values(status="cancelled", finished_at=datetime.now(UTC))
+        )
         await db.execute(
             update(ExecutionQueue)
             .where(ExecutionQueue.execution_id == execution.id)
             .values(status="done")
         )
-        execution.status = "cancelled"
         await db.commit()
+        if result.rowcount != 1:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="执行已非排队态，无法取消")
         return "cancelled"
     if execution.status == "running":
         result = await db.execute(

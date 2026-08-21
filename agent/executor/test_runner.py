@@ -67,6 +67,7 @@ class TestRunner:
         should_stop: Callable[[], bool] | None = None,
         screenshots_dir: Path | None = None,
         session_token: str | None = None,
+        uploader=None,
     ) -> None:
         self.driver = driver
         self.send = send
@@ -75,6 +76,21 @@ class TestRunner:
         self.should_stop = should_stop or (lambda: False)
         self.screenshots_dir = screenshots_dir
         self.session_token = session_token
+        self.uploader = uploader
+
+    async def _resolve_screenshot(self, result: dict) -> None:
+        """CR-07：截图成功后立即 HTTP 上传，只回传服务端对象键；失败记录明确错误。"""
+        local_path = result.get("screenshot_path")
+        if not local_path or self.uploader is None:
+            return
+        uploaded = await self.uploader.upload_screenshot(
+            self.execution_id, local_path, self.session_token
+        )
+        if uploaded:
+            result["screenshot_path"] = uploaded
+        else:
+            result["screenshot_path"] = None
+            result["error_message"] = "截图上传失败，Agent 本地路径不回传服务端"
 
     async def run_case(self, case: dict) -> str:
         case_id = case.get("case_id")
@@ -104,6 +120,7 @@ class TestRunner:
             except Exception as exc:
                 result = {"status": "failed", "error_message": str(exc)}
             duration = int((time.monotonic() - start) * 1000)
+            await self._resolve_screenshot(result)
             await reporter.step_result(
                 case_id,
                 step_order,

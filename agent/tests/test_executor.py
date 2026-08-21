@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -153,3 +154,100 @@ async def test_sleep_action(monkeypatch):
     result = await SleepAction().execute(driver, context, {"duration": 2})
     assert result["status"] == "passed"
     assert slept == [2]
+
+
+# ---------- CR-07：截图上传接线 ----------
+
+
+class FakeUploader:
+    def __init__(self, result: str | None) -> None:
+        self.result = result
+        self.calls: list[tuple[int, str, str | None]] = []
+
+    async def upload_screenshot(self, execution_id: int, path: str, session_token: str | None = None) -> str | None:
+        self.calls.append((execution_id, path, session_token))
+        return self.result
+
+
+def _screenshot_case() -> dict:
+    return _make_case(
+        steps=[{"order": 1, "action": "screenshot", "params": {"filename": "ignored.png"}}],
+        elements={"1": {"locator_type": "id", "locator_value": "x"}},
+    )
+
+
+async def test_runner_uploads_screenshot_and_reports_server_key():
+    """CR-07：截图后立即上传，step_result 只携带服务端对象键。"""
+    uploader = FakeUploader("execution_100/screenshots/abc123.png")
+    sent: list[dict] = []
+
+    async def fake_send(payload: dict):
+        sent.append(payload)
+
+    runner = TestRunner(
+        MockDriver(), fake_send, 100, screenshots_dir=Path("."),
+        session_token="sess", uploader=uploader,
+    )
+    status = await runner.run_case(_screenshot_case())
+    assert status == "passed"
+    step_msg = sent[0]
+    assert step_msg["screenshot_path"] == "execution_100/screenshots/abc123.png"
+    assert len(uploader.calls) == 1
+    exec_id, local_path, token = uploader.calls[0]
+    assert exec_id == 100
+    assert token == "sess"
+    # 上传的是 Agent 本地路径
+    assert local_path.endswith(".png")
+
+
+async def test_runner_upload_failure_keeps_local_path_out():
+    """CR-07：上传失败不得把本地路径回传服务端，须记录明确错误。"""
+    uploader = FakeUploader(None)
+    sent: list[dict] = []
+
+    async def fake_send(payload: dict):
+        sent.append(payload)
+
+    runner = TestRunner(
+        MockDriver(), fake_send, 100, screenshots_dir=Path("."),
+        session_token="sess", uploader=uploader,
+    )
+    status = await runner.run_case(_screenshot_case())
+    assert status == "passed"
+    step_msg = sent[0]
+    assert step_msg["screenshot_path"] is None
+    assert "上传失败" in (step_msg["error_message"] or "")
+
+
+# ---------- CR-08：真实 Appium 驱动接线 ----------
+
+
+async def test_create_driver_appium_uses_config_and_device():
+    """CR-08：create_driver 用 config 的 host/port/capabilities 与设备信息构造 Appium 驱动。"""
+    from executor import create_driver
+    from executor.appium_driver import AppiumDriver
+
+    driver = create_driver(
+        "appium",
+        config={
+            "appium_host": "10.0.0.8",
+            "appium_port": 4730,
+            "appium_capabilities": {"appium:options": {"noReset": False}},
+            "appium_command_timeout": 300,
+        },
+        device={"udid": "emulator-5554", "platform": "android"},
+    )
+    assert isinstance(driver, AppiumDriver)
+    assert driver.command_executor == "http://10.0.0.8:4730"
+    assert driver.command_timeout == 300
+
+    caps = driver._build_caps("com.demo.app", "com.demo.MainActivity", True)
+    assert caps["udid"] == "emulator-5554"
+    assert caps["platformName"] == "Android"
+    assert caps["automationName"] == "UiAutomator2"
+    assert caps["appPackage"] == "com.demo.app"
+    assert caps["newCommandTimeout"] == 300
+
+    ios = AppiumDriver(device={"udid": "iphone-x", "platform": "ios"})
+    assert ios._device_caps()["platformName"] == "iOS"
+    assert ios._device_caps()["automationName"] == "XCUITest"

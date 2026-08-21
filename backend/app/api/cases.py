@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_editable_project, get_project_permission
 from app.core.database import get_db
-from app.models import Project, TestCase, TestModule, User
+from app.models import Project, TestCase, TestElement, TestModule, User
 from app.schemas.case import CaseCreate, CaseListItem, CaseOut, CasePage, CaseUpdate
 from app.utils.pagination import get_pagination
 
@@ -26,6 +26,33 @@ async def _check_module_belongs(project_id: int, module_id: int | None, db: Asyn
     module = await db.get(TestModule, module_id)
     if module is None or module.deleted_at is not None or module.project_id != project_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="模块不存在")
+
+
+async def _check_elements_belong(
+    project_id: int, steps: list | None, assertions: list | None, db: AsyncSession
+) -> None:
+    """CR-09：步骤/断言引用的 element_id 必须存在且属于当前项目。"""
+    ids: set[int] = set()
+    for item in [*(steps or []), *(assertions or [])]:
+        element_id = item.get("element_id") if isinstance(item, dict) else None
+        if element_id is not None:
+            ids.add(int(element_id))
+    if not ids:
+        return
+    rows = (
+        await db.execute(select(TestElement).where(TestElement.id.in_(ids)))
+    ).scalars().all()
+    found = {r.id for r in rows}
+    missing = ids - found
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=f"元素不存在: {sorted(missing)}"
+        )
+    cross = [r.id for r in rows if r.project_id != project_id]
+    if cross:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=f"元素不属于该项目: {sorted(cross)}"
+        )
 
 
 @router.get("/projects/{project_id}/cases", response_model=CasePage)
@@ -91,6 +118,7 @@ async def create_case(
     db: AsyncSession = Depends(get_db),
 ):
     await _check_module_belongs(project_id, body.module_id, db)
+    await _check_elements_belong(project_id, body.steps, body.assertions, db)
     case = TestCase(
         project_id=project_id,
         module_id=body.module_id,
@@ -132,6 +160,8 @@ async def update_case(
     if role not in ("owner", "admin", "member"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
     await _check_module_belongs(case.project_id, body.module_id, db)
+    if body.steps is not None or body.assertions is not None:
+        await _check_elements_belong(case.project_id, body.steps, body.assertions, db)
     for field in ("name", "module_id", "description", "status", "steps", "assertions", "variables"):
         value = getattr(body, field)
         if value is not None:

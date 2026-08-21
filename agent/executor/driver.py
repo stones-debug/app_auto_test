@@ -71,6 +71,10 @@ class BaseDriver:
     def quit(self) -> None:
         raise NotImplementedError
 
+    def interrupt(self) -> None:
+        """CR-06：stop_test 时尝试终止阻塞中的操作（Appium 终止 app 会话；Mock 无操作）。"""
+        pass
+
 
 class MockDriver(BaseDriver):
     """确定性模拟驱动：以 locator_value 为 key 维护应用状态，供本地联调/测试。"""
@@ -123,9 +127,16 @@ class MockDriver(BaseDriver):
         pass
 
 
-def create_driver(mode: str, initial_state: dict | None = None):
+def create_driver(mode: str, config: dict | None = None, device: dict | None = None, initial_state: dict | None = None):
     if mode == "appium":
         from .appium_driver import AppiumDriver
 
-        return AppiumDriver()
+        config = config or {}
+        return AppiumDriver(
+            host=config.get("appium_host", "127.0.0.1"),
+            port=int(config.get("appium_port", 4723)),
+            capabilities=config.get("appium_capabilities") or {},
+            device=device,
+            command_timeout=config.get("appium_command_timeout"),
+        )
     return MockDriver(initial_state)
