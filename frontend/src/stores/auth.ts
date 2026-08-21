@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
-import request, { clearTokens, getToken, setTokens } from '@/utils/request'
+import request, { clearTokens, getRefreshToken, getToken, setRememberMe, setTokens } from '@/utils/request'
 
 export interface UserInfo {
   id: number
@@ -15,7 +15,8 @@ export const useAuthStore = defineStore('auth', () => {
   const token = ref<string | null>(getToken())
   const isLoggedIn = computed(() => !!token.value)
 
-  async function login(username: string, password: string): Promise<void> {
+  async function login(username: string, password: string, remember: boolean = true): Promise<void> {
+    setRememberMe(remember)
     const res = await request.post<{ access_token: string; refresh_token: string; user: UserInfo }>(
       '/auth/login',
       { username, password },
@@ -32,7 +33,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function logout(): Promise<void> {
     // CR-14：先尽力调用后端撤销 refresh token，再清本地状态
-    const refresh = localStorage.getItem('refresh_token')
+    const refresh = getRefreshToken()
     if (refresh) {
       try {
         await request.post('/auth/logout', { refresh_token: refresh })

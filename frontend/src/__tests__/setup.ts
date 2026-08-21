@@ -28,3 +28,4 @@ class MemoryStorage implements Storage {
 }
 
 ;(globalThis as Record<string, unknown>).localStorage = new MemoryStorage()
+;(globalThis as Record<string, unknown>).sessionStorage = new MemoryStorage()

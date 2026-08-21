@@ -3,17 +3,34 @@ import axios, { type AxiosError, type AxiosRequestConfig, type InternalAxiosRequ
 const TOKEN_KEY = 'access_token'
 const REFRESH_KEY = 'refresh_token'
 
+// V2 §5.1：记住我——勾选用 localStorage（持久），否则 refresh token 放 sessionStorage。
+let persistRefresh = localStorage.getItem('remember_me') !== '0'
+
+export function setRememberMe(remember: boolean): void {
+  persistRefresh = remember
+  localStorage.setItem('remember_me', remember ? '1' : '0')
+}
+
+function refreshStorage() {
+  return persistRefresh ? localStorage : sessionStorage
+}
+
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY)
 }
 
+export function getRefreshToken(): string | null {
+  return refreshStorage().getItem(REFRESH_KEY)
+}
+
 export function setTokens(access: string, refresh: string): void {
   localStorage.setItem(TOKEN_KEY, access)
-  localStorage.setItem(REFRESH_KEY, refresh)
+  refreshStorage().setItem(REFRESH_KEY, refresh)
 }
 
 export function clearTokens(): void {
   localStorage.removeItem(TOKEN_KEY)
+  sessionStorage.removeItem(REFRESH_KEY)
   localStorage.removeItem(REFRESH_KEY)
 }
 
@@ -36,7 +53,7 @@ let refreshPromise: Promise<boolean> | null = null
 export async function refreshToken(): Promise<boolean> {
   if (refreshPromise) return refreshPromise
   refreshPromise = (async () => {
-    const refresh = localStorage.getItem(REFRESH_KEY)
+    const refresh = getRefreshToken()
     if (!refresh) return false
     try {
       const res = await axios.post<{ access_token: string; refresh_token: string }>('/api/auth/refresh', {
