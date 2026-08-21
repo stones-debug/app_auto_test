@@ -11,6 +11,7 @@ dependencies = [
 
 [project.optional-dependencies]
 appium = ["appium-python-client>=3.0"]
+desktop = ["pystray>=0.19", "pillow>=10"]
 
 [dependency-groups]
 dev = [

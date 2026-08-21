@@ -1,14 +1,26 @@
 # 服务器连接
 server: "ws://127.0.0.1:8001/ws/agent"
-agent_key: "sk-agent-change-me"
-agent_id: "agent-001"
+# agent_key: 绑定模式无需配置（--bind 后自动使用机器 PSK）；旧版管理端创建的 Agent 填这里
+# agent_key: "sk-agent-change-me"
+# agent_id: 绑定模式自动使用 install_id（agent-<hex>）；旧版手动配置时填这里
+# agent_id: "agent-001"
 
 # 可选配置
 heartbeat_interval: 30
 log_level: "INFO"
+
+# Windows 方案 §4.1：设备注册表（3 秒轮询，变更即报；30 秒全量快照）
+registry_poll_interval: 3
+registry_full_interval: 30
+
+# Appium 生命周期（按需隐藏启动，127.0.0.1）
 appium_host: "127.0.0.1"
 appium_port: 4723
 appium_command_timeout: 300
+appium_ready_timeout: 60
+# appium_bin: "appium"            # Appium server 可执行文件（PATH 中）
+# node_bin: "C:\\node\\node.exe"  # 或指定便携 Node + appium JS
+# appium_js: "C:\\appium\\main.js"
 # appium_capabilities:
 #   appium:options:
 #     noReset: true

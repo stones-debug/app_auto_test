@@ -85,3 +85,41 @@ jobs:
         run: npm test
       - name: Type check + build
         run: npm run build
+
+  windows-agent-package:
+    name: Agent Windows package (self-check + PyInstaller + Inno)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: agent
+    env:
+      UV_CACHE_DIR: D:\a\_temp\uv-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies (Windows 方案 §4.2)
+        run: uv sync --all-extras
+      - name: Test
+        run: uv run pytest tests/ -q
+      - name: Self-check
+        run: uv run python main.py --config config.yaml.example --self-check
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+      - name: Build with PyInstaller
+        run: uv run --with pyinstaller pyinstaller packaging/pyinstaller.spec --noconfirm
+      - name: Compile installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe 未找到" }
+          & $iscc "packaging/setup.iss" "/DAppVersion=1.1.0" "/DOutputDir=dist"
+      - name: Verify installer + packaged self-check
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist/app-auto-test-agent-*-windows-x64-setup.exe | Select-Object -First 1
+          if (-not $exe) { throw "未生成安装包" }
+          $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash
+          Write-Host "installer: $($exe.Name) sha256: $hash"
+          & "dist/app-auto-test-agent/app-auto-test-agent.exe" --config config.yaml.example --self-check
