@@ -135,3 +135,15 @@ def test_validate_security_baseline_production_accepts_strong(monkeypatch):
 def test_validate_security_baseline_development_always_passes(monkeypatch):
     monkeypatch.setattr(settings, "environment", "development")
     validate_security_baseline()  # 默认密钥在 development 下允许
+
+
+# ---------- PSK 哈希健壮性 ----------
+
+
+def test_verify_psk_invalid_hash_returns_false():
+    """历史明文/损坏哈希不崩溃，返回 False（InvalidHashError 被吞掉）。"""
+    from app.core.security import hash_psk, verify_psk
+
+    assert verify_psk("sk-any", "sk-plaintext-legacy") is False  # 非 Argon2 格式
+    assert verify_psk("sk-wrong", hash_psk("sk-right")) is False  # 哈希不匹配
+    assert verify_psk("sk-right", hash_psk("sk-right")) is True

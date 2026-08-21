@@ -3,7 +3,7 @@ from uuid import uuid4
 
 import jwt
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
+from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
 from app.core.config import settings
 
@@ -17,7 +17,8 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, password_hash: str) -> bool:
     try:
         return _ph.verify(password_hash, password)
-    except VerifyMismatchError:
+    except (VerifyMismatchError, InvalidHashError):
+        # InvalidHashError：库中非 Argon2 格式（历史明文残留）→ 视为不匹配而非崩溃
         return False
 
 
@@ -29,7 +30,7 @@ def hash_psk(psk: str) -> str:
 def verify_psk(psk: str, psk_hash: str) -> bool:
     try:
         return _ph.verify(psk_hash, psk)
-    except VerifyMismatchError:
+    except (VerifyMismatchError, InvalidHashError):
         return False
 
 
