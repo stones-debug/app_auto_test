@@ -3,21 +3,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import reports_dir
+from app.core.config import reports_dir, settings
 from app.models import (
     Execution,
-    ExecutionAssertion,
-    ExecutionCase,
     ExecutionLog,
-    ExecutionStep,
     Report,
 )
+from app.services.execution_detail_service import load_case_tree
 from app.services.screenshot_store import resolve_screenshot_path, validate_object_key
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates" / "reports"
+# Step 8：HTML 缓存版本标记——修改模板/数据规则后旧缓存不再复用
+_REPORT_HTML_VERSION = "logs-truncation-v1"
 
 
 def _execution_dict(execution: Execution) -> dict:
@@ -40,78 +40,72 @@ def _execution_dict(execution: Execution) -> dict:
 
 
 async def get_report_detail(db: AsyncSession, execution_id: int) -> dict:
-    """聚合执行结果：execution + cases(steps/assertions) + logs，供前端渲染与 HTML 生成。"""
+    """聚合执行结果：execution + cases(steps/assertions) + logs，供前端渲染与 HTML 生成。
+
+    Step 8：case tree 复用 load_case_tree（常数级查询）；日志先 count，
+    超限时只返回最后 report_max_logs 条并保持正序。
+    """
     execution = await db.get(Execution, execution_id)
     if execution is None:
         raise LookupError(f"执行不存在: {execution_id}")
 
     cases: list[dict] = []
-    case_rows = (
-        await db.execute(
-            select(ExecutionCase)
-            .where(ExecutionCase.execution_id == execution_id)
-            .order_by(ExecutionCase.id)
-        )
-    ).scalars().all()
-    for ec in case_rows:
-        steps = (
-            await db.execute(
-                select(ExecutionStep)
-                .where(ExecutionStep.execution_case_id == ec.id)
-                .order_by(ExecutionStep.step_order)
-            )
-        ).scalars().all()
-        assertions = (
-            await db.execute(
-                select(ExecutionAssertion)
-                .join(ExecutionStep, ExecutionAssertion.execution_step_id == ExecutionStep.id)
-                .where(ExecutionStep.execution_case_id == ec.id)
-                .order_by(ExecutionAssertion.id)
-            )
-        ).scalars().all()
+    for c in await load_case_tree(db, execution_id):
         cases.append(
             {
-                "id": ec.id,
-                "case_id": ec.case_id,
-                "case_name": ec.case_name,
-                "module_name": ec.module_name,
-                "status": ec.status,
-                "duration": ec.duration,
-                "error_message": ec.error_message,
-                "elements": ec.elements_snapshot or {},
+                "id": c["id"],
+                "case_id": c["case_id"],
+                "case_name": c["case_name"],
+                "module_name": c["module_name"],
+                "status": c["status"],
+                "duration": c["duration"],
+                "error_message": c["error_message"],
+                "elements": c["elements"],
                 "steps": [
                     {
-                        "id": s.id,
-                        "step_order": s.step_order,
-                        "action": s.action,
-                        "parameters": s.parameters or {},
-                        "status": s.status,
-                        "duration": s.duration,
-                        "actual_value": s.actual_value,
-                        "error_message": s.error_message,
-                        "screenshot": _rel_screenshot(execution_id, s.screenshot_path),
+                        "id": s["id"],
+                        "step_order": s["step_order"],
+                        "action": s["action"],
+                        "parameters": s["parameters"],
+                        "status": s["status"],
+                        "duration": s["duration"],
+                        "actual_value": s["actual_value"],
+                        "error_message": s["error_message"],
+                        "screenshot": _rel_screenshot(execution_id, s["screenshot_path"]),
                     }
-                    for s in steps
+                    for s in c["steps"]
                 ],
                 "assertions": [
                     {
-                        "id": a.id,
-                        "assertion_type": a.assertion_type,
-                        "expected_value": a.expected_value,
-                        "actual_value": a.actual_value,
-                        "status": a.status,
-                        "error_message": a.error_message,
+                        "id": a["id"],
+                        "assertion_type": a["assertion_type"],
+                        "expected_value": a["expected_value"],
+                        "actual_value": a["actual_value"],
+                        "status": a["status"],
+                        "error_message": a["error_message"],
                     }
-                    for a in assertions
+                    for a in c["assertions"]
                 ],
             }
         )
 
-    logs = (
-        await db.execute(
-            select(ExecutionLog).where(ExecutionLog.execution_id == execution_id).order_by(ExecutionLog.id)
+    # Step 8：报告日志上限——先 count，超限取最后 N 条保持正序
+    logs_total = (
+        await db.scalar(
+            select(func.count()).select_from(ExecutionLog).where(ExecutionLog.execution_id == execution_id)
         )
-    ).scalars().all()
+    ) or 0
+    logs_truncated = logs_total > settings.report_max_logs
+    log_query = (
+        select(ExecutionLog)
+        .where(ExecutionLog.execution_id == execution_id)
+        .order_by(ExecutionLog.id.desc() if logs_truncated else ExecutionLog.id)
+    )
+    if logs_truncated:
+        log_query = log_query.limit(settings.report_max_logs)
+        log_rows = (await db.execute(log_query)).scalars().all()[::-1]
+    else:
+        log_rows = (await db.execute(log_query)).scalars().all()
 
     report = (
         await db.execute(select(Report).where(Report.execution_id == execution_id))
@@ -137,8 +131,10 @@ async def get_report_detail(db: AsyncSession, execution_id: int) -> dict:
                 "source": log.source,
                 "created_at": log.created_at.isoformat() if log.created_at else None,
             }
-            for log in logs
+            for log in log_rows
         ],
+        "logs_total": logs_total,
+        "logs_truncated": logs_truncated,
     }
 
 
@@ -169,18 +165,24 @@ def _embed_screenshots(detail: dict) -> None:
 
 
 async def render_report_html(db: AsyncSession, execution_id: int) -> Path:
-    """按需生成自包含 HTML 报告；已生成则直接复用（幂等）。"""
+    """按需生成自包含 HTML 报告；已生成且版本一致则直接复用（幂等）。
+
+    Step 8：缓存带模板/数据版本标记（_REPORT_HTML_VERSION），版本变化时强制重生成。
+    """
     target_dir = reports_dir() / f"execution_{execution_id}"
     html_path = target_dir / "report.html"
     if html_path.exists():
         # CR-26：命中缓存时也幂等同步 DB report_path，避免崩溃后列表长期显示“按需”
-        report = (
-            await db.execute(select(Report).where(Report.execution_id == execution_id))
-        ).scalar_one_or_none()
-        if report is not None and report.report_path != str(html_path):
-            report.report_path = str(html_path)
-            await db.commit()
-        return html_path
+        if _cache_version_ok(html_path):
+            report = (
+                await db.execute(select(Report).where(Report.execution_id == execution_id))
+            ).scalar_one_or_none()
+            if report is not None and report.report_path != str(html_path):
+                report.report_path = str(html_path)
+                await db.commit()
+            return html_path
+        # 版本过期：重生成，覆盖旧缓存
+        html_path.unlink(missing_ok=True)
 
     detail = await get_report_detail(db, execution_id)
     _embed_screenshots(detail)
@@ -191,8 +193,11 @@ async def render_report_html(db: AsyncSession, execution_id: int) -> Path:
         report=detail["report"],
         cases=detail["cases"],
         logs=detail["logs"],
+        logs_total=detail["logs_total"],
+        logs_truncated=detail["logs_truncated"],
         generated_at=datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
     )
+    html = f"<!-- version: {_REPORT_HTML_VERSION} -->\n" + html
     target_dir.mkdir(parents=True, exist_ok=True)
     html_path.write_text(html, encoding="utf-8")
 
@@ -203,3 +208,12 @@ async def render_report_html(db: AsyncSession, execution_id: int) -> Path:
         report.report_path = str(html_path)
         await db.commit()
     return html_path
+
+
+def _cache_version_ok(html_path: Path) -> bool:
+    try:
+        with html_path.open("r", encoding="utf-8") as fh:
+            head = fh.read(200)
+    except OSError:
+        return False
+    return f"version: {_REPORT_HTML_VERSION}" in head

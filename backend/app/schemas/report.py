@@ -92,3 +92,6 @@ class ReportDetailOut(BaseModel):
     report: ReportSummaryOut
     cases: list[ReportCaseOut]
     logs: list[ReportLogOut]
+    # Step 8：日志截断元数据（logs_truncated=true 时前端/HTML 展示“仅展示最后 N/M 条”）
+    logs_total: int = 0
+    logs_truncated: bool = False

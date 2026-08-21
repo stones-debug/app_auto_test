@@ -205,6 +205,9 @@ function viewExecution() {
 
       <div class="card">
         <h2>执行日志</h2>
+        <div v-if="detail.logs_truncated" class="truncate-note v2-aux">
+          日志总量 {{ detail.logs_total }} 条，仅展示最后 {{ detail.logs.length }} 条
+        </div>
         <el-table v-if="detail.logs.length" :data="detail.logs" size="small">
           <el-table-column prop="level" label="级别" width="80">
             <template #default="{ row }">
@@ -307,6 +310,10 @@ function viewExecution() {
 }
 .error-text {
   color: #f56c6c;
+  margin-bottom: 8px;
+}
+.truncate-note {
+  color: #e6a23c;
   margin-bottom: 8px;
 }
 .thumb {

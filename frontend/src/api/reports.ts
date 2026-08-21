@@ -77,6 +77,9 @@ export interface ReportDetail {
   report: ReportSummary
   cases: ReportCase[]
   logs: ReportLog[]
+  // Step 8：日志截断元数据
+  logs_total?: number
+  logs_truncated?: boolean
 }
 
 export function listReports(params?: {

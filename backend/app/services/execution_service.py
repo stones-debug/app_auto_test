@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -176,13 +176,27 @@ async def get_execution_logs(
     offset: int,
     limit: int,
 ) -> tuple[list[ExecutionLog], int]:
+    """日志分页。
+
+    Step 8：total 用 select(func.count())，不读取全部 ID；
+    排序使用 (created_at, id)，避免同毫秒日志漏读（after 游标仅支持 timestamp，
+    同毫秒边界以 id 次序稳定分页，见文档注明）。
+    """
     query = select(ExecutionLog).where(ExecutionLog.execution_id == execution_id)
-    count_query = select(ExecutionLog.id).where(ExecutionLog.execution_id == execution_id)
+    count_query = (
+        select(func.count())
+        .select_from(ExecutionLog)
+        .where(ExecutionLog.execution_id == execution_id)
+    )
     if after_timestamp is not None:
         query = query.where(ExecutionLog.created_at > after_timestamp)
         count_query = count_query.where(ExecutionLog.created_at > after_timestamp)
-    total = len((await db.execute(count_query)).scalars().all())
+    total = await db.scalar(count_query)
     rows = (
-        await db.execute(query.order_by(ExecutionLog.created_at.asc()).offset(offset).limit(limit))
+        await db.execute(
+            query.order_by(ExecutionLog.created_at.asc(), ExecutionLog.id.asc())
+            .offset(offset)
+            .limit(limit)
+        )
     ).scalars().all()
-    return rows, total
+    return rows, total or 0

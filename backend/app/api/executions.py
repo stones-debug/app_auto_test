@@ -18,7 +18,6 @@ from app.models import (
     Agent,
     Device,
     Execution,
-    ExecutionAssertion,
     ExecutionCase,
     ExecutionStep,
     Project,
@@ -29,7 +28,6 @@ from app.models import (
 )
 from app.schemas.execution import (
     BatchExecutionCreate,
-    ExecutionAssertionOut,
     ExecutionCaseOut,
     ExecutionCreate,
     ExecutionDetail,
@@ -42,6 +40,7 @@ from app.schemas.execution import (
     ExecutionStepOut,
 )
 from app.services import execution_service
+from app.services.execution_detail_service import load_case_tree
 from app.services.screenshot_store import resolve_screenshot_path
 from app.utils.pagination import get_pagination
 
@@ -278,37 +277,16 @@ async def get_execution(
 ):
     execution = await _get_execution_or_404(execution_id, db)
     await _require_execution_access(execution, user, db)
-    case_rows = (
-        await db.execute(
-            select(ExecutionCase)
-            .where(ExecutionCase.execution_id == execution_id)
-            .order_by(ExecutionCase.id)
-        )
-    ).scalars().all()
+    # Step 8：case tree 经常数级聚合服务加载（3 条查询，不随 N 增长）
+    tree = await load_case_tree(db, execution_id)
     case_outs: list[ExecutionCaseOut] = []
-    for ec in case_rows:
-        step_rows = (
-            await db.execute(
-                select(ExecutionStep)
-                .where(ExecutionStep.execution_case_id == ec.id)
-                .order_by(ExecutionStep.step_order)
-            )
-        ).scalars().all()
-        assertion_rows = (
-            await db.execute(
-                select(ExecutionAssertion)
-                .join(ExecutionStep, ExecutionAssertion.execution_step_id == ExecutionStep.id)
-                .where(ExecutionStep.execution_case_id == ec.id)
-                .order_by(ExecutionAssertion.id)
-            )
-        ).scalars().all()
-        case_out = ExecutionCaseOut.model_validate(ec)
+    for case in tree:
+        case_out = ExecutionCaseOut.model_validate(case)
         case_out.steps = []
-        for step in step_rows:
-            step_out = ExecutionStepOut.model_validate(step)
-            step_out.artifact_id = step.id if step.screenshot_path else None
+        for src in case.get("steps") or []:
+            step_out = ExecutionStepOut.model_validate(src)
+            step_out.artifact_id = src["id"] if src["screenshot_path"] else None
             case_out.steps.append(step_out)
-        case_out.assertions = [ExecutionAssertionOut.model_validate(a) for a in assertion_rows]
         case_outs.append(case_out)
 
     detail = ExecutionDetail.model_validate(execution)

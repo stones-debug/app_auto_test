@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     screenshot_retention_days: int = 30
     log_retention_days: int = 7
 
+    # Step 8：报告详情日志上限（超限只返回最后 N 条）
+    report_max_logs: int = 20000
+
     # CORS
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 

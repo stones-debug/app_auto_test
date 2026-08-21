@@ -155,6 +155,8 @@ async def _build_detail(db: AsyncSession, execution_id: int) -> ReportDetailOut:
         report=ReportSummaryOut(**detail["report"]),
         cases=[ReportCaseOut(**c) for c in detail["cases"]],
         logs=[ReportLogOut(**log_item) for log_item in detail["logs"]],
+        logs_total=detail["logs_total"],
+        logs_truncated=detail["logs_truncated"],
     )
 
 
