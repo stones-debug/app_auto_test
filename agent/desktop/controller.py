@@ -193,16 +193,21 @@ class DesktopController:
         self.status_var.set(f"Agent: {agent_id} | 连接: {online} | Appium: {appium}")
 
     def _refresh_bindings(self) -> None:
-        def _load():
+        async def _load():
             if self.app.bindings is None:
                 return []
             try:
-                return self.app.bindings.list_users()
+                return await self.app.bindings.list_users()
             except Exception as exc:
                 logger.warning("绑定列表刷新失败: %s", exc)
                 return []
 
-        users = self.bridge.call(_load)
+        try:
+            users = self.bridge.call(_load)
+        except Exception as exc:
+            # 桥接异常（如后台循环未就绪）不得打断 UI 启动
+            logger.warning("绑定列表刷新异常: %s", exc)
+            users = []
         if not users:
             self.bindings_var.set("未绑定（输入上方 Key 后点击“绑定 Key”）")
         else:

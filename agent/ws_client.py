@@ -10,6 +10,8 @@ logger = logging.getLogger("agent.ws")
 
 MAX_SIZE = 10 * 1024 * 1024  # 10MB
 
+KeyProvider = str | Callable[[], str]
+
 
 class AuthError(Exception):
     pass
@@ -22,7 +24,7 @@ class AgentWSClient:
     def __init__(
         self,
         url: str,
-        agent_key: str,
+        agent_key: KeyProvider,
         agent_id: str,
         version: str = "1.0.0",
         heartbeat_interval: int = 30,
@@ -37,12 +39,17 @@ class AgentWSClient:
         self.on_registered: MessageHandler | None = None
         self._stop = asyncio.Event()
 
+    def _resolve_key(self) -> str:
+        """解析当前 PSK：可传静态字符串或回调（绑定后无需重启即可重连）。"""
+        key = self.agent_key() if callable(self.agent_key) else self.agent_key
+        return key or ""
+
     async def connect(self) -> None:
         self.ws = await websockets.connect(self.url, max_size=MAX_SIZE, ping_interval=20, ping_timeout=60)
         await self.send(
             {
                 "type": "register",
-                "agent_key": self.agent_key,
+                "agent_key": self._resolve_key(),
                 "agent_id": self.agent_id,
                 "hostname": platform.node(),
                 "platform": platform.system().lower(),
@@ -61,7 +68,8 @@ class AgentWSClient:
             raise ConnectionError("WebSocket 未连接")
         await self.ws.send(json.dumps(payload, ensure_ascii=False))
 
-    async def run_forever(self) -> None:
+    async def run_forever(self, retry_on_auth: bool = False) -> None:
+        """连接循环。retry_on_auth=True 时认证失败不退出（桌面模式：绑定 Key 后自动重连）。"""
         backoff = 1
         while not self._stop.is_set():
             try:
@@ -73,8 +81,12 @@ class AgentWSClient:
                 finally:
                     heartbeat.cancel()
             except AuthError:
-                logger.error("认证失败，停止重连（请检查 agent_key/agent_id）")
-                raise
+                if not retry_on_auth:
+                    logger.error("认证失败，停止重连（请检查 agent_key/agent_id）")
+                    raise
+                logger.warning("认证失败（可能尚未绑定），%ss 后重试", backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30)
             except asyncio.CancelledError:
                 break
             except Exception as exc:

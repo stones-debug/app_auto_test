@@ -232,13 +232,19 @@ async def run_bind(bindings: BindingManager, user_key: str) -> None:
 
 
 def build_agent_app(config: dict, install_id: str, creds: CredentialStore, bindings: BindingManager) -> tuple[AgentApp, AgentWSClient]:
-    """构造 AgentApp + WS 客户端（Windows 方案 §3.2：机器 PSK 优先，兼容旧配置 agent_key）。"""
+    """构造 AgentApp + WS 客户端（Windows 方案 §3.2：机器 PSK 优先，兼容旧配置 agent_key）。
+
+    agent_key 以回调形式传入：绑定 Key 后无需重启，重连即用新机器 PSK。
+    """
     app = AgentApp(config, bindings=bindings)
-    agent_key = config.get("agent_key") or bindings.machine_psk() or ""
+
+    def key_provider() -> str:
+        return config.get("agent_key") or bindings.machine_psk() or ""
+
     base_url = http_base_url(config["server"])
     client = AgentWSClient(
         url=config["server"],
-        agent_key=agent_key,
+        agent_key=key_provider,
         agent_id=config.get("agent_id") or install_id,
         version=__version__,
         heartbeat_interval=config.get("heartbeat_interval", 30),
@@ -246,12 +252,12 @@ def build_agent_app(config: dict, install_id: str, creds: CredentialStore, bindi
     app.client = client
     app.uploader = Uploader(
         base_url=base_url,
-        agent_key=agent_key,
+        agent_key=key_provider,
         agent_id=config.get("agent_id") or install_id,
     )
     client.on_message = app.on_message
     client.on_registered = app.start_device_reporting
-    if not agent_key:
+    if not key_provider():
         logger.error("未配置 agent_key 且本机无机器 PSK，无法注册；请先执行 --bind <用户Key> 或配置 agent_key")
     return app, client
 
@@ -267,10 +273,10 @@ def configure_file_logging(state: Path) -> None:
     logging.getLogger().addHandler(handler)
 
 
-async def serve_agent(app: AgentApp, client: AgentWSClient) -> None:
-    """连接循环 + 退出清理。"""
+async def serve_agent(app: AgentApp, client: AgentWSClient, retry_on_auth: bool = False) -> None:
+    """连接循环 + 退出清理。retry_on_auth：桌面模式认证失败不退出（绑定后自动重连）。"""
     try:
-        await client.run_forever()
+        await client.run_forever(retry_on_auth=retry_on_auth)
     except AuthError:
         logger.error("Agent 启动失败：认证失败")
     except KeyboardInterrupt:
@@ -291,7 +297,7 @@ def run_desktop(app: AgentApp, client: AgentWSClient, state: Path, server_url: s
     def _run_loop() -> None:
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(serve_agent(app, client))
+            loop.run_until_complete(serve_agent(app, client, retry_on_auth=True))
         finally:
             loop.close()
 
