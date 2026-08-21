@@ -1,6 +1,19 @@
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -34,7 +47,11 @@ class Execution(Base, TimestampMixin):
 
 class ExecutionCase(Base, TimestampMixin):
     __tablename__ = "execution_cases"
-    __table_args__ = (Index("idx_exec_cases_execution", "execution_id"),)
+    __table_args__ = (
+        Index("idx_exec_cases_execution", "execution_id"),
+        # §5.2：批量去重语义下同一执行内用例唯一
+        UniqueConstraint("execution_id", "case_id", name="uq_execution_cases_execution_case"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     execution_id: Mapped[int] = mapped_column(ForeignKey("executions.id"), nullable=False)
@@ -53,6 +70,10 @@ class ExecutionCase(Base, TimestampMixin):
 
 class ExecutionStep(Base, TimestampMixin):
     __tablename__ = "execution_steps"
+    __table_args__ = (
+        # CR-11（§5.2）：同用例步骤顺序唯一
+        UniqueConstraint("execution_case_id", "step_order", name="uq_execution_steps_case_order"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     execution_case_id: Mapped[int] = mapped_column(ForeignKey("execution_cases.id"), nullable=False)
@@ -96,6 +117,15 @@ class ExecutionLog(Base, TimestampMixin):
 
 class Report(Base, TimestampMixin):
     __tablename__ = "reports"
+    __table_args__ = (
+        # CR-11（§5.2）：每个执行最多一份报告（幂等汇总）
+        UniqueConstraint("execution_id", name="uq_reports_execution_id"),
+        CheckConstraint(
+            "total >= 0 AND passed >= 0 AND failed >= 0 AND error_count >= 0 AND skipped >= 0",
+            name="ck_reports_counts_nonneg",
+        ),
+        CheckConstraint("success_rate >= 0 AND success_rate <= 100", name="ck_reports_success_rate_range"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     execution_id: Mapped[int] = mapped_column(ForeignKey("executions.id"), nullable=False)
@@ -104,7 +134,8 @@ class Report(Base, TimestampMixin):
     failed: Mapped[int] = mapped_column(Integer, default=0)
     error_count: Mapped[int] = mapped_column(Integer, default=0)
     skipped: Mapped[int] = mapped_column(Integer, default=0)
-    success_rate: Mapped[float] = mapped_column(Integer, default=0)
+    # CR-10：权威设计为 DECIMAL(5,2)，如 66.67
+    success_rate: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("0"))
     duration: Mapped[int | None] = mapped_column(Integer)
     report_path: Mapped[str | None] = mapped_column(Text)
 
@@ -117,6 +148,12 @@ class ExecutionQueue(Base, TimestampMixin):
             "status",
             "created_at",
             postgresql_where=text("status = 'pending'"),
+        ),
+        # §5.2：一个执行至多一个队列项；状态机约束
+        UniqueConstraint("execution_id", name="uq_execution_queue_execution_id"),
+        CheckConstraint(
+            "status IN ('pending', 'claimed', 'done', 'failed')",
+            name="ck_execution_queue_status",
         ),
     )
 

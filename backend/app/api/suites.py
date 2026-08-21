@@ -104,12 +104,10 @@ async def update_suite(
     _project, role = await get_project_permission(suite.project_id, user, db)
     if role not in ("owner", "admin", "member"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
-    if body.name is not None:
-        suite.name = body.name
-    if body.description is not None:
-        suite.description = body.description
-    if body.status is not None:
-        suite.status = body.status
+    # CR-25：model_fields_set 区分“未提交”与“显式 null”，支持清空可选字段
+    for field in ("name", "description", "status"):
+        if field in body.model_fields_set:
+            setattr(suite, field, getattr(body, field))
     await db.commit()
     await db.refresh(suite)
     return suite

@@ -39,6 +39,8 @@ async def _require_report_access(report: Report, user: User, db: AsyncSession) -
 async def list_reports(
     project_id: int | None = None,
     execution_id: int | None = None,
+    status: str = "",
+    keyword: str = "",
     pagination=Depends(get_pagination),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -48,27 +50,33 @@ async def list_reports(
         query = select(Report).join(Execution, Report.execution_id == Execution.id).where(
             Execution.project_id == project_id
         )
-        count_query = (
-            select(func.count())
-            .select_from(Report)
-            .join(Execution, Report.execution_id == Execution.id)
-            .where(Execution.project_id == project_id)
-        )
     else:
         member_projects = select(ProjectMember.project_id).where(ProjectMember.user_id == user.id)
         owner_projects = select(Project.id).where(Project.owner_id == user.id)
-        base = (
+        query = (
             select(Report)
             .join(Execution, Report.execution_id == Execution.id)
+            .join(Project, Execution.project_id == Project.id)
             .where(
-                (Execution.project_id.in_(owner_projects)) | (Execution.project_id.in_(member_projects))
+                (Execution.project_id.in_(owner_projects))
+                | (Execution.project_id.in_(member_projects))
+                | (Project.visibility == "public")  # CR-20：与详情权限一致，公开项目报告可发现
             )
         )
-        query = base
-        count_query = select(func.count()).select_from(base.subquery())
     if execution_id is not None:
         query = query.where(Report.execution_id == execution_id)
+    if status:
+        query = query.where(Execution.status == status)
+    if keyword:
+        # CR-15：keyword 按执行 ID 过滤（前端“按执行 ID 搜索”）
+        try:
+            keyword_int = int(keyword)
+        except ValueError:
+            keyword_int = -1
+        query = query.where(Report.execution_id == keyword_int)
 
+    # CR-15：count 与 items 从同一过滤后的 base query 派生
+    count_query = select(func.count()).select_from(query.subquery())
     total = await db.scalar(count_query)
     rows = (
         await db.execute(query.order_by(Report.id.desc()).offset(pagination.offset).limit(pagination.limit))

@@ -109,7 +109,7 @@ async def _fill_agent_names(items: list[DeviceOut], db: AsyncSession) -> None:
 @router.get("/devices", response_model=DevicePage)
 async def list_devices(
     platform: str = "",
-    device_status: str = "",
+    status: str = "",
     pagination=Depends(get_pagination),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -119,9 +119,9 @@ async def list_devices(
     if platform:
         query = query.where(Device.platform == platform)
         count_query = count_query.where(Device.platform == platform)
-    if device_status:
-        query = query.where(Device.status == device_status)
-        count_query = count_query.where(Device.status == device_status)
+    if status:
+        query = query.where(Device.status == status)
+        count_query = count_query.where(Device.status == status)
     total = await db.scalar(count_query)
     rows = (
         await db.execute(query.order_by(Device.id).offset(pagination.offset).limit(pagination.limit))

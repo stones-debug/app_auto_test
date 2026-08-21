@@ -173,6 +173,13 @@ async def render_report_html(db: AsyncSession, execution_id: int) -> Path:
     target_dir = reports_dir() / f"execution_{execution_id}"
     html_path = target_dir / "report.html"
     if html_path.exists():
+        # CR-26：命中缓存时也幂等同步 DB report_path，避免崩溃后列表长期显示“按需”
+        report = (
+            await db.execute(select(Report).where(Report.execution_id == execution_id))
+        ).scalar_one_or_none()
+        if report is not None and report.report_path != str(html_path):
+            report.report_path = str(html_path)
+            await db.commit()
         return html_path
 
     detail = await get_report_detail(db, execution_id)

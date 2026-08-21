@@ -206,3 +206,26 @@ async def test_nonexistent_element_rejected(client: AsyncClient):
     )
     assert resp.status_code == 400
     assert "元素不存在" in resp.json()["detail"]
+
+
+async def test_list_status_filter_contract(client: AsyncClient):
+    """CR-15：用例列表 status 过滤生效（前端发送 status）。"""
+    headers, project_id = await _setup(client)
+    await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={"name": "启用用例", "status": "active", "steps": [], "assertions": []},
+        headers=headers,
+    )
+    await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={"name": "草稿用例", "status": "draft", "steps": [], "assertions": []},
+        headers=headers,
+    )
+
+    active = await client.get(f"/api/projects/{project_id}/cases?status=active", headers=headers)
+    assert active.status_code == 200
+    assert active.json()["total"] == 1
+    assert active.json()["items"][0]["name"] == "启用用例"
+
+    all_cases = await client.get(f"/api/projects/{project_id}/cases", headers=headers)
+    assert all_cases.json()["total"] == 2

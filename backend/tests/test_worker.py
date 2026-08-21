@@ -322,8 +322,12 @@ async def test_mark_terminal_derives_case_status(client: AsyncClient):
         ec = (await db.execute(
             select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
         )).scalar_one()
-        # 步骤全 passed，无失败 → 归为 passed（不因执行超时而误判为 skipped）
-        assert ec.status == "passed"
+        # CR-11：执行超时中断 → 当前 case 归为 error（而非误判 passed）
+        assert ec.status == "error"
+        step = (await db.execute(
+            select(ExecutionStep).where(ExecutionStep.execution_case_id == ec.id)
+        )).scalar_one()
+        assert step.status == "passed"  # 已执行步骤不受影响
 
 
 async def test_run_execution_finalizes_on_terminal(client: AsyncClient):
@@ -377,6 +381,7 @@ async def test_run_execution_finalizes_on_terminal(client: AsyncClient):
         ec = (await db.execute(
             select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
         )).scalar_one()
+        # CR-11：终态为 passed 时无失败 case 归为 passed
         assert ec.status == "passed"
 
 
@@ -486,6 +491,124 @@ async def test_agent_heartbeat_scan_terminates_stopping(client: AsyncClient):
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
         assert execution.status == "stopped"
+
+
+# ---------- CR-10/CR-11：小数成功率 + 幂等汇总 + 状态归并 ----------
+
+
+async def test_mark_terminal_fractional_success_rate(client: AsyncClient):
+    """CR-10：success_rate 保存两位小数（66.67），0/0 → 0。"""
+    token, case_id = await _setup_case(client)
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        # 再补 2 个用例行：共 3 个 case，其中 1 个 failed → 2/3 = 66.67
+        db.add(ExecutionCase(execution_id=execution_id, case_id=9001, case_name="c1", status="running", steps_snapshot=[], assertions_snapshot=[]))
+        db.add(ExecutionCase(execution_id=execution_id, case_id=9002, case_name="c2", status="running", steps_snapshot=[], assertions_snapshot=[]))
+        await db.commit()
+        ecs = (await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id).order_by(ExecutionCase.id)
+        )).scalars().all()
+        assert len(ecs) == 3
+        for i, ec in enumerate(ecs):
+            db.add(ExecutionStep(execution_case_id=ec.id, step_order=1, action="click", status="failed" if i == 0 else "passed"))
+        await db.commit()
+        execution.status = "running"
+        execution.started_at = datetime.now(UTC) - timedelta(seconds=10)
+        await db.commit()
+        await worker_service._mark_terminal(db, execution, "passed")
+
+    async with SessionLocal() as db:
+        report = (await db.execute(select(Report).where(Report.execution_id == execution_id))).scalar_one()
+        assert report.total == 3
+        assert report.passed == 2
+        assert report.failed == 1
+        assert float(report.success_rate) == 66.67
+
+
+async def test_mark_terminal_zero_cases_rate_zero(client: AsyncClient):
+    """CR-10：无用例时成功率为 0 而非除零错误。"""
+    token, case_id = await _setup_case(client)
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        execution.status = "running"
+        execution.started_at = datetime.now(UTC)
+        await db.commit()
+        await worker_service._mark_terminal(db, execution, "error", "无快照用例")
+
+    async with SessionLocal() as db:
+        report = (await db.execute(select(Report).where(Report.execution_id == execution_id))).scalar_one()
+        assert report.total == 0
+        assert float(report.success_rate) == 0.0
+
+
+async def test_mark_terminal_idempotent_under_concurrency(client: AsyncClient):
+    """CR-11：并发终态汇总只产生一份报告，且只有一个进程推进状态。"""
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        execution.status = "running"
+        execution.device_id = device_id
+        execution.started_at = datetime.now(UTC)
+        await db.commit()
+        device = await db.get(Device, device_id)
+        device.status = "busy"
+        device.locked_by_execution = execution_id
+        await db.commit()
+
+    async def _finalize():
+        async with SessionLocal() as sdb:
+            ex = await sdb.get(Execution, execution_id)
+            await worker_service._mark_terminal(sdb, ex, "stopped")
+
+    await asyncio.gather(_finalize(), _finalize())
+
+    async with SessionLocal() as db:
+        reports = (await db.execute(select(Report).where(Report.execution_id == execution_id))).scalars().all()
+        assert len(reports) == 1  # 幂等：只一份报告
+        execution = await db.get(Execution, execution_id)
+        assert execution.status == "stopped"
+        device = await db.get(Device, device_id)
+        assert device.status == "idle"
+        assert device.locked_by_execution is None
+
+
+async def test_mark_terminal_skips_unexecuted_steps(client: AsyncClient):
+    """CR-11：中断时当前 case 置 stopped，未执行步骤置 skipped。"""
+    token, case_id = await _setup_case(client)
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        ec = (await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )).scalar_one()
+        db.add(ExecutionStep(execution_case_id=ec.id, step_order=1, action="click", status="passed"))
+        db.add(ExecutionStep(execution_case_id=ec.id, step_order=2, action="input", status="pending"))
+        execution.status = "running"
+        execution.started_at = datetime.now(UTC)
+        await db.commit()
+        await worker_service._mark_terminal(db, execution, "stopped")
+
+    async with SessionLocal() as db:
+        ec = (await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )).scalar_one()
+        assert ec.status == "stopped"
+        steps = (await db.execute(
+            select(ExecutionStep).where(ExecutionStep.execution_case_id == ec.id).order_by(ExecutionStep.step_order)
+        )).scalars().all()
+        assert steps[0].status == "passed"
+        assert steps[1].status == "skipped"
 
 
 # ---------- CR-12：queued 取消与 Worker 原子认领竞争 ----------

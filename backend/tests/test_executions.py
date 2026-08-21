@@ -260,3 +260,30 @@ async def test_public_viewer_cannot_create_stop_retry(client: AsyncClient):
         "/api/executions/suites/batch", headers=viewer_headers, json={"suite_ids": [suite_id], "parameters": {}}
     )
     assert batch.status_code == 403
+
+
+async def test_list_filters_status_and_type_with_consistent_total(client: AsyncClient):
+    """CR-15：执行列表 status/type 过滤生效，total 与 items 同口径。"""
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+    element_id = await _create_element(client, token, project_id)
+    case_id = await _create_case(client, token, project_id, element_id)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    created = await client.post(f"/api/executions/cases/{case_id}", headers=headers, json={"parameters": {}})
+    assert created.status_code == 201
+    execution_id = created.json()["id"]
+
+    all_items = await client.get(f"/api/executions?project_id={project_id}", headers=headers)
+    assert all_items.json()["total"] == 1
+
+    by_type = await client.get(f"/api/executions?project_id={project_id}&type=case", headers=headers)
+    assert by_type.json()["total"] == 1
+    assert by_type.json()["items"][0]["id"] == execution_id
+
+    by_status = await client.get(f"/api/executions?project_id={project_id}&status=queued", headers=headers)
+    assert by_status.json()["total"] == 1
+
+    no_match = await client.get(f"/api/executions?project_id={project_id}&status=passed", headers=headers)
+    assert no_match.json()["total"] == 0
+    assert no_match.json()["items"] == []

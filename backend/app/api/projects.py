@@ -161,12 +161,10 @@ async def update_project(
     db: AsyncSession = Depends(get_db),
 ):
     project, role = perm
-    if body.name is not None:
-        project.name = body.name
-    if body.description is not None:
-        project.description = body.description
-    if body.visibility is not None:
-        project.visibility = body.visibility
+    # CR-25：model_fields_set 区分“未提交”与“显式 null”，支持清空可选字段
+    for field in ("name", "description", "visibility"):
+        if field in body.model_fields_set:
+            setattr(project, field, getattr(body, field))
     await db.commit()
     await db.refresh(project)
     return await _project_out(project, role)

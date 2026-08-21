@@ -61,7 +61,7 @@ async def list_cases(
     pagination=Depends(get_pagination),
     module_id: int | None = None,
     keyword: str = "",
-    status_filter: str = "",
+    status: str = "",
     _perm: tuple[Project, str | None] = Depends(get_project_permission),
     db: AsyncSession = Depends(get_db),
 ):
@@ -79,9 +79,9 @@ async def list_cases(
     if keyword:
         query = query.where(TestCase.name.ilike(f"%{keyword}%"))
         count_query = count_query.where(TestCase.name.ilike(f"%{keyword}%"))
-    if status_filter:
-        query = query.where(TestCase.status == status_filter)
-        count_query = count_query.where(TestCase.status == status_filter)
+    if status:
+        query = query.where(TestCase.status == status)
+        count_query = count_query.where(TestCase.status == status)
 
     total = await db.scalar(count_query)
     rows = (
@@ -163,9 +163,9 @@ async def update_case(
     if body.steps is not None or body.assertions is not None:
         await _check_elements_belong(case.project_id, body.steps, body.assertions, db)
     for field in ("name", "module_id", "description", "status", "steps", "assertions", "variables"):
-        value = getattr(body, field)
-        if value is not None:
-            setattr(case, field, value)
+        # CR-25：model_fields_set 区分“未提交”与“显式 null”，支持清空可选字段
+        if field in body.model_fields_set:
+            setattr(case, field, getattr(body, field))
     case.updated_by = user.id
     await db.commit()
     await db.refresh(case)

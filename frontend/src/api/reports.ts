@@ -82,6 +82,8 @@ export interface ReportDetail {
 export function listReports(params?: {
   project_id?: number
   execution_id?: number
+  status?: string
+  keyword?: string
   page?: number
   page_size?: number
 }) {

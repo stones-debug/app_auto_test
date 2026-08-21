@@ -1,4 +1,4 @@
-﻿import uuid
+import uuid
 from datetime import UTC, datetime
 
 import pytest
@@ -470,3 +470,88 @@ async def test_handle_assertion_result(client: AsyncClient):
         assert len(rows) == 1
         assert rows[0].assertion_type == "text_equals"
         assert rows[0].status == "pass"
+
+
+# ---------- CR-16：Agent 重连身份 / CR-24：广播空组清理 ----------
+
+
+class FailingWebSocket:
+    async def send_json(self, data: dict) -> None:
+        raise ConnectionError("socket 已断开")
+
+
+async def test_agent_disconnect_identity_protects_new_connection():
+    """CR-16：旧连接 disconnect 不得删除新连接映射。"""
+    agent_id = 424242
+    ws_old = FakeWebSocket()
+    ws_new = FakeWebSocket()
+    await agent_manager.connect(agent_id, ws_old)
+    await agent_manager.connect(agent_id, ws_new)  # 新连接替换旧连接
+    assert ws_old.closed is not None  # 旧连接被关闭
+
+    # 旧连接 handler 退出时携带旧 ws 断开 → 不应删除新连接
+    removed = await agent_manager.disconnect(agent_id, ws_old)
+    assert removed is False
+    assert agent_manager.is_online(agent_id)
+
+    # 新连接断开 → 正常移除
+    removed = await agent_manager.disconnect(agent_id, ws_new)
+    assert removed is True
+    assert not agent_manager.is_online(agent_id)
+    await agent_manager.disconnect(agent_id, ws_old)  # 幂等
+
+
+async def test_broadcast_cleans_empty_group():
+    """CR-24：广播失败移除最后一个 socket 后清理空组。"""
+    execution_id = 424243
+    await execution_manager.connect(execution_id, FailingWebSocket())
+    await execution_manager.broadcast(execution_id, {"type": "log"})
+    assert execution_id not in execution_manager._groups
+
+
+# ---------- CR-17：设备消失同步 ----------
+
+
+async def test_device_list_marks_missing_devices_offline(client: AsyncClient):
+    """CR-17：设备快照中消失的设备被标记 offline（未锁定）。"""
+    agent_id = await _create_agent()
+    async with SessionLocal() as db:
+        db.add(Device(agent_id=agent_id, name="keep", platform="android", udid="u-keep", status="idle"))
+        db.add(Device(agent_id=agent_id, name="gone", platform="android", udid="u-gone", status="idle"))
+        await db.commit()
+
+    async with SessionLocal() as db:
+        await handlers.handle_device_list(db, agent_id, {"devices": [{"udid": "u-keep"}]})
+    async with SessionLocal() as db:
+        rows = {d.udid: d for d in (await db.execute(select(Device).where(Device.agent_id == agent_id))).scalars().all()}
+        assert rows["u-keep"].status == "idle"
+        assert rows["u-gone"].status == "offline"
+
+
+async def test_device_list_keeps_locked_missing_device(client: AsyncClient):
+    """CR-17：被锁定的消失设备不置 offline（避免破坏执行中状态）。"""
+    await client.post("/api/auth/register", json=REG)
+    login = await client.post("/api/auth/login", json={"username": REG["username"], "password": REG["password"]})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    project = await client.post("/api/projects", headers=headers, json={"name": "WS锁设备项目", "visibility": "private"})
+    project_id = project.json()["id"]
+
+    agent_id = await _create_agent()
+    async with SessionLocal() as db:
+        device = Device(agent_id=agent_id, name="locked", platform="android", udid="u-locked", status="busy")
+        db.add(device)
+        await db.flush()
+        execution = Execution(project_id=project_id, type="case", status="running")
+        db.add(execution)
+        await db.flush()
+        device.locked_by_execution = execution.id
+        await db.commit()
+
+    async with SessionLocal() as db:
+        await handlers.handle_device_list(db, agent_id, {"devices": []})
+
+    async with SessionLocal() as db:
+        device = (await db.execute(select(Device).where(Device.agent_id == agent_id))).scalar_one()
+        assert device.status == "busy"
+        assert device.locked_by_execution is not None

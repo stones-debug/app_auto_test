@@ -120,8 +120,8 @@ async def create_suite_execution(
 @router.get("/executions", response_model=ExecutionPage)
 async def list_executions(
     project_id: int | None = None,
-    status_filter: str = "",
-    execution_type: str = "",
+    status: str = "",
+    type: str = "",
     pagination=Depends(get_pagination),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -131,20 +131,20 @@ async def list_executions(
     if project_id is not None:
         await get_project_permission(project_id, user, db)
         query = select(Execution).where(Execution.project_id == project_id)
-        count_query = select(func.count()).select_from(Execution).where(Execution.project_id == project_id)
     else:
         member_projects = select(ProjectMember.project_id).where(ProjectMember.user_id == user.id)
         owner_projects = select(Project.id).where(Project.owner_id == user.id)
         query = select(Execution).where(
             (Execution.project_id.in_(owner_projects)) | (Execution.project_id.in_(member_projects))
         )
-        count_query = select(func.count()).select_from(query.subquery())
 
-    if status_filter:
-        query = query.where(Execution.status == status_filter)
-    if execution_type:
-        query = query.where(Execution.type == execution_type)
+    if status:
+        query = query.where(Execution.status == status)
+    if type:
+        query = query.where(Execution.type == type)
 
+    # CR-15：count 与 items 从同一过滤后的 base query 派生
+    count_query = select(func.count()).select_from(query.subquery())
     total = await db.scalar(count_query)
     rows = (
         await db.execute(

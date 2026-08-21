@@ -126,5 +126,8 @@ async def agent_ws(websocket: WebSocket, db: AsyncSession = Depends(get_db)):
         pass
     finally:
         if current_agent_id is not None:
-            await agent_manager.disconnect(current_agent_id)
-            await mark_agent_offline(db, current_agent_id)
+            # CR-16：带连接身份断开；仅当仍是当前连接时才标记离线，
+            # 避免旧连接关闭把已重连的新连接误标为 offline
+            removed = await agent_manager.disconnect(current_agent_id, websocket)
+            if removed:
+                await mark_agent_offline(db, current_agent_id)

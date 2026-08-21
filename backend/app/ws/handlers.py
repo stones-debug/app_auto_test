@@ -116,6 +116,14 @@ async def handle_device_list(db: AsyncSession, agent_id: int, payload: dict) -> 
         else:
             device.status = item.get("status") or device.status
             device.last_heartbeat = datetime.now(UTC)
+    # CR-17：本次快照未出现且未锁定的设备标记 offline（拔出/离线）
+    reported_udids = {
+        item.get("udid") for item in payload.get("devices") or [] if item.get("udid")
+    }
+    for d in existing:
+        if d.udid not in reported_udids and d.locked_by_execution is None:
+            d.status = "offline"
+            d.last_heartbeat = datetime.now(UTC)
     await db.commit()
 
 

@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -22,6 +22,7 @@ async function load() {
       page: page.value,
       page_size: pageSize.value,
       ...(statusFilter.value ? { status: statusFilter.value } : {}),
+      ...(keyword.value ? { keyword: keyword.value } : {}),
     })
     items.value = data.items
     total.value = data.total

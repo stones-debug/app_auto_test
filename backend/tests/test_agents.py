@@ -127,3 +127,18 @@ async def test_device_not_found(client: AsyncClient):
     token = await _token(client)
     resp = await client.get("/api/devices/999999", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 404
+
+
+async def test_device_list_status_filter(client: AsyncClient):
+    """CR-15：设备列表 status 过滤生效（前端发送 status）。"""
+    token = await _token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    _agent_id, device_id = await _create_agent_device()  # idle 设备
+
+    idle = await client.get("/api/devices?status=idle", headers=headers)
+    assert idle.status_code == 200
+    assert any(d["id"] == device_id for d in idle.json()["items"])
+
+    busy = await client.get("/api/devices?status=busy", headers=headers)
+    assert busy.status_code == 200
+    assert all(d["status"] == "busy" for d in busy.json()["items"])

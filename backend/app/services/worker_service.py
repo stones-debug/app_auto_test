@@ -5,9 +5,11 @@ import secrets
 from collections.abc import Callable
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import httpx
 from sqlalchemy import delete, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -270,8 +272,29 @@ def _add_log(db: AsyncSession, execution_id: int, level: str, message: str) -> N
 
 
 async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, message: str | None = None) -> None:
+    """终态汇总（CR-10/CR-11）。
+
+    - 条件更新：只有一个调用者从非终态推进到终态；
+    - 状态归并：中断时当前 case 置 stopped/error、未执行步骤置 skipped、未执行 case 置 skipped；
+    - 报告幂等：reports.execution_id 唯一 + on_conflict_do_nothing，重复汇总不会产生多份报告。
+    """
     if message:
         _add_log(db, execution.id, "ERROR" if status_ == "error" else "INFO", message)
+    now = datetime.now(UTC)
+
+    claimed = await db.execute(
+        update(Execution)
+        .where(Execution.id == execution.id, Execution.status.notin_(TERMINAL_STATES))
+        .values(status=status_, finished_at=now)
+        .returning(Execution.id)
+    )
+    await db.flush()
+    if claimed.scalar_one_or_none() is not None:
+        execution.status = status_
+        execution.finished_at = now
+        if execution.started_at is not None:
+            execution.duration = int((now - execution.started_at).total_seconds() * 1000)
+
     cases = (
         await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == execution.id))
     ).scalars().all()
@@ -292,32 +315,44 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
             )
             if failed:
                 c.status = "failed"
-            elif steps or assertions:
+            elif status_ == "passed":
                 c.status = "passed"
+            elif steps or assertions:
+                # CR-11：已有执行痕迹但被中断 → 当前项 stopped/error
+                c.status = "stopped" if status_ in ("stopped", "cancelled") else "error"
+                c.error_message = c.error_message or f"执行被中断（{status_}）"
+                # 未执行步骤标记 skipped
+                await db.execute(
+                    update(ExecutionStep)
+                    .where(
+                        ExecutionStep.execution_case_id == c.id,
+                        ExecutionStep.status == "pending",
+                    )
+                    .values(status="skipped")
+                )
             else:
-                c.status = "passed" if status_ == "passed" else "skipped"
-    now = datetime.now(UTC)
-    execution.status = status_
-    execution.finished_at = now
-    if execution.started_at is not None:
-        execution.duration = int((now - execution.started_at).total_seconds() * 1000)
+                c.status = "skipped"
 
     total = len(cases)
     passed = sum(1 for c in cases if c.status == "passed")
     failed = sum(1 for c in cases if c.status == "failed")
     error_count = sum(1 for c in cases if c.status == "error")
     skipped = sum(1 for c in cases if c.status == "skipped")
-    db.add(
-        Report(
+    # CR-10：DECIMAL(5,2)（如 66.67）；0/0 → 0
+    rate = Decimal(str(round(passed / total * 100, 2))) if total else Decimal("0")
+    await db.execute(
+        pg_insert(Report)
+        .values(
             execution_id=execution.id,
             total=total,
             passed=passed,
             failed=failed,
             error_count=error_count,
             skipped=skipped,
-            success_rate=round(passed / total * 100, 2) if total else 0,
+            success_rate=rate,
             duration=execution.duration,
         )
+        .on_conflict_do_nothing(constraint="uq_reports_execution_id")
     )
     if execution.device_id is not None:
         await db.execute(

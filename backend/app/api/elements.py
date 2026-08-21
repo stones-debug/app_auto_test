@@ -47,6 +47,34 @@ async def list_modules(
     return rows
 
 
+async def _check_parent_valid(
+    db: AsyncSession,
+    project_id: int,
+    parent_id: int | None,
+    module_id: int | None = None,
+) -> None:
+    """CR-18：父模块必须属于同项目、未删除、非自身且不构成祖先循环。"""
+    if parent_id is None or parent_id == 0:
+        return
+    if module_id is not None and parent_id == module_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="父模块不能是自身")
+    parent = await db.get(TestModule, parent_id)
+    if parent is None or parent.deleted_at is not None or parent.project_id != project_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="父模块不存在")
+    # 沿祖先链上溯，遇 module_id 即为循环
+    seen: set[int] = {parent_id}
+    current = parent
+    while current.parent_id is not None:
+        if current.parent_id in seen:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="父模块形成循环")
+        seen.add(current.parent_id)
+        if module_id is not None and current.parent_id == module_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="父模块形成循环")
+        current = await db.get(TestModule, current.parent_id)
+        if current is None:
+            break
+
+
 @router.post("/projects/{project_id}/modules", response_model=ModuleOut, status_code=status.HTTP_201_CREATED)
 async def create_module(
     project_id: int,
@@ -54,10 +82,7 @@ async def create_module(
     project: Project = Depends(get_editable_project),
     db: AsyncSession = Depends(get_db),
 ):
-    if body.parent_id is not None:
-        parent = await db.get(TestModule, body.parent_id)
-        if parent is None or parent.deleted_at is not None or parent.project_id != project_id:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="父模块不存在")
+    await _check_parent_valid(db, project_id, body.parent_id)
     module = TestModule(
         project_id=project_id,
         name=body.name,
@@ -81,11 +106,15 @@ async def update_module(
     if module is None or module.deleted_at is not None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="模块不存在")
     await _check_editable(module.project_id, user, db)
-    if body.name is not None:
+    # CR-25：model_fields_set 区分“未提交”与“显式 null”
+    if "name" in body.model_fields_set:
         module.name = body.name
-    if body.parent_id is not None:
-        module.parent_id = body.parent_id if body.parent_id != 0 else None
-    if body.sort_order is not None:
+    if "parent_id" in body.model_fields_set:
+        new_parent = body.parent_id if body.parent_id != 0 else None
+        # CR-18：同项目、非自身、无循环
+        await _check_parent_valid(db, module.project_id, new_parent, module_id)
+        module.parent_id = new_parent
+    if "sort_order" in body.model_fields_set:
         module.sort_order = body.sort_order
     await db.commit()
     await db.refresh(module)

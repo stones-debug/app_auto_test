@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String
+from sqlalchemy import JSON, CheckConstraint, DateTime, ForeignKey, Index, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -26,6 +26,9 @@ class Device(Base, TimestampMixin):
     __table_args__ = (
         Index("idx_devices_status", "status"),
         Index("idx_devices_agent", "agent_id"),
+        # §5.2：同一 Agent 下设备 UDID 唯一（CR-17 建议的唯一键）
+        UniqueConstraint("agent_id", "udid", name="uq_devices_agent_udid"),
+        CheckConstraint("status IN ('idle', 'busy', 'offline', 'error')", name="ck_devices_status"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

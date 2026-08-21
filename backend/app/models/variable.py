@@ -1,6 +1,15 @@
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, Text, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -38,6 +47,11 @@ class Variable(Base, TimestampMixin):
 
 class RefreshToken(Base, TimestampMixin):
     __tablename__ = "refresh_tokens"
+    __table_args__ = (
+        # §5.2：token 哈希唯一（防重放/重复入库）
+        UniqueConstraint("token_hash", name="uq_refresh_tokens_token_hash"),
+        Index("idx_refresh_tokens_user", "user_id", "expires_at"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     token_hash: Mapped[str] = mapped_column(String(255), nullable=False)

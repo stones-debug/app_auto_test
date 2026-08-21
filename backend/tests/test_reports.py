@@ -1,4 +1,4 @@
-﻿import shutil
+import shutil
 import uuid
 from datetime import UTC, datetime
 
@@ -227,3 +227,47 @@ async def test_report_screenshot_resolution_is_contained():
     assert detail["cases"][0]["steps"][0]["screenshot_base64"] is None
 
     _cleanup(exec_id)
+
+
+# ---------- CR-20 / CR-15：公开项目报告可发现 + 筛选契约 ----------
+
+
+async def test_public_project_report_listable_by_viewer(client: AsyncClient):
+    """CR-20：公开项目报告在列表可见（与详情权限一致）。"""
+    token, execution_id = await _setup(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    # 改为公开项目
+    project_id = (await client.get(f"/api/executions/{execution_id}", headers=headers)).json()["project_id"]
+    await client.put(f"/api/projects/{project_id}", headers=headers, json={"visibility": "public"})
+    report_id = await _report_id(execution_id)
+
+    await client.post("/api/auth/register", json={"username": "pytest_rp_viewer", "email": "rpv@t.com", "password": "x12345678"})
+    viewer_login = await client.post("/api/auth/login", json={"username": "pytest_rp_viewer", "password": "x12345678"})
+    viewer_headers = {"Authorization": f"Bearer {viewer_login.json()['access_token']}"}
+
+    listed = await client.get("/api/reports", headers=viewer_headers)
+    assert listed.status_code == 200
+    assert any(r["id"] == report_id for r in listed.json()["items"])
+    _cleanup(execution_id)
+
+
+async def test_report_list_status_and_keyword_filters(client: AsyncClient):
+    """CR-15：报告列表支持 status 过滤与按执行 ID 搜索，total 与 items 一致。"""
+    token, execution_id = await _setup(client)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    by_status = await client.get("/api/reports?status=passed", headers=headers)
+    assert by_status.status_code == 200
+    assert by_status.json()["total"] == 1
+
+    no_match = await client.get("/api/reports?status=running", headers=headers)
+    assert no_match.json()["total"] == 0
+
+    by_keyword = await client.get(f"/api/reports?keyword={execution_id}", headers=headers)
+    assert by_keyword.status_code == 200
+    assert by_keyword.json()["total"] == 1
+    assert by_keyword.json()["items"][0]["execution_id"] == execution_id
+
+    bad_keyword = await client.get("/api/reports?keyword=abc", headers=headers)
+    assert bad_keyword.json()["total"] == 0
+    _cleanup(execution_id)

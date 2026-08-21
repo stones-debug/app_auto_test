@@ -30,7 +30,16 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = res
   }
 
-  function logout(): void {
+  async function logout(): Promise<void> {
+    // CR-14：先尽力调用后端撤销 refresh token，再清本地状态
+    const refresh = localStorage.getItem('refresh_token')
+    if (refresh) {
+      try {
+        await request.post('/auth/logout', { refresh_token: refresh })
+      } catch {
+        // 撤销失败不阻塞登出
+      }
+    }
     clearTokens()
     token.value = null
     user.value = null

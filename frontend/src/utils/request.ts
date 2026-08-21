@@ -1,4 +1,4 @@
-import axios, { type AxiosError, type AxiosRequestConfig } from 'axios'
+import axios, { type AxiosError, type AxiosRequestConfig, type InternalAxiosRequestConfig } from 'axios'
 
 const TOKEN_KEY = 'access_token'
 const REFRESH_KEY = 'refresh_token'
@@ -30,10 +30,45 @@ instance.interceptors.request.use((config) => {
   return config
 })
 
+// CR-14：单飞 refresh 队列——并发 401 只触发一次刷新，成功后重放原请求并保存新 refresh
+let refreshPromise: Promise<boolean> | null = null
+
+export async function refreshToken(): Promise<boolean> {
+  if (refreshPromise) return refreshPromise
+  refreshPromise = (async () => {
+    const refresh = localStorage.getItem(REFRESH_KEY)
+    if (!refresh) return false
+    try {
+      const res = await axios.post<{ access_token: string; refresh_token: string }>('/api/auth/refresh', {
+        refresh_token: refresh,
+      })
+      setTokens(res.data.access_token, res.data.refresh_token)
+      return true
+    } catch {
+      clearTokens()
+      return false
+    } finally {
+      refreshPromise = null
+    }
+  })()
+  return refreshPromise
+}
+
 instance.interceptors.response.use(
   (response) => response.data,
   async (error: AxiosError) => {
-    if (error.response?.status === 401 && !error.config?.url?.includes('/auth/')) {
+    const config = error.config as (InternalAxiosRequestConfig & { _retried?: boolean }) | undefined
+    const isAuthUrl = config?.url?.includes('/auth/') ?? false
+    if (error.response?.status === 401 && config && !isAuthUrl && !config._retried) {
+      config._retried = true
+      const ok = await refreshToken()
+      if (ok) {
+        config.headers = config.headers ?? {}
+        config.headers.Authorization = `Bearer ${getToken()}`
+        return instance.request(config)
+      }
+    }
+    if (error.response?.status === 401 && !isAuthUrl) {
       clearTokens()
       window.location.href = '/login'
     }
@@ -63,21 +98,6 @@ const request: RequestInstance = {
     _put(url, data, config) as unknown as Promise<T>,
   delete: <T>(url: string, config?: AxiosRequestConfig) =>
     _delete(url, config) as unknown as Promise<T>,
-}
-
-export async function refreshToken(): Promise<boolean> {
-  const refresh = localStorage.getItem(REFRESH_KEY)
-  if (!refresh) return false
-  try {
-    const res = await axios.post<{ access_token: string }>('/api/auth/refresh', {
-      refresh_token: refresh,
-    })
-    localStorage.setItem(TOKEN_KEY, res.data.access_token)
-    return true
-  } catch {
-    clearTokens()
-    return false
-  }
 }
 
 export default request

@@ -16,8 +16,15 @@ class AgentConnectionManager:
                 pass
         self._sockets[agent_id] = ws
 
-    async def disconnect(self, agent_id: int) -> None:
+    async def disconnect(self, agent_id: int, ws: WebSocket | None = None) -> bool:
+        """CR-16：仅当当前映射仍为该连接时才删除；返回是否真的移除。"""
+        current = self._sockets.get(agent_id)
+        if current is None:
+            return False
+        if ws is not None and current is not ws:
+            return False
         self._sockets.pop(agent_id, None)
+        return True
 
     def is_online(self, agent_id: int) -> bool:
         return agent_id in self._sockets
@@ -63,7 +70,8 @@ class ExecutionConnectionManager:
                 await ws.send_json(message)
             except Exception:
                 group.discard(ws)
-        if group and not group:
+        # CR-24：发送失败移除最后一个 socket 后清理空组（原条件恒为 false）
+        if not group:
             self._groups.pop(execution_id, None)
 
 
