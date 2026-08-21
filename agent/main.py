@@ -1,13 +1,18 @@
 import argparse
 import asyncio
+import json
 import logging
 import tempfile
-import uuid
 from pathlib import Path
 
 import yaml
 
+from appium_lifecycle import AppiumServer
+from binding import BindingManager
+from credentials import CredentialStore
+from devices.registry import DeviceRegistry
 from executor import StopRequested, TestRunner, create_driver
+from state import load_or_create_install_id
 from uploader import Uploader
 from ws_client import AgentWSClient, AuthError
 
@@ -24,27 +29,14 @@ def http_base_url(ws_url: str) -> str:
     return ws_url.replace("ws://", "http://", 1).replace("wss://", "https://", 1).split("/")[0]
 
 
-def discover_devices(config: dict) -> list[dict]:
-    if config.get("driver") != "appium":
-        return config.get("mock_devices") or []
-    devices: list[dict] = []
-    try:
-        import subprocess
-
-        out = subprocess.run(["adb", "devices"], capture_output=True, text=True, timeout=10).stdout
-        for line in out.splitlines()[1:]:
-            parts = line.split()
-            if len(parts) == 2 and parts[1] == "device":
-                devices.append(
-                    {"udid": parts[0], "name": parts[0], "platform": "android", "device_type": "real"}
-                )
-    except Exception as exc:
-        logger.warning("ADB 不可用，设备列表为空: %s", exc)
-    return devices
-
-
 class AgentApp:
-    def __init__(self, config: dict) -> None:
+    def __init__(
+        self,
+        config: dict,
+        registry: DeviceRegistry | None = None,
+        bindings: BindingManager | None = None,
+        appium: AppiumServer | None = None,
+    ) -> None:
         self.config = config
         self.client: AgentWSClient | None = None
         self.uploader: Uploader | None = None
@@ -52,6 +44,48 @@ class AgentApp:
         self.executions: dict[int, asyncio.Task] = {}
         self.cancel_events: dict[int, asyncio.Event] = {}
         self.drivers: dict[int, object] = {}
+        # Windows 方案 §4.1：设备注册表 / Appium 生命周期
+        self.registry = registry or DeviceRegistry(
+            poll_interval=float(config.get("registry_poll_interval", 3.0)),
+            full_interval=float(config.get("registry_full_interval", 30.0)),
+        )
+        self.bindings = bindings
+        self.appium = appium or AppiumServer(
+            host=config.get("appium_host", "127.0.0.1"),
+            port=int(config.get("appium_port", 4723)),
+            appium_bin=config.get("appium_bin"),
+            node_bin=config.get("node_bin"),
+            appium_js=config.get("appium_js"),
+            command=config.get("appium_command"),
+            log_dir=Path(config.get("log_dir", tempfile.gettempdir())) / "appium",
+            ready_timeout=float(config.get("appium_ready_timeout", 60)),
+        )
+        self._appium_refs = 0
+
+    # ---------- Windows 方案 §4.1：设备上报与 Appium 生命周期 ----------
+
+    async def start_device_reporting(self, _reply: dict | None = None) -> None:
+        """注册成功后启动设备注册表轮询（3s 变更即报 / 30s 全量）。"""
+        await self.registry.start(self.send_device_list)
+
+    async def stop_device_reporting(self) -> None:
+        await self.registry.stop()
+
+    async def _ensure_appium(self) -> None:
+        """需要执行时隐藏启动 Appium（引用计数，并发执行复用）。"""
+        if self._appium_refs == 0:
+            await asyncio.to_thread(self.appium.start)
+        self._appium_refs += 1
+        try:
+            await self.appium.wait_ready()
+        except Exception:
+            self._appium_refs = max(0, self._appium_refs - 1)
+            raise
+
+    async def _release_appium(self) -> None:
+        self._appium_refs = max(0, self._appium_refs - 1)
+        if self._appium_refs == 0:
+            await asyncio.to_thread(self.appium.stop)
 
     async def _run_execution(self, message: dict) -> None:
         execution_id = message["execution_id"]
@@ -60,6 +94,9 @@ class AgentApp:
         cases = message.get("cases") or []
         cancel_event = self.cancel_events[execution_id]
         mode = self.config.get("driver", "mock")
+        if mode == "appium":
+            # Windows 方案 §4.1：Appium 按需隐藏启动，执行结束后清理
+            await self._ensure_appium()
         # CR-08：用配置的 host/port/capabilities + Worker 下发的设备信息构造驱动
         driver = create_driver(mode, config=self.config, device=message.get("device"))
         self.drivers[execution_id] = driver
@@ -128,10 +165,13 @@ class AgentApp:
                 # Windows 方案 §2：Appium 清理可能阻塞，进入工作线程
                 await asyncio.to_thread(driver.quit)
                 self.drivers.pop(execution_id, None)
+                if mode == "appium":
+                    await self._release_appium()
 
     async def send_device_list(self, _reply: dict | None = None) -> None:
-        # Windows 方案 §2：ADB 扫描是阻塞命令，统一进入工作线程，不卡事件循环
-        devices = await asyncio.to_thread(discover_devices, self.config)
+        if self.client is None:
+            return
+        devices = self.registry.current()
         await self.client.send({"type": "device_list", "devices": devices})
         logger.info("已上报 %s 台设备", len(devices))
 
@@ -172,9 +212,16 @@ class AgentApp:
             logger.debug("忽略消息: %s", msg_type)
 
 
+async def run_bind(bindings: BindingManager, user_key: str) -> None:
+    result = await bindings.bind(user_key)
+    print(json.dumps({"status": "ok", "agent_id": result.get("agent_id"), "user_id": result.get("user_id")}, ensure_ascii=False))
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="APP 自动化测试平台 Device Agent")
     parser.add_argument("--config", default="config.yaml", help="配置文件路径")
+    parser.add_argument("--bind", metavar="USER_KEY", help="绑定用户 Key 后退出（无头绑定）")
+    parser.add_argument("--state-dir", help="状态目录覆盖（测试用）")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -183,21 +230,36 @@ async def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    app = AgentApp(config)
+    state = Path(args.state_dir) if args.state_dir else None
+    install_id = load_or_create_install_id(state)
+    creds = CredentialStore(path=(state / "credentials") if state else None)
+    base_url = http_base_url(config["server"])
+    bindings = BindingManager(base_url, install_id, creds)
+
+    if args.bind:
+        await run_bind(bindings, args.bind)
+        return
+
+    app = AgentApp(config, bindings=bindings)
+    # Windows 方案 §3.2：优先使用绑定产生的机器 PSK；兼容旧配置 agent_key
+    agent_key = config.get("agent_key") or bindings.machine_psk() or ""
     client = AgentWSClient(
         url=config["server"],
-        agent_key=config["agent_key"],
-        agent_id=config.get("agent_id") or f"agent-{uuid.uuid4().hex[:8]}",
+        agent_key=agent_key,
+        agent_id=config.get("agent_id") or install_id,
         heartbeat_interval=config.get("heartbeat_interval", 30),
     )
     app.client = client
     app.uploader = Uploader(
-        base_url=http_base_url(config["server"]),
-        agent_key=config["agent_key"],
-        agent_id=config.get("agent_id") or "",
+        base_url=base_url,
+        agent_key=agent_key,
+        agent_id=config.get("agent_id") or install_id,
     )
     client.on_message = app.on_message
-    client.on_registered = app.send_device_list
+    client.on_registered = app.start_device_reporting
+
+    if not agent_key:
+        logger.error("未配置 agent_key 且本机无机器 PSK，无法注册；请先执行 --bind <用户Key> 或配置 agent_key")
 
     try:
         await client.run_forever()
@@ -206,6 +268,9 @@ async def main() -> None:
     except KeyboardInterrupt:
         logger.info("收到 Ctrl+C，退出")
     finally:
+        await app.stop_device_reporting()
+        if app.appium.running:
+            await asyncio.to_thread(app.appium.stop)
         await client.close()
 
 
