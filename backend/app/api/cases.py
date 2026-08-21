@@ -55,6 +55,22 @@ async def _check_elements_belong(
         )
 
 
+async def _check_orders_unique(steps: list | None, assertions: list | None) -> None:
+    """Step 4：step order 与 assertion order 不得重复（快照用 JSON 列，无 DB 唯一约束）。"""
+    step_orders = [int(s["order"]) for s in (steps or []) if isinstance(s, dict) and "order" in s]
+    if len(step_orders) != len(set(step_orders)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="步骤 order 不得重复"
+        )
+    assertion_orders = [
+        int(a["order"]) for a in (assertions or []) if isinstance(a, dict) and "order" in a
+    ]
+    if len(assertion_orders) != len(set(assertion_orders)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="断言 order 不得重复"
+        )
+
+
 @router.get("/projects/{project_id}/cases", response_model=CasePage)
 async def list_cases(
     project_id: int,
@@ -140,6 +156,7 @@ async def create_case(
 ):
     await _check_module_belongs(project_id, body.module_id, db)
     await _check_elements_belong(project_id, body.steps, body.assertions, db)
+    await _check_orders_unique(body.steps, body.assertions)
     case = TestCase(
         project_id=project_id,
         module_id=body.module_id,
@@ -183,6 +200,7 @@ async def update_case(
     await _check_module_belongs(case.project_id, body.module_id, db)
     if body.steps is not None or body.assertions is not None:
         await _check_elements_belong(case.project_id, body.steps, body.assertions, db)
+    await _check_orders_unique(body.steps, body.assertions)
     for field in ("name", "module_id", "description", "status", "steps", "assertions", "variables"):
         # CR-25：model_fields_set 区分“未提交”与“显式 null”，支持清空可选字段
         if field in body.model_fields_set:

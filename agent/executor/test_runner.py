@@ -153,7 +153,8 @@ class TestRunner:
             )
             if result.get("status") == "failed":
                 case_status = "failed"
-                if not (step.get("params") or {}).get("continue_on_failure"):
+                # Step 4：continue_on_failure 是 Step 顶层字段，不从 params 读取
+                if not step.get("continue_on_failure", False):
                     break
 
         assertion_results: list[dict] = []

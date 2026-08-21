@@ -130,6 +130,127 @@ async def test_runner_stop_requested():
         await _run_and_capture(case, should_stop=lambda: True)
 
 
+# ---------- Step 4：continue_on_failure 顶层契约 ----------
+
+
+async def test_runner_continue_on_failure_true_keeps_going():
+    """失败后继续=true：失败步骤后仍执行下一步（整体仍为 failed）。"""
+    case = _make_case(
+        steps=[
+            {"order": 1, "action": "no_such_action", "params": {}},
+            {"order": 2, "action": "input", "element_id": 1, "params": {"value": "admin"}},
+        ],
+    )
+    case["steps_snapshot"][0]["continue_on_failure"] = True
+    status, sent = await _run_and_capture(case)
+    assert status == "failed"
+    step_msgs = [m for m in sent if m["type"] == "step_result"]
+    assert len(step_msgs) == 2  # 失败后继续执行第二步
+
+
+async def test_runner_continue_on_failure_false_stops():
+    """失败后继续=false（默认）：失败步骤后停止，不再执行后续步骤。"""
+    case = _make_case(
+        steps=[
+            {"order": 1, "action": "no_such_action", "params": {}},
+            {"order": 2, "action": "input", "element_id": 1, "params": {"value": "admin"}},
+        ],
+    )
+    status, sent = await _run_and_capture(case)
+    assert status == "failed"
+    step_msgs = [m for m in sent if m["type"] == "step_result"]
+    assert len(step_msgs) == 1
+
+
+async def test_runner_continue_on_failure_not_read_from_params():
+    """continue_on_failure 只从 Step 顶层读取，params 里的遗留值不生效。"""
+    case = _make_case(
+        steps=[
+            {"order": 1, "action": "no_such_action", "params": {"continue_on_failure": True}},
+            {"order": 2, "action": "input", "element_id": 1, "params": {"value": "admin"}},
+        ],
+    )
+    status, sent = await _run_and_capture(case)
+    assert status == "failed"
+    step_msgs = [m for m in sent if m["type"] == "step_result"]
+    assert len(step_msgs) == 1  # params 中的遗留字段不生效，仍停止
+
+
+# ---------- Step 4：click 等待秒数契约 ----------
+
+
+class RecordingDriver(MockDriver):
+    """记录 find_element 收到的 wait_timeout。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.wait_timeouts: list[int | None | float] = []
+
+    def find_element(self, locator_type: str, locator_value: str, wait_timeout: int | None = None):
+        self.wait_timeouts.append(wait_timeout)
+        return super().find_element(locator_type, locator_value, wait_timeout)
+
+
+async def test_click_passes_wait_timeout_to_driver():
+    from executor.actions import ClickAction
+
+    driver = RecordingDriver()
+    context = ExecutionContext(driver, _make_case([]))
+    result = await ClickAction().execute(driver, context, {"element_id": 2, "wait_timeout": 5})
+    assert result["status"] == "passed"
+    assert driver.wait_timeouts == [5]
+
+
+async def test_click_default_wait_timeout_none_means_default():
+    from executor.actions import ClickAction
+
+    driver = RecordingDriver()
+    context = ExecutionContext(driver, _make_case([]))
+    await ClickAction().execute(driver, context, {"element_id": 2})
+    assert driver.wait_timeouts == [None]  # None → AppiumDriver 侧用默认 10
+
+
+async def test_appium_find_element_timeout_raises_element_not_found(monkeypatch):
+    from selenium.common.exceptions import TimeoutException
+
+    from executor import ElementNotFound
+    from executor.appium_driver import AppiumDriver
+
+    class MissingSession:
+        def find_element(self, by, value):
+            raise TimeoutException(f"no element {value}")
+
+    driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
+    driver.driver = MissingSession()
+    with pytest.raises(ElementNotFound, match="元素等待超时: id=login_btn \\(3s\\)"):
+        driver.find_element("id", "login_btn", wait_timeout=3)
+
+
+async def test_appium_find_element_zero_timeout_no_wait(monkeypatch):
+    from executor.appium_driver import AppiumDriver
+
+    class NullSession:
+        def find_element(self, by, value):
+            return f"element:{value}"
+
+    driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
+    driver.driver = NullSession()
+    assert driver.find_element("id", "zero_wait", wait_timeout=0) == "element:zero_wait"
+
+
+async def test_appium_find_element_wait_success(monkeypatch):
+    from executor.appium_driver import AppiumDriver
+
+    class ReadySession:
+        def find_element(self, by, value):
+            return f"element:{value}"
+
+    driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
+    driver.driver = ReadySession()
+    found = driver.find_element("id", "soon", wait_timeout=5)
+    assert found == "element:soon"
+
+
 async def test_regex_match_assertion():
     from executor.assertions import RegexMatchAssertion
 

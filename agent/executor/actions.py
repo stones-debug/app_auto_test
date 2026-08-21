@@ -40,7 +40,8 @@ class CloseAppAction(BaseAction):
 @register_action("click")
 class ClickAction(BaseAction):
     async def execute(self, driver, context, params: dict) -> dict:
-        element = context.find_element(params.get("element_id"))
+        wait_timeout = params.get("wait_timeout")
+        element = context.find_element(params.get("element_id"), wait_timeout=wait_timeout)
         driver.click(element)
         return {"status": "passed"}
 

@@ -7,7 +7,8 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class ParamsBase(BaseModel):
-    model_config = {"extra": "ignore"}
+    # 严格校验：新写入请求遇未知参数返回 422；旧数据库 JSON 仍可作原始 dict 读取
+    model_config = {"extra": "forbid"}
 
 
 class LaunchAppParams(ParamsBase):
@@ -21,7 +22,8 @@ class CloseAppParams(ParamsBase):
 
 
 class ClickParams(ParamsBase):
-    wait_timeout: int | None = Field(default=None, ge=0)
+    # 等待秒数 0..300；0 表示立即查找（不等待）
+    wait_timeout: int = Field(default=10, ge=0, le=300)
 
 
 class InputParams(ParamsBase):

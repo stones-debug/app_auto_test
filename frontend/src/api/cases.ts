@@ -7,6 +7,8 @@ export interface Step {
   element_id?: number | null
   params?: Record<string, unknown>
   description?: string
+  // Step 4：失败后继续为 Step 顶层字段（不入 params）
+  continue_on_failure: boolean
 }
 
 export interface Assertion {
@@ -53,6 +55,8 @@ export interface ParamField {
   default?: string | number | boolean
   placeholder?: string
   required?: boolean
+  min?: number
+  max?: number
 }
 
 export interface ActionMeta {
@@ -79,7 +83,7 @@ export const ACTIONS: ActionMeta[] = [
     { key: 'package', label: '包名', type: 'text', placeholder: 'com.example.app' },
   ] },
   { value: 'click', label: '点击元素', needsElement: true, fields: [
-    { key: 'wait_timeout', label: '等待秒数', type: 'number', default: 10 },
+    { key: 'wait_timeout', label: '等待秒数', type: 'number', default: 10, min: 0, max: 300 },
   ] },
   { value: 'input', label: '输入文本', needsElement: true, fields: [
     { key: 'value', label: '文本', type: 'text', required: true, placeholder: '如 ${username}' },
@@ -160,6 +164,14 @@ export function defaultParams(fields: ParamField[]): Record<string, unknown> {
     if (f.default !== undefined) params[f.key] = f.default
   }
   return params
+}
+
+// Step 4：continue_on_failure 是 Step 顶层字段；加载旧数据/历史 params 时归一化，
+// 并把历史遗留塞入 params 的同名字段剔除
+export function normalizeStep(step: Step): Step {
+  const { continue_on_failure: legacy, ...params } = (step.params ?? {}) as Record<string, unknown>
+  void legacy
+  return { ...step, params, continue_on_failure: step.continue_on_failure ?? false }
 }
 
 export function listCases(

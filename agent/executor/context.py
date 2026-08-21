@@ -37,14 +37,14 @@ class ExecutionContext:
 
         return _VAR_RE.sub(repl, text)
 
-    def find_element(self, element_id):
+    def find_element(self, element_id, wait_timeout: float | None = None):
         key = str(element_id)
         data = self.elements_snapshot.get(key)
         if data is None:
             raise ElementNotFound(f"元素快照缺失: element_id={element_id}")
         locator_type = data.get("locator_type") or "id"
         locator_value = self.render(data.get("locator_value") or "")
-        return self.driver.find_element(locator_type, locator_value)
+        return self.driver.find_element(locator_type, locator_value, wait_timeout=wait_timeout)
 
     def save_screenshot(self, filename: str = "screenshot.png") -> str:
         # 忽略用户提供的文件名，使用服务端安全文件名，避免任意路径写入（CR-13）

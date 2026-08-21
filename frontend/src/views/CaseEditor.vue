@@ -13,6 +13,7 @@ import {
   createCase,
   defaultParams,
   getCase,
+  normalizeStep,
   updateCase,
   type Assertion,
   type Step,
@@ -76,6 +77,7 @@ function addStep() {
     params: defaultParams(actionMeta('click').fields),
     element_id: null,
     description: '',
+    continue_on_failure: false,
   })
 }
 
@@ -145,7 +147,7 @@ async function save() {
       module_id: form.module_id,
       description: form.description,
       status: form.status,
-      steps: form.steps as Step[],
+      steps: (form.steps as Step[]).map(normalizeStep),
       assertions: form.assertions as Assertion[],
       variables: collectVariables(),
     }
@@ -173,7 +175,8 @@ onMounted(async () => {
     form.module_id = data.module_id
     form.description = data.description ?? ''
     form.status = data.status
-    form.steps = data.steps.map((s) => ({ ...s, params: s.params ?? {} }))
+    // Step 4：加载旧数据时归一化 continue_on_failure，且清理历史留在 params 里的字段
+    form.steps = data.steps.map(normalizeStep)
     form.assertions = data.assertions.map((a) => ({ ...a, params: a.params ?? {} }))
     form.variables = data.variables
     variableEntries.value = Object.entries(data.variables).map(([key, value]) => ({
@@ -227,6 +230,8 @@ onMounted(async () => {
               >
                 <el-option v-for="a in ACTIONS" :key="a.value" :label="a.label" :value="a.value" />
               </el-select>
+              <span class="continue-label">失败后继续</span>
+              <el-switch v-model="element.continue_on_failure" size="small" />
               <el-button type="danger" text size="small" @click="removeStep(index)">删除</el-button>
             </div>
             <div class="step-body">
@@ -248,6 +253,8 @@ onMounted(async () => {
                   v-else
                   v-model="element.params![f.key]"
                   :type="f.type === 'number' ? 'number' : 'text'"
+                  :min="f.min"
+                  :max="f.max"
                   :placeholder="f.placeholder"
                   class="w-200"
                 />
@@ -414,6 +421,11 @@ onMounted(async () => {
 .action-select {
   flex: 1;
   max-width: 220px;
+}
+.continue-label {
+  color: #888;
+  font-size: 13px;
+  flex-shrink: 0;
 }
 .step-body {
   margin-top: 8px;

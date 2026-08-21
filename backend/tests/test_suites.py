@@ -41,7 +41,7 @@ async def test_suite_crud(client: AsyncClient):
 
     listing = await client.get(f"/api/projects/{project_id}/suites", headers=headers)
     assert listing.status_code == 200
-    assert any(s["id"] == suite_id for s in listing.json())
+    assert any(s["id"] == suite_id for s in listing.json()["items"])
 
     # 添加用例
     for case_id in case_ids:

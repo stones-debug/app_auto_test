@@ -87,12 +87,34 @@ class AppiumDriver(BaseDriver):
             except Exception as exc:
                 logger.warning("terminate_app 失败: %s", exc)
 
-    def find_element(self, locator_type: str, locator_value: str, wait_timeout: int = 10):
+    def find_element(self, locator_type: str, locator_value: str, wait_timeout: int | None = None):
+        """按 wait_timeout 等待元素。
+
+        - None → 默认 10 秒；
+        - 0 → 立即查找（driver.find_element 一次）；
+        - >0 → Selenium WebDriverWait 轮询；超时统一转 ElementNotFound。
+        """
         from appium.webdriver.common.appiumby import AppiumBy
+        from selenium.common.exceptions import TimeoutException
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.webdriver.support.ui import WebDriverWait
+
+        from .driver import ElementNotFound
 
         self._ensure()
-        by = getattr(AppiumBy, locator_type.upper(), None) or locator_type.upper()
-        return self.driver.find_element(by, locator_value)
+        by = getattr(AppiumBy, locator_type.upper(), None) or By.XPATH
+        timeout = wait_timeout if wait_timeout is not None else 10
+        if timeout <= 0:
+            return self.driver.find_element(by, locator_value)
+        try:
+            return WebDriverWait(self.driver, timeout).until(
+                EC.presence_of_element_located((by, locator_value))
+            )
+        except TimeoutException:
+            raise ElementNotFound(
+                f"元素等待超时: {locator_type}={locator_value} ({timeout}s)"
+            ) from None
 
     def click(self, element) -> None:
         self._ensure()

@@ -292,3 +292,132 @@ async def test_case_list_extended_fields(client: AsyncClient):
     item2 = next(i for i in listed2["items"] if i["id"] == case_id)
     assert item2["last_execution_status"] == "passed"
     assert item2["last_execution_at"] is not None
+
+
+# ---------- Step 4：continue_on_failure 顶层契约 + 严格 params ----------
+
+
+async def test_continue_on_failure_preserved_through_crud(client: AsyncClient):
+    """Step 4：continue_on_failure 是 Step 顶层字段，保存/更新/克隆后不丢失、不进入 params。"""
+    headers, project_id = await _setup(client)
+    element_id = await _create_element(client, headers, project_id)
+
+    created = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "继续执行用例",
+            "steps": [
+                {"order": 1, "action": "click", "element_id": element_id, "continue_on_failure": True, "params": {"wait_timeout": 5}},
+                {"order": 2, "action": "back", "continue_on_failure": False, "params": {}},
+            ],
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201
+    saved_steps = created.json()["steps"]
+    assert saved_steps[0]["continue_on_failure"] is True
+    assert saved_steps[1]["continue_on_failure"] is False
+    assert "continue_on_failure" not in saved_steps[0]["params"]
+    case_id = created.json()["id"]
+
+    # 更新后保留
+    updated = await client.put(
+        f"/api/cases/{case_id}",
+        json={
+            "steps": [
+                {"order": 1, "action": "click", "element_id": element_id, "continue_on_failure": True, "params": {"wait_timeout": 12}},
+            ]
+        },
+        headers=headers,
+    )
+    assert updated.status_code == 200
+    assert updated.json()["steps"][0]["continue_on_failure"] is True
+    assert updated.json()["steps"][0]["params"]["wait_timeout"] == 12
+
+    # 克隆后保留
+    cloned = await client.post(f"/api/cases/{case_id}/clone", headers=headers)
+    assert cloned.status_code == 201
+    assert cloned.json()["steps"][0]["continue_on_failure"] is True
+
+
+async def test_unknown_params_rejected_422(client: AsyncClient):
+    """Step 4：params 未知参数返回 422（extra=forbid），动作与断言一致。"""
+    headers, project_id = await _setup(client)
+    resp = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "未知参数用例",
+            "steps": [{"order": 1, "action": "click", "params": {"typo_field": 1}}],
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 422
+
+    resp2 = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "未知断言参数用例",
+            "assertions": [{"order": 1, "type": "text_equals", "params": {"expected": "x", "typo_field": 1}}],
+        },
+        headers=headers,
+    )
+    assert resp2.status_code == 422
+
+
+async def test_wait_timeout_range_enforced(client: AsyncClient):
+    """Step 4：click wait_timeout 范围 0..300（默认 10）。"""
+    headers, project_id = await _setup(client)
+    ok = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={"name": "等待0秒", "steps": [{"order": 1, "action": "click", "params": {"wait_timeout": 0}}]},
+        headers=headers,
+    )
+    assert ok.status_code == 201
+    assert ok.json()["steps"][0]["params"]["wait_timeout"] == 0
+
+    over = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={"name": "等待超限", "steps": [{"order": 1, "action": "click", "params": {"wait_timeout": 301}}]},
+        headers=headers,
+    )
+    assert over.status_code == 422
+
+    defaulted = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={"name": "默认等待", "steps": [{"order": 1, "action": "click", "params": {}}]},
+        headers=headers,
+    )
+    assert defaulted.status_code == 201
+    assert defaulted.json()["steps"][0]["params"]["wait_timeout"] == 10
+
+
+async def test_duplicate_orders_rejected(client: AsyncClient):
+    """Step 4：step order 与 assertion order 不得重复。"""
+    headers, project_id = await _setup(client)
+    resp = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "重复步骤序用例",
+            "steps": [
+                {"order": 1, "action": "back", "params": {}},
+                {"order": 1, "action": "back", "params": {}},
+            ],
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 400
+    assert "order 不得重复" in resp.json()["detail"]
+
+    resp2 = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "重复断言序用例",
+            "assertions": [
+                {"order": 2, "type": "text_equals", "params": {"expected": "a"}},
+                {"order": 2, "type": "text_equals", "params": {"expected": "b"}},
+            ],
+        },
+        headers=headers,
+    )
+    assert resp2.status_code == 400
+    assert "order 不得重复" in resp2.json()["detail"]

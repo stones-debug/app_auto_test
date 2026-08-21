@@ -251,7 +251,15 @@ async def test_list_get_logs_stop_retry(client: AsyncClient):
     again = await client.post(f"/api/executions/{execution_id}/stop", headers=headers)
     assert again.status_code == 409
 
-    retried = await client.post(f"/api/executions/{execution_id}/retry", headers=headers)
+    # RQ-03/Step 5：retry 必须携带 body（{device_id, timeout_seconds?}），否则 400
+    missing = await client.post(f"/api/executions/{execution_id}/retry", headers=headers)
+    assert missing.status_code == 400
+
+    retried = await client.post(
+        f"/api/executions/{execution_id}/retry",
+        headers=headers,
+        json={"device_id": device_id},
+    )
     assert retried.status_code == 201
     assert retried.json()["retry_of"] == execution_id
     assert retried.json()["status"] == "queued"
