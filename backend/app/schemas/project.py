@@ -37,14 +37,23 @@ class ProjectMemberCreate(BaseModel):
     role: str = Field(default="member", pattern="^(admin|member|viewer)$")
 
 
+class ProjectMemberUpdate(BaseModel):
+    role: str = Field(pattern="^(admin|member|viewer)$")
+
+
 class ProjectMemberOut(BaseModel):
-    id: int
-    project_id: int
+    membership_id: int | None = None  # owner 为虚拟行时为 None
     user_id: int
-    role: str
     username: str | None = None
+    role: str
 
     model_config = {"from_attributes": True}
+
+
+class UserCandidateOut(BaseModel):
+    id: int
+    username: str
+    email: str
 
 
 class PageResult(BaseModel):

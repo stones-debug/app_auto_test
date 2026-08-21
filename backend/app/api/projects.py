@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,14 +10,17 @@ from app.api.deps import (
     require_project_role,
 )
 from app.core.database import get_db
+from app.core.errors import api_error
 from app.models import Project, ProjectMember, TestCase, TestElement, TestSuite, User
 from app.schemas.project import (
     PageResult,
     ProjectCreate,
     ProjectMemberCreate,
     ProjectMemberOut,
+    ProjectMemberUpdate,
     ProjectOut,
     ProjectUpdate,
+    UserCandidateOut,
 )
 from app.utils.pagination import get_pagination, paginate
 
@@ -184,31 +187,69 @@ async def delete_project(
 @router.get("/{project_id}/members", response_model=list[ProjectMemberOut])
 async def list_members(
     project_id: int,
-    _perm: tuple[Project, str | None] = Depends(require_project_role("owner", "admin", "member")),
+    perm: tuple[Project, str | None] = Depends(get_project_permission),
     db: AsyncSession = Depends(get_db),
 ):
+    project, _role = perm
+    # owner 虚拟行（owner 不在 project_members 表中）
+    owner = await db.get(User, project.owner_id)
+    items: list[ProjectMemberOut] = []
+    if owner is not None:
+        items.append(
+            ProjectMemberOut(membership_id=None, user_id=owner.id, username=owner.username, role="owner")
+        )
     rows = await db.execute(
         select(ProjectMember, User.username)
         .join(User, User.id == ProjectMember.user_id)
         .where(ProjectMember.project_id == project_id)
+        .order_by(ProjectMember.id)
     )
-    members = []
     for member, username in rows.all():
-        out = ProjectMemberOut.model_validate(member)
-        out.username = username
-        members.append(out)
-    return members
+        out = ProjectMemberOut(
+            membership_id=member.id,
+            user_id=member.user_id,
+            username=username,
+            role=member.role,
+        )
+        items.append(out)
+    return items
+
+
+@router.get("/{project_id}/member-candidates", response_model=list[UserCandidateOut])
+async def member_candidates(
+    project_id: int,
+    keyword: str = "",
+    limit: int = Query(10, ge=1, le=20),
+    perm: tuple[Project, str | None] = Depends(require_project_role("owner", "admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """候选用户：排除 owner 与已有成员，按用户名/邮箱模糊搜索。"""
+    project, _role = perm
+    existing_ids = select(ProjectMember.user_id).where(ProjectMember.project_id == project_id)
+    cond = (User.id != project.owner_id) & (User.id.not_in(existing_ids)) & (User.status == "active")
+    if keyword:
+        like = f"%{keyword}%"
+        cond = cond & ((User.username.ilike(like)) | (User.email.ilike(like)))
+    rows = (
+        await db.execute(
+            select(User).where(cond).order_by(User.username).limit(limit)
+        )
+    ).scalars().all()
+    return [UserCandidateOut(id=u.id, username=u.username, email=u.email) for u in rows]
 
 
 @router.post("/{project_id}/members", response_model=ProjectMemberOut, status_code=status.HTTP_201_CREATED)
 async def add_member(
     project_id: int,
     body: ProjectMemberCreate,
-    _project: Project = Depends(require_project_role("owner", "admin")),
+    perm: tuple[Project, str | None] = Depends(require_project_role("owner", "admin")),
     db: AsyncSession = Depends(get_db),
 ):
+    project, _role = perm
+    if body.user_id == project.owner_id:
+        raise api_error(409, "PROJECT_OWNER_IMMUTABLE", "项目 owner 不可添加为成员")
     target = await db.get(User, body.user_id)
-    if target is None:
+    if target is None or target.status != "active":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
     existing = await db.execute(
         select(ProjectMember).where(
@@ -217,12 +258,87 @@ async def add_member(
         )
     )
     if existing.scalar_one_or_none():
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该用户已是项目成员")
+        raise api_error(409, "MEMBER_ALREADY_EXISTS", "该用户已是项目成员")
 
     member = ProjectMember(project_id=project_id, user_id=body.user_id, role=body.role)
     db.add(member)
     await db.commit()
     await db.refresh(member)
-    out = ProjectMemberOut.model_validate(member)
-    out.username = target.username
-    return out
+    return ProjectMemberOut(
+        membership_id=member.id,
+        user_id=member.user_id,
+        username=target.username,
+        role=member.role,
+    )
+
+
+@router.patch("/{project_id}/members/{user_id}", response_model=ProjectMemberOut)
+async def update_member(
+    project_id: int,
+    user_id: int,
+    body: ProjectMemberUpdate,
+    perm: tuple[Project, str | None] = Depends(require_project_role("owner", "admin")),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """修改成员角色。
+
+    - admin 只能管理 member/viewer（不能给 user 授予 admin/owner，不能改 admin）；
+    - admin 不得修改自己；owner 可管理所有成员（除 owner 自身虚拟行）。
+    """
+    project, caller_role = perm
+    if user_id == project.owner_id:
+        raise api_error(409, "PROJECT_OWNER_IMMUTABLE", "项目 owner 角色不可修改")
+    member = await db.execute(
+        select(ProjectMember).where(
+            ProjectMember.project_id == project_id,
+            ProjectMember.user_id == user_id,
+        )
+    )
+    member = member.scalar_one_or_none()
+    if member is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="成员不存在")
+    if caller_role == "admin":
+        if user_id == user.id:
+            raise api_error(409, "PROJECT_OWNER_IMMUTABLE", "admin 不能修改自己的角色")
+        if member.role == "admin" or body.role == "admin":
+            raise api_error(403, "PROJECT_FORBIDDEN", "admin 只能管理 member/viewer")
+    member.role = body.role
+    target = await db.get(User, user_id)
+    await db.commit()
+    await db.refresh(member)
+    return ProjectMemberOut(
+        membership_id=member.id,
+        user_id=member.user_id,
+        username=target.username if target else None,
+        role=member.role,
+    )
+
+
+@router.delete("/{project_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_member(
+    project_id: int,
+    user_id: int,
+    perm: tuple[Project, str | None] = Depends(require_project_role("owner", "admin")),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    project, caller_role = perm
+    if user_id == project.owner_id:
+        raise api_error(409, "PROJECT_OWNER_IMMUTABLE", "项目 owner 不可移除")
+    member = await db.execute(
+        select(ProjectMember).where(
+            ProjectMember.project_id == project_id,
+            ProjectMember.user_id == user_id,
+        )
+    )
+    member = member.scalar_one_or_none()
+    if member is None:
+        return
+    if caller_role == "admin":
+        if user_id == user.id:
+            raise api_error(409, "PROJECT_OWNER_IMMUTABLE", "admin 不能移除自己")
+        if member.role == "admin":
+            raise api_error(403, "PROJECT_FORBIDDEN", "admin 只能管理 member/viewer")
+    await db.delete(member)
+    await db.commit()
