@@ -34,6 +34,7 @@ defineExpose({
     title="选择设备运行"
     width="440px"
     :close-on-click-modal="false"
+    append-to-body
     @closed="close()"
   >
     <el-form label-width="80px">
