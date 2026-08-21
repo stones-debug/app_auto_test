@@ -25,7 +25,13 @@ import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 const route = useRoute()
 const router = useRouter()
 const projectId = Number(route.params.projectId)
-const caseId = route.params.caseId === 'new' ? null : Number(route.params.caseId)
+const caseId = computed<number | null>(() => {
+  if (route.name === 'CaseNew') return null
+  const p = route.params.caseId
+  if (p == null || p === 'new') return null
+  const n = Number(p)
+  return Number.isFinite(n) ? n : null
+})
 
 const loading = ref(false)
 const modules = ref<{ id: number; name: string }[]>([])
@@ -41,7 +47,7 @@ const form = reactive<Partial<TestCase>>({
 })
 
 const variableEntries = ref<{ key: string; value: string }[]>([])
-const isEdit = computed(() => caseId !== null)
+const isEdit = computed(() => caseId.value !== null)
 
 // V2 §4.2：编辑页 dirty 离开确认
 const { markDirty, markSaved } = useUnsavedChanges()
@@ -144,15 +150,15 @@ async function save() {
       variables: collectVariables(),
     }
     if (isEdit.value) {
-      await updateCase(caseId!, payload)
+      await updateCase(caseId.value!, payload)
       ElMessage.success('已保存')
       markSaved()
       router.push(`/projects/${projectId}/cases`)
     } else {
-      const created = await createCase(projectId, payload)
+      await createCase(projectId, payload)
       ElMessage.success('已创建')
       markSaved()
-      router.replace(`/projects/${projectId}/cases/${created.id}/edit`)
+      router.push(`/projects/${projectId}/cases`)
     }
   } finally {
     loading.value = false
@@ -162,7 +168,7 @@ async function save() {
 onMounted(async () => {
   modules.value = await listModules(projectId)
   if (isEdit.value) {
-    const data = await getCase(caseId!)
+    const data = await getCase(caseId.value!)
     form.name = data.name
     form.module_id = data.module_id
     form.description = data.description ?? ''
