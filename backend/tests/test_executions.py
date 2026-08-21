@@ -265,6 +265,112 @@ async def test_list_get_logs_stop_retry(client: AsyncClient):
     assert retried.json()["status"] == "queued"
 
 
+# ---------- Step 5：case/suite/batch 重试契约（retry_of / parameters / device / timeout） ----------
+
+
+async def test_retry_case_copies_contract(client: AsyncClient):
+    """Step 5：case 重试复制 retry_of、原 parameters、显式 device 与可选 timeout。"""
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+    element_id = await _create_element(client, token, project_id)
+    case_id = await _create_case(client, token, project_id, element_id)
+    device_id = await _create_agent_device(client, token)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    created = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers=headers,
+        json={"device_id": device_id, "parameters": {"variables": {"btn_id": "btn_login"}}, "timeout_seconds": 900},
+    )
+    exec_id = created.json()["id"]
+
+    retried = await client.post(
+        f"/api/executions/{exec_id}/retry",
+        headers=headers,
+        json={"device_id": device_id, "timeout_seconds": 600},
+    )
+    assert retried.status_code == 201
+    body = retried.json()
+    assert body["retry_of"] == exec_id
+    assert body["type"] == "case"
+    assert body["case_id"] == case_id
+    assert body["device_id"] == device_id
+    assert body["timeout_seconds"] == 600
+    assert body["parameters"]["variables"]["btn_id"] == "btn_login"
+
+
+async def test_retry_suite_and_batch_copies_contract(client: AsyncClient):
+    """Step 5：suite/batch 重试复制 retry_of、原 parameters（含 suite_ids）、显式 device。"""
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+    element_id = await _create_element(client, token, project_id)
+    case_id = await _create_case(client, token, project_id, element_id)
+    suite_id = await _create_suite(client, token, project_id, case_id)
+    device_id = await _create_agent_device(client, token)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    suite_run = await client.post(
+        f"/api/executions/suites/{suite_id}",
+        headers=headers,
+        json={"device_id": device_id, "parameters": {"variables": {"env": "staging"}}},
+    )
+    suite_exec_id = suite_run.json()["id"]
+    suite_retry = await client.post(
+        f"/api/executions/{suite_exec_id}/retry",
+        headers=headers,
+        json={"device_id": device_id, "timeout_seconds": 720},
+    )
+    assert suite_retry.status_code == 201
+    assert suite_retry.json()["retry_of"] == suite_exec_id
+    assert suite_retry.json()["type"] == "suite"
+    assert suite_retry.json()["suite_id"] == suite_id
+    assert suite_retry.json()["timeout_seconds"] == 720
+    assert suite_retry.json()["parameters"]["variables"]["env"] == "staging"
+
+    batch = await client.post(
+        "/api/executions/suites/batch",
+        headers=headers,
+        json={"suite_ids": [suite_id], "device_id": device_id, "parameters": {"marker": "batch-1"}},
+    )
+    batch_exec_id = batch.json()["id"]
+    batch_retry = await client.post(
+        f"/api/executions/{batch_exec_id}/retry",
+        headers=headers,
+        json={"device_id": device_id},
+    )
+    assert batch_retry.status_code == 201
+    assert batch_retry.json()["retry_of"] == batch_exec_id
+    assert batch_retry.json()["type"] == "batch"
+    assert batch_retry.json()["parameters"]["suite_ids"] == [suite_id]
+    assert batch_retry.json()["parameters"]["marker"] == "batch-1"
+    # 未传 timeout 时沿用原 timeout_seconds
+    assert batch_retry.json()["timeout_seconds"] == batch.json()["timeout_seconds"]
+
+
+async def test_retry_timeout_falls_back_to_original(client: AsyncClient):
+    """Step 5：retry 不传 timeout_seconds 时沿用原执行超时。"""
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+    element_id = await _create_element(client, token, project_id)
+    case_id = await _create_case(client, token, project_id, element_id)
+    device_id = await _create_agent_device(client, token)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    created = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers=headers,
+        json={"device_id": device_id, "timeout_seconds": 1500},
+    )
+    exec_id = created.json()["id"]
+    retried = await client.post(
+        f"/api/executions/{exec_id}/retry",
+        headers=headers,
+        json={"device_id": device_id},
+    )
+    assert retried.status_code == 201
+    assert retried.json()["timeout_seconds"] == 1500
+
+
 async def test_execution_permission_denied(client: AsyncClient):
     token = await _register_and_login(client)
     project_id = await _create_project(client, token)

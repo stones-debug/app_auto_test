@@ -2,11 +2,11 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-
 import { executionStatusMeta } from '@/api/executions'
 import { downloadReport, getReportDetail, reportFileUrl, type ReportDetail } from '@/api/reports'
 import AuthenticatedImage from '@/components/AuthenticatedImage.vue'
-import { useRunFlow } from '@/composables/useRunFlow'
+import DevicePicker from '@/components/DevicePicker.vue'
+import { useExecutionRetry } from '@/composables/useExecutionRetry'
 
 const route = useRoute()
 const router = useRouter()
@@ -16,7 +16,8 @@ const loading = ref(false)
 const detail = ref<ReportDetail | null>(null)
 const activeCases = ref<number[]>([])
 const onlyFailed = ref(false)
-const { running, run } = useRunFlow()
+
+const { picker, retry: retryEntry, running: retrying } = useExecutionRetry()
 
 const displayCases = computed(() => {
   if (!detail.value) return []
@@ -81,8 +82,10 @@ async function download() {
 }
 
 async function retryThis() {
+  // Step 5：不要再把 execution ID 伪装成 case ID；走 retry target（{device_id, timeout_seconds?}）
   const execId = Number(detail.value?.execution?.id)
-  if (execId) await run({ kind: 'case', id: execId, name: `重试执行 #${execId}` })
+  if (!execId) return
+  await retryEntry(execId, `执行 #${execId}`)
 }
 
 function viewExecution() {
@@ -104,7 +107,7 @@ onMounted(load)
           </el-tag>
           <div class="head-actions">
             <el-button @click="viewExecution">查看执行</el-button>
-            <el-button :loading="running" @click="retryThis">重试</el-button>
+            <el-button :loading="retrying" @click="retryThis">重试</el-button>
             <el-button @click="router.push('/reports')">返回列表</el-button>
             <el-button type="primary" @click="download">下载 HTML 报告</el-button>
           </div>
@@ -203,6 +206,8 @@ onMounted(load)
         <el-empty v-else description="暂无日志" :image-size="60" />
       </div>
     </div>
+
+    <DevicePicker ref="picker" />
   </div>
 </template>
 

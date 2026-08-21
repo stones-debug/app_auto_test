@@ -60,7 +60,6 @@ declare module 'vue' {
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     RunButton: typeof import('./components/RunButton.vue')['default']
-    RunDialog: typeof import('./components/RunDialog.vue')['default']
     StatCard: typeof import('./components/StatCard.vue')['default']
     StatusBadge: typeof import('./components/StatusBadge.vue')['default']
   }

@@ -5,17 +5,18 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   getExecution,
   getExecutionLogs,
-  retryExecution,
   stopExecution,
   type ExecutionDetail,
   type ExecutionLog,
   type ExecutionStatus,
 } from '@/api/executions'
 import { findReportByExecution } from '@/api/reports'
+import DevicePicker from '@/components/DevicePicker.vue'
 import ExecutionTimeline, { type TimelineCase } from '@/components/ExecutionTimeline.vue'
 import LiveLogViewer, { type LogEntry } from '@/components/LiveLogViewer.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { useExecutionSocket } from '@/composables/useExecutionSocket'
+import { useExecutionRetry } from '@/composables/useExecutionRetry'
 import { getToken } from '@/utils/request'
 
 const route = useRoute()
@@ -115,6 +116,8 @@ function updateCaseStatus(caseId: number, status: string) {
 
 let socket: { connected: { value: boolean }; close: () => void } | null = null
 
+const { picker, retry: retryEntry, running: retrying } = useExecutionRetry()
+
 async function stop() {
   stopping.value = true
   try {
@@ -127,9 +130,8 @@ async function stop() {
 }
 
 async function retry() {
-  const exec = await retryExecution(executionId)
-  ElMessage.success(`已创建重试执行 #${exec.id}`)
-  router.push(`/executions/${exec.id}`)
+  // Step 5：重试统一走 DevicePicker，成功后跳新 execution 详情
+  await retryEntry(executionId, `执行 #${executionId}`)
 }
 
 function viewReport() {
@@ -161,7 +163,7 @@ onBeforeUnmount(() => socket?.close())
       </div>
       <div class="head-actions">
         <el-button v-if="['queued', 'running', 'stopping'].includes(detail?.status ?? '')" type="warning" :loading="stopping" @click="stop">停止</el-button>
-        <el-button type="primary" @click="retry">重试</el-button>
+        <el-button type="primary" :loading="retrying" @click="retry">重试</el-button>
         <el-button v-if="reportId != null" type="success" @click="viewReport">查看报告</el-button>
       </div>
     </div>
@@ -185,6 +187,8 @@ onBeforeUnmount(() => socket?.close())
         <LiveLogViewer :logs="logEntries" :connected="connected" :connecting="connecting" />
       </div>
     </div>
+
+    <DevicePicker ref="picker" />
   </div>
 </template>
 

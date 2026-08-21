@@ -5,12 +5,13 @@ import { useRouter } from 'vue-router'
 import {
   EXECUTION_STATUS,
   listExecutions,
-  retryExecution,
   stopExecution,
   type ExecutionListItem,
 } from '@/api/executions'
 import StatusBadge from '@/components/StatusBadge.vue'
+import DevicePicker from '@/components/DevicePicker.vue'
 import { getDashboardOverview } from '@/api/dashboard'
+import { useExecutionRetry } from '@/composables/useExecutionRetry'
 
 const router = useRouter()
 const loading = ref(false)
@@ -23,6 +24,8 @@ const typeFilter = ref('')
 const keyword = ref('')
 const summary = ref<{ active: number; failed: number; error: number; passed: number }>({ active: 0, failed: 0, error: 0, passed: 0 })
 let timer: ReturnType<typeof setInterval> | null = null
+
+const { picker, retry: retryEntry } = useExecutionRetry()
 
 async function load() {
   loading.value = true
@@ -81,9 +84,8 @@ async function stop(row: ExecutionListItem) {
 }
 
 async function retry(row: ExecutionListItem) {
-  const exec = await retryExecution(row.id)
-  ElMessage.success(`已创建重试执行 #${exec.id}`)
-  await load()
+  // Step 5：重试统一走 DevicePicker（携带 {device_id, timeout_seconds?}），成功后跳新执行详情
+  await retryEntry(row.id, row.case_name ?? row.suite_name ?? `#${row.id}`)
 }
 
 function onSearch() {
@@ -189,6 +191,8 @@ onBeforeUnmount(() => {
       class="pager"
       @change="load"
     />
+
+    <DevicePicker ref="picker" />
   </div>
 </template>
 

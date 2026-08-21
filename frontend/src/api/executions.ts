@@ -145,8 +145,13 @@ export function stopExecution(id: number) {
   return request.post<{ execution_id: number; status: string }>(`/executions/${id}/stop`)
 }
 
-export function retryExecution(id: number) {
-  return request.post<Execution>(`/executions/${id}/retry`)
+export interface RetryOptions {
+  device_id: number
+  timeout_seconds?: number
+}
+
+export function retryExecution(id: number, data: RetryOptions) {
+  return request.post<Execution>(`/executions/${id}/retry`, data)
 }
 
 export const EXECUTION_STATUS: { value: string; label: string; type: 'success' | 'info' | 'warning' | 'danger' | 'primary' }[] = [

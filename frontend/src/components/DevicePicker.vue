@@ -1,25 +1,26 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 
+import type { Execution } from '@/api/executions'
 import { useDeviceSelect, type RunTarget } from '@/composables/useDeviceSelect'
 
-// V2 §5.12：统一设备选择器（所有运行入口复用）。
-// 通过 ref.open(target, options) 触发；默认设备可用时直接创建执行返回 true，
-// 否则打开选择弹窗。选中运行成功通过 emit('created') 通知父级跳转。
-const emit = defineEmits<{ created: [] }>()
+// V2 §5.12：统一设备选择器（所有运行入口复用，含重试入口）。
+// 通过 ref.open(target, options) 触发；默认设备可用时直接创建执行返回 Execution，
+// 否则打开选择弹窗并返回 null。选中运行成功通过 emit('created') 携带 Execution 通知父级。
+const emit = defineEmits<{ created: [execution: Execution] }>()
 
 const timeout = ref(1800)
 const { dialogVisible, devices, selectedId, setAsDefault, running, reason, open, confirmRun, close } =
   useDeviceSelect()
 
 async function run() {
-  const ok = await confirmRun({ timeout_seconds: timeout.value })
-  if (ok) emit('created')
+  const exec = await confirmRun({ timeout_seconds: timeout.value })
+  if (exec) emit('created', exec)
 }
 
 defineExpose({
-  /** 返回是否已直接创建执行（默认设备直跑）。未创建时选择弹窗已打开。 */
-  open: (target: RunTarget, options: { timeout_seconds?: number } = {}) => {
+  /** 返回直接创建的 Execution；需要选择弹窗时返回 null（弹窗已打开）。 */
+  open: (target: RunTarget, options: { timeout_seconds?: number } = {}): Promise<Execution | null> => {
     if (options.timeout_seconds) timeout.value = options.timeout_seconds
     return open(target, { timeout_seconds: options.timeout_seconds })
   },
