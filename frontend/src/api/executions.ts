@@ -12,6 +12,26 @@ export type ExecutionStatus =
   | 'stopped'
   | 'cancelled'
 
+export interface ExecutionStep {
+  id: number
+  step_order: number
+  action: string
+  parameters: Record<string, unknown>
+  status: string
+  duration: number | null
+  actual_value: string | null
+  error_message: string | null
+}
+
+export interface ExecutionAssertion {
+  id: number
+  assertion_type: string
+  expected_value: string | null
+  actual_value: string | null
+  status: string
+  error_message: string | null
+}
+
 export interface ExecutionCase {
   id: number
   case_id: number
@@ -22,6 +42,8 @@ export interface ExecutionCase {
   finished_at: string | null
   duration: number | null
   error_message: string | null
+  steps?: ExecutionStep[]
+  assertions?: ExecutionAssertion[]
 }
 
 export interface Execution {
@@ -43,6 +65,9 @@ export interface Execution {
 }
 
 export interface ExecutionDetail extends Execution {
+  project_name: string | null
+  device_name: string | null
+  created_by_name: string | null
   cases: ExecutionCase[]
 }
 
@@ -71,6 +96,9 @@ export interface ExecutionListItem {
   created_at: string
   case_name: string | null
   suite_name: string | null
+  project_name?: string | null
+  device_name?: string | null
+  created_by_name?: string | null
 }
 
 export interface RunOptions {
@@ -83,6 +111,10 @@ export function listExecutions(params?: {
   project_id?: number
   status?: string
   type?: string
+  keyword?: string
+  device_id?: number
+  created_from?: string
+  created_to?: string
   page?: number
   page_size?: number
 }) {

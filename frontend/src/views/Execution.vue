@@ -1,42 +1,28 @@
 ﻿<script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-
+import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
 import {
   EXECUTION_STATUS,
-  executionStatusMeta,
-  getExecution,
-  getExecutionLogs,
   listExecutions,
   retryExecution,
   stopExecution,
-  type ExecutionDetail,
   type ExecutionListItem,
-  type ExecutionLog,
-  type ExecutionStatus,
 } from '@/api/executions'
-import { useExecutionSocket } from '@/composables/useExecutionSocket'
-import { findReportByExecution } from '@/api/reports'
-import { getToken } from '@/utils/request'
+import StatusBadge from '@/components/StatusBadge.vue'
+import { getDashboardOverview } from '@/api/dashboard'
 
-const route = useRoute()
 const router = useRouter()
-
 const loading = ref(false)
 const items = ref<ExecutionListItem[]>([])
 const total = ref(0)
 const page = ref(1)
-const pageSize = ref(10)
+const pageSize = ref(20)
 const statusFilter = ref('')
 const typeFilter = ref('')
-
-const drawerOpen = ref(false)
-const detail = ref<ExecutionDetail | null>(null)
-const logs = ref<ExecutionLog[]>([])
-const logsLoading = ref(false)
-const lastTimestamp = ref<string | null>(null)
-let socket: { connected: { value: boolean }; close: () => void } | null = null
+const keyword = ref('')
+const summary = ref<{ active: number; failed: number; error: number; passed: number }>({ active: 0, failed: 0, error: 0, passed: 0 })
+let timer: ReturnType<typeof setInterval> | null = null
 
 async function load() {
   loading.value = true
@@ -46,11 +32,27 @@ async function load() {
       page_size: pageSize.value,
       status: statusFilter.value,
       type: typeFilter.value,
+      keyword: keyword.value || undefined,
     })
     items.value = data.items
     total.value = data.total
   } finally {
     loading.value = false
+  }
+}
+
+async function loadSummary() {
+  try {
+    const data = await getDashboardOverview({})
+    const sc = data.status_counts
+    summary.value = {
+      active: sc.running + sc.stopping,
+      failed: sc.failed,
+      error: sc.error,
+      passed: sc.passed,
+    }
+  } catch {
+    /* 摘要失败不阻塞列表 */
   }
 }
 
@@ -63,115 +65,25 @@ function durationText(ms: number | null | undefined) {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
 }
 
-function levelType(level: string) {
-  if (level === 'ERROR') return 'danger'
-  if (level === 'WARN') return 'warning'
-  if (level === 'DEBUG') return 'info'
-  return 'primary'
+function isActive(status: string) {
+  return ['queued', 'running', 'stopping'].includes(status)
 }
 
-function isTerminal(status: string) {
-  return ['passed', 'failed', 'error', 'stopped', 'cancelled'].includes(status)
+function openDetail(id: number) {
+  router.push(`/executions/${id}`)
 }
 
-function subscribe() {
-  socket?.close()
-  if (!detail.value || isTerminal(detail.value.status)) return
-  const token = getToken() ?? ''
-  socket = useExecutionSocket(detail.value.id, token, (msg) => {
-    const type = msg.type as string
-    if (type === 'status' && detail.value) {
-      detail.value.status = msg.status as ExecutionStatus
-    } else if (type === 'log' && detail.value && msg.execution_id === detail.value.id) {
-      const item: ExecutionLog = {
-        id: Date.now(),
-        execution_id: detail.value.id,
-        level: (msg.level as string) ?? 'INFO',
-        message: (msg.message as string) ?? '',
-        source: 'live',
-        created_at: (msg.timestamp as string) ?? new Date().toISOString(),
-      }
-      logs.value.push(item)
-      scrollLogs()
-    } else if (type === 'step_result' && detail.value) {
-      const caseId = Number(msg.case_id)
-      const ec = detail.value.cases.find((c) => c.case_id === caseId)
-      if (ec) ec.status = (msg.status as string) ?? ec.status
-    } else if (type === 'completed' && detail.value) {
-      detail.value.status = (msg.status as ExecutionStatus) ?? detail.value.status
-      socket?.close()
-      load()
-    }
-  })
-}
-
-const logBody = ref<HTMLElement | null>(null)
-function scrollLogs() {
-  nextTick(() => {
-    if (logBody.value) logBody.value.scrollTop = logBody.value.scrollHeight
-  })
-}
-
-async function openDetail(id: number) {
-  drawerOpen.value = true
-  detail.value = null
-  logs.value = []
-  lastTimestamp.value = null
-  const data = await getExecution(id)
-  detail.value = data
-  subscribe()
-  await loadLogs()
-}
-
-async function loadLogs() {
-  if (!detail.value) return
-  logsLoading.value = true
-  try {
-    const data = await getExecutionLogs(detail.value.id, { page_size: 200 })
-    logs.value = data.items
-    lastTimestamp.value = data.items.length ? data.items[data.items.length - 1].created_at : null
-    scrollLogs()
-  } finally {
-    logsLoading.value = false
-  }
-}
-
-function closeDrawer() {
-  socket?.close()
-  socket = null
-  drawerOpen.value = false
-  detail.value = null
-}
-
-async function stop(id: number) {
+async function stop(row: ExecutionListItem) {
   await ElMessageBox.confirm('确认停止该执行？', '提示', { type: 'warning' })
-  await stopExecution(id)
+  await stopExecution(row.id)
   ElMessage.success('已请求停止')
   await load()
-  if (detail.value?.id === id) {
-    detail.value.status = 'stopping'
-    subscribe()
-  }
 }
 
-async function retry(id: number) {
-  const exec = await retryExecution(id)
+async function retry(row: ExecutionListItem) {
+  const exec = await retryExecution(row.id)
   ElMessage.success(`已创建重试执行 #${exec.id}`)
   await load()
-  await openDetail(exec.id)
-}
-
-async function viewReport(id: number) {
-  const reportId = await findReportByExecution(id)
-  if (reportId == null) {
-    ElMessage.info('该执行暂无报告（需执行完成）')
-    return
-  }
-  router.push(`/reports/${reportId}`)
-}
-
-async function viewReportDetail() {
-  if (detail.value) await viewReport(detail.value.id)
 }
 
 function onSearch() {
@@ -181,22 +93,49 @@ function onSearch() {
 
 onMounted(() => {
   load()
-  const focus = Number(route.query.focus)
-  if (focus) openDetail(focus)
+  loadSummary()
+  // 活跃执行每 5 秒轮询当前页
+  timer = setInterval(() => {
+    if (document.visibilityState === 'visible') {
+      load()
+      loadSummary()
+    }
+  }, 5000)
 })
 
 onBeforeUnmount(() => {
-  socket?.close()
+  if (timer) clearInterval(timer)
 })
 </script>
 
 <template>
   <div>
-    <div class="toolbar">
-      <el-select v-model="statusFilter" placeholder="状态" clearable class="w160" @change="onSearch">
+    <!-- 状态摘要 -->
+    <div class="summary-bar">
+      <div class="summary-item" @click="statusFilter = 'running'; onSearch()">
+        <span class="summary-value primary">{{ summary.active }}</span>
+        <span class="summary-label">活跃执行</span>
+      </div>
+      <div class="summary-item" @click="statusFilter = 'passed'; onSearch()">
+        <span class="summary-value success">{{ summary.passed }}</span>
+        <span class="summary-label">已通过</span>
+      </div>
+      <div class="summary-item" @click="statusFilter = 'failed'; onSearch()">
+        <span class="summary-value danger">{{ summary.failed }}</span>
+        <span class="summary-label">失败</span>
+      </div>
+      <div class="summary-item" @click="statusFilter = 'error'; onSearch()">
+        <span class="summary-value danger-dark">{{ summary.error }}</span>
+        <span class="summary-label">异常</span>
+      </div>
+    </div>
+
+    <div class="toolbar-card">
+      <el-input v-model="keyword" placeholder="按名称/ID 搜索" clearable class="search" @keyup.enter="onSearch" />
+      <el-select v-model="statusFilter" placeholder="状态" clearable class="w140" @change="onSearch">
         <el-option v-for="s in EXECUTION_STATUS" :key="s.value" :label="s.label" :value="s.value" />
       </el-select>
-      <el-select v-model="typeFilter" placeholder="类型" clearable class="w120" @change="onSearch">
+      <el-select v-model="typeFilter" placeholder="类型" clearable class="w110" @change="onSearch">
         <el-option label="用例" value="case" />
         <el-option label="套件" value="suite" />
         <el-option label="批量" value="batch" />
@@ -205,7 +144,7 @@ onBeforeUnmount(() => {
       <el-button @click="load">刷新</el-button>
     </div>
 
-    <el-table v-loading="loading" :data="items">
+    <el-table v-loading="loading" :data="items" stripe>
       <el-table-column prop="id" label="ID" width="70" />
       <el-table-column label="类型" width="80">
         <template #default="{ row }">
@@ -215,21 +154,29 @@ onBeforeUnmount(() => {
       <el-table-column label="名称" min-width="180" show-overflow-tooltip>
         <template #default="{ row }">{{ row.case_name ?? row.suite_name ?? '-' }}</template>
       </el-table-column>
-      <el-table-column label="状态" width="100">
+      <el-table-column label="项目" width="140" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.project_name ?? '-' }}</template>
+      </el-table-column>
+      <el-table-column label="设备" width="120" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.device_name ?? '-' }}</template>
+      </el-table-column>
+      <el-table-column label="状态" width="110">
         <template #default="{ row }">
-          <el-tag :type="executionStatusMeta(row.status).type" size="small">{{ executionStatusMeta(row.status).label }}</el-tag>
+          <StatusBadge :status="row.status" />
         </template>
       </el-table-column>
-      <el-table-column prop="device_id" label="设备" width="80" />
-      <el-table-column label="耗时" width="100">
+      <el-table-column label="耗时" width="90">
         <template #default="{ row }">{{ durationText(row.duration) }}</template>
       </el-table-column>
-      <el-table-column prop="created_at" label="创建时间" width="180" />
+      <el-table-column label="创建人" width="100" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.created_by_name ?? '-' }}</template>
+      </el-table-column>
+      <el-table-column prop="created_at" label="创建时间" width="170" />
       <el-table-column label="操作" width="200" fixed="right">
         <template #default="{ row }">
           <el-button size="small" type="primary" text @click="openDetail(row.id)">详情</el-button>
-          <el-button size="small" text @click="stop(row.id)">停止</el-button>
-          <el-button size="small" text @click="retry(row.id)">重试</el-button>
+          <el-button v-if="isActive(row.status)" size="small" text @click="stop(row as ExecutionListItem)">停止</el-button>
+          <el-button size="small" text @click="retry(row as ExecutionListItem)">重试</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -242,100 +189,56 @@ onBeforeUnmount(() => {
       class="pager"
       @change="load"
     />
-
-    <el-drawer v-model="drawerOpen" size="60%" :destroy-on-close="false" @closed="closeDrawer">
-      <template #header>
-        <div class="drawer-header">
-          <span>执行 #{{ detail?.id }}</span>
-          <el-tag v-if="detail" :type="executionStatusMeta(detail.status).type" size="small">
-            {{ executionStatusMeta(detail.status).label }}
-          </el-tag>
-          <div class="drawer-actions">
-            <el-button size="small" type="success" @click="viewReportDetail">查看报告</el-button>
-            <el-button size="small" type="warning" @click="detail && stop(detail.id)">停止</el-button>
-            <el-button size="small" type="primary" @click="detail && retry(detail.id)">重试</el-button>
-          </div>
-        </div>
-      </template>
-
-      <template v-if="detail">
-        <el-descriptions :column="3" border size="small" class="mb16">
-          <el-descriptions-item label="类型">{{ typeLabel(detail.type) }}</el-descriptions-item>
-          <el-descriptions-item label="设备">#{{ detail.device_id ?? '-' }}</el-descriptions-item>
-          <el-descriptions-item label="超时">{{ detail.timeout_seconds }}s</el-descriptions-item>
-          <el-descriptions-item label="开始时间">{{ detail.started_at ?? '-' }}</el-descriptions-item>
-          <el-descriptions-item label="结束时间">{{ detail.finished_at ?? '-' }}</el-descriptions-item>
-          <el-descriptions-item label="耗时">{{ durationText(detail.duration) }}</el-descriptions-item>
-        </el-descriptions>
-
-        <div class="section-title">用例</div>
-        <el-table :data="detail.cases" size="small" class="mb16">
-          <el-table-column prop="case_name" label="用例" min-width="180" show-overflow-tooltip />
-          <el-table-column label="状态" width="90">
-            <template #default="{ row }">
-              <el-tag :type="executionStatusMeta(row.status).type" size="small">{{ executionStatusMeta(row.status).label }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="耗时" width="90">
-            <template #default="{ row }">{{ durationText(row.duration) }}</template>
-          </el-table-column>
-          <el-table-column prop="error_message" label="错误" min-width="180" show-overflow-tooltip />
-        </el-table>
-
-        <div class="section-title">执行日志</div>
-        <div ref="logBody" v-loading="logsLoading" class="log-box">
-          <el-table :data="logs" size="small">
-            <el-table-column prop="level" label="级别" width="80">
-              <template #default="{ row }">
-                <el-tag :type="levelType(row.level)" size="small">{{ row.level }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="message" label="消息" min-width="300" show-overflow-tooltip />
-            <el-table-column prop="source" label="来源" width="90" />
-            <el-table-column prop="created_at" label="时间" width="170" />
-          </el-table>
-        </div>
-      </template>
-    </el-drawer>
   </div>
 </template>
 
 <style scoped>
-.toolbar {
-  display: flex;
-  gap: 8px;
+.summary-bar {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
   margin-bottom: 16px;
 }
-.w160 {
-  width: 160px;
-}
-.w120 {
-  width: 120px;
-}
-.pager {
-  margin-top: 16px;
-  justify-content: flex-end;
-}
-.drawer-header {
+.summary-item {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 12px 16px;
+  cursor: pointer;
   display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
+  flex-direction: column;
+  gap: 2px;
 }
-.drawer-actions {
-  margin-left: auto;
+.summary-item:hover {
+  border-color: var(--primary);
 }
-.section-title {
-  font-weight: 600;
-  margin-bottom: 8px;
+.summary-value {
+  font-size: var(--font-kpi);
+  font-weight: 700;
 }
-.mb16 {
-  margin-bottom: 16px;
+.summary-value.primary {
+  color: var(--primary);
 }
-.log-box {
-  max-height: 360px;
-  overflow-y: auto;
-  border: 1px solid #ebeef5;
-  border-radius: 4px;
+.summary-value.success {
+  color: var(--success);
+}
+.summary-value.danger {
+  color: var(--danger);
+}
+.summary-value.danger-dark {
+  color: var(--danger-dark);
+}
+.summary-label {
+  font-size: var(--font-aux);
+  color: var(--text-2);
+}
+.search {
+  width: 200px;
+}
+.w140 {
+  width: 140px;
+}
+.w110 {
+  width: 110px;
 }
 </style>
