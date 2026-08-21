@@ -1,10 +1,12 @@
 ﻿<script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 
 import { executionStatusMeta } from '@/api/executions'
-import { downloadReport, getReportDetail, reportFileUrl, type ReportDetail, type ReportStep } from '@/api/reports'
+import { downloadReport, getReportDetail, reportFileUrl, type ReportDetail } from '@/api/reports'
+import AuthenticatedImage from '@/components/AuthenticatedImage.vue'
+import { useRunFlow } from '@/composables/useRunFlow'
 
 const route = useRoute()
 const router = useRouter()
@@ -13,6 +15,14 @@ const reportId = Number(route.params.id)
 const loading = ref(false)
 const detail = ref<ReportDetail | null>(null)
 const activeCases = ref<number[]>([])
+const onlyFailed = ref(false)
+const { running, run } = useRunFlow()
+
+const displayCases = computed(() => {
+  if (!detail.value) return []
+  if (!onlyFailed.value) return detail.value.cases
+  return detail.value.cases.filter((c) => ['failed', 'error'].includes(c.status))
+})
 
 function typeLabel(t: unknown) {
   return { case: '用例', suite: '套件', batch: '批量' }[t as string] ?? '-'
@@ -35,14 +45,27 @@ function statusMeta(s: unknown) {
   return executionStatusMeta(String(s))
 }
 
-function stepImages(steps: ReportStep[], reportId: number) {
-  return steps.filter((s) => s.screenshot).map((s) => reportFileUrl(reportId, s.screenshot!))
+function expandAll() {
+  activeCases.value = displayCases.value.map((_, i) => i)
+}
+
+function collapseAll() {
+  activeCases.value = []
+}
+
+function toggleOnlyFailed() {
+  onlyFailed.value = !onlyFailed.value
+  activeCases.value = onlyFailed.value ? displayCases.value.map((_, i) => i) : []
 }
 
 async function load() {
   loading.value = true
   try {
     detail.value = await getReportDetail(reportId)
+    // 默认展开 failed/error 用例
+    activeCases.value = detail.value.cases
+      .map((c, i) => (['failed', 'error'].includes(c.status) ? i : -1))
+      .filter((i) => i >= 0)
   } finally {
     loading.value = false
   }
@@ -55,6 +78,16 @@ async function download() {
   } catch {
     ElMessage.error('报告生成失败')
   }
+}
+
+async function retryThis() {
+  const execId = Number(detail.value?.execution?.id)
+  if (execId) await run({ kind: 'case', id: execId, name: `重试执行 #${execId}` })
+}
+
+function viewExecution() {
+  const execId = Number(detail.value?.execution?.id)
+  if (execId) router.push(`/executions/${execId}`)
 }
 
 onMounted(load)
@@ -70,6 +103,8 @@ onMounted(load)
             {{ statusMeta(detail.execution.status).label }}
           </el-tag>
           <div class="head-actions">
+            <el-button @click="viewExecution">查看执行</el-button>
+            <el-button :loading="running" @click="retryThis">重试</el-button>
             <el-button @click="router.push('/reports')">返回列表</el-button>
             <el-button type="primary" @click="download">下载 HTML 报告</el-button>
           </div>
@@ -96,9 +131,16 @@ onMounted(load)
       </div>
 
       <div class="card">
-        <h2>用例明细</h2>
+        <div class="case-toolbar">
+          <h2>用例明细</h2>
+          <div class="case-actions">
+            <el-checkbox v-model="onlyFailed" @change="toggleOnlyFailed">只看失败/异常</el-checkbox>
+            <el-button size="small" @click="expandAll">全部展开</el-button>
+            <el-button size="small" @click="collapseAll">全部折叠</el-button>
+          </div>
+        </div>
         <el-collapse v-model="activeCases">
-          <el-collapse-item v-for="(c, idx) in detail.cases" :key="c.id" :name="idx">
+          <el-collapse-item v-for="(c, idx) in displayCases" :key="c.id" :name="idx">
             <template #title>
               <span class="case-name">{{ c.case_name }}</span>
               <el-tag :type="statusMeta(c.status).type" size="small">{{ statusMeta(c.status).label }}</el-tag>
@@ -121,11 +163,9 @@ onMounted(load)
               <el-table-column prop="error_message" label="错误" min-width="160" show-overflow-tooltip />
               <el-table-column label="截图" width="130">
                 <template #default="{ row }">
-                  <el-image
+                  <AuthenticatedImage
                     v-if="row.screenshot"
                     :src="reportFileUrl(reportId, row.screenshot)"
-                    :preview-src-list="stepImages(c.steps, reportId)"
-                    fit="cover"
                     class="thumb"
                   />
                 </template>
@@ -231,6 +271,17 @@ onMounted(load)
 .case-name {
   font-weight: 600;
   margin-right: 10px;
+}
+.case-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.case-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .case-dur {
   color: #999;

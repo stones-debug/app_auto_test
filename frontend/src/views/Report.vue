@@ -11,9 +11,11 @@ const loading = ref(false)
 const items = ref<ReportListItem[]>([])
 const total = ref(0)
 const page = ref(1)
-const pageSize = ref(10)
+const pageSize = ref(20)
 const statusFilter = ref('')
+const typeFilter = ref('')
 const keyword = ref('')
+const summary = ref({ passed: 0, failed: 0, error: 0, success_rate: 0 })
 
 async function load() {
   loading.value = true
@@ -22,10 +24,21 @@ async function load() {
       page: page.value,
       page_size: pageSize.value,
       ...(statusFilter.value ? { status: statusFilter.value } : {}),
+      ...(typeFilter.value ? { type: typeFilter.value } : {}),
       ...(keyword.value ? { keyword: keyword.value } : {}),
     })
     items.value = data.items
     total.value = data.total
+    const passed = data.items.filter((i) => i.execution_status === 'passed').length
+    const failed = data.items.filter((i) => i.execution_status === 'failed').length
+    const error = data.items.filter((i) => i.execution_status === 'error').length
+    const rated = data.items.filter((i) => i.success_rate > 0)
+    summary.value = {
+      passed,
+      failed,
+      error,
+      success_rate: rated.length ? rated.reduce((s, i) => s + i.success_rate, 0) / rated.length : 0,
+    }
   } finally {
     loading.value = false
   }
@@ -49,10 +62,35 @@ onMounted(load)
 
 <template>
   <div>
-    <div class="toolbar">
+    <!-- 摘要（V2 §5.15） -->
+    <div class="summary-bar">
+      <div class="summary-item">
+        <span class="summary-value success">{{ summary.passed }}</span>
+        <span class="summary-label">当前页通过</span>
+      </div>
+      <div class="summary-item">
+        <span class="summary-value danger">{{ summary.failed }}</span>
+        <span class="summary-label">失败</span>
+      </div>
+      <div class="summary-item">
+        <span class="summary-value danger-dark">{{ summary.error }}</span>
+        <span class="summary-label">异常</span>
+      </div>
+      <div class="summary-item">
+        <span class="summary-value primary">{{ summary.success_rate ? summary.success_rate.toFixed(1) + '%' : '—' }}</span>
+        <span class="summary-label">平均成功率</span>
+      </div>
+    </div>
+
+    <div class="toolbar-card">
       <el-input v-model="keyword" placeholder="按执行 ID 搜索" clearable class="search" @keyup.enter="page = 1; load()" />
       <el-select v-model="statusFilter" placeholder="执行状态" clearable class="status" @change="page = 1; load()">
         <el-option v-for="s in ['queued','running','stopping','passed','failed','error','stopped','cancelled']" :key="s" :label="executionStatusMeta(s).label" :value="s" />
+      </el-select>
+      <el-select v-model="typeFilter" placeholder="类型" clearable class="status" @change="page = 1; load()">
+        <el-option label="用例" value="case" />
+        <el-option label="套件" value="suite" />
+        <el-option label="批量" value="batch" />
       </el-select>
       <el-button type="primary" @click="page = 1; load()">搜索</el-button>
       <el-button @click="load">刷新</el-button>
@@ -111,10 +149,40 @@ onMounted(load)
 </template>
 
 <style scoped>
-.toolbar {
-  display: flex;
-  gap: 8px;
+.summary-bar {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
   margin-bottom: 16px;
+}
+.summary-item {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.summary-value {
+  font-size: var(--font-kpi);
+  font-weight: 700;
+}
+.summary-value.primary {
+  color: var(--primary);
+}
+.summary-value.success {
+  color: var(--success);
+}
+.summary-value.danger {
+  color: var(--danger);
+}
+.summary-value.danger-dark {
+  color: var(--danger-dark);
+}
+.summary-label {
+  font-size: var(--font-aux);
+  color: var(--text-2);
 }
 .search {
   width: 200px;
