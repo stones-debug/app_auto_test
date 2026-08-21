@@ -1,28 +1,46 @@
 ﻿<script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
-
+import { useRoute, useRouter } from 'vue-router'
 
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
 
 const form = ref({ username: '', password: '' })
 const remember = ref(true)
 const loading = ref(false)
+const fieldErrors = ref<{ username?: string; password?: string }>({})
+
+function onUsernameBlur() {
+  if (!form.value.username.trim()) {
+    fieldErrors.value.username = '请输入用户名'
+  } else {
+    delete fieldErrors.value.username
+  }
+}
+
+function onPasswordBlur() {
+  if (!form.value.password) {
+    fieldErrors.value.password = '请输入密码'
+  } else {
+    delete fieldErrors.value.password
+  }
+}
 
 async function handleLogin() {
-  if (!form.value.username || !form.value.password) {
-    ElMessage.warning('请输入用户名和密码')
-    return
-  }
+  onUsernameBlur()
+  onPasswordBlur()
+  if (fieldErrors.value.username || fieldErrors.value.password) return
   loading.value = true
   try {
-    await auth.login(form.value.username, form.value.password)
-    ElMessage.success('登录成功')
-    router.push('/projects')
+    await auth.login(form.value.username, form.value.password, remember.value)
+    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/dashboard'
+    router.push(redirect)
   } catch {
+    // 失败保留用户名，清空密码
+    form.value.password = ''
     ElMessage.error('用户名或密码错误')
   } finally {
     loading.value = false
@@ -52,16 +70,17 @@ async function handleLogin() {
         <p class="subtitle">请登录你的账号以继续</p>
 
         <el-form label-position="top" @keyup.enter="handleLogin">
-          <el-form-item label="用户名">
-            <el-input v-model="form.username" placeholder="请输入用户名" size="large" />
+          <el-form-item label="用户名" :error="fieldErrors.username">
+            <el-input v-model="form.username" placeholder="请输入用户名" size="large" @blur="onUsernameBlur" />
           </el-form-item>
-          <el-form-item label="密码">
+          <el-form-item label="密码" :error="fieldErrors.password">
             <el-input
               v-model="form.password"
               type="password"
               placeholder="请输入密码"
               show-password
               size="large"
+              @blur="onPasswordBlur"
             />
           </el-form-item>
           <div class="row-between">
