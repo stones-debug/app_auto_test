@@ -21,7 +21,6 @@ from app.models import (
     ExecutionCase,
     ExecutionStep,
     Project,
-    ProjectMember,
     TestCase,
     TestSuite,
     User,
@@ -40,6 +39,7 @@ from app.schemas.execution import (
     ExecutionStepOut,
 )
 from app.services import execution_service
+from app.services.access_scope import visible_project_ids
 from app.services.execution_detail_service import load_case_tree
 from app.services.screenshot_store import resolve_screenshot_path
 from app.utils.pagination import get_pagination
@@ -195,10 +195,9 @@ async def list_executions(
         await get_project_permission(project_id, user, db)
         query = select(Execution).where(Execution.project_id == project_id)
     else:
-        member_projects = select(ProjectMember.project_id).where(ProjectMember.user_id == user.id)
-        owner_projects = select(Project.id).where(Project.owner_id == user.id)
+        # Step 9：owner/member/public viewer 使用统一可见范围（公开项目执行可发现）
         query = select(Execution).where(
-            (Execution.project_id.in_(owner_projects)) | (Execution.project_id.in_(member_projects))
+            Execution.project_id.in_(visible_project_ids(user.id))
         )
 
     if status:

@@ -22,11 +22,11 @@ _RANGE_DAYS = {"7d": 7, "30d": 30, "90d": 90}
 _STATUS_LABELS = ["queued", "running", "stopping", "passed", "failed", "error", "stopped", "cancelled"]
 
 
-async def _visible_project_ids(db: AsyncSession, user: User, project_id: int | None) -> list[int] | None:
-    """返回可见项目 id 列表；None 表示由查询条件限定（project_id 指定时单项目）。
+async def _my_project_ids(db: AsyncSession, user: User, project_id: int | None) -> list[int] | None:
+    """返回个人工作台项目 id 列表；None 表示由查询条件限定（project_id 指定时单项目）。
 
-    - 未指定 project_id：仅 owned/member 项目（公开未加入不进入个人工作台，V2 §5.2）。
-    - 指定 project_id：校验 viewer+ 权限后返回 [project_id]。
+    Step 9：这是「我的项目」语义（owned/member），与可见资源（reports/executions
+    列表的 visible_project_ids，含公开项目）区分——公开项目未加入不进入个人工作台。
     """
     if project_id is not None:
         await get_project_permission(project_id, user, db)
@@ -118,7 +118,7 @@ async def dashboard_overview(
     days = _RANGE_DAYS.get(range, 7)
     effective_range = range if range in _RANGE_DAYS else "7d"
     since = datetime.now(UTC) - timedelta(days=days)
-    project_ids = await _visible_project_ids(db, user, project_id)
+    project_ids = await _my_project_ids(db, user, project_id)
     if not project_ids:
         return DashboardOverviewOut(
             range=effective_range,

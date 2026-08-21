@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user, get_project_permission
 from app.core.config import reports_dir
 from app.core.database import get_db
-from app.models import Execution, Project, ProjectMember, Report, TestCase, TestSuite, User
+from app.models import Execution, Project, Report, TestCase, TestSuite, User
 from app.schemas.report import (
     ReportCaseOut,
     ReportDetailOut,
@@ -56,17 +56,13 @@ async def list_reports(
             Execution.project_id == project_id
         )
     else:
-        member_projects = select(ProjectMember.project_id).where(ProjectMember.user_id == user.id)
-        owner_projects = select(Project.id).where(Project.owner_id == user.id)
+        # Step 9：owner/member/public viewer 使用统一可见范围（EXISTS，避免成员重复行）
+        from app.services.access_scope import visible_project_ids
+
         query = (
             select(Report)
             .join(Execution, Report.execution_id == Execution.id)
-            .join(Project, Execution.project_id == Project.id)
-            .where(
-                (Execution.project_id.in_(owner_projects))
-                | (Execution.project_id.in_(member_projects))
-                | (Project.visibility == "public")  # CR-20：与详情权限一致，公开项目报告可发现
-            )
+            .where(Execution.project_id.in_(visible_project_ids(user.id)))
         )
     if execution_id is not None:
         query = query.where(Report.execution_id == execution_id)
