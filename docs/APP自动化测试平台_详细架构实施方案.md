@@ -1928,4 +1928,30 @@ RUNNING ←── Worker 认领后经内部接口通知 FastAPI 更新
 
 ---
 
+### 10.11 Windows Agent 安装与多用户绑定（V1.2 增量）
+
+> 依据《Windows_Agent安装与设备管理实施方案.md》（V1.0）实施后固化，为最新口径。
+> 涉及表：`user_agent_keys`、`agent_users`、`device_preferences`；`devices.connection_type/address`；`executions.stop_requested_at/finalized_at`。
+
+1. **多用户绑定与权限**：
+   - 每用户一条专属 Key `uak_<public_id>_<secret>`（public_id 为 hex，secret 可含下划线）；库中仅存 Argon2 哈希 + Fernet 密文（`AGENT_USER_KEY_ENCRYPTION_KEY` 派生密钥），明文仅 GET `/api/me/agent-key` 解密返回。
+   - `POST /api/agent/bind`：首绑（user_key+install_id）创建 Agent 与机器 PSK；追加绑定（machine_psk+另一用户 Key）只加 `agent_users`。机器 PSK 与撤销凭据只返回一次，用户 Key 不落库不写日志。
+   - 普通用户只可见/可用其绑定 Agent 下的资源（`/agents`、`/devices`、详情、执行均校验）；平台管理员不受限。
+   - 解绑：机器侧 `DELETE /api/agent/bindings/{id}`（机器 PSK+撤销凭据）；用户侧 `DELETE /api/agents/{id}/bindings/me`。
+2. **设备与执行**：
+   - `devices.connection_type`（usb/wifi）、`devices.address`（无线地址）；`GET/PUT /api/devices/default` 为用户级默认设备（含实时可用性 reason）。
+   - 执行创建 `device_id` **必填**，缺失返回 `DEVICE_REQUIRED`；创建/重试前校验设备授权、Agent 在线、设备 idle 未锁；Worker 不再从全平台设备池随机选机，只原子锁指定设备（条件 UPDATE）。
+   - Agent 快照不得覆盖 busy 锁状态（`busy && locked_by_execution` 时跳过）。
+   - 运行入口自动选机：默认设备可用→直跑；不可用→弹窗（仅在线空闲+有权限）；无可选→下载/绑定/连接引导；并发占用（`DEVICE_BUSY`/`AGENT_OFFLINE`）→提示并刷新，不自动换设备。
+3. **Windows Agent**：
+   - 交付 Inno Setup 安装包（LocalAppData 安装、HKCU 登录自启动、免管理员）；托盘（pystray）+ Tkinter 管理窗口；asyncio 网络循环在后台线程。
+   - `adb devices -l` 每 3s 轮询（工作线程），设备集合变化立即上报 `device_list`，无变化每 30s 全量；`unauthorized`→提示允许 USB 调试，`offline`→连接异常，仅 `device` 上报 idle。
+   - 机器 PSK/撤销凭据存 Windows Credential Manager（回退 LocalAppData 文件）；Appium 按需隐藏启动（127.0.0.1），执行结束/退出清理 Session 与子进程树。
+   - 安装包托管于后端 `AGENT_RELEASES_PATH`：`latest.json`（version/filename/sha256/size/published_at）+ 5 分钟限定文件名下载 JWT + FileResponse 流式下载（防路径穿越）。
+4. **执行时间戳**：
+   - `stop_requested_at`：用户请求停止时刻（queued 取消与 running→stopping 均写入）；停止宽限期从此起算（`execution_stop_grace_seconds`），无值时回退 started_at+timeout 口径。
+   - `finalized_at`：唯一终态汇总完成时刻（`_mark_terminal`/queued 取消写入）。
+
+---
+
 > **文档结束**。本方案基于原始设计进行了系统性修订，重点解决了执行引擎耦合、Agent 落地性、执行可靠性、报告可追溯性等核心问题，并经由 V1.1 评审补齐执行职责划分、Worker↔Agent 通信中转、元素快照、停止机制、设备原子锁、变量系统等缺口，可直接作为项目启动的技术基线。
