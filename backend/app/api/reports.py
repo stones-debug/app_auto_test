@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select
@@ -40,7 +42,10 @@ async def list_reports(
     project_id: int | None = None,
     execution_id: int | None = None,
     status: str = "",
+    type: str = "",
     keyword: str = "",
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
     pagination=Depends(get_pagination),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -67,6 +72,12 @@ async def list_reports(
         query = query.where(Report.execution_id == execution_id)
     if status:
         query = query.where(Execution.status == status)
+    if type:
+        query = query.where(Execution.type == type)
+    if created_from is not None:
+        query = query.where(Report.created_at >= created_from)
+    if created_to is not None:
+        query = query.where(Report.created_at <= created_to)
     if keyword:
         # CR-15：keyword 按执行 ID 过滤（前端“按执行 ID 搜索”）
         try:
@@ -91,12 +102,22 @@ async def list_reports(
         }
     case_ids = {e.case_id for e in executions.values() if e.case_id}
     suite_ids = {e.suite_id for e in executions.values() if e.suite_id}
+    project_ids = {e.project_id for e in executions.values()}
+    device_ids = {e.device_id for e in executions.values() if e.device_id}
     case_names: dict[int, str] = {}
     suite_names: dict[int, str] = {}
+    project_names: dict[int, str] = {}
+    device_names: dict[int, str] = {}
     if case_ids:
         case_names = {c.id: c.name for c in (await db.execute(select(TestCase).where(TestCase.id.in_(case_ids)))).scalars().all()}
     if suite_ids:
         suite_names = {s.id: s.name for s in (await db.execute(select(TestSuite).where(TestSuite.id.in_(suite_ids)))).scalars().all()}
+    if project_ids:
+        project_names = {p.id: p.name for p in (await db.execute(select(Project).where(Project.id.in_(project_ids)))).scalars().all()}
+    if device_ids:
+        from app.models import Device
+
+        device_names = {d.id: d.name for d in (await db.execute(select(Device).where(Device.id.in_(device_ids)))).scalars().all()}
 
     items = []
     for row in rows:
@@ -104,10 +125,13 @@ async def list_reports(
         item = ReportListItem.model_validate(row)
         if execution is not None:
             item.project_id = execution.project_id
+            item.project_name = project_names.get(execution.project_id)
+            item.device_name = device_names.get(execution.device_id) if execution.device_id else None
             item.execution_status = execution.status
             item.execution_type = execution.type
             item.case_name = case_names.get(execution.case_id) if execution.case_id else None
             item.suite_name = suite_names.get(execution.suite_id) if execution.suite_id else None
+            item.finished_at = execution.finished_at
         item.has_report = bool(row.report_path)
         items.append(item)
     return {"total": total or 0, "page": pagination.page, "page_size": pagination.page_size, "items": items}

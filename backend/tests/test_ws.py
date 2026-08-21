@@ -239,6 +239,13 @@ async def test_handle_log_step_result_execution_result(client: AsyncClient):
 
     types = {m["type"] for m in front.sent}
     assert {"log", "step_result", "completed"} <= types
+    completed = next(m for m in front.sent if m["type"] == "completed")
+    # B5：completed 携带 report_id（未生成报告时为 None）
+    assert "report_id" in completed
+    assert completed["report_id"] is None
+    # B5：step_result 带 artifact_id（有截图时为 step.id）
+    step_msg = next(m for m in front.sent if m["type"] == "step_result")
+    assert "artifact_id" in step_msg
     await execution_manager.disconnect(execution_id, front)
 
 
@@ -444,6 +451,9 @@ async def test_handle_assertion_result(client: AsyncClient):
         await worker_service.create_execution_cases_from_execution(db, execution)
         await _bind_execution_to_agent(db, execution_id, agent_id)
 
+    front = FakeWebSocket()
+    await execution_manager.connect(execution_id, front)
+
     async with SessionLocal() as db:
         await handlers.handle_step_result(
             db,
@@ -474,6 +484,13 @@ async def test_handle_assertion_result(client: AsyncClient):
         assert len(rows) == 1
         assert rows[0].assertion_type == "text_equals"
         assert rows[0].status == "pass"
+
+    # B5：assertion_result 广播（V2 §8.2）
+    assertion_msgs = [m for m in front.sent if m["type"] == "assertion_result"]
+    assert len(assertion_msgs) == 1
+    assert assertion_msgs[0]["case_id"] == case_id
+    assert assertion_msgs[0]["assertions"][0]["status"] == "pass"
+    await execution_manager.disconnect(execution_id, front)
 
 
 # ---------- CR-16：Agent 重连身份 / CR-24：广播空组清理 ----------

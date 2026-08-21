@@ -266,4 +266,13 @@ async def test_report_list_status_and_keyword_filters(client: AsyncClient):
 
     bad_keyword = await client.get("/api/reports?keyword=abc", headers=headers)
     assert bad_keyword.json()["total"] == 0
+
+    # B5：type 过滤 + project_name/device_name/finished_at 填充
+    by_type = await client.get("/api/reports?type=case", headers=headers)
+    assert by_type.status_code == 200
+    assert by_type.json()["total"] == 1
+    item = by_type.json()["items"][0]
+    assert item["project_name"] == "报告测试项目"
+    assert item["finished_at"] is not None
+
     _cleanup(execution_id)

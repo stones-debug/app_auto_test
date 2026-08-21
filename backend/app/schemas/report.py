@@ -18,10 +18,13 @@ class ReportListItem(BaseModel):
     created_at: datetime
     # 执行维度
     project_id: int | None = None
+    project_name: str | None = None
+    device_name: str | None = None
     execution_status: str | None = None
     execution_type: str | None = None
     case_name: str | None = None
     suite_name: str | None = None
+    finished_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 

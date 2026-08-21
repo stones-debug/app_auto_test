@@ -15,6 +15,7 @@ from app.models import (
     ExecutionCase,
     ExecutionLog,
     ExecutionStep,
+    Report,
 )
 from app.services.screenshot_store import validate_object_key
 from app.ws.managers import agent_manager, execution_manager
@@ -277,6 +278,7 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
             "status": step.status,
             "duration": step.duration,
             "screenshot_url": step.screenshot_path,
+            "artifact_id": step.id if step.screenshot_path else None,
             "timestamp": now.isoformat(),
         },
     )
@@ -331,6 +333,18 @@ async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict
             )
         )
     await db.commit()
+    # V2 §8.2：assertion 广播（前端按 execution_id+case_id+step_order+type 幂等合并）
+    await execution_manager.broadcast(
+        execution_id,
+        {
+            "type": "assertion_result",
+            "execution_id": execution_id,
+            "case_id": case_id,
+            "step_order": last_step.step_order,
+            "assertions": payload.get("assertions") or [],
+            "timestamp": datetime.now(UTC).isoformat(),
+        },
+    )
 
 
 async def handle_execution_result(db: AsyncSession, agent_id: int, payload: dict) -> None:
@@ -347,12 +361,17 @@ async def handle_execution_result(db: AsyncSession, agent_id: int, payload: dict
     if execution.started_at is not None:
         execution.duration = int((now - execution.started_at).total_seconds() * 1000)
     await db.commit()
+    # V2 §8.2：completed 携带 report_id（若已生成）
+    report = (
+        await db.execute(select(Report).where(Report.execution_id == execution_id))
+    ).scalar_one_or_none()
     await execution_manager.broadcast(
         execution_id,
         {
             "type": "completed",
             "execution_id": execution_id,
             "status": status,
+            "report_id": report.id if report else None,
             "timestamp": now.isoformat(),
         },
     )

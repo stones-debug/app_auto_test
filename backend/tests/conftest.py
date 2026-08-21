@@ -35,7 +35,9 @@ from app.core.database import SessionLocal  # noqa: E402
 from app.core.ratelimit import reset_rate_limits  # noqa: E402
 from app.models import (  # noqa: E402
     Agent,
+    AgentUser,
     Device,
+    DevicePreference,
     Execution,
     ExecutionAssertion,
     ExecutionCase,
@@ -52,6 +54,7 @@ from app.models import (  # noqa: E402
     TestSuite,
     TestSuiteCase,
     User,
+    UserAgentKey,
     Variable,
 )
 
@@ -187,8 +190,18 @@ async def _cleanup_test_data():
                 )
                 await session.execute(delete(Project).where(Project.id.in_(project_ids)))
 
+            # 用户可能作为其他项目成员（B2 跨项目成员关系），无论是否拥有项目都按 user_id 清理
+            await session.execute(
+                delete(ProjectMember).where(ProjectMember.user_id == user.id)
+            )
+
             # 全局变量（project_id 为空）按创建者清理，避免跨测试残留
             await session.execute(delete(Variable).where(Variable.created_by == user.id))
+
+            # Windows 方案 §3：Agent 绑定/用户 Key/默认设备按 user 清理，避免删用户 FK 冲突
+            await session.execute(delete(AgentUser).where(AgentUser.user_id == user.id))
+            await session.execute(delete(UserAgentKey).where(UserAgentKey.user_id == user.id))
+            await session.execute(delete(DevicePreference).where(DevicePreference.user_id == user.id))
 
             await session.execute(delete(RefreshToken).where(RefreshToken.user_id == user.id))
             await session.execute(delete(User).where(User.id == user.id))

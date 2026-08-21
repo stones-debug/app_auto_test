@@ -9,6 +9,7 @@ from app.api.agent import router as agent_router
 from app.api.agents import router as agents_router
 from app.api.auth import router as auth_router
 from app.api.cases import router as cases_router
+from app.api.dashboard import router as dashboard_router
 from app.api.elements import router as elements_router
 from app.api.executions import router as executions_router
 from app.api.internal import router as internal_router
@@ -52,6 +53,7 @@ app.include_router(cases_router, prefix="/api")
 app.include_router(suites_router, prefix="/api")
 app.include_router(variables_router, prefix="/api")
 app.include_router(executions_router, prefix="/api")
+app.include_router(dashboard_router, prefix="/api")
 app.include_router(agent_router, prefix="/api")
 app.include_router(agents_router, prefix="/api")
 app.include_router(me_router, prefix="/api")
