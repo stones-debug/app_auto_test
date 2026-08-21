@@ -1,0 +1,381 @@
+{
+  "_generated": {
+    "do_not_edit": true,
+    "source": "agent/executor/protocol_manifest.yaml",
+    "generator": "agent/scripts/generate_protocol.py"
+  },
+  "protocol_version": "1.0.0",
+  "min_agent_version": "1.0.0",
+  "controls": {
+    "step": [
+      "continue_on_failure"
+    ]
+  },
+  "actions": [
+    {
+      "name": "launch_app",
+      "label": "启动 APP",
+      "version": 1,
+      "needs_element": false,
+      "params": [
+        {
+          "name": "package",
+          "type": "string",
+          "required": true,
+          "label": "包名",
+          "placeholder": "com.example.app"
+        },
+        {
+          "name": "activity",
+          "type": "string",
+          "label": "Activity",
+          "placeholder": "com.example.MainActivity"
+        },
+        {
+          "name": "no_reset",
+          "type": "boolean",
+          "default": true,
+          "label": "不重置"
+        }
+      ]
+    },
+    {
+      "name": "close_app",
+      "label": "关闭 APP",
+      "version": 1,
+      "needs_element": false,
+      "params": [
+        {
+          "name": "package",
+          "type": "string",
+          "label": "包名",
+          "placeholder": "com.example.app"
+        }
+      ]
+    },
+    {
+      "name": "click",
+      "label": "点击元素",
+      "version": 1,
+      "needs_element": true,
+      "params": [
+        {
+          "name": "wait_timeout",
+          "type": "integer",
+          "default": 10,
+          "min": 0,
+          "max": 300,
+          "label": "等待秒数"
+        }
+      ]
+    },
+    {
+      "name": "input",
+      "label": "输入文本",
+      "version": 1,
+      "needs_element": true,
+      "params": [
+        {
+          "name": "value",
+          "type": "string",
+          "required": true,
+          "label": "文本",
+          "placeholder": "如 ${username}"
+        },
+        {
+          "name": "clear_first",
+          "type": "boolean",
+          "default": true,
+          "label": "先清空"
+        }
+      ]
+    },
+    {
+      "name": "clear",
+      "label": "清空输入框",
+      "version": 1,
+      "needs_element": true,
+      "params": []
+    },
+    {
+      "name": "swipe",
+      "label": "滑动",
+      "version": 1,
+      "needs_element": false,
+      "params": [
+        {
+          "name": "direction",
+          "type": "select",
+          "default": "up",
+          "label": "方向",
+          "options": [
+            {
+              "value": "up",
+              "label": "上滑"
+            },
+            {
+              "value": "down",
+              "label": "下滑"
+            },
+            {
+              "value": "left",
+              "label": "左滑"
+            },
+            {
+              "value": "right",
+              "label": "右滑"
+            }
+          ]
+        },
+        {
+          "name": "duration",
+          "type": "integer",
+          "default": 500,
+          "min": 0,
+          "label": "时长(ms)"
+        }
+      ]
+    },
+    {
+      "name": "scroll",
+      "label": "滚动到元素",
+      "version": 1,
+      "needs_element": true,
+      "params": []
+    },
+    {
+      "name": "back",
+      "label": "返回键",
+      "version": 1,
+      "needs_element": false,
+      "params": []
+    },
+    {
+      "name": "sleep",
+      "label": "等待",
+      "version": 1,
+      "needs_element": false,
+      "params": [
+        {
+          "name": "duration",
+          "type": "number",
+          "default": 1,
+          "min": 0,
+          "label": "秒数"
+        }
+      ]
+    },
+    {
+      "name": "screenshot",
+      "label": "截图",
+      "version": 1,
+      "needs_element": false,
+      "params": [
+        {
+          "name": "filename",
+          "type": "string",
+          "label": "文件名",
+          "placeholder": "留空自动生成安全文件名"
+        }
+      ]
+    },
+    {
+      "name": "get_text",
+      "label": "获取文本",
+      "version": 1,
+      "needs_element": true,
+      "params": [
+        {
+          "name": "variable_name",
+          "type": "string",
+          "label": "存入变量",
+          "placeholder": "可选，如 text_1"
+        }
+      ]
+    },
+    {
+      "name": "get_attribute",
+      "label": "获取属性",
+      "version": 1,
+      "needs_element": true,
+      "params": [
+        {
+          "name": "attribute",
+          "type": "string",
+          "required": true,
+          "label": "属性名",
+          "placeholder": "如 content-desc"
+        },
+        {
+          "name": "variable_name",
+          "type": "string",
+          "label": "存入变量",
+          "placeholder": "可选，如 attr_1"
+        }
+      ]
+    },
+    {
+      "name": "tap_coordinate",
+      "label": "坐标点击",
+      "version": 1,
+      "needs_element": false,
+      "params": [
+        {
+          "name": "x",
+          "type": "integer",
+          "required": true,
+          "label": "X"
+        },
+        {
+          "name": "y",
+          "type": "integer",
+          "required": true,
+          "label": "Y"
+        }
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "name": "element_exists",
+      "label": "元素存在/不存在",
+      "version": 1,
+      "needs_element": true,
+      "params": [
+        {
+          "name": "expected",
+          "type": "select",
+          "default": "exists",
+          "label": "期望",
+          "options": [
+            {
+              "value": "exists",
+              "label": "存在"
+            },
+            {
+              "value": "not_exists",
+              "label": "不存在"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "text_equals",
+      "label": "文本等于",
+      "version": 1,
+      "needs_element": true,
+      "params": [
+        {
+          "name": "expected",
+          "type": "string",
+          "required": true,
+          "label": "期望值"
+        },
+        {
+          "name": "trim",
+          "type": "boolean",
+          "default": false,
+          "label": "去空格"
+        }
+      ]
+    },
+    {
+      "name": "text_contains",
+      "label": "文本包含",
+      "version": 1,
+      "needs_element": true,
+      "params": [
+        {
+          "name": "expected",
+          "type": "string",
+          "required": true,
+          "label": "期望值"
+        }
+      ]
+    },
+    {
+      "name": "text_not_contains",
+      "label": "文本不包含",
+      "version": 1,
+      "needs_element": true,
+      "params": [
+        {
+          "name": "expected",
+          "type": "string",
+          "required": true,
+          "label": "期望值"
+        }
+      ]
+    },
+    {
+      "name": "attribute_equals",
+      "label": "属性等于",
+      "version": 1,
+      "needs_element": true,
+      "params": [
+        {
+          "name": "attribute",
+          "type": "string",
+          "required": true,
+          "label": "属性名"
+        },
+        {
+          "name": "expected",
+          "type": "string",
+          "required": true,
+          "label": "期望值"
+        }
+      ]
+    },
+    {
+      "name": "attribute_contains",
+      "label": "属性包含",
+      "version": 1,
+      "needs_element": true,
+      "params": [
+        {
+          "name": "attribute",
+          "type": "string",
+          "required": true,
+          "label": "属性名"
+        },
+        {
+          "name": "expected",
+          "type": "string",
+          "required": true,
+          "label": "期望值"
+        }
+      ]
+    },
+    {
+      "name": "value_equals",
+      "label": "输入框值等于",
+      "version": 1,
+      "needs_element": true,
+      "params": [
+        {
+          "name": "expected",
+          "type": "string",
+          "required": true,
+          "label": "期望值"
+        }
+      ]
+    },
+    {
+      "name": "regex_match",
+      "label": "正则匹配",
+      "version": 1,
+      "needs_element": true,
+      "params": [
+        {
+          "name": "pattern",
+          "type": "string",
+          "required": true,
+          "label": "正则",
+          "placeholder": "如 ^\\d{4}$"
+        }
+      ]
+    }
+  ]
+}

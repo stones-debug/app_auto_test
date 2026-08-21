@@ -1,6 +1,10 @@
 import logging
+from typing import TYPE_CHECKING
 
 from .driver import BaseDriver
+
+if TYPE_CHECKING:
+    from appium.webdriver.webdriver import WebDriver
 
 logger = logging.getLogger("agent.appium")
 
@@ -24,7 +28,7 @@ class AppiumDriver(BaseDriver):
         self.capabilities = capabilities or {}
         self.device = device or {}
         self.command_timeout = command_timeout
-        self.driver = None
+        self.driver: WebDriver | None = None
 
     def _device_caps(self) -> dict:
         """由 Worker 下发的设备信息构造平台能力（CR-08）。"""
@@ -67,9 +71,10 @@ class AppiumDriver(BaseDriver):
         options.load_capabilities(caps)
         return options
 
-    def _ensure(self):
+    def _ensure(self) -> "WebDriver":
         if self.driver is None:
             raise RuntimeError("Appium 会话未启动，请先执行 launch_app")
+        return self.driver
 
     def launch_app(self, package: str, activity: str | None = None, no_reset: bool = True) -> None:
         try:
@@ -102,13 +107,13 @@ class AppiumDriver(BaseDriver):
 
         from .driver import ElementNotFound
 
-        self._ensure()
+        driver = self._ensure()
         by = getattr(AppiumBy, locator_type.upper(), None) or By.XPATH
         timeout = wait_timeout if wait_timeout is not None else 10
         if timeout <= 0:
-            return self.driver.find_element(by, locator_value)
+            return driver.find_element(by, locator_value)
         try:
-            return WebDriverWait(self.driver, timeout).until(
+            return WebDriverWait(driver, timeout).until(
                 EC.presence_of_element_located((by, locator_value))
             )
         except TimeoutException:
@@ -139,8 +144,8 @@ class AppiumDriver(BaseDriver):
         return element.get_attribute(attribute) or ""
 
     def swipe(self, direction: str, duration: int = 500) -> None:
-        self._ensure()
-        size = self.driver.get_window_size()
+        driver = self._ensure()
+        size = driver.get_window_size()
         w, h = size["width"], size["height"]
         points = {
             "up": ((w // 2, int(h * 0.8)), (w // 2, int(h * 0.2))),
@@ -149,23 +154,23 @@ class AppiumDriver(BaseDriver):
             "right": ((int(w * 0.2), h // 2), (int(w * 0.8), h // 2)),
         }
         start, end = points.get(direction, points["up"])
-        self.driver.swipe(*start, *end, duration)
+        driver.swipe(start[0], start[1], end[0], end[1], duration)
 
     def scroll_to(self, element) -> None:
-        self._ensure()
-        self.driver.execute_script("arguments[0].scrollIntoView(true);", element)
+        driver = self._ensure()
+        driver.execute_script("arguments[0].scrollIntoView(true);", element)
 
     def back(self) -> None:
-        self._ensure()
-        self.driver.back()
+        driver = self._ensure()
+        driver.back()
 
     def tap_coordinate(self, x: int, y: int) -> None:
-        self._ensure()
-        self.driver.tap([(x, y)])
+        driver = self._ensure()
+        driver.tap([(x, y)])
 
     def screenshot(self, path: str) -> None:
-        self._ensure()
-        self.driver.save_screenshot(path)
+        driver = self._ensure()
+        driver.save_screenshot(path)
 
     def quit(self) -> None:
         if self.driver is not None:

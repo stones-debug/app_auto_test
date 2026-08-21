@@ -7,8 +7,15 @@ from .actions import ACTION_REGISTRY
 from .assertions import ASSERTION_REGISTRY
 from .context import ExecutionContext
 from .driver import StopRequested
+from .protocol_messages import (
+    AssertionItem,
+    AssertionResultMessage,
+    ExecutionResultMessage,
+    StepResultMessage,
+)
 
-SendFn = Callable[[dict], Awaitable[None]]
+Message = dict | StepResultMessage | AssertionResultMessage | ExecutionResultMessage
+SendFn = Callable[[Message], Awaitable[None]]
 
 
 def _run_action_in_thread(action_cls, driver, context, params: dict) -> dict:
@@ -41,32 +48,30 @@ class RunnerReporter:
         error_message: str | None = None,
         screenshot_path: str | None = None,
     ) -> None:
-        await self.send(
-            {
-                "type": "step_result",
-                "execution_id": self.execution_id,
-                "session_token": self.session_token,
-                "case_id": case_id,
-                "step_order": step_order,
-                "action": action,
-                "status": status,
-                "duration": duration,
-                "actual_value": actual_value,
-                "error_message": error_message,
-                "screenshot_path": screenshot_path,
-            }
-        )
+        msg: StepResultMessage = {
+            "type": "step_result",
+            "execution_id": self.execution_id,
+            "session_token": self.session_token,
+            "case_id": case_id,
+            "step_order": step_order,
+            "action": action,
+            "status": status,
+            "duration": duration,
+            "actual_value": actual_value,
+            "error_message": error_message,
+            "screenshot_path": screenshot_path,
+        }
+        await self.send(msg)
 
-    async def assertion_result(self, case_id: int, assertions: list[dict]) -> None:
-        await self.send(
-            {
-                "type": "assertion_result",
-                "execution_id": self.execution_id,
-                "session_token": self.session_token,
-                "case_id": case_id,
-                "assertions": assertions,
-            }
-        )
+    async def assertion_result(self, case_id: int, assertions: list[AssertionItem]) -> None:
+        msg: AssertionResultMessage = {
+            "type": "assertion_result",
+            "execution_id": self.execution_id,
+            "session_token": self.session_token,
+            "case_id": case_id,
+            "assertions": assertions,
+        }
+        await self.send(msg)
 
 
 class TestRunner:
@@ -107,7 +112,7 @@ class TestRunner:
             result["error_message"] = "截图上传失败，Agent 本地路径不回传服务端"
 
     async def run_case(self, case: dict) -> str:
-        case_id = case.get("case_id")
+        case_id = int(case.get("case_id") or 0)
         context = ExecutionContext(
             self.driver,
             case,
@@ -157,7 +162,7 @@ class TestRunner:
                 if not step.get("continue_on_failure", False):
                     break
 
-        assertion_results: list[dict] = []
+        assertion_results: list[AssertionItem] = []
         for assertion in case.get("assertions_snapshot") or []:
             try:
                 cls = ASSERTION_REGISTRY.get(assertion.get("type"))
@@ -178,11 +183,11 @@ class TestRunner:
                 }
             assertion_results.append(
                 {
-                    "type": assertion.get("type"),
-                    "expected": res.get("expected"),
-                    "actual": res.get("actual"),
-                    "status": res.get("status", "failed"),
-                    "error_message": res.get("error_message"),
+                    "type": str(assertion.get("type") or ""),
+                    "expected": str(res.get("expected") or ""),
+                    "actual": str(res.get("actual") or ""),
+                    "status": str(res.get("status") or "failed"),
+                    "error_message": str(res.get("error_message") or None),
                 }
             )
             if res.get("status") != "passed":

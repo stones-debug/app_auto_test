@@ -1,0 +1,6 @@
+{
+  "include": ["app/core", "app/services/execution_detail_service.py"],
+  "typeCheckingMode": "basic",
+  "pythonVersion": "3.12",
+  "pythonPlatform": "Linux"
+}

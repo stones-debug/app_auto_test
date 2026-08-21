@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.security import decode_token
 from app.models import Execution, Project, ProjectMember, User
+from app.schemas.ws import validate_agent_message
 from app.ws.handlers import (
     handle_assertion_result,
     handle_device_list,
@@ -96,30 +97,44 @@ async def agent_ws(websocket: WebSocket, db: AsyncSession = Depends(get_db)):
         while True:
             data = await websocket.receive_json()
             msg_type = data.get("type")
+            # Step 10：按 type 验证 payload；协议错误回结构化 error，不写入 DB
+            try:
+                valid = validate_agent_message(data)
+            except Exception:
+                valid = None
+            if valid is None:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "code": "PROTOCOL_ERROR",
+                        "message": f"Agent 消息无效或未知 type: {msg_type!r}",
+                    }
+                )
+                continue
             if msg_type == "register":
-                reply = await handle_register(db, websocket, data)
+                reply = await handle_register(db, websocket, valid)
                 if reply is None:
                     return
                 current_agent_id = reply["agent_id"]
                 await websocket.send_json(reply)
             elif msg_type == "heartbeat":
                 if current_agent_id is not None:
-                    await handle_heartbeat(db, current_agent_id, data)
+                    await handle_heartbeat(db, current_agent_id, valid)
             elif msg_type == "device_list":
                 if current_agent_id is not None:
-                    await handle_device_list(db, current_agent_id, data)
+                    await handle_device_list(db, current_agent_id, valid)
             elif msg_type == "log":
                 if current_agent_id is not None:
-                    await handle_log(db, current_agent_id, data)
+                    await handle_log(db, current_agent_id, valid)
             elif msg_type == "step_result":
                 if current_agent_id is not None:
-                    await handle_step_result(db, current_agent_id, data)
+                    await handle_step_result(db, current_agent_id, valid)
             elif msg_type == "assertion_result":
                 if current_agent_id is not None:
-                    await handle_assertion_result(db, current_agent_id, data)
+                    await handle_assertion_result(db, current_agent_id, valid)
             elif msg_type == "execution_result":
                 if current_agent_id is not None:
-                    await handle_execution_result(db, current_agent_id, data)
+                    await handle_execution_result(db, current_agent_id, valid)
             elif msg_type == "ping":
                 await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:

@@ -3,6 +3,8 @@
 import asyncio
 import time
 
+import pytest
+
 from devices.registry import DeviceRegistry
 
 D1 = {"udid": "emulator-5554", "name": "emu1", "status": "idle", "connection_type": "usb"}
@@ -105,3 +107,55 @@ async def test_scanner_error_does_not_kill_loop():
         await _wait_snapshots(snapshots, 1)  # 异常后恢复，仍能上报
     finally:
         await reg.stop()
+
+
+async def test_protocol_manifest_registry_consistency(monkeypatch):
+    """Step 10：启动断言——decorator 注册集合与 manifest 一致；多/少都拒绝。"""
+    from executor.protocol import verify_registry_matches_manifest
+
+    verify_registry_matches_manifest()  # 当前应在一次通过
+
+    # manifest 比注册多一个动作 → 拒绝并给出名称
+    from executor import actions as actions_mod
+
+    original = dict(actions_mod.ACTION_REGISTRY)
+    try:
+        actions_mod.ACTION_REGISTRY.pop("click")
+        with pytest.raises(RuntimeError, match="未注册"):
+            verify_registry_matches_manifest()
+    finally:
+        actions_mod.ACTION_REGISTRY.clear()
+        actions_mod.ACTION_REGISTRY.update(original)
+
+    # 注册比 manifest 多一个动作 → 拒绝。
+    from executor.actions import register_action
+
+    @register_action("phantom_action")
+    class _Phantom:
+        pass
+
+    with pytest.raises(RuntimeError, match="未声明"):
+        verify_registry_matches_manifest()
+    actions_mod.ACTION_REGISTRY.pop("phantom_action", None)
+
+
+async def test_generated_artifacts_are_synced():
+    """Step 10：generator --check 在产物过期时失败、重新生成后成功（本次为提交态，应即一致）。"""
+    import subprocess
+    import sys
+
+    from executor.protocol import load_manifest
+
+    manifest = load_manifest()
+    assert manifest.get("protocol_version") == "1.0.0"
+    # 无多余控制字段进入 params：controls.step 均在 Step 顶层（生成产物已按此建模）
+    for action in manifest.get("actions", []):
+        param_names = {p["name"] for p in action.get("params", [])}
+        assert "continue_on_failure" not in param_names
+
+    result = subprocess.run(
+        [sys.executable, "scripts/generate_protocol.py", "--check"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

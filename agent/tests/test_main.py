@@ -351,3 +351,48 @@ async def test_stop_test_unknown_execution_is_noop():
     app.client = FakeClient()
     await app.on_message({"type": "stop_test", "execution_id": 999})
     assert 999 not in app.runtimes
+
+
+async def test_start_test_wrong_protocol_version_reports_error():
+    """Step 10：start_test 携带不兼容 protocol_version → 上报明确 error，不启动执行。"""
+    from executor.protocol import protocol_version
+
+    app = AgentApp({"driver": "mock"})
+    app.client = FakeClient()
+    await app.on_message(
+        {
+            "type": "start_test",
+            "execution_id": 31,
+            "session_token": "t-31",
+            "protocol_version": "999.0.0",
+            "parameters": {},
+            "device": {"udid": "u-31", "platform": "android"},
+            "cases": [],
+        }
+    )
+    assert 31 not in app.runtimes  # 未创建运行时/任务
+    results = [m for m in app.client.sent if m["type"] == "execution_result"]
+    assert results and results[0]["status"] == "error"
+    assert "协议版本不兼容" in (results[0].get("error_message") or "")
+    assert protocol_version() in (results[0].get("error_message") or "")
+
+
+async def test_start_test_matching_protocol_version_runs():
+    """Step 10：protocol_version 匹配时正常执行。"""
+    from executor.protocol import protocol_version
+
+    app = AgentApp({"driver": "mock"})
+    app.client = FakeClient()
+    await app.on_message(
+        {
+            "type": "start_test",
+            "execution_id": 32,
+            "session_token": "t-32",
+            "protocol_version": protocol_version(),
+            "parameters": {},
+            "device": {"udid": "u-32", "platform": "android"},
+            "cases": _sleep_case(0.01),
+        }
+    )
+    assert 32 in app.runtimes
+    await asyncio.wait_for(app.runtimes[32].task, timeout=2)

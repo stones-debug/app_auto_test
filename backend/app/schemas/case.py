@@ -1,116 +1,15 @@
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
-# ---------- CR-09：按 action/type 严格校验嵌套参数 ----------
-
-
-class ParamsBase(BaseModel):
-    # 严格校验：新写入请求遇未知参数返回 422；旧数据库 JSON 仍可作原始 dict 读取
-    model_config = {"extra": "forbid"}
-
-
-class LaunchAppParams(ParamsBase):
-    package: str = ""
-    activity: str | None = None
-    no_reset: bool = True
-
-
-class CloseAppParams(ParamsBase):
-    package: str | None = None
-
-
-class ClickParams(ParamsBase):
-    # 等待秒数 0..300；0 表示立即查找（不等待）
-    wait_timeout: int = Field(default=10, ge=0, le=300)
-
-
-class InputParams(ParamsBase):
-    value: str = ""
-    clear_first: bool = True
-
-
-class SwipeParams(ParamsBase):
-    direction: Literal["up", "down", "left", "right"] = "up"
-    duration: int = Field(default=500, ge=0)
-
-
-class SleepParams(ParamsBase):
-    duration: float = Field(default=1, ge=0)
-
-
-class ScreenshotParams(ParamsBase):
-    filename: str | None = None
-
-
-class GetTextParams(ParamsBase):
-    variable_name: str | None = None
-
-
-class GetAttributeParams(ParamsBase):
-    attribute: str = ""
-    variable_name: str | None = None
-
-
-class TapCoordinateParams(ParamsBase):
-    x: int
-    y: int
-
-
-STEP_PARAM_MODELS: dict[str, type[ParamsBase]] = {
-    "launch_app": LaunchAppParams,
-    "close_app": CloseAppParams,
-    "click": ClickParams,
-    "input": InputParams,
-    "clear": ParamsBase,
-    "swipe": SwipeParams,
-    "scroll": ParamsBase,
-    "back": ParamsBase,
-    "sleep": SleepParams,
-    "screenshot": ScreenshotParams,
-    "get_text": GetTextParams,
-    "get_attribute": GetAttributeParams,
-    "tap_coordinate": TapCoordinateParams,
-}
-
-KNOWN_ACTIONS = frozenset(STEP_PARAM_MODELS)
-
-
-class ElementExistsParams(ParamsBase):
-    expected: Literal["exists", "not_exists"] = "exists"
-
-
-class TextEqualsParams(ParamsBase):
-    expected: str = ""
-    trim: bool = False
-
-
-class ExpectedTextParams(ParamsBase):
-    expected: str = ""
-
-
-class AttributeParams(ParamsBase):
-    attribute: str = ""
-    expected: str = ""
-
-
-class RegexMatchParams(ParamsBase):
-    pattern: str = ""
-
-
-ASSERTION_PARAM_MODELS: dict[str, type[ParamsBase]] = {
-    "element_exists": ElementExistsParams,
-    "text_equals": TextEqualsParams,
-    "text_contains": ExpectedTextParams,
-    "text_not_contains": ExpectedTextParams,
-    "attribute_equals": AttributeParams,
-    "attribute_contains": AttributeParams,
-    "value_equals": ExpectedTextParams,
-    "regex_match": RegexMatchParams,
-}
-
-KNOWN_ASSERTIONS = frozenset(ASSERTION_PARAM_MODELS)
+# ---------- CR-09/Step 10：协议参数模型来自 Registry 单一来源（generated） ----------
+from app.schemas.generated_case_params import (  # noqa: F401  (ParamsBase 由生成模块提供)
+    ASSERTION_PARAM_MODELS,
+    KNOWN_ACTIONS,
+    KNOWN_ASSERTIONS,
+    STEP_PARAM_MODELS,
+)
 
 
 class StepCreate(BaseModel):
@@ -119,6 +18,7 @@ class StepCreate(BaseModel):
     element_id: int | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     description: str | None = None
+    # Step 4：失败后继续为 Step 顶层字段（manifest controls.step，不进 params）
     continue_on_failure: bool = False
 
     @model_validator(mode="after")

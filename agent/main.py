@@ -17,6 +17,8 @@ from credentials import CredentialStore
 from devices.registry import DeviceRegistry
 from execution_supervisor import ExecutionRuntime
 from executor import StopRequested, TestRunner, create_driver
+from executor.protocol import protocol_version, verify_registry_matches_manifest
+from executor.protocol_messages import DeviceListMessage, ExecutionResultMessage
 from state import load_or_create_install_id, state_dir
 from uploader import Uploader
 from version import __version__
@@ -125,7 +127,7 @@ class AgentApp:
         error_message: str | None = None,
     ) -> None:
         """上报终态。WS 断开时记录未上报结果，绝不让清理过程抛未检索异常。"""
-        payload: dict = {
+        payload: ExecutionResultMessage = {
             "type": "execution_result",
             "execution_id": execution_id,
             "session_token": session_token,
@@ -228,7 +230,8 @@ class AgentApp:
         if self.client is None:
             return
         devices = self.registry.current()
-        await self.client.send({"type": "device_list", "devices": devices})
+        msg: DeviceListMessage = {"type": "device_list", "devices": devices}
+        await self.client.send(msg)
         logger.info("已上报 %s 台设备", len(devices))
 
     async def on_message(self, message: dict) -> None:
@@ -238,6 +241,16 @@ class AgentApp:
             execution_id = message.get("execution_id")
             if execution_id is None:
                 logger.warning("start_test 缺少 execution_id，忽略")
+                return
+            # Step 10：protocol_version 不兼容时上报明确 error，不启动执行
+            worker_protocol = message.get("protocol_version")
+            if worker_protocol is not None and worker_protocol != protocol_version():
+                await self._send_execution_result_safe(
+                    execution_id,
+                    message.get("session_token"),
+                    "error",
+                    f"协议版本不兼容: Agent 支持 {protocol_version()}，Worker 下发 {worker_protocol}",
+                )
                 return
             if execution_id in self.runtimes:
                 # CR-06：重复 start_test 保持原任务，不得覆盖 runtime
@@ -432,6 +445,9 @@ async def main() -> None:
         _out(json.dumps(result, ensure_ascii=False, indent=2))
         # Windows 方案 §4.2：自检失败以非零码退出（CI / publish.ps1 门禁）
         sys.exit(0 if result["ok"] else 1)
+
+    # Step 10：Registry 与 manifest 单一来源一致性断言（不一致拒绝启动）
+    verify_registry_matches_manifest()
 
     install_id = load_or_create_install_id(state)
     creds = CredentialStore(path=(state / "credentials") if state else None)

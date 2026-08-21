@@ -33,7 +33,7 @@ async def load_case_tree(db: AsyncSession, execution_id: int) -> list[dict]:
             .order_by(ExecutionStep.execution_case_id, ExecutionStep.step_order)
         )
     ).scalars().all()
-    assertion_rows: list = []
+    assertion_rows = ()
     if steps:
         assertion_rows = (
             await db.execute(

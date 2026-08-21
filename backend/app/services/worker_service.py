@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import re
 import secrets
@@ -6,6 +7,7 @@ from collections.abc import Callable
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import httpx
 from sqlalchemy import delete, select, update
@@ -33,6 +35,16 @@ logger = logging.getLogger("worker")
 
 _VAR_RE = re.compile(r"\$\{(\w+)\}")
 TERMINAL_STATES = {"passed", "failed", "error", "stopped", "cancelled"}
+# Step 10：协议版本来自 Registry 生成产物（单一来源）
+_PROTOCOL_JSON = Path(__file__).resolve().parents[1] / "protocol" / "action_registry.json"
+
+
+def protocol_version() -> str:
+    try:
+        with _PROTOCOL_JSON.open("r", encoding="utf-8") as fh:
+            return str(json.load(fh).get("protocol_version", "0.0.0"))
+    except OSError:  # pragma: no cover
+        return "0.0.0"
 
 
 # ---------- 变量渲染（§10.6：优先级 执行参数 > 套件 > 用例 > 项目 > 全局） ----------
@@ -466,6 +478,7 @@ async def run_execution(
             "execution_id": execution.id,
             "session_token": execution.session_token,
             "parameters": execution.parameters,
+            "protocol_version": protocol_version(),
             "device": {"udid": device.udid, "platform": device.platform},
             "cases": payload_cases,
         },
