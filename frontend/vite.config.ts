@@ -9,14 +9,14 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [
     vue(),
-    // CR-23：Element Plus 按需自动引入（样式仍走 main.ts 的全局 index.css）
+    // Step 11：Element Plus 按需自动引入 + 按需样式（component API 双出口统一 css）
     AutoImport({
       imports: ['vue', 'vue-router', 'pinia'],
-      resolvers: [ElementPlusResolver({ importStyle: false })],
+      resolvers: [ElementPlusResolver({ importStyle: 'css' })],
       dts: 'src/auto-imports.d.ts',
     }),
     Components({
-      resolvers: [ElementPlusResolver({ importStyle: false })],
+      resolvers: [ElementPlusResolver({ importStyle: 'css' })],
       dts: 'src/components.d.ts',
     }),
   ],
@@ -26,17 +26,29 @@ export default defineConfig({
     },
   },
   build: {
-    // CR-23：拆分 Vue / Element Plus / VueUse 等 vendor chunk，减小主入口
+    // Step 11：按需拆包——echarts/vue/vueuse 独立 chunk（Dashboard 之外不下载 ECharts），
+    // 不强制把所有 Element Plus 塞入单一大 chunk，保留按路由拆分
     rollupOptions: {
       output: {
-        manualChunks: {
-          vue: ['vue', 'vue-router', 'pinia'],
-          vueuse: ['@vueuse/core'],
-          draggable: ['vuedraggable'],
+        manualChunks(id) {
+          if (id.includes('node_modules/echarts') || id.includes('node_modules/zrender')) {
+            return 'echarts'
+          }
+          if (
+            id.includes('node_modules/vue') ||
+            id.includes('node_modules/vue-router') ||
+            id.includes('node_modules/pinia')
+          ) {
+            return 'vue'
+          }
+          if (id.includes('node_modules/@vueuse')) {
+            return 'vueuse'
+          }
         },
       },
     },
-    chunkSizeWarningLimit: 700,
+    // Step 11：恢复 500 kB 告警阈值，不用提高阈值隐藏回归
+    chunkSizeWarningLimit: 500,
   },
   server: {
     port: 5173,

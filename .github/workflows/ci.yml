@@ -96,6 +96,8 @@ jobs:
         run: npm test
       - name: Type check + build
         run: npm run build
+      - name: Bundle budget (Step 11)
+        run: npm run check:bundle
 
   windows-agent-package:
     name: Agent Windows package (self-check + PyInstaller + Inno)
