@@ -3,7 +3,7 @@
 Windows 方案 §2：测试强制使用独立 `test_platform_test` 数据库——
 - 导入任何 app 模块前把 DATABASE_URL 指向测试库（环境变量优先于 .env）；
 - 会话开始前确保测试库存在并执行 `alembic upgrade head`；
-- DATABASE_URL 不是测试库时直接拒绝运行（杜绝污染开发库）。
+- DATABASE_URL 不是以 `_test` 结尾的测试库时直接拒绝运行（Step 12：杜绝污染开发库）。
 """
 
 import asyncio
@@ -29,6 +29,12 @@ if settings.database_url != _TEST_URL:
         "测试必须运行在独立测试库上（拒绝污染开发库）。"
         f"当前 DATABASE_URL={settings.database_url}，期望 {_TEST_URL}"
         "；如需自定义测试库请设置 TEST_DATABASE_URL 环境变量。"
+    )
+
+_test_db_name = make_url(_TEST_URL).database or ""
+if not _test_db_name.endswith("_test"):
+    raise RuntimeError(
+        f"测试数据库名必须以 `_test` 结尾（当前 {_test_db_name!r}），拒绝运行。"
     )
 
 from app.core.database import SessionLocal  # noqa: E402
