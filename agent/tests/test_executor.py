@@ -141,19 +141,42 @@ async def test_regex_match_assertion():
 
 
 async def test_sleep_action(monkeypatch):
-    slept = []
+    slept: list[float] = []
+
+    class FakeClock:
+        def __init__(self) -> None:
+            self.t = 0.0
+
+        def time(self) -> float:
+            return self.t
+
+    clock = FakeClock()
 
     async def fake_sleep(seconds):
         slept.append(seconds)
+        clock.t += seconds  # 每片 sleep 推进虚拟时钟
 
+    monkeypatch.setattr(asyncio, "get_event_loop", lambda: clock)
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
     from executor.actions import SleepAction
 
     driver = MockDriver()
     context = ExecutionContext(driver, _make_case([]))
-    result = await SleepAction().execute(driver, context, {"duration": 2})
+    result = await SleepAction().execute(driver, context, {"duration": 0.5})
     assert result["status"] == "passed"
-    assert slept == [2]
+    # 分片 sleep：总量等于时长，且每次不超过轮询间隔
+    assert slept and abs(sum(slept) - 0.5) < 0.01
+    assert all(s <= SleepAction._POLL + 0.001 for s in slept)
+
+
+async def test_sleep_action_stops_promptly():
+    """stop 信号可打断分片 sleep（收敛性：线程不残留至整段时长结束）。"""
+    from executor.actions import SleepAction
+
+    driver = MockDriver()
+    context = ExecutionContext(driver, _make_case([]), should_stop=lambda: True)
+    with pytest.raises(StopRequested):
+        await SleepAction().execute(driver, context, {"duration": 60})
 
 
 # ---------- Windows 方案 §2：阻塞命令不阻塞事件循环 ----------

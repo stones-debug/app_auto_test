@@ -1,4 +1,5 @@
 import re
+from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
 
@@ -6,16 +7,26 @@ from .driver import ElementNotFound
 
 _VAR_RE = re.compile(r"\$\{(\w+)\}")
 
+StopPredicate = Callable[[], bool]
+
 
 class ExecutionContext:
     """执行上下文：从元素快照解析定位信息（§10.3），支持运行时变量。"""
 
-    def __init__(self, driver, case: dict, variables: dict | None = None, screenshots_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        driver,
+        case: dict,
+        variables: dict | None = None,
+        screenshots_dir: Path | None = None,
+        should_stop: StopPredicate | None = None,
+    ) -> None:
         self.driver = driver
         self.case = case
         self.elements_snapshot = case.get("elements_snapshot") or {}
         self.variables = dict(variables or {})
         self.screenshots_dir = screenshots_dir or Path(".")
+        self.should_stop = should_stop
 
     def render(self, text: str) -> str:
         def repl(match: re.Match) -> str:

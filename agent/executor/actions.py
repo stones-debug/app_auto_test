@@ -1,5 +1,7 @@
 import asyncio
 
+from .driver import StopRequested
+
 
 class BaseAction:
     async def execute(self, driver, context, params: dict) -> dict:
@@ -83,9 +85,21 @@ class BackAction(BaseAction):
 
 @register_action("sleep")
 class SleepAction(BaseAction):
+    """分片 sleep：stop 信号能及时打断阻塞中的动作线程（收敛性，Step 3）。"""
+
+    _POLL = 0.2
+
     async def execute(self, driver, context, params: dict) -> dict:
-        await asyncio.sleep(float(params.get("duration", 1)))
-        return {"status": "passed"}
+        duration = float(params.get("duration", 1))
+        stop = getattr(context, "should_stop", None)
+        deadline = asyncio.get_event_loop().time() + duration
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                return {"status": "passed"}
+            if stop is not None and stop():
+                raise StopRequested("执行被用户停止")
+            await asyncio.sleep(min(self._POLL, remaining))
 
 
 @register_action("screenshot")

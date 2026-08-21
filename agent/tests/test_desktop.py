@@ -103,3 +103,78 @@ def test_refresh_bindings_renders_users(tmp_path):
         assert messages and "alice、bob" in messages[0]
     finally:
         bridge.close()
+
+
+def test_desktop_shutdown_cancels_executions_and_joins_loop_thread(tmp_path):
+    """桌面窗口关闭后：异步 shutdown 取消活动执行并收敛，后台循环线程正常退出。"""
+    from main import AgentApp
+
+    loop = asyncio.new_event_loop()
+    shutdown_done = threading.Event()
+    thread_error: list[Exception] = []
+
+    async def _shutdown(app) -> None:
+        try:
+            await app.stop_all_executions()
+        finally:
+            shutdown_done.set()
+
+    app = AgentApp({})
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.sent: list[dict] = []
+
+        async def send(self, payload: dict) -> None:
+            self.sent.append(payload)
+
+    client = FakeClient()
+    app.client = client
+
+    def _run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        try:
+            # 模拟 serve_agent 循环：不退出，等待退出指令
+            loop.run_forever()
+        except Exception as exc:  # pragma: no cover
+            thread_error.append(exc)
+        finally:
+            try:
+                loop.close()
+            except RuntimeError:
+                pass
+
+    thread = threading.Thread(target=_run_loop, daemon=True)
+    thread.start()
+    bridge = AsyncBridge(loop, timeout=5)
+    try:
+        # 在后台循环中启动一个长执行
+        bridge.call(
+            lambda: app.on_message(
+                {
+                    "type": "start_test",
+                    "execution_id": 21,
+                    "session_token": "t-21",
+                    "parameters": {},
+                    "device": {"udid": "u-21", "platform": "android"},
+                    "cases": [{"case_id": 1, "case_name": "长执行", "steps_snapshot": [{"order": 1, "action": "sleep", "params": {"duration": 60}}], "assertions_snapshot": [], "elements_snapshot": {}}],
+                }
+            )
+        )
+        pending = app.runtimes[21].task
+        assert not pending.done()
+
+        # 桌面退出：先提交异步 shutdown 等待完成，再停循环并 join
+        bridge.call(lambda: _shutdown(app))
+        assert shutdown_done.wait(timeout=5)
+        assert pending.done()
+        assert not app.runtimes
+
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert not thread_error
+    finally:
+        if thread.is_alive():
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=2)

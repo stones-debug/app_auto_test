@@ -113,6 +113,7 @@ class TestRunner:
             case,
             self.parameters.get("variables", {}),
             self.screenshots_dir,
+            self.should_stop,
         )
         reporter = RunnerReporter(self.send, self.execution_id, self.session_token)
         case_status = "passed"
@@ -133,6 +134,9 @@ class TestRunner:
                 result = await asyncio.to_thread(
                     _run_action_in_thread, action_cls, self.driver, context, effective
                 )
+            except StopRequested:
+                # 动作线程内的停止信号（如 sleep 轮询）必须向外传播为整体 stopped
+                raise
             except Exception as exc:
                 result = {"status": "failed", "error_message": str(exc)}
             duration = int((time.monotonic() - start) * 1000)

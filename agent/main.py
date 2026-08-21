@@ -15,6 +15,7 @@ from appium_lifecycle import AppiumServer
 from binding import BindingManager
 from credentials import CredentialStore
 from devices.registry import DeviceRegistry
+from execution_supervisor import ExecutionRuntime
 from executor import StopRequested, TestRunner, create_driver
 from state import load_or_create_install_id, state_dir
 from uploader import Uploader
@@ -64,10 +65,8 @@ class AgentApp:
         self.config = config
         self.client: AgentWSClient | None = None
         self.uploader: Uploader | None = None
-        # CR-06：execution_id → 执行任务 / 取消事件 / 驱动（stop_test 立即生效）
-        self.executions: dict[int, asyncio.Task] = {}
-        self.cancel_events: dict[int, asyncio.Event] = {}
-        self.drivers: dict[int, object] = {}
+        # CR-06：execution_id → 单一运行时（取消事件/任务/驱动不拆分字典）
+        self.runtimes: dict[int, ExecutionRuntime] = {}
         # Windows 方案 §4.1：设备注册表 / Appium 生命周期
         self.registry = registry or DeviceRegistry(
             poll_interval=float(config.get("registry_poll_interval", 3.0)),
@@ -84,6 +83,7 @@ class AgentApp:
             log_dir=Path(config.get("log_dir", tempfile.gettempdir())) / "appium",
             ready_timeout=float(config.get("appium_ready_timeout", 60)),
         )
+        self._appium_lock = asyncio.Lock()
         self._appium_refs = 0
 
     # ---------- Windows 方案 §4.1：设备上报与 Appium 生命周期 ----------
@@ -96,101 +96,133 @@ class AgentApp:
         await self.registry.stop()
 
     async def _ensure_appium(self) -> None:
-        """需要执行时隐藏启动 Appium（引用计数，并发执行复用）。"""
-        if self._appium_refs == 0:
-            await asyncio.to_thread(self.appium.start)
-        self._appium_refs += 1
-        try:
-            await self.appium.wait_ready()
-        except Exception:
-            self._appium_refs = max(0, self._appium_refs - 1)
-            raise
+        """需要执行时隐藏启动 Appium（引用计数，并发执行复用）。
+
+        引用计数在同一锁内维护：并发 start 只启动一次 Server。
+        """
+        async with self._appium_lock:
+            if self._appium_refs == 0:
+                await asyncio.to_thread(self.appium.start)
+            self._appium_refs += 1
+            try:
+                await self.appium.wait_ready()
+            except Exception:
+                self._appium_refs = max(0, self._appium_refs - 1)
+                raise
 
     async def _release_appium(self) -> None:
-        self._appium_refs = max(0, self._appium_refs - 1)
-        if self._appium_refs == 0:
-            await asyncio.to_thread(self.appium.stop)
+        """并发执行全部结束后才停止 Server（引用计数在同一锁内维护）。"""
+        async with self._appium_lock:
+            self._appium_refs = max(0, self._appium_refs - 1)
+            if self._appium_refs == 0:
+                await asyncio.to_thread(self.appium.stop)
+
+    async def _send_execution_result_safe(
+        self,
+        execution_id: int,
+        session_token: str | None,
+        status: str,
+        error_message: str | None = None,
+    ) -> None:
+        """上报终态。WS 断开时记录未上报结果，绝不让清理过程抛未检索异常。"""
+        payload: dict = {
+            "type": "execution_result",
+            "execution_id": execution_id,
+            "session_token": session_token,
+            "status": status,
+        }
+        if error_message:
+            payload["error_message"] = error_message
+        if self.client is None:
+            logger.warning("WS 未连接，execution=%s 结果未上报: %s", execution_id, status)
+            return
+        try:
+            await self.client.send(payload)
+        except Exception as exc:
+            logger.warning("execution=%s 结果上报失败（%s）: %s", execution_id, status, exc)
 
     async def _run_execution(self, message: dict) -> None:
         execution_id = message["execution_id"]
         session_token = message.get("session_token")
         parameters = message.get("parameters") or {}
         cases = message.get("cases") or []
-        cancel_event = self.cancel_events[execution_id]
         mode = self.config.get("driver", "mock")
-        if mode == "appium":
-            # Windows 方案 §4.1：Appium 按需隐藏启动，执行结束后清理
-            await self._ensure_appium()
-        # CR-08：用配置的 host/port/capabilities + Worker 下发的设备信息构造驱动
-        driver = create_driver(mode, config=self.config, device=message.get("device"))
-        self.drivers[execution_id] = driver
-        with tempfile.TemporaryDirectory(prefix=f"exec_{execution_id}_") as tmpdir:
-            screenshots_dir = Path(tmpdir) / "screenshots"
-            try:
-                runner = TestRunner(
-                    driver,
-                    self.client.send,
-                    execution_id,
-                    parameters,
-                    should_stop=cancel_event.is_set,
-                    screenshots_dir=screenshots_dir,
-                    session_token=session_token,
-                    uploader=self.uploader,
-                )
-                overall = "passed"
-                for case in cases:
-                    if cancel_event.is_set():
-                        raise StopRequested("执行被用户停止")
-                    status = await runner.run_case(case)
-                    if status == "failed":
-                        overall = "failed"
-                await self.client.send(
-                    {
-                        "type": "execution_result",
-                        "execution_id": execution_id,
-                        "session_token": session_token,
-                        "status": overall,
-                    }
-                )
-                logger.info("execution=%s 完成: %s", execution_id, overall)
-            except asyncio.CancelledError:
-                # CR-06：stop_test 取消任务 → 立即上报 stopped（不重抛，任务正常结束）
-                await self.client.send(
-                    {
-                        "type": "execution_result",
-                        "execution_id": execution_id,
-                        "session_token": session_token,
-                        "status": "stopped",
-                    }
-                )
-                logger.info("execution=%s 被取消", execution_id)
-            except StopRequested:
-                await self.client.send(
-                    {
-                        "type": "execution_result",
-                        "execution_id": execution_id,
-                        "session_token": session_token,
-                        "status": "stopped",
-                    }
-                )
-                logger.info("execution=%s 已停止", execution_id)
-            except Exception as exc:
-                logger.exception("execution=%s 异常", execution_id)
-                await self.client.send(
-                    {
-                        "type": "execution_result",
-                        "execution_id": execution_id,
-                        "session_token": session_token,
-                        "status": "error",
-                        "error_message": str(exc),
-                    }
-                )
-            finally:
-                # Windows 方案 §2：Appium 清理可能阻塞，进入工作线程
-                await asyncio.to_thread(driver.quit)
-                self.drivers.pop(execution_id, None)
-                if mode == "appium":
+        runtime = self.runtimes[execution_id]
+        cancel_event = runtime.cancel_event
+        driver = None
+        tmpdir = None
+        # 最外层 try/except/finally 覆盖 _ensure_appium/create_driver/临时目录创建
+        try:
+            if mode == "appium":
+                # Windows 方案 §4.1：Appium 按需隐藏启动，执行结束后清理
+                await self._ensure_appium()
+            # CR-08：用配置的 host/port/capabilities + Worker 下发的设备信息构造驱动
+            driver = create_driver(mode, config=self.config, device=message.get("device"))
+            runtime.driver = driver
+            tmpdir = tempfile.TemporaryDirectory(prefix=f"exec_{execution_id}_")
+            screenshots_dir = Path(tmpdir.name) / "screenshots"
+            runner = TestRunner(
+                driver,
+                self.client.send,
+                execution_id,
+                parameters,
+                should_stop=cancel_event.is_set,
+                screenshots_dir=screenshots_dir,
+                session_token=session_token,
+                uploader=self.uploader,
+            )
+            overall = "passed"
+            for case in cases:
+                if cancel_event.is_set():
+                    raise StopRequested("执行被用户停止")
+                status = await runner.run_case(case)
+                if status == "failed":
+                    overall = "failed"
+            await self._send_execution_result_safe(execution_id, session_token, overall)
+            logger.info("execution=%s 完成: %s", execution_id, overall)
+        except asyncio.CancelledError:
+            # CR-06：stop_test 取消任务 → 立即上报 stopped（不重抛，任务正常结束）
+            await self._send_execution_result_safe(execution_id, session_token, "stopped")
+            logger.info("execution=%s 被取消", execution_id)
+        except StopRequested:
+            await self._send_execution_result_safe(execution_id, session_token, "stopped")
+            logger.info("execution=%s 已停止", execution_id)
+        except Exception as exc:
+            logger.exception("execution=%s 异常", execution_id)
+            await self._send_execution_result_safe(execution_id, session_token, "error", str(exc))
+        finally:
+            # 清理顺序固定：driver.quit → 清 runtime.driver → release Appium → 从 map 删除
+            if driver is not None:
+                try:
+                    # Windows 方案 §2：Appium 清理可能阻塞，进入工作线程
+                    await asyncio.to_thread(driver.quit)
+                except Exception as exc:
+                    logger.warning("execution=%s driver.quit 失败: %s", execution_id, exc)
+            if runtime.driver is not None:
+                runtime.driver = None
+            if mode == "appium":
+                try:
                     await self._release_appium()
+                except Exception as exc:
+                    logger.warning("execution=%s release appium 失败: %s", execution_id, exc)
+            self.runtimes.pop(execution_id, None)
+            if tmpdir is not None:
+                try:
+                    tmpdir.cleanup()
+                except Exception as exc:
+                    logger.warning("execution=%s 临时目录清理失败: %s", execution_id, exc)
+
+    async def stop_all_executions(self) -> None:
+        """取消全部执行并等待收敛（serve_agent / 桌面退出时调用）。"""
+        for runtime in self.runtimes.values():
+            runtime.cancel_event.set()
+            task = runtime.task
+            if task is not None and not task.done():
+                task.cancel()
+        pending = [r.task for r in self.runtimes.values() if r.task is not None and not r.task.done()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        self.runtimes.clear()
 
     async def send_device_list(self, _reply: dict | None = None) -> None:
         if self.client is None:
@@ -204,32 +236,48 @@ class AgentApp:
         msg_type = message.get("type")
         if msg_type == "start_test":
             execution_id = message.get("execution_id")
-            if execution_id in self.executions:
+            if execution_id is None:
+                logger.warning("start_test 缺少 execution_id，忽略")
+                return
+            if execution_id in self.runtimes:
+                # CR-06：重复 start_test 保持原任务，不得覆盖 runtime
                 logger.warning("execution=%s 已在执行中，忽略重复 start_test", execution_id)
                 return
-            self.cancel_events[execution_id] = asyncio.Event()
+            runtime = ExecutionRuntime(
+                execution_id=execution_id,
+                session_token=message.get("session_token"),
+            )
+            self.runtimes[execution_id] = runtime
             task = asyncio.create_task(self._run_execution(message))
-            self.executions[execution_id] = task
+            runtime.task = task
 
             def _done(_task: asyncio.Task, _eid: int = execution_id) -> None:
-                self.executions.pop(_eid, None)
-                self.cancel_events.pop(_eid, None)
+                self.runtimes.pop(_eid, None)
+                try:
+                    exc = _task.exception()
+                    if exc is not None:
+                        logger.warning("execution=%s 任务异常未上报: %s", _eid, exc)
+                except asyncio.CancelledError:
+                    pass
 
             task.add_done_callback(_done)
         elif msg_type == "stop_test":
             execution_id = message.get("execution_id")
             logger.info("收到 stop_test: execution=%s", execution_id)
-            event = self.cancel_events.get(execution_id)
-            if event is not None:
-                event.set()
-            driver = self.drivers.get(execution_id)
+            runtime = self.runtimes.get(execution_id)
+            if runtime is None:
+                logger.warning("stop_test 但 execution=%s 不在运行", execution_id)
+                return
+            # 顺序固定：set cancel event → 线程中 interrupt driver → cancel task
+            runtime.cancel_event.set()
+            driver = runtime.driver
             if driver is not None and hasattr(driver, "interrupt"):
                 try:
                     # Windows 方案 §2：终止 Appium 会话可能阻塞，进入工作线程
                     await asyncio.to_thread(driver.interrupt)
                 except Exception as exc:
                     logger.warning("interrupt 失败: %s", exc)
-            task = self.executions.get(execution_id)
+            task = runtime.task
             if task is not None and not task.done():
                 task.cancel()
         else:
@@ -292,9 +340,14 @@ async def serve_agent(app: AgentApp, client: AgentWSClient, retry_on_auth: bool 
     except KeyboardInterrupt:
         logger.info("收到 Ctrl+C，退出")
     finally:
+        # 先收敛执行任务，避免 pending task 在 loop 结束时被销毁
+        await app.stop_all_executions()
         await app.stop_device_reporting()
         if app.appium.running:
-            await asyncio.to_thread(app.appium.stop)
+            try:
+                await asyncio.to_thread(app.appium.stop)
+            except Exception as exc:
+                logger.warning("Appium 停止失败: %s", exc)
         await client.close()
 
 
@@ -303,15 +356,29 @@ def run_desktop(app: AgentApp, client: AgentWSClient, state: Path, server_url: s
     from desktop.controller import AsyncBridge, DesktopController, load_server_url
 
     loop = asyncio.new_event_loop()
+    shutdown_done = threading.Event()
+
+    async def _shutdown() -> None:
+        """桌面退出清理：取消全部执行并等待收敛后再停循环。"""
+        try:
+            await app.stop_all_executions()
+        except Exception as exc:
+            logger.warning("桌面退出清理异常: %s", exc)
+        finally:
+            shutdown_done.set()
 
     def _run_loop() -> None:
         asyncio.set_event_loop(loop)
         try:
             loop.run_until_complete(serve_agent(app, client, retry_on_auth=True))
+        except RuntimeError:
+            # 桌面退出时 loop.stop() 可能打断 run_until_complete，属正常路径
+            pass
         finally:
             loop.close()
 
-    threading.Thread(target=_run_loop, daemon=True).start()
+    loop_thread = threading.Thread(target=_run_loop, daemon=True)
+    loop_thread.start()
     bridge = AsyncBridge(loop)
     controller = DesktopController(
         app, bridge, state, state / "logs", load_server_url(state, server_url)
@@ -319,7 +386,16 @@ def run_desktop(app: AgentApp, client: AgentWSClient, state: Path, server_url: s
     try:
         controller.run()
     finally:
+        # 先提交异步 shutdown 并等待完成，再停止 loop，最后 join 后台线程
+        try:
+            bridge.call(_shutdown)
+        except Exception as exc:
+            # 后台循环已退出/关闭时无法投递协程；等待标记后继续
+            logger.warning("桌面退出异步清理不可用: %s", exc)
+            shutdown_done.set()
+        shutdown_done.wait(timeout=5)
         loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=5)
 
 
 async def main() -> None:
