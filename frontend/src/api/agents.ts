@@ -34,8 +34,24 @@ export interface Device {
   udid: string
   device_type: string
   status: string
+  connection_type: string
+  address: string | null
   locked_by_execution: number | null
   last_heartbeat: string | null
+}
+
+export interface DefaultDevice {
+  device_id: number | null
+  device: Device | null
+  available: boolean
+  reason: string
+}
+
+export interface AgentBinding {
+  id: number
+  agent_id: number
+  user_id: number
+  username: string
 }
 
 export function listAgents() {
@@ -64,6 +80,18 @@ export function getDevice(id: number) {
 
 export function releaseDevice(id: number) {
   return request.post<Device>(`/devices/${id}/release`)
+}
+
+export function getDefaultDevice() {
+  return request.get<DefaultDevice>('/devices/default')
+}
+
+export function setDefaultDevice(deviceId: number | null) {
+  return request.put<DefaultDevice>('/devices/default', { device_id: deviceId })
+}
+
+export function unbindMyAgent(agentId: number) {
+  return request.delete<void>(`/agents/${agentId}/bindings/me`)
 }
 
 export function deviceStatusType(s: string): 'success' | 'info' | 'warning' | 'danger' {

@@ -10,6 +10,12 @@ def reports_dir() -> Path:
     return base if base.is_absolute() else BASE_DIR / base
 
 
+def releases_dir() -> Path:
+    """Windows 方案 §3.4：Agent 安装包发布目录。"""
+    base = Path(settings.agent_releases_path)
+    return base if base.is_absolute() else BASE_DIR / base
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
@@ -62,6 +68,8 @@ class Settings(BaseSettings):
     reports_base_path: str = "./data/reports"
     max_upload_size: int = 524288000  # 500MB
     max_screenshot_size: int = 10485760  # 10MB
+    # Windows 方案 §3.4：Agent 安装包发布目录（latest.json + 版本化安装包）
+    agent_releases_path: str = "./data/agent-releases"
 
     # 清理
     report_retention_days: int = 90
