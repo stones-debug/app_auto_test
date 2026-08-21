@@ -29,7 +29,7 @@ vi.mock('axios', async (importOriginal) => {
 // request.ts 在模块加载时调用 axios.create —— 先导入被测模块
 import { clearTokens, getToken, refreshToken, setTokens } from '@/utils/request'
 
-const mockedAxios = vi.mocked(axios)
+const mockedAxios = vi.mocked(axios, true)
 
 describe('CR-14 会话刷新闭环', () => {
   beforeEach(() => {
