@@ -16,6 +16,10 @@ node_modules/
 dist/
 *.local
 .vite/
+*.dist/
+*.build/
+AppAutoTestAgent/
+.playwright-mcp
 
 # 环境与密钥
 .env

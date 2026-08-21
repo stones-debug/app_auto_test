@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,9 +12,11 @@ from app.schemas.suite import (
     SuiteCaseOut,
     SuiteCreate,
     SuiteOut,
+    SuitePage,
     SuiteReorderRequest,
     SuiteUpdate,
 )
+from app.utils.pagination import get_pagination
 
 router = APIRouter(tags=["套件管理"])
 
@@ -26,17 +28,28 @@ async def _get_suite_or_404(suite_id: int, db: AsyncSession) -> TestSuite:
     return suite
 
 
-@router.get("/projects/{project_id}/suites", response_model=list[SuiteOut])
+@router.get("/projects/{project_id}/suites", response_model=SuitePage)
 async def list_suites(
     project_id: int,
+    pagination=Depends(get_pagination),
+    keyword: str = "",
+    status_filter: str = Query(default="", alias="status"),
     _perm: tuple[Project, str | None] = Depends(get_project_permission),
     db: AsyncSession = Depends(get_db),
 ):
+    query = select(TestSuite).where(
+        TestSuite.project_id == project_id, TestSuite.deleted_at.is_(None)
+    )
+    if keyword:
+        query = query.where(TestSuite.name.ilike(f"%{keyword}%"))
+    if status_filter:
+        query = query.where(TestSuite.status == status_filter)
+    total = await db.scalar(select(func.count()).select_from(query.subquery()))
     suites = (
         await db.execute(
-            select(TestSuite)
-            .where(TestSuite.project_id == project_id, TestSuite.deleted_at.is_(None))
-            .order_by(TestSuite.updated_at.desc())
+            query.order_by(TestSuite.updated_at.desc())
+            .offset(pagination.offset)
+            .limit(pagination.limit)
         )
     ).scalars().all()
 
@@ -54,7 +67,12 @@ async def list_suites(
         out = SuiteOut.model_validate(suite)
         out.case_count = counts.get(suite.id, 0)
         items.append(out)
-    return items
+    return {
+        "total": total or 0,
+        "page": pagination.page,
+        "page_size": pagination.page_size,
+        "items": items,
+    }
 
 
 @router.post("/projects/{project_id}/suites", response_model=SuiteOut, status_code=status.HTTP_201_CREATED)
@@ -162,7 +180,7 @@ async def list_suite_cases(
 
 @router.post(
     "/suites/{suite_id}/cases",
-    response_model=SuiteCaseOut,
+    response_model=list[SuiteCaseOut],
     status_code=status.HTTP_201_CREATED,
 )
 async def add_suite_case(
@@ -176,33 +194,63 @@ async def add_suite_case(
     if role not in ("owner", "admin", "member"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
 
-    case = await db.get(TestCase, body.case_id)
-    if case is None or case.deleted_at is not None or case.project_id != suite.project_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用例不存在")
-
-    existing = await db.execute(
-        select(TestSuiteCase).where(
-            TestSuiteCase.suite_id == suite_id,
-            TestSuiteCase.case_id == body.case_id,
+    case_ids = body.case_ids or []
+    cases = (
+        await db.execute(
+            select(TestCase).where(
+                TestCase.id.in_(case_ids),
+                TestCase.project_id == suite.project_id,
+                TestCase.deleted_at.is_(None),
+            )
         )
+    ).scalars().all()
+    cases_by_id = {case.id: case for case in cases}
+    missing = [case_id for case_id in case_ids if case_id not in cases_by_id]
+    if missing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"用例不存在: {missing}")
+
+    existing_ids = set(
+        (
+            await db.execute(
+                select(TestSuiteCase.case_id).where(
+                    TestSuiteCase.suite_id == suite_id,
+                    TestSuiteCase.case_id.in_(case_ids),
+                )
+            )
+        ).scalars().all()
     )
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该用例已在套件中")
+    if existing_ids:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"用例已在套件中: {sorted(existing_ids)}",
+        )
 
     max_order = await db.scalar(
         select(func.max(TestSuiteCase.sort_order)).where(TestSuiteCase.suite_id == suite_id)
     )
-    sc = TestSuiteCase(suite_id=suite_id, case_id=body.case_id, sort_order=(max_order or 0) + 1)
-    db.add(sc)
+    created: list[tuple[TestSuiteCase, TestCase]] = []
+    for offset, case_id in enumerate(case_ids, start=1):
+        sc = TestSuiteCase(
+            suite_id=suite_id,
+            case_id=case_id,
+            sort_order=(max_order or 0) + offset,
+        )
+        db.add(sc)
+        created.append((sc, cases_by_id[case_id]))
     await db.commit()
-    await db.refresh(sc)
-    return SuiteCaseOut(
-        id=sc.id,
-        case_id=sc.case_id,
-        case_name=case.name,
-        module_name=None,
-        sort_order=sc.sort_order,
-    )
+    result: list[SuiteCaseOut] = []
+    for sc, case in created:
+        await db.refresh(sc)
+        result.append(
+            SuiteCaseOut(
+                id=sc.id,
+                case_id=sc.case_id,
+                case_name=case.name,
+                module_name=None,
+                sort_order=sc.sort_order,
+            )
+        )
+    return result
 
 
 @router.put("/suites/{suite_id}/cases/order", status_code=status.HTTP_204_NO_CONTENT)

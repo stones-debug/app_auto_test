@@ -84,6 +84,9 @@ async def _resolve_role(project: Project, user: User, db: AsyncSession) -> str:
 async def list_projects(
     pagination=Depends(get_pagination),
     visibility: str = "all",
+    scope: str = "",
+    role: str = "",
+    keyword: str = "",
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -99,10 +102,35 @@ async def list_projects(
     cond = (Project.deleted_at.is_(None)) & (
         (Project.visibility == "public") | (Project.id.in_(owned_or_member))
     )
-    if visibility == "public":
+    effective_scope = scope or visibility
+    if effective_scope == "public":
         cond = (Project.deleted_at.is_(None)) & (Project.visibility == "public")
-    elif visibility == "mine":
+    elif effective_scope == "mine":
         cond = (Project.deleted_at.is_(None)) & (Project.owner_id == user.id)
+
+    if keyword:
+        cond &= Project.name.ilike(f"%{keyword.strip()}%")
+
+    if role == "owner":
+        cond &= Project.owner_id == user.id
+    elif role in {"admin", "member"}:
+        cond &= Project.id.in_(
+            select(ProjectMember.project_id).where(
+                ProjectMember.user_id == user.id,
+                ProjectMember.role == role,
+            )
+        )
+    elif role == "viewer":
+        all_memberships = select(ProjectMember.project_id).where(ProjectMember.user_id == user.id)
+        viewer_memberships = select(ProjectMember.project_id).where(
+            ProjectMember.user_id == user.id,
+            ProjectMember.role == "viewer",
+        )
+        cond &= Project.id.in_(viewer_memberships) | (
+            (Project.visibility == "public")
+            & (Project.owner_id != user.id)
+            & Project.id.not_in(all_memberships)
+        )
 
     total = await db.scalar(select(func.count()).select_from(Project).where(cond))
     rows = (
@@ -225,11 +253,13 @@ async def member_candidates(
 ):
     """候选用户：排除 owner 与已有成员，按用户名/邮箱模糊搜索。"""
     project, _role = perm
+    keyword = keyword.strip()
+    if len(keyword) < 2:
+        return []
     existing_ids = select(ProjectMember.user_id).where(ProjectMember.project_id == project_id)
     cond = (User.id != project.owner_id) & (User.id.not_in(existing_ids)) & (User.status == "active")
-    if keyword:
-        like = f"%{keyword}%"
-        cond = cond & ((User.username.ilike(like)) | (User.email.ilike(like)))
+    like = f"%{keyword}%"
+    cond = cond & ((User.username.ilike(like)) | (User.email.ilike(like)))
     rows = (
         await db.execute(
             select(User).where(cond).order_by(User.username).limit(limit)

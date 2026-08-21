@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,9 +38,11 @@ from app.schemas.execution import (
     ExecutionLogPage,
     ExecutionOut,
     ExecutionPage,
+    ExecutionRetryRequest,
     ExecutionStepOut,
 )
 from app.services import execution_service
+from app.services.screenshot_store import resolve_screenshot_path
 from app.utils.pagination import get_pagination
 
 router = APIRouter(tags=["执行管理"])
@@ -300,7 +303,11 @@ async def get_execution(
             )
         ).scalars().all()
         case_out = ExecutionCaseOut.model_validate(ec)
-        case_out.steps = [ExecutionStepOut.model_validate(s) for s in step_rows]
+        case_out.steps = []
+        for step in step_rows:
+            step_out = ExecutionStepOut.model_validate(step)
+            step_out.artifact_id = step.id if step.screenshot_path else None
+            case_out.steps.append(step_out)
         case_out.assertions = [ExecutionAssertionOut.model_validate(a) for a in assertion_rows]
         case_outs.append(case_out)
 
@@ -334,6 +341,33 @@ async def get_execution_logs(
     return {"total": total, "page": pagination.page, "page_size": pagination.page_size, "items": items}
 
 
+@router.get("/executions/{execution_id}/artifacts/{artifact_id}")
+async def get_execution_artifact(
+    execution_id: int,
+    artifact_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    execution = await _get_execution_or_404(execution_id, db)
+    await _require_execution_access(execution, user, db)
+    step = (
+        await db.execute(
+            select(ExecutionStep)
+            .join(ExecutionCase, ExecutionStep.execution_case_id == ExecutionCase.id)
+            .where(
+                ExecutionCase.execution_id == execution_id,
+                ExecutionStep.id == artifact_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if step is None or not step.screenshot_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="执行附件不存在")
+    target = resolve_screenshot_path(execution_id, step.screenshot_path)
+    if target is None or not target.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="执行附件不存在")
+    return FileResponse(target)
+
+
 @router.post("/executions/{execution_id}/stop")
 async def stop_execution(
     execution_id: int,
@@ -349,13 +383,19 @@ async def stop_execution(
 @router.post("/executions/{execution_id}/retry", response_model=ExecutionOut, status_code=status.HTTP_201_CREATED)
 async def retry_execution(
     execution_id: int,
-    device_id: int | None = None,
+    body: ExecutionRetryRequest | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     execution = await _get_execution_or_404(execution_id, db)
     await _require_execution_write(execution, user, db)
-    # Windows 方案 §3.3：重试也校验设备授权；未指定时沿用原执行设备（缺失则报 DEVICE_REQUIRED）
-    target_device_id = device_id if device_id is not None else execution.device_id
-    await _validate_device_for_execution(target_device_id, user, db)
-    return await execution_service.retry_execution(db, execution, user, device_id)
+    if body is None:
+        raise api_error(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            code="DEVICE_REQUIRED",
+            message="重试必须指定执行设备 device_id",
+        )
+    await _validate_device_for_execution(body.device_id, user, db)
+    return await execution_service.retry_execution(
+        db, execution, user, body.device_id, body.timeout_seconds
+    )

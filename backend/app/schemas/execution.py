@@ -17,6 +17,11 @@ class BatchExecutionCreate(BaseModel):
     timeout_seconds: int | None = Field(default=None, ge=60, le=7200)
 
 
+class ExecutionRetryRequest(BaseModel):
+    device_id: int
+    timeout_seconds: int | None = Field(default=None, ge=60, le=7200)
+
+
 class ExecutionCaseOut(BaseModel):
     id: int
     case_id: int
@@ -42,6 +47,7 @@ class ExecutionStepOut(BaseModel):
     duration: int | None
     actual_value: str | None
     error_message: str | None
+    artifact_id: int | None = None
 
     model_config = {"from_attributes": True}
 

@@ -28,6 +28,13 @@ class SuiteOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class SuitePage(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[SuiteOut]
+
+
 class SuiteCaseOut(BaseModel):
     id: int  # test_suite_cases.id
     case_id: int
@@ -37,7 +44,17 @@ class SuiteCaseOut(BaseModel):
 
 
 class SuiteAddCaseRequest(BaseModel):
-    case_id: int
+    case_ids: list[int] | None = Field(default=None, min_length=1)
+    case_id: int | None = None
+
+    @model_validator(mode="after")
+    def _normalize_case_ids(self):
+        ids = self.case_ids or ([] if self.case_id is None else [self.case_id])
+        ids = list(dict.fromkeys(ids))
+        if not ids:
+            raise ValueError("case_ids 不能为空")
+        self.case_ids = ids
+        return self
 
 
 class SuiteReorderRequest(BaseModel):
