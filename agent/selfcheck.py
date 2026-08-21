@@ -32,11 +32,19 @@ def _check_appium() -> tuple[bool, str]:
     if shutil.which("appium"):
         return True, "appium 在 PATH 中"
     try:
-        import appium  # noqa: F401
+        from appium import webdriver  # noqa: F401
 
         return True, "appium-python-client 已安装（server 请另行配置）"
-    except ImportError:
-        return False, "未安装 appium-python-client（可选：pip install 'agent[appium]'）"
+    except ImportError as exc:
+        probe = ""
+        try:
+            from importlib.metadata import distribution
+
+            dist = distribution("Appium-Python-Client")
+            probe = f" metadata_path={dist._path}"
+        except Exception as meta_exc:
+            probe = f" metadata_lookup_failed: {meta_exc}"
+        return False, f"appium-python-client 导入失败（pip install 'agent[appium]'）: {exc}{probe}"
 
 
 def _check_state_dir(state: Path | None) -> tuple[bool, str]:

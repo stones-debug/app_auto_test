@@ -361,6 +361,16 @@ async def handle_execution_result(db: AsyncSession, agent_id: int, payload: dict
     execution.finished_at = now
     if execution.started_at is not None:
         execution.duration = int((now - execution.started_at).total_seconds() * 1000)
+    error_message = payload.get("error_message")
+    if error_message:
+        db.add(
+            ExecutionLog(
+                execution_id=execution_id,
+                level="ERROR",
+                message=str(error_message),
+                source="agent",
+            )
+        )
     await db.commit()
     # V2 §8.2：completed 携带 report_id（若已生成）
     report = (

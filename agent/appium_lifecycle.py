@@ -10,6 +10,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import time
 import urllib.request
 from collections.abc import Callable
@@ -18,6 +19,20 @@ from pathlib import Path
 logger = logging.getLogger("agent.appium")
 
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
+
+def bundled_appium() -> tuple[Path, Path, Path | None] | None:
+    """打包安装版随附的便携 Node + Appium + 驱动目录（exe 旁 appium/，publish.ps1 生成）。
+
+    返回 (node.exe, appium main.js, APPIUM_HOME 驱动目录)；未随包时返回 None。
+    """
+    root = Path(sys.executable).resolve().parent
+    node = root / "appium" / "node" / "node.exe"
+    main_js = root / "appium" / "appium" / "node_modules" / "appium" / "build" / "lib" / "main.js"
+    if node.is_file() and main_js.is_file():
+        home = root / "appium" / "appium-home"
+        return node, main_js, home if home.is_dir() else None
+    return None
 
 
 class AppiumError(Exception):
@@ -63,6 +78,10 @@ class AppiumServer:
             return [self.appium_bin, "--port", str(self.port), "--address", self.host]
         if self.node_bin and self.appium_js:
             return [self.node_bin, str(self.appium_js), "--port", str(self.port), "--address", self.host]
+        bundled = bundled_appium()
+        if bundled:
+            node_bin, main_js, _ = bundled
+            return [str(node_bin), str(main_js), "--port", str(self.port), "--address", self.host]
         resolved = shutil.which("appium")
         if not resolved:
             raise AppiumError("未找到 appium 可执行文件（请配置 appium_bin 或 node_bin/appium_js）")
@@ -80,6 +99,17 @@ class AppiumServer:
         kwargs: dict = {}
         if os.name == "nt":
             kwargs["creationflags"] = CREATE_NO_WINDOW
+        bundled = bundled_appium()
+        if bundled:
+            _, _, home = bundled
+            env = os.environ.copy()
+            if home is not None:
+                env["APPIUM_HOME"] = str(home)
+            # uiautomator2 驱动需要 ANDROID_HOME 定位 platform-tools/adb（随包在 exe 同级）
+            root = Path(sys.executable).resolve().parent
+            env["ANDROID_HOME"] = str(root)
+            env["ANDROID_SDK_ROOT"] = str(root)
+            kwargs["env"] = env
         self.process = subprocess.Popen(
             command,
             shell=False,

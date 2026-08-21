@@ -52,9 +52,68 @@ if (-not $SkipBuild) {
 $vendor = "vendor"
 if (Test-Path "$vendor\platform-tools\adb.exe") {
     Write-Host "== 2) copy platform-tools =="
-    Copy-Item -Recurse -Force "$vendor\platform-tools" (Join-Path $bundledApp "platform-tools")
+    $ptTarget = Join-Path $bundledApp "platform-tools"
+    if (Test-Path $ptTarget) { Remove-Item -Recurse -Force $ptTarget }
+    Copy-Item -Recurse -Force "$vendor\platform-tools" $ptTarget
 } else {
     Write-Host "== 2) vendor\platform-tools not found; installer will NOT bundle adb =="
+}
+
+# 2.5) bundle portable Node + Appium Server + UiAutomator2 driver (Windows plan 4.1)
+$appiumVendor = "$vendor\appium"
+$nodeVersion = "v20.20.2"
+$appiumReady = (Test-Path "$appiumVendor\node\node.exe") -and `
+    (Test-Path "$appiumVendor\appium\node_modules\appium\build\lib\main.js") -and `
+    (Test-Path "$appiumVendor\appium-home\node_modules")
+if (-not $appiumReady) {
+    Write-Host "== 2.5) preparing portable Node $nodeVersion + Appium =="
+    if (Test-Path $appiumVendor) { Remove-Item -Recurse -Force $appiumVendor }
+    New-Item -ItemType Directory -Force -Path $appiumVendor | Out-Null
+    $nodeZip = Join-Path $env:TEMP "node-$nodeVersion-win-x64.zip"
+    $nodeExtract = Join-Path $env:TEMP "node-$nodeVersion-extract"
+    if (-not (Test-Path $nodeZip)) {
+        Invoke-WebRequest -Uri "https://nodejs.org/dist/$nodeVersion/node-$nodeVersion-win-x64.zip" -OutFile $nodeZip
+    }
+    if (Test-Path $nodeExtract) { Remove-Item -Recurse -Force $nodeExtract }
+    Expand-Archive -Force $nodeZip $nodeExtract
+    Copy-Item -Recurse -Force "$nodeExtract\node-$nodeVersion-win-x64" "$appiumVendor\node"
+    $nodeExe = Join-Path $appiumVendor "node\node.exe"
+    $npmCli = Join-Path $appiumVendor "node\node_modules\npm\bin\npm-cli.js"
+    & $nodeExe $npmCli install --prefix "$appiumVendor\appium" --no-audit --no-fund appium@2
+    if ($LASTEXITCODE -ne 0) { throw "appium npm install failed" }
+    $appiumHome = Join-Path $appiumVendor "appium-home"
+    $appiumMain = Join-Path $appiumVendor "appium\node_modules\appium\build\lib\main.js"
+    $oldHome = $env:APPIUM_HOME
+    $env:APPIUM_HOME = $appiumHome
+    try {
+        # Pin uiautomator2 3.9.1: newer 7.x/8.x require Appium 3 RC (peer ^3.0.0-rc.2)
+        & $nodeExe $appiumMain driver install "uiautomator2@3.9.1"
+        if ($LASTEXITCODE -ne 0) { throw "uiautomator2 driver install failed" }
+    } finally {
+        if ($null -eq $oldHome) { Remove-Item Env:\APPIUM_HOME } else { $env:APPIUM_HOME = $oldHome }
+    }
+    Write-Host "== 2.5) portable Node + Appium ready =="
+}
+if (Test-Path "$appiumVendor\node\node.exe") {
+    Write-Host "== 2.5) copy portable Node + Appium =="
+    $appiumTarget = Join-Path $bundledApp "appium"
+    if (Test-Path $appiumTarget) { Remove-Item -Recurse -Force $appiumTarget }
+    Copy-Item -Recurse -Force $appiumVendor $appiumTarget
+    # Appium 首次启动会按运行时 APPIUM_HOME 重新生成 extensions.yaml；
+    # 删除构建机残留 manifest，避免 installPath 指向构建机绝对路径
+    $staleManifest = Join-Path $appiumTarget "appium-home\node_modules\.cache"
+    if (Test-Path $staleManifest) { Remove-Item -Recurse -Force $staleManifest }
+} else {
+    Write-Host "== 2.5) vendor\appium not found; installer will NOT bundle Appium =="
+}
+
+# 2.6) bundle Python dist-info metadata (appium/selenium read own version via importlib.metadata)
+$metaTarget = Join-Path $bundledApp "_internal"
+foreach ($pat in @("appium_python_client-*.dist-info", "selenium-*.dist-info")) {
+    Get-ChildItem ".venv\Lib\site-packages" -Directory -Filter $pat -ErrorAction SilentlyContinue | ForEach-Object {
+        Write-Host "== 2.6) copy $($_.Name) =="
+        Copy-Item -Recurse -Force $_.FullName (Join-Path $metaTarget $_.Name)
+    }
 }
 
 # 3) Inno Setup compile

@@ -5,6 +5,9 @@ dist/
 build/
 *.spec.bak
 
+# 随包工具链（publish.ps1 自动下载生成，勿入库）
+vendor/appium/
+
 # 运行时状态
 config.yaml
 state/

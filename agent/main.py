@@ -427,6 +427,9 @@ async def main() -> None:
     )
 
     state = Path(args.state_dir) if args.state_dir else None
+    if state is None and not args.self_check:
+        # 打包/常规模式：日志必须落盘（Windows 方案 §4.1，LocalAppData\\AppAutoTestAgent\\logs）
+        state = state_dir()
     if state is not None:
         configure_file_logging(state)
 
