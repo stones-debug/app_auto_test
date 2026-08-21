@@ -13,9 +13,22 @@ from app.api.deps import (
 from app.core.database import get_db
 from app.core.errors import api_error
 from app.core.ratelimit import rate_limit
-from app.models import Agent, Device, Execution, ExecutionCase, TestCase, TestSuite, User
+from app.models import (
+    Agent,
+    Device,
+    Execution,
+    ExecutionAssertion,
+    ExecutionCase,
+    ExecutionStep,
+    Project,
+    ProjectMember,
+    TestCase,
+    TestSuite,
+    User,
+)
 from app.schemas.execution import (
     BatchExecutionCreate,
+    ExecutionAssertionOut,
     ExecutionCaseOut,
     ExecutionCreate,
     ExecutionDetail,
@@ -24,6 +37,7 @@ from app.schemas.execution import (
     ExecutionLogPage,
     ExecutionOut,
     ExecutionPage,
+    ExecutionStepOut,
 )
 from app.services import execution_service
 from app.utils.pagination import get_pagination
@@ -167,12 +181,14 @@ async def list_executions(
     project_id: int | None = None,
     status: str = "",
     type: str = "",
+    keyword: str = "",
+    device_id: int | None = None,
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
     pagination=Depends(get_pagination),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.models import Project, ProjectMember
-
     if project_id is not None:
         await get_project_permission(project_id, user, db)
         query = select(Execution).where(Execution.project_id == project_id)
@@ -187,6 +203,22 @@ async def list_executions(
         query = query.where(Execution.status == status)
     if type:
         query = query.where(Execution.type == type)
+    if device_id is not None:
+        query = query.where(Execution.device_id == device_id)
+    if created_from is not None:
+        query = query.where(Execution.created_at >= created_from)
+    if created_to is not None:
+        query = query.where(Execution.created_at <= created_to)
+    if keyword:
+        # 匹配执行 ID 或关联对象名（case/suite 名称）；先解析数字 ID
+        like = f"%{keyword}%"
+        name_cond = Execution.case_id.in_(
+            select(TestCase.id).where(TestCase.name.ilike(like))
+        ) | Execution.suite_id.in_(select(TestSuite.id).where(TestSuite.name.ilike(like)))
+        if keyword.isdigit():
+            query = query.where((Execution.id == int(keyword)) | name_cond)
+        else:
+            query = query.where(name_cond)
 
     # CR-15：count 与 items 从同一过滤后的 base query 派生
     count_query = select(func.count()).select_from(query.subquery())
@@ -199,20 +231,38 @@ async def list_executions(
 
     case_ids = {r.case_id for r in rows if r.case_id}
     suite_ids = {r.suite_id for r in rows if r.suite_id}
+    project_ids = {r.project_id for r in rows}
+    device_ids = {r.device_id for r in rows if r.device_id}
+    creator_ids = {r.created_by for r in rows if r.created_by}
     case_names: dict[int, str] = {}
     suite_names: dict[int, str] = {}
+    project_names: dict[int, str] = {}
+    device_names: dict[int, str] = {}
+    creator_names: dict[int, str] = {}
     if case_ids:
         cases = (await db.execute(select(TestCase).where(TestCase.id.in_(case_ids)))).scalars().all()
         case_names = {c.id: c.name for c in cases}
     if suite_ids:
         suites = (await db.execute(select(TestSuite).where(TestSuite.id.in_(suite_ids)))).scalars().all()
         suite_names = {s.id: s.name for s in suites}
+    if project_ids:
+        projects = (await db.execute(select(Project).where(Project.id.in_(project_ids)))).scalars().all()
+        project_names = {p.id: p.name for p in projects}
+    if device_ids:
+        devices = (await db.execute(select(Device).where(Device.id.in_(device_ids)))).scalars().all()
+        device_names = {d.id: d.name for d in devices}
+    if creator_ids:
+        creators = (await db.execute(select(User).where(User.id.in_(creator_ids)))).scalars().all()
+        creator_names = {u.id: u.username for u in creators}
 
     items = []
     for row in rows:
         item = ExecutionListItem.model_validate(row)
         item.case_name = case_names.get(row.case_id) if row.case_id else None
         item.suite_name = suite_names.get(row.suite_id) if row.suite_id else None
+        item.project_name = project_names.get(row.project_id)
+        item.device_name = device_names.get(row.device_id) if row.device_id else None
+        item.created_by_name = creator_names.get(row.created_by) if row.created_by else None
         items.append(item)
     return {"total": total or 0, "page": pagination.page, "page_size": pagination.page_size, "items": items}
 
@@ -225,15 +275,45 @@ async def get_execution(
 ):
     execution = await _get_execution_or_404(execution_id, db)
     await _require_execution_access(execution, user, db)
-    cases = (
+    case_rows = (
         await db.execute(
             select(ExecutionCase)
             .where(ExecutionCase.execution_id == execution_id)
             .order_by(ExecutionCase.id)
         )
     ).scalars().all()
+    case_outs: list[ExecutionCaseOut] = []
+    for ec in case_rows:
+        step_rows = (
+            await db.execute(
+                select(ExecutionStep)
+                .where(ExecutionStep.execution_case_id == ec.id)
+                .order_by(ExecutionStep.step_order)
+            )
+        ).scalars().all()
+        assertion_rows = (
+            await db.execute(
+                select(ExecutionAssertion)
+                .join(ExecutionStep, ExecutionAssertion.execution_step_id == ExecutionStep.id)
+                .where(ExecutionStep.execution_case_id == ec.id)
+                .order_by(ExecutionAssertion.id)
+            )
+        ).scalars().all()
+        case_out = ExecutionCaseOut.model_validate(ec)
+        case_out.steps = [ExecutionStepOut.model_validate(s) for s in step_rows]
+        case_out.assertions = [ExecutionAssertionOut.model_validate(a) for a in assertion_rows]
+        case_outs.append(case_out)
+
     detail = ExecutionDetail.model_validate(execution)
-    detail.cases = [ExecutionCaseOut.model_validate(c) for c in cases]
+    detail.cases = case_outs
+    project = await db.get(Project, execution.project_id)
+    detail.project_name = project.name if project else None
+    if execution.device_id:
+        device = await db.get(Device, execution.device_id)
+        detail.device_name = device.name if device else None
+    if execution.created_by:
+        creator = await db.get(User, execution.created_by)
+        detail.created_by_name = creator.username if creator else None
     return detail
 
 

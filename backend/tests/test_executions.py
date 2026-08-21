@@ -1,5 +1,6 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from app.main import app
 from tests.helpers import create_bound_agent_device
@@ -363,3 +364,91 @@ async def test_list_filters_status_and_type_with_consistent_total(client: AsyncC
     no_match = await client.get(f"/api/executions?project_id={project_id}&status=passed", headers=headers)
     assert no_match.json()["total"] == 0
     assert no_match.json()["items"] == []
+
+
+async def test_list_extended_filters_and_names(client: AsyncClient):
+    """B4：执行列表 keyword/device_id 过滤；列表项含 project_name/device_name/created_by_name。"""
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+    element_id = await _create_element(client, token, project_id)
+    case_id = await _create_case(client, token, project_id, element_id)
+    device_id = await _create_agent_device(client, token)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    created = await client.post(
+        f"/api/executions/cases/{case_id}", headers=headers,
+        json={"device_id": device_id, "parameters": {}},
+    )
+    execution_id = created.json()["id"]
+
+    listed = (await client.get(f"/api/executions?project_id={project_id}", headers=headers)).json()
+    item = listed["items"][0]
+    assert item["project_name"] == "执行测试项目"
+    assert item["device_name"] is not None
+    assert item["created_by_name"] == "pytest_exec_user"
+
+    # keyword=数字 → 匹配 execution ID
+    by_id = await client.get(f"/api/executions?project_id={project_id}&keyword={execution_id}", headers=headers)
+    assert by_id.json()["total"] == 1
+    assert by_id.json()["items"][0]["id"] == execution_id
+
+    # keyword=用例名 → 匹配
+    by_name = await client.get(f"/api/executions?project_id={project_id}&keyword=登录用例", headers=headers)
+    assert by_name.json()["total"] == 1
+
+    # keyword 无匹配
+    none = await client.get(f"/api/executions?project_id={project_id}&keyword=不存在对象", headers=headers)
+    assert none.json()["total"] == 0
+
+    # device_id 过滤
+    by_device = await client.get(f"/api/executions?project_id={project_id}&device_id={device_id}", headers=headers)
+    assert by_device.json()["total"] == 1
+    wrong_device = await client.get(f"/api/executions?project_id={project_id}&device_id=999999", headers=headers)
+    assert wrong_device.json()["total"] == 0
+
+
+async def test_execution_detail_aggregates_steps_assertions(client: AsyncClient):
+    """B4：执行详情聚合 steps/assertions，并填充 project_name/device_name/created_by_name。"""
+    from app.core.database import SessionLocal
+    from app.models import Device, Execution
+    from app.services import worker_service
+    from app.ws import handlers
+
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+    element_id = await _create_element(client, token, project_id)
+    case_id = await _create_case(client, token, project_id, element_id)
+    device_id = await _create_agent_device(client, token)
+    headers = {"Authorization": f"Bearer {token}"}
+    created = await client.post(
+        f"/api/executions/cases/{case_id}", headers=headers,
+        json={"device_id": device_id, "parameters": {"variables": {"btn_id": "btn"}}},
+    )
+    execution_id = created.json()["id"]
+
+    # 造 execution_cases 快照 + 置 running + 绑定设备，生成 steps/assertions 行
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        execution.status = "running"
+        await db.commit()
+        agent_id = (await db.execute(select(Device.agent_id).where(Device.id == device_id))).scalar_one()
+        await handlers.handle_step_result(
+            db, agent_id,
+            {"execution_id": execution_id, "case_id": case_id, "step_order": 1, "action": "click", "status": "passed", "duration": 100},
+        )
+        await handlers.handle_assertion_result(
+            db, agent_id,
+            {"execution_id": execution_id, "case_id": case_id, "assertions": [{"type": "text_equals", "expected": "a", "actual": "a", "status": "pass"}]},
+        )
+
+    detail = (await client.get(f"/api/executions/{execution_id}", headers=headers)).json()
+    assert detail["project_name"] == "执行测试项目"
+    assert detail["device_name"] is not None
+    assert detail["created_by_name"] == "pytest_exec_user"
+    assert len(detail["cases"]) == 1
+    case = detail["cases"][0]
+    assert case["steps"][0]["action"] == "click"
+    assert case["steps"][0]["status"] == "passed"
+    assert case["assertions"][0]["assertion_type"] == "text_equals"
+    assert case["assertions"][0]["status"] == "pass"

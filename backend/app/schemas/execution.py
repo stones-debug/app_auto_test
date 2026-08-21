@@ -27,6 +27,32 @@ class ExecutionCaseOut(BaseModel):
     finished_at: datetime | None
     duration: int | None
     error_message: str | None
+    steps: list["ExecutionStepOut"] = Field(default_factory=list)
+    assertions: list["ExecutionAssertionOut"] = Field(default_factory=list)
+
+    model_config = {"from_attributes": True}
+
+
+class ExecutionStepOut(BaseModel):
+    id: int
+    step_order: int
+    action: str
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    status: str
+    duration: int | None
+    actual_value: str | None
+    error_message: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class ExecutionAssertionOut(BaseModel):
+    id: int
+    assertion_type: str
+    expected_value: str | None
+    actual_value: str | None
+    status: str
+    error_message: str | None
 
     model_config = {"from_attributes": True}
 
@@ -54,6 +80,9 @@ class ExecutionOut(BaseModel):
 
 
 class ExecutionDetail(ExecutionOut):
+    project_name: str | None = None
+    device_name: str | None = None
+    created_by_name: str | None = None
     cases: list[ExecutionCaseOut] = Field(default_factory=list)
 
 
@@ -75,6 +104,9 @@ class ExecutionListItem(BaseModel):
     created_at: datetime
     case_name: str | None = None
     suite_name: str | None = None
+    project_name: str | None = None
+    device_name: str | None = None
+    created_by_name: str | None = None
 
     model_config = {"from_attributes": True}
 
