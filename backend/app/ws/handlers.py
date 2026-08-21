@@ -78,7 +78,8 @@ async def handle_register(db: AsyncSession, ws: WebSocket, payload: dict) -> dic
     agent = (
         await db.execute(select(Agent).where(Agent.agent_id == agent_id_str))
     ).scalar_one_or_none()
-    if agent is None or not verify_psk(agent_key, agent.agent_key):
+    if agent is None or agent.deleted_at is not None or not verify_psk(agent_key, agent.agent_key):
+        # Step 6：软注销 Agent 不接受 WS 注册
         await ws.close(code=1008, reason="Agent 认证失败")
         return None
     # CR-21：注册时语义化版本比较（min_agent_version）

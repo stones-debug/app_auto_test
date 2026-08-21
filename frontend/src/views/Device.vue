@@ -147,16 +147,33 @@ async function submitCreate() {
 }
 
 async function remove(agent: Agent) {
-  await ElMessageBox.confirm(`确认注销 Agent「${agent.agent_id}」及其所有设备？`, '提示', { type: 'warning' })
-  await deleteAgent(agent.id)
-  ElMessage.success('已注销')
+  await ElMessageBox.confirm(`确认注销 Agent「${agent.agent_id}」？（设备与历史执行/报告保留）`, '提示', { type: 'warning' })
+  try {
+    await deleteAgent(agent.id)
+    ElMessage.success('已注销')
+  } catch (error) {
+    // Step 6：活动执行时返回 409 AGENT_HAS_ACTIVE_EXECUTIONS，展示具体执行信息
+    const detail = (error as { response?: { data?: { detail?: { code?: string; message?: string } } } })?.response?.data?.detail
+    if (detail?.code === 'AGENT_HAS_ACTIVE_EXECUTIONS' && detail.message) {
+      ElMessage.warning(detail.message)
+      return
+    }
+    throw error
+  }
   await load()
 }
 
 async function release(device: Device) {
   await ElMessageBox.confirm(`确认强制释放设备「${device.name}」的锁？`, '提示', { type: 'warning' })
-  await releaseDevice(device.id)
-  ElMessage.success('已释放')
+  // Step 6：活动执行只请求停止、等待 Worker 汇总，不立即清锁
+  const resp = await releaseDevice(device.id)
+  if (resp.action === 'released') {
+    ElMessage.success('设备已释放')
+  } else if (resp.action === 'stop_requested') {
+    ElMessage.warning(`已请求停止执行 #${resp.execution_id}，设备保持占用直至 Worker 汇总`)
+  } else {
+    ElMessage.info(`执行 #${resp.execution_id} 已结束，等待 Worker 汇总后自动释放`)
+  }
   await load()
 }
 

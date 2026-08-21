@@ -27,7 +27,11 @@ async def _verify_agent(key: str, agent_id: str, db: AsyncSession) -> Agent:
         agent = (
             await db.execute(select(Agent).where(Agent.agent_id == agent_id))
         ).scalar_one_or_none()
-        if agent is not None and verify_psk(key, agent.agent_key):
+        if (
+            agent is not None
+            and agent.deleted_at is None  # Step 6：软注销 Agent 拒绝认证
+            and verify_psk(key, agent.agent_key)
+        ):
             return agent
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Agent 认证失败")
 
@@ -78,12 +82,33 @@ async def bind_agent(
 
     machine_psk: str | None = None
     if body.machine_psk:
-        # 追加绑定：机器 PSK 认证
-        if agent is None or not verify_psk(body.machine_psk, agent.agent_key):
+        # 追加绑定 / 软注销实例重新激活：机器 PSK 认证
+        if agent is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="机器 PSK 无效")
+        if not verify_psk(body.machine_psk, agent.agent_key):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="机器 PSK 无效")
+        if agent.deleted_at is not None:
+            # Step 6：软注销安装实例重新激活——必须携带仍匹配的旧 machine PSK，
+            # 旋转 PSK、清空 deleted_at、更新 hostname/platform/version
+            machine_psk = f"sk-{secrets.token_hex(24)}"
+            agent.agent_key = hash_psk(machine_psk)
+            agent.deleted_at = None
+            agent.status = "offline"
+            if body.hostname:
+                agent.hostname = body.hostname
+            if body.platform:
+                agent.platform = body.platform
+            if body.version:
+                agent.version = body.version
     else:
         # 首次绑定：创建 Agent 与机器 PSK
         if agent is not None:
+            if agent.deleted_at is not None:
+                # Step 6：软注销实例无旧 PSK 时拒绝仅凭 install_id 激活，提示管理员彻底重置
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="该安装实例已被注销，需要携带原机器 PSK 重新激活；如已丢失请联系平台管理员彻底重置",
+                )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="该 Agent 已存在，请携带 machine_psk 追加绑定",

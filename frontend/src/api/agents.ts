@@ -54,6 +54,16 @@ export interface AgentBinding {
   username: string
 }
 
+// Step 6：强制释放设备返回动作化结果（活动执行只请求停止，不立即清锁）
+export type DeviceReleaseAction = 'released' | 'stop_requested' | 'finalization_pending'
+
+export interface DeviceReleaseResponse {
+  action: DeviceReleaseAction
+  device: Device
+  execution_id: number | null
+  execution_status: string | null
+}
+
 export function listAgents() {
   return request.get<Agent[]>('/agents')
 }
@@ -79,7 +89,7 @@ export function getDevice(id: number) {
 }
 
 export function releaseDevice(id: number) {
-  return request.post<Device>(`/devices/${id}/release`)
+  return request.post<DeviceReleaseResponse>(`/devices/${id}/release`)
 }
 
 export function getDefaultDevice() {

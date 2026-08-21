@@ -100,6 +100,7 @@ async def test_device_list_and_release(client: AsyncClient):
         device.status = "busy"
         device.locked_by_execution = execution.id
         await db.commit()
+        execution_id = execution.id
 
     listed = await client.get("/api/devices", headers=headers)
     assert listed.status_code == 200
@@ -108,19 +109,30 @@ async def test_device_list_and_release(client: AsyncClient):
     assert item["status"] == "busy"
     assert item["agent_name"] == "pytest_agent_mgmt"
 
+    # Step 6：活动执行 → 只请求停止，不立即清锁
     released = await client.post(f"/api/devices/{device_id}/release", headers=headers)
     assert released.status_code == 200
-    assert released.json()["status"] == "idle"
-    assert released.json()["locked_by_execution"] is None
+    body = released.json()
+    assert body["action"] == "stop_requested"
+    assert body["execution_id"] == execution_id
+    assert body["device"]["status"] == "busy"
+    assert body["device"]["locked_by_execution"] == execution_id
 
     async with SessionLocal() as db:
         device = await db.get(Device, device_id)
-        assert device.status == "idle"
-        assert device.locked_by_execution is None
+        assert device.status == "busy"
+        assert device.locked_by_execution == execution_id
 
     agents = await client.get(f"/api/agents/{agent_id}/devices", headers=headers)
     assert agents.status_code == 200
     assert len(agents.json()) == 1
+
+    # 终态并汇总后才能注销（stopping 属于活动执行）
+    async with SessionLocal() as db:
+        exec_row = await db.get(Execution, execution_id)
+        exec_row.status = "error"
+        exec_row.finalized_at = exec_row.finished_at
+        await db.commit()
 
     deleted = await client.delete(f"/api/agents/{agent_id}", headers=headers)
     assert deleted.status_code == 204

@@ -38,9 +38,16 @@ def start_scans(scheduler: AsyncIOScheduler) -> None:
     scheduler.add_job(
         _job(worker_service.agent_heartbeat_scan), "interval", seconds=60, id="agent_heartbeat_scan"
     )
+    # Step 6：终态汇总恢复扫描（周期与 timeout scan 一致，仅 worker-001 启用）
+    scheduler.add_job(
+        _job(worker_service.finalize_unfinished_terminal),
+        "interval",
+        seconds=60,
+        id="finalize_terminal",
+    )
     scheduler.add_job(_job(_daily_cleanup), "cron", hour=3, id="daily_cleanup")
     scheduler.start()
-    logger.info("扫描任务已启用（reclaim/timeout/heartbeat/每日清理）")
+    logger.info("扫描任务已启用（reclaim/timeout/heartbeat/finalize/每日清理）")
 
 
 async def _daily_cleanup(db) -> None:

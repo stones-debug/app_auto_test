@@ -276,7 +276,8 @@ def _stop_grace_exceeded(execution: Execution) -> bool:
 async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, message: str | None = None) -> None:
     """终态汇总（CR-10/CR-11）。
 
-    - 条件更新：只有一个调用者从非终态推进到终态；
+    - 条件更新：以 `finalized_at is null` 做最终汇总 CAS，只有一个调用方成为 finalizer；
+      没有抢到 finalizer 的调用方立即返回（status 已终态的重复路径），避免重复汇总；
     - 状态归并：中断时当前 case 置 stopped/error、未执行步骤置 skipped、未执行 case 置 skipped；
     - 报告幂等：reports.execution_id 唯一 + on_conflict_do_nothing，重复汇总不会产生多份报告；
     - Windows 方案 §2：推进终态时写入 finalized_at（唯一终态汇总完成时刻）。
@@ -284,20 +285,27 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
     if message:
         _add_log(db, execution.id, "ERROR" if status_ == "error" else "INFO", message)
     now = datetime.now(UTC)
+    status_ = status_ if status_ in TERMINAL_STATES else "error"
 
+    # Step 6：最终汇总 CAS 以 `finalized_at is null` 为唯一所有权条件——
+    # Agent 回传的终态只写 status/finished_at，谁先抢到 finalized_at 谁做汇总，
+    # 未抢到的调用方立即返回，避免重复汇总。
     claimed = await db.execute(
         update(Execution)
-        .where(Execution.id == execution.id, Execution.status.notin_(TERMINAL_STATES))
+        .where(Execution.id == execution.id, Execution.finalized_at.is_(None))
         .values(status=status_, finished_at=now, finalized_at=now)
         .returning(Execution.id)
     )
     await db.flush()
-    if claimed.scalar_one_or_none() is not None:
-        execution.status = status_
-        execution.finished_at = now
-        execution.finalized_at = now
-        if execution.started_at is not None:
-            execution.duration = int((now - execution.started_at).total_seconds() * 1000)
+    if claimed.scalar_one_or_none() is None:
+        # 已被其他调用方汇总：此调用方不重复汇总
+        await db.rollback()
+        return
+    execution.status = status_
+    execution.finished_at = now
+    execution.finalized_at = now
+    if execution.started_at is not None:
+        execution.duration = int((now - execution.started_at).total_seconds() * 1000)
 
     cases = (
         await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == execution.id))
@@ -535,6 +543,28 @@ async def timeout_scan(db: AsyncSession) -> None:
             elapsed = (now - execution.started_at).total_seconds()
             if elapsed > execution.timeout_seconds:
                 await _mark_terminal(db, execution, "error", f"执行超时（>{execution.timeout_seconds}s）")
+
+
+async def finalize_unfinished_terminal(db: AsyncSession) -> None:
+    """Step 6：恢复扫描——terminal 且 `finalized_at is null` 的执行调用 Worker 终态汇总。
+
+    覆盖 Agent 回传终态后进程崩溃、或 release 返回 finalization_pending 的场景；
+    具体汇总由 _mark_terminal 的 `finalized_at is null` CAS 保证只执行一次。
+    """
+    rows = (
+        await db.execute(
+            select(Execution).where(
+                Execution.status.in_(TERMINAL_STATES),
+                Execution.finalized_at.is_(None),
+            )
+        )
+    ).scalars().all()
+    for execution in rows:
+        try:
+            await _mark_terminal(db, execution, execution.status)
+            logger.info("恢复汇总 terminal execution=%s (%s)", execution.id, execution.status)
+        except Exception:
+            logger.exception("恢复汇总 execution=%s 失败", execution.id)
 
 
 async def agent_heartbeat_scan(db: AsyncSession) -> None:

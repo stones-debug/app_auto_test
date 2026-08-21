@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -57,6 +58,15 @@ class DevicePage(BaseModel):
     page: int
     page_size: int
     items: list[DeviceOut]
+
+
+class DeviceReleaseResponse(BaseModel):
+    """Step 6：强制释放设备结果。活动执行只请求停止，不立即清锁。"""
+
+    action: Literal["released", "stop_requested", "finalization_pending"]
+    device: DeviceOut
+    execution_id: int | None = None
+    execution_status: str | None = None
 
 
 # ---------- Windows 方案 §3.2：用户 Key 与 Agent 绑定 ----------

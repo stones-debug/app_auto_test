@@ -28,6 +28,9 @@ class Agent(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(20), default="offline")  # offline / online / busy
     version: Mapped[str | None] = mapped_column(String(50))
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Step 6：软注销。保留 Agent/Device/Execution/Report 行供历史引用；
+    # 安装实例可凭旧 machine PSK 重新激活（bind_agent 旋转 PSK）。
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class Device(Base, TimestampMixin):
