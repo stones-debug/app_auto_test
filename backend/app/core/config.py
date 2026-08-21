@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     min_agent_version: str = "1.0.0"
     internal_token: str = "dev-internal-token-change-me"
     backend_base_url: str = "http://127.0.0.1:8001"
+    # Windows 方案 §3.2：用户 Agent Key 可逆加密主密钥（生产必填）
+    agent_user_key_encryption_key: str = ""
 
     # Worker
     worker_poll_interval: int = 2
@@ -53,6 +55,8 @@ class Settings(BaseSettings):
     rate_limit_auth_per_minute: int = 60
     rate_limit_upload_per_minute: int = 120
     rate_limit_execution_per_minute: int = 60
+    # Windows 方案 §3.2：Agent 绑定/解绑接口限流
+    rate_limit_bind_per_minute: int = 20
 
     # 存储
     reports_base_path: str = "./data/reports"
@@ -86,6 +90,8 @@ def validate_security_baseline() -> None:
         problems.append("jwt_secret_key 必须为随机长密钥（>=32 字符），不能使用默认值")
     if settings.internal_token in _DEFAULT_SECRETS:
         problems.append("internal_token 不能使用默认值")
+    if len(settings.agent_user_key_encryption_key) < 32:
+        problems.append("agent_user_key_encryption_key 必须为随机长密钥（>=32 字符）")
     if "dev123" in settings.database_url:
         problems.append("数据库密码不能使用默认值 dev123")
     if problems:

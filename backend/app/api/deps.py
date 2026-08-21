@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import decode_token
-from app.models import Project, ProjectMember, User
+from app.models import Agent, AgentUser, Device, Project, ProjectMember, User
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -117,3 +117,47 @@ async def get_editable_project(
 ) -> Project:
     project, _role = perm
     return project
+
+
+# ---------- Windows 方案 §3.3：Agent/设备访问校验 ----------
+
+
+async def require_agent_access(agent_id: int, user: User, db: AsyncSession) -> Agent:
+    """Agent 访问校验：平台管理员或已绑定该 Agent 的用户。"""
+    agent = await db.get(Agent, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent 不存在")
+    if user.is_admin:
+        return agent
+    bound = await db.execute(
+        select(AgentUser).where(
+            AgentUser.agent_id == agent_id,
+            AgentUser.user_id == user.id,
+        )
+    )
+    if bound.scalar_one_or_none() is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问该 Agent")
+    return agent
+
+
+async def require_device_access(device_id: int, user: User, db: AsyncSession) -> Device:
+    """设备访问校验：平台管理员或设备所属 Agent 已绑定该用户（CR-… 防猜测 ID 用他人设备）。"""
+    device = await db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="设备不存在")
+    if user.is_admin:
+        return device
+    bound = await db.execute(
+        select(AgentUser).where(
+            AgentUser.agent_id == device.agent_id,
+            AgentUser.user_id == user.id,
+        )
+    )
+    if bound.scalar_one_or_none() is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权使用该设备")
+    return device
+
+
+def bound_agent_ids_subquery(user_id: int):
+    """当前用户可访问的 Agent id 子查询（非管理员过滤用）。"""
+    return select(AgentUser.agent_id).where(AgentUser.user_id == user_id)

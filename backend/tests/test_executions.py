@@ -2,6 +2,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from tests.helpers import create_bound_agent_device
 
 REG = {"username": "pytest_exec_user", "email": "pytest_exec@tl-tek.com", "password": "test123"}
 
@@ -78,16 +79,23 @@ async def _create_suite(client: AsyncClient, token: str, project_id: int, case_i
     return suite_id
 
 
+async def _create_agent_device(client: AsyncClient, token: str) -> int:
+    """创建绑定当前用户的在线 Agent + idle 设备，返回 device_id（Windows 方案 §3.3）。"""
+    _agent_id, device_id = await create_bound_agent_device(REG["username"])
+    return device_id
+
+
 async def test_create_case_execution(client: AsyncClient):
     token = await _register_and_login(client)
     project_id = await _create_project(client, token)
     element_id = await _create_element(client, token, project_id)
     case_id = await _create_case(client, token, project_id, element_id)
+    device_id = await _create_agent_device(client, token)
 
     resp = await client.post(
         f"/api/executions/cases/{case_id}",
         headers={"Authorization": f"Bearer {token}"},
-        json={"device_id": None, "parameters": {"variables": {"btn_id": "btn_login"}}, "timeout_seconds": 300},
+        json={"device_id": device_id, "parameters": {"variables": {"btn_id": "btn_login"}}, "timeout_seconds": 300},
     )
     assert resp.status_code == 201
     body = resp.json()
@@ -98,17 +106,74 @@ async def test_create_case_execution(client: AsyncClient):
     assert body["parameters"]["variables"]["btn_id"] == "btn_login"
 
 
-async def test_create_suite_and_batch_execution(client: AsyncClient):
+async def test_create_execution_requires_device(client: AsyncClient):
+    """Windows 方案 §3.3：缺失 device_id → 400 DEVICE_REQUIRED（不再随机选机）。"""
     token = await _register_and_login(client)
     project_id = await _create_project(client, token)
     element_id = await _create_element(client, token, project_id)
     case_id = await _create_case(client, token, project_id, element_id)
     suite_id = await _create_suite(client, token, project_id, case_id)
 
+    resp = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"device_id": None, "parameters": {}},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "DEVICE_REQUIRED"
+
+    batch = await client.post(
+        "/api/executions/suites/batch",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"suite_ids": [suite_id], "device_id": None, "parameters": {}},
+    )
+    assert batch.status_code == 400
+    assert batch.json()["detail"]["code"] == "DEVICE_REQUIRED"
+
+
+async def test_create_execution_rejects_busy_or_unbound_device(client: AsyncClient):
+    """Windows 方案 §3.3：busy 设备 409；未绑定 Agent 的设备 403。"""
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+    element_id = await _create_element(client, token, project_id)
+    case_id = await _create_case(client, token, project_id, element_id)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # busy 设备
+    _a, busy_device = await create_bound_agent_device(REG["username"], device_status="busy")
+    resp = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers=headers,
+        json={"device_id": busy_device, "parameters": {}},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "DEVICE_BUSY"
+
+    # 未绑定 Agent 的设备（其他用户）
+    await client.post(
+        "/api/auth/register", json={"username": "pytest_other", "email": "o@t.com", "password": "x12345678"}
+    )
+    _o_agent, other_device = await create_bound_agent_device("pytest_other")
+    resp = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers=headers,
+        json={"device_id": other_device, "parameters": {}},
+    )
+    assert resp.status_code == 403
+
+
+async def test_create_suite_and_batch_execution(client: AsyncClient):
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+    element_id = await _create_element(client, token, project_id)
+    case_id = await _create_case(client, token, project_id, element_id)
+    suite_id = await _create_suite(client, token, project_id, case_id)
+    device_id = await _create_agent_device(client, token)
+
     suite_run = await client.post(
         f"/api/executions/suites/{suite_id}",
         headers={"Authorization": f"Bearer {token}"},
-        json={"parameters": {}},
+        json={"device_id": device_id, "parameters": {}},
     )
     assert suite_run.status_code == 201
     assert suite_run.json()["type"] == "suite"
@@ -116,7 +181,7 @@ async def test_create_suite_and_batch_execution(client: AsyncClient):
     batch = await client.post(
         "/api/executions/suites/batch",
         headers={"Authorization": f"Bearer {token}"},
-        json={"suite_ids": [suite_id], "parameters": {}},
+        json={"suite_ids": [suite_id], "device_id": device_id, "parameters": {}},
     )
     assert batch.status_code == 201
     assert batch.json()["type"] == "batch"
@@ -150,12 +215,13 @@ async def test_list_get_logs_stop_retry(client: AsyncClient):
     project_id = await _create_project(client, token)
     element_id = await _create_element(client, token, project_id)
     case_id = await _create_case(client, token, project_id, element_id)
+    device_id = await _create_agent_device(client, token)
     headers = {"Authorization": f"Bearer {token}"}
 
     created = await client.post(
         f"/api/executions/cases/{case_id}",
         headers=headers,
-        json={"parameters": {}},
+        json={"device_id": device_id, "parameters": {}},
     )
     execution_id = created.json()["id"]
 
@@ -234,10 +300,11 @@ async def test_public_viewer_cannot_create_stop_retry(client: AsyncClient):
     assert resp.status_code == 403
 
     # owner 创建执行后，viewer 不能停止/重试，但可读详情
+    device_id = await _create_agent_device(client, token)
     created = await client.post(
         f"/api/executions/cases/{case_id}",
         headers={"Authorization": f"Bearer {token}"},
-        json={"parameters": {}},
+        json={"device_id": device_id, "parameters": {}},
     )
     execution_id = created.json()["id"]
 
@@ -273,9 +340,13 @@ async def test_list_filters_status_and_type_with_consistent_total(client: AsyncC
     project_id = await _create_project(client, token)
     element_id = await _create_element(client, token, project_id)
     case_id = await _create_case(client, token, project_id, element_id)
+    device_id = await _create_agent_device(client, token)
     headers = {"Authorization": f"Bearer {token}"}
 
-    created = await client.post(f"/api/executions/cases/{case_id}", headers=headers, json={"parameters": {}})
+    created = await client.post(
+        f"/api/executions/cases/{case_id}", headers=headers,
+        json={"device_id": device_id, "parameters": {}},
+    )
     assert created.status_code == 201
     execution_id = created.json()["id"]
 

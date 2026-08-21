@@ -3,6 +3,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from tests.helpers import create_bound_agent_device
 
 ALICE = {"username": "pytest_matrix_alice", "email": "m-a@tl-tek.com", "password": "test123"}
 BOB = {"username": "pytest_matrix_bob", "email": "m-b@tl-tek.com", "password": "test123"}
@@ -46,9 +47,13 @@ async def _setup_project(client: AsyncClient, headers: dict, visibility: str) ->
     case_id = case.json()["id"]
     suite = await client.post(f"/api/projects/{project_id}/suites", headers=headers, json={"name": "套件"})
     suite_id = suite.json()["id"]
+    # Windows 方案 §3.3：执行创建必须指定已授权设备
+    _agent_id, device_id = await create_bound_agent_device(ALICE["username"])
     execution = await client.post(
-        f"/api/executions/cases/{case_id}", headers=headers, json={"parameters": {}}
+        f"/api/executions/cases/{case_id}", headers=headers,
+        json={"device_id": device_id, "parameters": {}},
     )
+    assert execution.status_code == 201, execution.text
     execution_id = execution.json()["id"]
     return {"project_id": project_id, "case_id": case_id, "suite_id": suite_id, "execution_id": execution_id}
 

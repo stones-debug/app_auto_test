@@ -8,12 +8,12 @@ from sqlalchemy import select as sa_select
 
 from app.core.config import reports_dir
 from app.core.database import SessionLocal
-from app.core.security import hash_psk
 from app.main import app
-from app.models import Agent, Device, Execution, Report
+from app.models import Device, Execution, Report
 from app.services import report_service, worker_service
 from app.services.screenshot_store import resolve_screenshot_path, validate_object_key
 from app.ws import handlers
+from tests.helpers import create_bound_agent_device
 
 REG = {"username": "pytest_report_user", "email": "rp@tl-tek.com", "password": "test123"}
 
@@ -23,14 +23,6 @@ async def client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
-
-
-async def _make_agent() -> int:
-    async with SessionLocal() as db:
-        agent = Agent(agent_key=hash_psk("sk-rp"), agent_id=f"pytest_rp_agent_{uuid.uuid4().hex[:6]}", status="offline")
-        db.add(agent)
-        await db.commit()
-        return agent.id
 
 
 async def _setup(client: AsyncClient) -> tuple[str, int]:
@@ -62,11 +54,15 @@ async def _setup(client: AsyncClient) -> tuple[str, int]:
         },
     )
     case_id = case.json()["id"]
+    # Windows 方案 §3.3：执行创建必须指定已授权设备
+    agent_id, device_id = await create_bound_agent_device(REG["username"])
     execution = await client.post(
-        f"/api/executions/cases/{case_id}", headers=headers, json={"parameters": {}}
+        f"/api/executions/cases/{case_id}", headers=headers,
+        json={"device_id": device_id, "parameters": {}},
     )
+    assert execution.status_code == 201, execution.text
     execution_id = execution.json()["id"]
-    agent_id = await _make_agent()
+    _ = agent_id
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)

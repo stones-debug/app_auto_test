@@ -23,6 +23,7 @@ from app.models import (
 from app.services import worker_service
 from app.ws import handlers
 from app.ws.managers import agent_manager, execution_manager
+from tests.helpers import create_bound_agent_device
 
 REG = {"username": "pytest_ws_user", "email": "ws@tl-tek.com", "password": "test123"}
 
@@ -102,11 +103,14 @@ async def _setup_case_execution(client: AsyncClient) -> tuple[str, int, int]:
         },
     )
     case_id = case.json()["id"]
+    # Windows 方案 §3.3：执行创建必须指定已授权设备
+    _agent_id, device_id = await create_bound_agent_device(REG["username"])
     execution = await client.post(
         f"/api/executions/cases/{case_id}",
         headers=headers,
-        json={"parameters": {}},
+        json={"device_id": device_id, "parameters": {}},
     )
+    assert execution.status_code == 201, execution.text
     return token, case_id, execution.json()["id"]
 
 

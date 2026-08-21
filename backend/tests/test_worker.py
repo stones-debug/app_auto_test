@@ -1,5 +1,4 @@
 import asyncio
-import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -20,6 +19,7 @@ from app.models import (
     Report,
 )
 from app.services import worker_service
+from tests.helpers import create_bound_agent_device
 
 REG = {"username": "pytest_worker_user", "email": "pw@tl-tek.com", "password": "test123"}
 
@@ -63,35 +63,22 @@ async def _setup_case(client: AsyncClient) -> tuple[str, int]:
 async def _create_agent_device(
     *, agent_status: str = "online", device_status: str = "idle", stale: bool = False
 ) -> tuple[int, int]:
-    async with SessionLocal() as db:
-        agent = Agent(
-            agent_key=f"sk-{uuid.uuid4().hex}",
-            agent_id=f"pytest_agent_{uuid.uuid4().hex[:8]}",
-            hostname="pytest-host",
-            status=agent_status,
-            last_heartbeat=datetime.now(UTC) - (timedelta(hours=1) if stale else timedelta(seconds=5)),
-        )
-        db.add(agent)
-        await db.flush()
-        device = Device(
-            agent_id=agent.id,
-            name="pytest设备",
-            platform="android",
-            udid=f"pytest-udid-{uuid.uuid4().hex[:8]}",
-            status=device_status,
-        )
-        db.add(device)
-        await db.commit()
-        return agent.id, device.id
+    """创建绑定到 REG 用户的 agent+device（Windows 方案 §3.3：执行设备须授权）。"""
+    return await create_bound_agent_device(
+        REG["username"],
+        agent_status=agent_status,
+        device_status=device_status,
+        stale=stale,
+    )
 
 
-async def _create_execution(client: AsyncClient, token: str, case_id: int, parameters: dict) -> int:
+async def _create_execution(client: AsyncClient, token: str, case_id: int, parameters: dict, device_id: int) -> int:
     resp = await client.post(
         f"/api/executions/cases/{case_id}",
         headers={"Authorization": f"Bearer {token}"},
-        json={"parameters": parameters, "timeout_seconds": 300},
+        json={"device_id": device_id, "parameters": parameters, "timeout_seconds": 300},
     )
-    assert resp.status_code == 201
+    assert resp.status_code == 201, resp.text
     return resp.json()["id"]
 
 
@@ -111,7 +98,7 @@ def test_render_text_and_undefined():
 async def test_claim_and_run_agent_offline(client: AsyncClient):
     token, case_id = await _setup_case(client)
     _agent_id, device_id = await _create_agent_device()
-    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "btn_login"}})
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "btn_login"}}, device_id)
 
     async with SessionLocal() as db:
         item = await worker_service.claim_next_queue(db, "worker-test")
@@ -148,8 +135,8 @@ async def test_claim_and_run_agent_offline(client: AsyncClient):
 
 async def test_run_undefined_variable_errors(client: AsyncClient):
     token, case_id = await _setup_case(client)
-    await _create_agent_device()
-    execution_id = await _create_execution(client, token, case_id, {})
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {}, device_id)
 
     async with SessionLocal() as db:
         await worker_service.claim_next_queue(db, "worker-test")
@@ -209,7 +196,8 @@ async def test_select_and_lock_device(client: AsyncClient):
 
 async def test_create_execution_snapshots(client: AsyncClient):
     token, case_id = await _setup_case(client)
-    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "btn_login"}})
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "btn_login"}}, device_id)
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
@@ -226,7 +214,8 @@ async def test_create_execution_snapshots(client: AsyncClient):
 async def test_create_execution_snapshots_idempotent(client: AsyncClient):
     """重复创建快照不产生重复行，且删除旧快照不触发 FK 错误（含已注入步骤）。"""
     token, case_id = await _setup_case(client)
-    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
@@ -257,7 +246,7 @@ async def test_create_execution_snapshots_idempotent(client: AsyncClient):
 async def test_timeout_scan(client: AsyncClient):
     token, case_id = await _setup_case(client)
     _agent_id, device_id = await _create_agent_device()
-    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
@@ -282,7 +271,8 @@ async def test_timeout_scan(client: AsyncClient):
 
 async def test_reclaim_stale_claimed(client: AsyncClient):
     token, case_id = await _setup_case(client)
-    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
 
     async with SessionLocal() as db:
         queue = (await db.execute(select(ExecutionQueue).where(ExecutionQueue.execution_id == execution_id))).scalar_one()
@@ -303,7 +293,7 @@ async def test_reclaim_stale_claimed(client: AsyncClient):
 async def test_mark_terminal_derives_case_status(client: AsyncClient):
     token, case_id = await _setup_case(client)
     _agent_id, device_id = await _create_agent_device()
-    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
@@ -341,7 +331,7 @@ async def test_run_execution_finalizes_on_terminal(client: AsyncClient):
     """Agent 回传 execution_result（另一会话设置终态）后，Worker 轮询应能检测并 finalize。"""
     token, case_id = await _setup_case(client)
     _agent_id, device_id = await _create_agent_device()
-    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "btn_login"}})
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "btn_login"}}, device_id)
 
     async with SessionLocal() as db:
         item = await worker_service.claim_next_queue(db, "worker-test")
@@ -395,7 +385,7 @@ async def test_run_execution_finalizes_on_terminal(client: AsyncClient):
 async def test_agent_heartbeat_scan(client: AsyncClient):
     token, case_id = await _setup_case(client)
     agent_id, device_id = await _create_agent_device(stale=True)
-    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
@@ -427,7 +417,7 @@ async def test_timeout_scan_forces_stopped_after_grace(client: AsyncClient):
     """CR-06：stopping 超过 deadline（超时 + 宽限期）被强制 stopped 并释放设备。"""
     token, case_id = await _setup_case(client)
     _agent_id, device_id = await _create_agent_device()
-    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
@@ -459,7 +449,7 @@ async def test_timeout_scan_keeps_stopping_within_grace(client: AsyncClient):
     """CR-06：宽限期内 stopping 不被误终态。"""
     token, case_id = await _setup_case(client)
     _agent_id, device_id = await _create_agent_device()
-    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
@@ -483,7 +473,7 @@ async def test_timeout_scan_forces_stopped_from_stop_requested_at(client: AsyncC
     """
     token, case_id = await _setup_case(client)
     _agent_id, device_id = await _create_agent_device()
-    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
@@ -511,7 +501,7 @@ async def test_timeout_scan_keeps_stopping_within_grace_from_stop_requested_at(c
     """Windows 方案 §2：stop_requested_at 在宽限期内时 stopping 不被误终态。"""
     token, case_id = await _setup_case(client)
     _agent_id, device_id = await _create_agent_device()
-    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
@@ -533,7 +523,7 @@ async def test_agent_heartbeat_scan_terminates_stopping(client: AsyncClient):
     """CR-06：Agent 失联时 stopping 执行也被终结为 stopped。"""
     token, case_id = await _setup_case(client)
     agent_id, device_id = await _create_agent_device(stale=True)
-    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
@@ -559,7 +549,8 @@ async def test_agent_heartbeat_scan_terminates_stopping(client: AsyncClient):
 async def test_mark_terminal_fractional_success_rate(client: AsyncClient):
     """CR-10：success_rate 保存两位小数（66.67），0/0 → 0。"""
     token, case_id = await _setup_case(client)
-    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
@@ -591,7 +582,8 @@ async def test_mark_terminal_fractional_success_rate(client: AsyncClient):
 async def test_mark_terminal_zero_cases_rate_zero(client: AsyncClient):
     """CR-10：无用例时成功率为 0 而非除零错误。"""
     token, case_id = await _setup_case(client)
-    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
@@ -610,7 +602,7 @@ async def test_mark_terminal_idempotent_under_concurrency(client: AsyncClient):
     """CR-11：并发终态汇总只产生一份报告，且只有一个进程推进状态。"""
     token, case_id = await _setup_case(client)
     _agent_id, device_id = await _create_agent_device()
-    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
@@ -644,7 +636,8 @@ async def test_mark_terminal_idempotent_under_concurrency(client: AsyncClient):
 async def test_mark_terminal_skips_unexecuted_steps(client: AsyncClient):
     """CR-11：中断时当前 case 置 stopped，未执行步骤置 skipped。"""
     token, case_id = await _setup_case(client)
-    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
@@ -677,8 +670,8 @@ async def test_mark_terminal_skips_unexecuted_steps(client: AsyncClient):
 async def test_cancelled_queued_execution_not_started_by_worker(client: AsyncClient):
     """CR-12：queued 执行被取消后，Worker 认领不得将其反写为 running。"""
     token, case_id = await _setup_case(client)
-    await _create_agent_device()
-    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
 
     # 用户取消 queued 执行
     cancelled = await client.post(

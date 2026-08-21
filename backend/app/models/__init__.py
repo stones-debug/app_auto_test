@@ -1,5 +1,5 @@
 from app.core.database import Base
-from app.models.agent import Agent, Device
+from app.models.agent import Agent, AgentUser, Device, DevicePreference, UserAgentKey
 from app.models.case import TestCase, TestSuite, TestSuiteCase
 from app.models.element import TestElement, TestModule
 from app.models.execution import (
@@ -18,7 +18,10 @@ from app.models.variable import RefreshToken, Variable
 __all__ = [
     "Base",
     "Agent",
+    "AgentUser",
     "Device",
+    "DevicePreference",
+    "UserAgentKey",
     "TestCase",
     "TestSuite",
     "TestSuiteCase",

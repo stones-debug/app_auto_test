@@ -17,6 +17,7 @@ _BUCKET_LIMITS: dict[str, tuple[str, int]] = {
     "auth": ("rate_limit_auth_per_minute", 60),
     "upload": ("rate_limit_upload_per_minute", 60),
     "execution": ("rate_limit_execution_per_minute", 60),
+    "bind": ("rate_limit_bind_per_minute", 60),
 }
 
 
@@ -36,6 +37,11 @@ def _check(bucket: str, key: str, limit: int, window_seconds: int) -> None:
             detail="请求过于频繁，请稍后再试",
         )
     q.append(now)
+
+
+def rate_limit_check(bucket: str, key: str, limit: int, window_seconds: int = 60) -> None:
+    """直接调用式限流（自定义 key，如绑定接口的 public_id 维度）。"""
+    _check(bucket, key, limit, window_seconds)
 
 
 def rate_limit(bucket: str):

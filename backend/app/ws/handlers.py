@@ -130,12 +130,21 @@ async def handle_device_list(db: AsyncSession, agent_id: int, payload: dict) -> 
                 device_type=item.get("device_type") or "emulator",
                 udid=udid,
                 status=item.get("status") or "idle",
+                connection_type=item.get("connection_type") or "usb",
+                address=item.get("address"),
                 capabilities=item.get("capabilities") or {},
                 last_heartbeat=datetime.now(UTC),
             )
             db.add(device)
         else:
+            # Windows 方案 §3.3：被执行锁定的设备保持 busy，不允许普通快照覆盖锁状态
+            if device.status == "busy" and device.locked_by_execution is not None:
+                continue
             device.status = item.get("status") or device.status
+            if item.get("connection_type"):
+                device.connection_type = item["connection_type"]
+            if item.get("address"):
+                device.address = item["address"]
             device.last_heartbeat = datetime.now(UTC)
     # CR-17：本次快照未出现且未锁定的设备标记 offline（拔出/离线）
     reported_udids = {

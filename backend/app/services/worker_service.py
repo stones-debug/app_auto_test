@@ -232,35 +232,22 @@ async def _lock_device(db: AsyncSession, device_id: int, execution_id: int) -> b
 
 
 async def select_and_lock_device(db: AsyncSession, execution: Execution) -> Device | None:
-    if execution.device_id is not None:
-        device = await db.get(Device, execution.device_id)
-        if (
-            device is not None
-            and device.status == "idle"
-            and device.locked_by_execution is None
-        ):
-            agent = await db.get(Agent, device.agent_id)
-            if agent is not None and agent.status == "online":
-                if await _lock_device(db, device.id, execution.id):
-                    return device
-        return None
+    """Windows 方案 §3.3：只认领执行指定的设备（device_id 必填），不再从全平台设备池随机选择。
 
-    for _ in range(5):
-        stmt = (
-            select(Device)
-            .join(Agent, Device.agent_id == Agent.id)
-            .where(
-                Agent.status == "online",
-                Device.status == "idle",
-                Device.locked_by_execution.is_(None),
-            )
-            .order_by(Agent.last_heartbeat.desc())
-        )
-        device = (await db.execute(stmt)).scalars().first()
-        if device is None:
-            return None
-        if await _lock_device(db, device.id, execution.id):
-            return device
+    并发安全由 _lock_device 的条件 UPDATE（idle + 未锁）保证。
+    """
+    if execution.device_id is None:
+        return None
+    device = await db.get(Device, execution.device_id)
+    if (
+        device is not None
+        and device.status == "idle"
+        and device.locked_by_execution is None
+    ):
+        agent = await db.get(Agent, device.agent_id)
+        if agent is not None and agent.status == "online":
+            if await _lock_device(db, device.id, execution.id):
+                return device
     return None
 
 

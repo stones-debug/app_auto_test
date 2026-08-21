@@ -5,11 +5,25 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, require_platform_admin
+from app.api.deps import (
+    bound_agent_ids_subquery,
+    get_current_user,
+    require_agent_access,
+    require_device_access,
+    require_platform_admin,
+)
 from app.core.database import get_db
 from app.core.security import hash_psk
-from app.models import Agent, Device, User
-from app.schemas.agent import AgentCreate, AgentCreateResponse, AgentListItem, DeviceOut, DevicePage
+from app.models import Agent, AgentUser, Device, DevicePreference, User
+from app.schemas.agent import (
+    AgentCreate,
+    AgentCreateResponse,
+    AgentListItem,
+    DefaultDeviceOut,
+    DefaultDeviceUpdate,
+    DeviceOut,
+    DevicePage,
+)
 from app.utils.pagination import get_pagination
 
 router = APIRouter(tags=["设备与 Agent 管理"])
@@ -31,10 +45,14 @@ async def _get_device_or_404(device_id: int, db: AsyncSession) -> Device:
 
 @router.get("/agents", response_model=list[AgentListItem])
 async def list_agents(
-    _admin: User = Depends(require_platform_admin()),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agents = (await db.execute(select(Agent).order_by(Agent.id))).scalars().all()
+    """Windows 方案 §3.3：普通用户只返回其绑定 Agent；平台管理员返回全部。"""
+    query = select(Agent)
+    if not user.is_admin:
+        query = query.where(Agent.id.in_(bound_agent_ids_subquery(user.id)))
+    agents = (await db.execute(query.order_by(Agent.id))).scalars().all()
     counts: dict[int, int] = {}
     if agents:
         rows = (
@@ -78,9 +96,31 @@ async def delete_agent(
     db: AsyncSession = Depends(get_db),
 ):
     agent = await _get_agent_or_404(agent_id, db)
+    # agent_users / device_preferences 由外键 CASCADE 一并清理
     await db.execute(delete(Device).where(Device.agent_id == agent_id))
     await db.delete(agent)
     await db.commit()
+
+
+@router.delete("/agents/{agent_id}/bindings/me", status_code=status.HTTP_204_NO_CONTENT)
+async def unbind_my_agent(
+    agent_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Windows 方案 §3.2：用户从前端撤销自己对该 Agent 的授权。"""
+    await require_agent_access(agent_id, user, db)
+    binding = (
+        await db.execute(
+            select(AgentUser).where(
+                AgentUser.agent_id == agent_id,
+                AgentUser.user_id == user.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if binding is not None:
+        await db.delete(binding)
+        await db.commit()
 
 
 @router.get("/agents/{agent_id}/devices", response_model=list[DeviceOut])
@@ -89,7 +129,7 @@ async def agent_devices(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await _get_agent_or_404(agent_id, db)
+    await require_agent_access(agent_id, user, db)
     devices = (
         await db.execute(select(Device).where(Device.agent_id == agent_id).order_by(Device.id))
     ).scalars().all()
@@ -114,8 +154,12 @@ async def list_devices(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """Windows 方案 §3.3：普通用户只返回其绑定 Agent 下的设备。"""
     query = select(Device)
     count_query = select(func.count()).select_from(Device)
+    if not user.is_admin:
+        query = query.where(Device.agent_id.in_(bound_agent_ids_subquery(user.id)))
+        count_query = count_query.where(Device.agent_id.in_(bound_agent_ids_subquery(user.id)))
     if platform:
         query = query.where(Device.platform == platform)
         count_query = count_query.where(Device.platform == platform)
@@ -131,14 +175,79 @@ async def list_devices(
     return {"total": total or 0, "page": pagination.page, "page_size": pagination.page_size, "items": items}
 
 
+@router.get("/devices/default", response_model=DefaultDeviceOut)
+async def get_default_device(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Windows 方案 §4.2：返回当前默认设备及实时可用性。
+
+    注意：本路由必须注册在 /devices/{device_id} 之前，否则 "default" 会被当作设备 ID。
+    """
+    pref = (
+        await db.execute(select(DevicePreference).where(DevicePreference.user_id == user.id))
+    ).scalar_one_or_none()
+    if pref is None:
+        return DefaultDeviceOut(device_id=None, reason="未设置默认设备")
+
+    device = await db.get(Device, pref.device_id)
+    if device is None:
+        # 设备已被删除（外键 CASCADE 应已清空偏好，防御性处理）
+        await db.delete(pref)
+        await db.commit()
+        return DefaultDeviceOut(device_id=None, reason="默认设备已不存在")
+
+    out = DeviceOut.model_validate(device)
+    if not (user.is_admin or await _user_bound_to_agent(db, device.agent_id, user.id)):
+        return DefaultDeviceOut(device_id=device.id, device=out, available=False, reason="无权限")
+    agent = await db.get(Agent, device.agent_id)
+    if agent is None or agent.status != "online":
+        return DefaultDeviceOut(device_id=device.id, device=out, available=False, reason="Agent 离线")
+    if device.status != "idle" or device.locked_by_execution is not None:
+        return DefaultDeviceOut(device_id=device.id, device=out, available=False, reason="设备忙或已被占用")
+    return DefaultDeviceOut(device_id=device.id, device=out, available=True, reason="")
+
+
+@router.put("/devices/default", response_model=DefaultDeviceOut)
+async def set_default_device(
+    body: DefaultDeviceUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Windows 方案 §4.2：设置或清除默认设备；只能设置用户有权限的设备。"""
+    pref = (
+        await db.execute(select(DevicePreference).where(DevicePreference.user_id == user.id))
+    ).scalar_one_or_none()
+    if body.device_id is None:
+        if pref is not None:
+            await db.delete(pref)
+            await db.commit()
+        return DefaultDeviceOut(device_id=None, reason="已清除默认设备")
+
+    device = await require_device_access(body.device_id, user, db)
+    if pref is None:
+        db.add(DevicePreference(user_id=user.id, device_id=device.id))
+    else:
+        pref.device_id = device.id
+    await db.commit()
+    return DefaultDeviceOut(device_id=device.id, device=DeviceOut.model_validate(device), reason="已设置默认设备")
+
+
 @router.get("/devices/{device_id}", response_model=DeviceOut)
 async def get_device(
     device_id: int,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    device = await _get_device_or_404(device_id, db)
+    device = await require_device_access(device_id, user, db)
     return DeviceOut.model_validate(device)
+
+
+async def _user_bound_to_agent(db: AsyncSession, agent_id: int, user_id: int) -> bool:
+    row = await db.execute(
+        select(AgentUser).where(AgentUser.agent_id == agent_id, AgentUser.user_id == user_id)
+    )
+    return row.scalar_one_or_none() is not None
 
 
 @router.post("/devices/{device_id}/release", response_model=DeviceOut)

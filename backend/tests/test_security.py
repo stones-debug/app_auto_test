@@ -122,6 +122,7 @@ def test_validate_security_baseline_production_accepts_strong(monkeypatch):
     monkeypatch.setattr(settings, "environment", "production")
     monkeypatch.setattr(settings, "jwt_secret_key", "x" * 40)
     monkeypatch.setattr(settings, "internal_token", "x" * 40)
+    monkeypatch.setattr(settings, "agent_user_key_encryption_key", "x" * 40)
     monkeypatch.setattr(settings, "database_url", "postgresql+asyncpg://u:strong-pw@db:5432/test_platform")
     try:
         validate_security_baseline()  # 不应抛异常
@@ -129,6 +130,25 @@ def test_validate_security_baseline_production_accepts_strong(monkeypatch):
         monkeypatch.setattr(settings, "environment", "development")
         monkeypatch.setattr(settings, "jwt_secret_key", "dev-secret-key-change-me-in-production-at-least-32-chars")
         monkeypatch.setattr(settings, "internal_token", "dev-internal-token-change-me")
+        monkeypatch.setattr(settings, "agent_user_key_encryption_key", "")
+        monkeypatch.setattr(settings, "database_url", "postgresql+asyncpg://dev:dev123@127.0.0.1:5432/test_platform")
+
+
+def test_validate_security_baseline_production_rejects_weak_encryption_key(monkeypatch):
+    """Windows 方案 §3.2：生产环境要求 AGENT_USER_KEY_ENCRYPTION_KEY >= 32 字符。"""
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "jwt_secret_key", "x" * 40)
+    monkeypatch.setattr(settings, "internal_token", "x" * 40)
+    monkeypatch.setattr(settings, "agent_user_key_encryption_key", "short")
+    monkeypatch.setattr(settings, "database_url", "postgresql+asyncpg://u:strong-pw@db:5432/test_platform")
+    try:
+        with pytest.raises(RuntimeError, match="agent_user_key_encryption_key"):
+            validate_security_baseline()
+    finally:
+        monkeypatch.setattr(settings, "environment", "development")
+        monkeypatch.setattr(settings, "jwt_secret_key", "dev-secret-key-change-me-in-production-at-least-32-chars")
+        monkeypatch.setattr(settings, "internal_token", "dev-internal-token-change-me")
+        monkeypatch.setattr(settings, "agent_user_key_encryption_key", "")
         monkeypatch.setattr(settings, "database_url", "postgresql+asyncpg://dev:dev123@127.0.0.1:5432/test_platform")
 
 

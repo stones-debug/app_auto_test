@@ -93,6 +93,20 @@ def _run_migrations() -> None:
 async def _prepare_test_database():
     await _ensure_test_database()
     await asyncio.to_thread(_run_migrations)
+    # Windows 方案 §2：测试库专用，每次会话开始时全量清空（含历史遗留的非 pytest_% 测试数据：
+    # 绑定产生的 Agent/Key/默认设备等），保证结果确定性；alembic_version 保留以免迁移状态错乱
+    from app.models import Base
+
+    async with SessionLocal() as db:
+        tables = ", ".join(
+            f'"{t.name}"' for t in Base.metadata.sorted_tables if t.name != "alembic_version"
+        )
+        await db.execute(text(f"TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE"))
+        await db.commit()
+    # 会话级事件循环与逐测试事件循环不同：放掉池中连接，避免 "Future attached to a different loop"
+    from app.core.database import engine
+
+    await engine.dispose()
     yield
 
 

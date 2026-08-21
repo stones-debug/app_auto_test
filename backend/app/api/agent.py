@@ -1,17 +1,23 @@
+import secrets
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import reports_dir, settings
 from app.core.database import get_db
-from app.core.ratelimit import rate_limit
-from app.core.security import verify_psk
-from app.models import Agent, Device, Execution
+from app.core.ratelimit import rate_limit, rate_limit_check
+from app.core.security import hash_psk, parse_user_agent_key, verify_psk, verify_user_key
+from app.models import Agent, AgentUser, Device, Execution, User, UserAgentKey
+from app.schemas.agent import AgentBindingOut, BindRequest, BindResponse
 from app.services.screenshot_store import new_screenshot_filename
 
 router = APIRouter(tags=["Agent"])
 
 _ALLOWED_EXTS = {".png", ".jpg", ".jpeg"}
+
+# Windows 方案 §3.2：同一 public_id 每分钟最多绑定尝试次数（Key 维度限流）
+_BIND_KEY_LIMIT_PER_MINUTE = 5
 
 
 async def _verify_agent(key: str, agent_id: str, db: AsyncSession) -> Agent:
@@ -24,6 +30,154 @@ async def _verify_agent(key: str, agent_id: str, db: AsyncSession) -> Agent:
         if agent is not None and verify_psk(key, agent.agent_key):
             return agent
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Agent 认证失败")
+
+
+async def _load_user_key(db: AsyncSession, user_key: str) -> UserAgentKey | None:
+    """解析并校验用户 Key，返回对应记录；非法/无效返回 None。"""
+    parsed = parse_user_agent_key(user_key)
+    if parsed is None:
+        return None
+    public_id, secret = parsed
+    row = (
+        await db.execute(select(UserAgentKey).where(UserAgentKey.public_id == public_id))
+    ).scalar_one_or_none()
+    if row is None or not verify_user_key(secret, row.key_hash):
+        return None
+    return row
+
+
+@router.post("/agent/bind", response_model=BindResponse, status_code=status.HTTP_201_CREATED)
+async def bind_agent(
+    body: BindRequest,
+    _rl: None = Depends(rate_limit("bind")),  # Windows 方案 §3.2：绑定接口按 IP 限流
+    db: AsyncSession = Depends(get_db),
+):
+    """Windows 方案 §3.2：Agent 绑定用户。
+
+    - 首次绑定（machine_psk 为空）：提交用户 Key + install_id，创建 Agent、机器 PSK 与 agent_users；
+    - 追加绑定：同时提交机器 PSK 与另一个用户 Key，只新增关联。
+    - 机器 PSK 与撤销凭据只返回一次；原始用户 Key 不写日志、不落库。
+    """
+    user_key = body.user_key.strip()
+    public_id = parse_user_agent_key(user_key)
+    if public_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="用户 Key 格式无效")
+    # Key 维度限流（IP + public_id 双维度，§3.2）
+    rate_limit_check("bind", f"pk:{public_id[0]}", _BIND_KEY_LIMIT_PER_MINUTE, 60)
+
+    key_row = await _load_user_key(db, user_key)
+    if key_row is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户 Key 无效")
+    if not body.install_id or not body.install_id.strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="缺少 install_id")
+
+    install_id = body.install_id.strip()
+    agent = (
+        await db.execute(select(Agent).where(Agent.agent_id == install_id))
+    ).scalar_one_or_none()
+
+    machine_psk: str | None = None
+    if body.machine_psk:
+        # 追加绑定：机器 PSK 认证
+        if agent is None or not verify_psk(body.machine_psk, agent.agent_key):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="机器 PSK 无效")
+    else:
+        # 首次绑定：创建 Agent 与机器 PSK
+        if agent is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="该 Agent 已存在，请携带 machine_psk 追加绑定",
+            )
+        machine_psk = f"sk-{secrets.token_hex(24)}"
+        agent = Agent(
+            agent_id=install_id,
+            agent_key=hash_psk(machine_psk),
+            hostname=body.hostname,
+            platform=body.platform,
+            version=body.version,
+            status="offline",
+        )
+        db.add(agent)
+        await db.flush()
+
+    existing = (
+        await db.execute(
+            select(AgentUser).where(
+                AgentUser.agent_id == agent.id,
+                AgentUser.user_id == key_row.user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该用户已绑定此 Agent")
+
+    revoke_credential = secrets.token_urlsafe(24)
+    db.add(
+        AgentUser(
+            agent_id=agent.id,
+            user_id=key_row.user_id,
+            revoke_credential_hash=hash_psk(revoke_credential),
+        )
+    )
+    await db.commit()
+    return BindResponse(
+        agent_id=agent.agent_id,
+        machine_psk=machine_psk,
+        revoke_credential=revoke_credential,
+        user_id=key_row.user_id,
+    )
+
+
+@router.get("/agent/bindings", response_model=list[AgentBindingOut])
+async def list_agent_bindings(
+    request: Request,
+    agent_id: str,
+    _rl: None = Depends(rate_limit("bind")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Windows 方案 §3.2：机器 PSK 认证，返回本机已绑定用户名。"""
+    agent = await _verify_agent(request.headers.get("x-agent-key") or "", agent_id, db)
+    rows = (
+        await db.execute(
+            select(AgentUser, User.username)
+            .join(User, AgentUser.user_id == User.id)
+            .where(AgentUser.agent_id == agent.id)
+            .order_by(AgentUser.id)
+        )
+    ).all()
+    return [
+        AgentBindingOut(id=au.id, agent_id=agent.id, user_id=au.user_id, username=username)
+        for au, username in rows
+    ]
+
+
+@router.delete("/agent/bindings/{binding_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def unbind_agent_binding(
+    binding_id: int,
+    request: Request,
+    agent_id: str,
+    _rl: None = Depends(rate_limit("bind")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Windows 方案 §3.2：机器 PSK + 对应撤销凭据解绑。"""
+    agent = await _verify_agent(request.headers.get("x-agent-key") or "", agent_id, db)
+    revoke = request.headers.get("x-revoke-credential") or ""
+    if not revoke:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="缺少撤销凭据")
+    binding = (
+        await db.execute(
+            select(AgentUser).where(
+                AgentUser.id == binding_id,
+                AgentUser.agent_id == agent.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if binding is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="绑定不存在")
+    if not verify_psk(revoke, binding.revoke_credential_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="撤销凭据无效")
+    await db.delete(binding)
+    await db.commit()
 
 
 async def _verify_execution_binding(

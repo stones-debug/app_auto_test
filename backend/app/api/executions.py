@@ -4,10 +4,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_project_permission, require_project_write
+from app.api.deps import (
+    get_current_user,
+    get_project_permission,
+    require_device_access,
+    require_project_write,
+)
 from app.core.database import get_db
 from app.core.ratelimit import rate_limit
-from app.models import Execution, ExecutionCase, TestCase, TestSuite, User
+from app.models import Agent, Device, Execution, ExecutionCase, TestCase, TestSuite, User
 from app.schemas.execution import (
     BatchExecutionCreate,
     ExecutionCaseOut,
@@ -56,6 +61,35 @@ async def _get_suite_or_404(suite_id: int, db: AsyncSession) -> TestSuite:
     return suite
 
 
+async def _validate_device_for_execution(
+    device_id: int | None, user: User, db: AsyncSession
+) -> Device:
+    """Windows 方案 §3.3：执行设备校验。
+
+    - 缺失 → 400 DEVICE_REQUIRED（不再从全平台设备池随机选择）；
+    - 用户无权（未绑定 Agent / 非管理员）→ 403；
+    - 设备忙/被锁/Agent 离线 → 409（并发安全最终仍由 Worker 原子锁保证）。
+    """
+    if device_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "DEVICE_REQUIRED", "message": "必须指定执行设备 device_id"},
+        )
+    device = await require_device_access(device_id, user, db)
+    if device.status != "idle" or device.locked_by_execution is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "DEVICE_BUSY", "message": "设备忙或已被其他执行占用"},
+        )
+    agent = await db.get(Agent, device.agent_id)
+    if agent is None or agent.status != "online":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "AGENT_OFFLINE", "message": "Agent 离线，设备不可用"},
+        )
+    return device
+
+
 @router.post(
     "/executions/cases/{case_id}",
     response_model=ExecutionOut,
@@ -70,6 +104,7 @@ async def create_case_execution(
 ):
     case = await _get_case_or_404(case_id, db)
     await require_project_write(case.project_id, user, db)
+    await _validate_device_for_execution(body.device_id, user, db)
     return await execution_service.create_case_execution(
         db, case, user, body.device_id, body.parameters, body.timeout_seconds
     )
@@ -97,6 +132,7 @@ async def create_batch_execution(
         suites.append(suite)
     if project_id is not None:
         await require_project_write(project_id, user, db)
+    await _validate_device_for_execution(body.device_id, user, db)
     return await execution_service.create_batch_execution(
         db, suites, user, body.device_id, body.parameters, body.timeout_seconds
     )
@@ -116,6 +152,7 @@ async def create_suite_execution(
 ):
     suite = await _get_suite_or_404(suite_id, db)
     await require_project_write(suite.project_id, user, db)
+    await _validate_device_for_execution(body.device_id, user, db)
     return await execution_service.create_suite_execution(
         db, suite, user, body.device_id, body.parameters, body.timeout_seconds
     )
@@ -234,4 +271,7 @@ async def retry_execution(
 ):
     execution = await _get_execution_or_404(execution_id, db)
     await _require_execution_write(execution, user, db)
+    # Windows 方案 §3.3：重试也校验设备授权；未指定时沿用原执行设备（缺失则报 DEVICE_REQUIRED）
+    target_device_id = device_id if device_id is not None else execution.device_id
+    await _validate_device_for_execution(target_device_id, user, db)
     return await execution_service.retry_execution(db, execution, user, device_id)

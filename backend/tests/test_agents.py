@@ -63,7 +63,7 @@ async def test_create_and_list_agents(client: AsyncClient):
 
 
 async def test_agent_device_mgmt_requires_platform_admin(client: AsyncClient):
-    """CR-03：非平台管理员不能管理 Agent/设备或读取 PSK。"""
+    """CR-03：非平台管理员不能管理 Agent/设备或读取 PSK；列表仅返回其绑定 Agent（此处为空）。"""
     await client.post("/api/auth/register", json=REG)
     login = await client.post(
         "/api/auth/login", json={"username": REG["username"], "password": REG["password"]}
@@ -71,7 +71,10 @@ async def test_agent_device_mgmt_requires_platform_admin(client: AsyncClient):
     token = login.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
-    assert (await client.get("/api/agents", headers=headers)).status_code == 403
+    # Windows 方案 §3.3：普通用户可查列表，但只看到自己绑定的 Agent（未绑定 → 空）
+    listed = await client.get("/api/agents", headers=headers)
+    assert listed.status_code == 200
+    assert listed.json() == []
     assert (await client.post("/api/agents", headers=headers, json={"hostname": "x"})).status_code == 403
 
     agent_id, device_id = await _create_agent_device()
