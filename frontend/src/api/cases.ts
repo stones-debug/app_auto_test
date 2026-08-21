@@ -30,6 +30,12 @@ export interface TestCase {
   created_by?: number | null
   created_at: string
   updated_at: string
+  // B3 扩展字段（列表项）
+  module_name?: string | null
+  step_count?: number
+  assertion_count?: number
+  last_execution_status?: string | null
+  last_execution_at?: string | null
 }
 
 export const CASE_STATUS = [

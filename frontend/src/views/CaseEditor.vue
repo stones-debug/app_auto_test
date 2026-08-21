@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import Draggable from 'vuedraggable'
@@ -20,6 +20,7 @@ import {
 } from '@/api/cases'
 import { listModules } from '@/api/elements'
 import ElementSelector from '@/components/ElementSelector.vue'
+import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 
 const route = useRoute()
 const router = useRouter()
@@ -41,6 +42,17 @@ const form = reactive<Partial<TestCase>>({
 
 const variableEntries = ref<{ key: string; value: string }[]>([])
 const isEdit = computed(() => caseId !== null)
+
+// V2 §4.2：编辑页 dirty 离开确认
+const { markDirty, markSaved } = useUnsavedChanges()
+watch(
+  () => JSON.stringify({ ...form, variables: collectVariables() }),
+  () => {
+    if (loadedOnce.value) markDirty()
+  },
+  { deep: true },
+)
+const loadedOnce = ref(false)
 
 function stepMeta(step: Step) {
   return actionMeta(step.action)
@@ -134,11 +146,14 @@ async function save() {
     if (isEdit.value) {
       await updateCase(caseId!, payload)
       ElMessage.success('已保存')
+      markSaved()
+      router.push(`/projects/${projectId}/cases`)
     } else {
-      await createCase(projectId, payload)
+      const created = await createCase(projectId, payload)
       ElMessage.success('已创建')
+      markSaved()
+      router.replace(`/projects/${projectId}/cases/${created.id}/edit`)
     }
-    router.push(`/projects/${projectId}/cases`)
   } finally {
     loading.value = false
   }
@@ -160,6 +175,7 @@ onMounted(async () => {
       value: String(value),
     }))
   }
+  loadedOnce.value = true
 })
 </script>
 
