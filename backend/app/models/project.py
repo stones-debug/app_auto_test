@@ -1,4 +1,4 @@
-from sqlalchemy import ForeignKey, String, Text
+from sqlalchemy import ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -18,6 +18,7 @@ class Project(Base, TimestampMixin, SoftDeleteMixin):
 
 class ProjectMember(Base, TimestampMixin):
     __tablename__ = "project_members"
+    __table_args__ = (UniqueConstraint("project_id", "user_id", name="project_members_project_id_user_id_key"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False)

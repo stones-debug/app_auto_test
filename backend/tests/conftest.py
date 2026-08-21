@@ -75,6 +75,10 @@ async def _cleanup_test_data():
                     )
                     await session.execute(delete(Execution).where(Execution.id.in_(exec_ids)))
 
+                # 变量可能引用 suite/case/project，须先于 test_suites/test_cases 删除
+                await session.execute(
+                    delete(Variable).where(Variable.project_id.in_(project_ids))
+                )
                 await session.execute(
                     delete(TestSuiteCase).where(TestSuiteCase.suite_id.in_(
                         select(TestSuite.id).where(TestSuite.project_id.in_(project_ids))
@@ -93,12 +97,12 @@ async def _cleanup_test_data():
                     delete(TestElement).where(TestElement.project_id.in_(project_ids))
                 )
                 await session.execute(
-                    delete(Variable).where(Variable.project_id.in_(project_ids))
-                )
-                await session.execute(
                     delete(ProjectMember).where(ProjectMember.project_id.in_(project_ids))
                 )
                 await session.execute(delete(Project).where(Project.id.in_(project_ids)))
+
+            # 全局变量（project_id 为空）按创建者清理，避免跨测试残留
+            await session.execute(delete(Variable).where(Variable.created_by == user.id))
 
             await session.execute(delete(RefreshToken).where(RefreshToken.user_id == user.id))
             await session.execute(delete(User).where(User.id == user.id))

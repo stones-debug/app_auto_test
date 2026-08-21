@@ -25,6 +25,7 @@ async def seed() -> None:
             username=DEFAULT_ADMIN["username"],
             email=DEFAULT_ADMIN["email"],
             password_hash=hash_password(DEFAULT_ADMIN["password"]),
+            is_admin=True,
         )
         session.add(user)
         await session.commit()

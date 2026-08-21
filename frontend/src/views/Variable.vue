@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
@@ -50,7 +50,12 @@ async function save() {
   if (editingId.value) {
     await updateVariable(editingId.value, { value: form.value.value, description: form.value.description })
   } else {
-    await createVariable({ scope: scope.value, project_id: projectId, ...form.value })
+    // CR-02：全局变量不携带 project_id
+    await createVariable(
+      scope.value === 'global'
+        ? { scope: 'global', ...form.value }
+        : { scope: scope.value, project_id: projectId, ...form.value },
+    )
   }
   dialogVisible.value = false
   await load()

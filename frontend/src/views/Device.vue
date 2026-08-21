@@ -14,6 +14,10 @@ import {
   type Agent,
   type Device,
 } from '@/api/agents'
+import { useAuthStore } from '@/stores/auth'
+
+const auth = useAuthStore()
+const isAdmin = ref(auth.user?.is_admin ?? false)
 
 const loading = ref(false)
 const agents = ref<Agent[]>([])
@@ -80,10 +84,11 @@ onBeforeUnmount(() => {
 <template>
   <div>
     <div class="toolbar">
-      <el-button type="primary" @click="dialogOpen = true">新建 Agent</el-button>
+      <el-button v-if="isAdmin" type="primary" @click="dialogOpen = true">新建 Agent</el-button>
       <el-button @click="load">刷新</el-button>
       <span class="tip">状态每 5 秒自动刷新</span>
     </div>
+    <div v-if="!isAdmin" class="admin-notice">仅平台管理员可管理 Agent/设备；当前为只读查看。</div>
 
     <el-table v-loading="loading" :data="agents" row-key="id">
       <el-table-column type="expand">
@@ -104,7 +109,7 @@ onBeforeUnmount(() => {
               </el-table-column>
               <el-table-column label="操作" width="120">
                 <template #default="{ row: d }">
-                  <el-button size="small" type="warning" text @click="release(d)">释放锁</el-button>
+                  <el-button v-if="isAdmin" size="small" type="warning" text @click="release(d)">释放锁</el-button>
                 </template>
               </el-table-column>
             </el-table>
@@ -126,7 +131,7 @@ onBeforeUnmount(() => {
       <el-table-column prop="device_count" label="设备数" width="80" />
       <el-table-column label="操作" width="100" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" type="danger" text @click="remove(row)">注销</el-button>
+          <el-button v-if="isAdmin" size="small" type="danger" text @click="remove(row)">注销</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -163,6 +168,11 @@ onBeforeUnmount(() => {
   color: #999;
   font-size: 12px;
   margin-left: 8px;
+}
+.admin-notice {
+  color: #e6a23c;
+  font-size: 12px;
+  margin-bottom: 12px;
 }
 .expand-wrap {
   padding: 8px 24px;

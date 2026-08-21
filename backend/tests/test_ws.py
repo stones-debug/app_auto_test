@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.core.config import reports_dir, settings
 from app.core.database import SessionLocal
+from app.core.security import hash_psk
 from app.main import app
 from app.models import (
     Agent,
@@ -16,6 +17,8 @@ from app.models import (
     ExecutionCase,
     ExecutionLog,
     ExecutionStep,
+    Project,
+    User,
 )
 from app.services import worker_service
 from app.ws import handlers
@@ -46,7 +49,7 @@ async def client():
 async def _create_agent(agent_key: str = "sk-ws-test") -> int:
     async with SessionLocal() as db:
         agent = Agent(
-            agent_key=agent_key,
+            agent_key=hash_psk(agent_key),
             agent_id=f"pytest_ws_agent_{uuid.uuid4().hex[:6]}",
             hostname="ws-host",
             status="offline",
@@ -54,6 +57,21 @@ async def _create_agent(agent_key: str = "sk-ws-test") -> int:
         db.add(agent)
         await db.commit()
         return agent.id
+
+
+async def _bind_execution_to_agent(
+    db, execution_id: int, agent_id: int, *, status: str = "running", session_token: str = "sess-token"
+) -> int:
+    """为 execution 绑定一台属于 agent 的设备并置为 running，返回 device_id。"""
+    device = Device(agent_id=agent_id, name="ws-device", platform="android", udid=f"u-{uuid.uuid4().hex[:8]}", status="busy")
+    db.add(device)
+    await db.flush()
+    execution = await db.get(Execution, execution_id)
+    execution.device_id = device.id
+    execution.status = status
+    execution.session_token = session_token
+    await db.commit()
+    return device.id
 
 
 async def _setup_case_execution(client: AsyncClient) -> tuple[str, int, int]:
@@ -163,11 +181,13 @@ async def test_handle_register_wrong_key_closes():
 async def test_handle_log_step_result_execution_result(client: AsyncClient):
     token, case_id, execution_id = await _setup_case_execution(client)
 
-    # 造 execution_cases 快照（复用 worker 快照逻辑）
+    # 造 execution_cases 快照 + 绑定设备并置 running（CR-05）
     async with SessionLocal() as db:
+        agent_id = await _create_agent()
         execution = await db.get(Execution, execution_id)
         await worker_service.create_execution_cases_from_execution(db, execution)
-        execution.status = "running"
+        await _bind_execution_to_agent(db, execution_id, agent_id)
+        execution = await db.get(Execution, execution_id)
         execution.started_at = datetime.now(UTC)
         await db.commit()
 
@@ -176,8 +196,8 @@ async def test_handle_log_step_result_execution_result(client: AsyncClient):
     await execution_manager.connect(execution_id, front)
 
     async with SessionLocal() as db:
-        agent_id = await _create_agent()
-        await handlers.handle_log(db, agent_id, {"execution_id": execution_id, "level": "INFO", "message": "开始点击", "step_order": 1})
+        payload_log = {"execution_id": execution_id, "session_token": "sess-token", "level": "INFO", "message": "开始点击", "step_order": 1}
+        await handlers.handle_log(db, agent_id, payload_log)
         log = (await db.execute(select(ExecutionLog).where(ExecutionLog.execution_id == execution_id))).scalar_one()
         assert log.message == "开始点击"
         assert log.source == "agent"
@@ -187,6 +207,7 @@ async def test_handle_log_step_result_execution_result(client: AsyncClient):
             agent_id,
             {
                 "execution_id": execution_id,
+                "session_token": "sess-token",
                 "case_id": case_id,
                 "step_order": 1,
                 "action": "click",
@@ -205,7 +226,7 @@ async def test_handle_log_step_result_execution_result(client: AsyncClient):
         assert step.status == "passed"
         assert step.actual_value == "OK"
 
-        await handlers.handle_execution_result(db, agent_id, {"execution_id": execution_id, "status": "PASSED"})
+        await handlers.handle_execution_result(db, agent_id, {"execution_id": execution_id, "session_token": "sess-token", "status": "PASSED"})
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
@@ -215,6 +236,78 @@ async def test_handle_log_step_result_execution_result(client: AsyncClient):
     types = {m["type"] for m in front.sent}
     assert {"log", "step_result", "completed"} <= types
     await execution_manager.disconnect(execution_id, front)
+
+
+async def test_step_result_rejects_unsafe_screenshot_path(client: AsyncClient):
+    """CR-01：Agent 回传的恶意 screenshot_path 不得入库。"""
+    token, case_id, execution_id = await _setup_case_execution(client)
+    async with SessionLocal() as db:
+        agent_id = await _create_agent()
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        await _bind_execution_to_agent(db, execution_id, agent_id)
+
+    async with SessionLocal() as db:
+        for bad in [
+            r"C:\Windows\win.ini",
+            r"\\server\share\x",
+            "../x.png",
+            "execution_999/screenshots/a.png",
+            f"execution_{execution_id}/../../etc/passwd",
+            f"execution_{execution_id}/screenshots/..\\..\\win.ini",
+        ]:
+            await handlers.handle_step_result(
+                db,
+                agent_id,
+                {
+                    "execution_id": execution_id,
+                    "session_token": "sess-token",
+                    "case_id": case_id,
+                    "step_order": 1,
+                    "action": "screenshot",
+                    "status": "passed",
+                    "screenshot_path": bad,
+                },
+            )
+        ec = (await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )).scalar_one()
+        step = (await db.execute(
+            select(ExecutionStep).where(ExecutionStep.execution_case_id == ec.id)
+        )).scalar_one()
+        assert step.screenshot_path is None
+
+
+async def test_cross_agent_cannot_submit_other_execution(client: AsyncClient):
+    """CR-05：Agent A 不能给 Agent B 的执行提交日志/步骤/终态。"""
+    token, case_id, execution_id = await _setup_case_execution(client)
+    async with SessionLocal() as db:
+        agent_a = await _create_agent("sk-agent-a")
+        await _bind_execution_to_agent(db, execution_id, agent_a)
+        agent_b = await _create_agent("sk-agent-b")
+
+    async with SessionLocal() as db:
+        # Agent B 冒名提交 log/step/execution_result 均被拒绝
+        await handlers.handle_log(db, agent_b, {"execution_id": execution_id, "session_token": "sess-token", "level": "INFO", "message": "冒名日志", "step_order": 1})
+        await handlers.handle_step_result(
+            db, agent_b,
+            {"execution_id": execution_id, "session_token": "sess-token", "case_id": case_id, "step_order": 1, "action": "click", "status": "passed"},
+        )
+        await handlers.handle_execution_result(db, agent_b, {"execution_id": execution_id, "session_token": "sess-token", "status": "passed"})
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution.status == "running"  # 未被冒名终态化
+        assert (await db.execute(
+            select(ExecutionLog).where(ExecutionLog.execution_id == execution_id)
+        )).scalars().all() == []  # 无冒名日志
+        assert (await db.execute(
+            select(ExecutionStep).where(
+                ExecutionStep.execution_case_id.in_(
+                    select(ExecutionCase.id).where(ExecutionCase.execution_id == execution_id)
+                )
+            )
+        )).scalars().all() == []  # 无冒名步骤
 
 
 # ---------- 内部转发 ----------
@@ -261,33 +354,72 @@ async def test_internal_forward_bad_token(client: AsyncClient):
 async def test_agent_upload_ok_and_cleanup():
     agent_id = await _create_agent("sk-ws-test")
     async with SessionLocal() as db:
+        # 注册用户作为项目 owner
+        user = User(username="pytest_upload_user", email="up@t.com", password_hash="x")
+        db.add(user)
+        await db.flush()
         agent = await db.get(Agent, agent_id)
-        key = agent.agent_key
-    execution_id = 987654
+        key = "sk-ws-test"
+        agent_identifier = agent.agent_id
+        device = Device(agent_id=agent_id, name="up-device", platform="android", udid=f"u-{uuid.uuid4().hex[:8]}", status="busy")
+        db.add(device)
+        await db.flush()
+        project = Project(name="上传测试项目", owner_id=user.id, visibility="private")
+        db.add(project)
+        await db.flush()
+        execution = Execution(
+            project_id=project.id, type="case", status="running", session_token="up-token"
+        )
+        db.add(execution)
+        await db.flush()
+        execution.device_id = device.id
+        await db.commit()
+        execution_id = execution.id
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
             "/api/agent/upload",
             headers={"X-Agent-Key": key},
-            data={"execution_id": str(execution_id), "file_type": "screenshot"},
+            data={"execution_id": str(execution_id), "agent_id": agent_identifier, "session_token": "up-token", "file_type": "screenshot"},
             files={"file": ("step_001.png", b"\x89PNG\r\n\x1a\n fake-png", "image/png")},
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert body["path"] == f"execution_{execution_id}/screenshots/step_001.png"
+        # 文件名应为服务端生成的 UUID 安全名（忽略用户原始文件名）
+        assert body["path"].startswith(f"execution_{execution_id}/screenshots/")
+        assert body["path"].endswith(".png")
+        stored_name = body["path"].split("/")[-1]
+        assert stored_name != "step_001.png"
+        assert len(stored_name) == 32 + 4  # uuid4().hex(32) + '.png'
 
+        # 校验上传落盘路径确实为安全路径
+        import uuid as _uuid
+        _uuid.UUID(stored_name[:-4])
+
+        # 错误 PSK → 401
         bad_key = await client.post(
             "/api/agent/upload",
             headers={"X-Agent-Key": "wrong"},
-            data={"execution_id": str(execution_id)},
+            data={"execution_id": str(execution_id), "agent_id": agent_identifier, "session_token": "up-token"},
             files={"file": ("a.png", b"x", "image/png")},
         )
         assert bad_key.status_code == 401
 
+        # 错误 session_token → 403（CR-05）
+        bad_token = await client.post(
+            "/api/agent/upload",
+            headers={"X-Agent-Key": key},
+            data={"execution_id": str(execution_id), "agent_id": agent_identifier, "session_token": "wrong"},
+            files={"file": ("a.png", b"x", "image/png")},
+        )
+        assert bad_token.status_code == 403
+
+        # 错误扩展名 → 400
         bad_ext = await client.post(
             "/api/agent/upload",
             headers={"X-Agent-Key": key},
-            data={"execution_id": str(execution_id)},
+            data={"execution_id": str(execution_id), "agent_id": agent_identifier, "session_token": "up-token"},
             files={"file": ("a.exe", b"x", "application/octet-stream")},
         )
         assert bad_ext.status_code == 400
@@ -303,21 +435,23 @@ async def test_agent_upload_ok_and_cleanup():
 async def test_handle_assertion_result(client: AsyncClient):
     token, case_id, execution_id = await _setup_case_execution(client)
     async with SessionLocal() as db:
+        agent_id = await _create_agent()
         execution = await db.get(Execution, execution_id)
         await worker_service.create_execution_cases_from_execution(db, execution)
+        await _bind_execution_to_agent(db, execution_id, agent_id)
 
     async with SessionLocal() as db:
-        agent_id = await _create_agent()
         await handlers.handle_step_result(
             db,
             agent_id,
-            {"execution_id": execution_id, "case_id": case_id, "step_order": 1, "action": "input", "status": "passed"},
+            {"execution_id": execution_id, "session_token": "sess-token", "case_id": case_id, "step_order": 1, "action": "input", "status": "passed"},
         )
         await handlers.handle_assertion_result(
             db,
             agent_id,
             {
                 "execution_id": execution_id,
+                "session_token": "sess-token",
                 "case_id": case_id,
                 "assertions": [{"type": "text_equals", "expected": "admin", "actual": "admin", "status": "pass"}],
             },

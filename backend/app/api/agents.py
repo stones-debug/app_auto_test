@@ -5,10 +5,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, require_platform_admin
 from app.core.database import get_db
+from app.core.security import hash_psk
 from app.models import Agent, Device, User
-from app.schemas.agent import AgentCreate, AgentOut, DeviceOut, DevicePage
+from app.schemas.agent import AgentCreate, AgentCreateResponse, AgentListItem, DeviceOut, DevicePage
 from app.utils.pagination import get_pagination
 
 router = APIRouter(tags=["设备与 Agent 管理"])
@@ -28,9 +29,9 @@ async def _get_device_or_404(device_id: int, db: AsyncSession) -> Device:
     return device
 
 
-@router.get("/agents", response_model=list[AgentOut])
+@router.get("/agents", response_model=list[AgentListItem])
 async def list_agents(
-    user: User = Depends(get_current_user),
+    _admin: User = Depends(require_platform_admin()),
     db: AsyncSession = Depends(get_db),
 ):
     agents = (await db.execute(select(Agent).order_by(Agent.id))).scalars().all()
@@ -42,21 +43,22 @@ async def list_agents(
             )
         ).all()
         counts = {agent_id: count for agent_id, count in rows}
-    items = [AgentOut.model_validate(a) for a in agents]
+    items = [AgentListItem.model_validate(a) for a in agents]
     for item in items:
         item.device_count = counts.get(item.id, 0)
     return items
 
 
-@router.post("/agents", response_model=AgentOut, status_code=status.HTTP_201_CREATED)
+@router.post("/agents", response_model=AgentCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_agent(
     body: AgentCreate,
-    user: User = Depends(get_current_user),
+    _admin: User = Depends(require_platform_admin()),
     db: AsyncSession = Depends(get_db),
 ):
+    psk = f"sk-{secrets.token_hex(24)}"
     agent = Agent(
         agent_id=f"agent-{secrets.token_hex(4)}",
-        agent_key=f"sk-{secrets.token_hex(24)}",
+        agent_key=hash_psk(psk),
         hostname=body.hostname,
         platform=body.platform,
         status="offline",
@@ -64,13 +66,15 @@ async def create_agent(
     db.add(agent)
     await db.commit()
     await db.refresh(agent)
-    return agent
+    resp = AgentCreateResponse.model_validate(agent)
+    resp.agent_key = psk  # 仅创建时返回一次明文 PSK
+    return resp
 
 
 @router.delete("/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_agent(
     agent_id: int,
-    user: User = Depends(get_current_user),
+    _admin: User = Depends(require_platform_admin()),
     db: AsyncSession = Depends(get_db),
 ):
     agent = await _get_agent_or_404(agent_id, db)
@@ -140,7 +144,7 @@ async def get_device(
 @router.post("/devices/{device_id}/release", response_model=DeviceOut)
 async def release_device(
     device_id: int,
-    user: User = Depends(get_current_user),
+    _admin: User = Depends(require_platform_admin()),
     db: AsyncSession = Depends(get_db),
 ):
     """强制释放设备锁（应急）。执行状态由 Worker 超时扫描兜底。"""

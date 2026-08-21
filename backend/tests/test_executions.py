@@ -201,3 +201,62 @@ async def test_execution_permission_denied(client: AsyncClient):
         f"/api/executions/cases/{case_id}", headers=other_headers, json={"parameters": {}}
     )
     assert resp.status_code == 403
+
+
+async def test_public_viewer_cannot_create_stop_retry(client: AsyncClient):
+    """CR-04：公共项目 viewer 不能创建/停止/重试执行，但可读详情。"""
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+    # 设为公共项目
+    await client.put(
+        f"/api/projects/{project_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"visibility": "public"},
+    )
+    element_id = await _create_element(client, token, project_id)
+    case_id = await _create_case(client, token, project_id, element_id)
+
+    await client.post("/api/auth/register", json={"username": "pytest_viewer", "email": "v@t.com", "password": "x12345678"})
+    viewer_login = await client.post(
+        "/api/auth/login", json={"username": "pytest_viewer", "password": "x12345678"}
+    )
+    viewer_headers = {"Authorization": f"Bearer {viewer_login.json()['access_token']}"}
+
+    # viewer 不能创建
+    resp = await client.post(
+        f"/api/executions/cases/{case_id}", headers=viewer_headers, json={"parameters": {}}
+    )
+    assert resp.status_code == 403
+
+    # owner 创建执行后，viewer 不能停止/重试，但可读详情
+    created = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"parameters": {}},
+    )
+    execution_id = created.json()["id"]
+
+    detail = await client.get(f"/api/executions/{execution_id}", headers=viewer_headers)
+    assert detail.status_code == 200
+
+    stopped = await client.post(f"/api/executions/{execution_id}/stop", headers=viewer_headers)
+    assert stopped.status_code == 403
+
+    retried = await client.post(f"/api/executions/{execution_id}/retry", headers=viewer_headers)
+    assert retried.status_code == 403
+
+    # viewer 也不能用套件/批量入口创建
+    suite = await client.post(
+        f"/api/projects/{project_id}/suites",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"name": "套件V"},
+    )
+    suite_id = suite.json()["id"]
+    suite_run = await client.post(
+        f"/api/executions/suites/{suite_id}", headers=viewer_headers, json={"parameters": {}}
+    )
+    assert suite_run.status_code == 403
+    batch = await client.post(
+        "/api/executions/suites/batch", headers=viewer_headers, json={"suite_ids": [suite_id], "parameters": {}}
+    )
+    assert batch.status_code == 403

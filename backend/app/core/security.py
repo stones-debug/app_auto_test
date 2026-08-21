@@ -21,6 +21,18 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
+def hash_psk(psk: str) -> str:
+    """Agent PSK 哈希（Argon2id），数据库中只存哈希，不存明文。"""
+    return _ph.hash(psk)
+
+
+def verify_psk(psk: str, psk_hash: str) -> bool:
+    try:
+        return _ph.verify(psk_hash, psk)
+    except VerifyMismatchError:
+        return False
+
+
 def _base_payload(user_id: int, username: str, token_type: str) -> dict:
     return {
         "sub": str(user_id),

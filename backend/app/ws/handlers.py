@@ -4,6 +4,7 @@ from fastapi import WebSocket
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.security import verify_psk
 from app.models import (
     Agent,
     Device,
@@ -13,9 +14,37 @@ from app.models import (
     ExecutionLog,
     ExecutionStep,
 )
+from app.services.screenshot_store import validate_object_key
 from app.ws.managers import agent_manager, execution_manager
 
 TERMINAL_STATES = {"passed", "failed", "error", "stopped", "cancelled"}
+WRITE_STATES = {"running", "stopping"}
+
+
+async def _bound_execution(
+    db: AsyncSession,
+    agent_id: int,
+    execution_id: int | None,
+    session_token: str | None = None,
+) -> Execution | None:
+    """校验 Agent 回传的执行绑定关系（CR-05）。
+
+    仅当 execution 的 device 属于当前 agent、状态为 running/stopping、
+    且 session_token 匹配时返回 execution；否则返回 None（拒绝写入）。
+    """
+    if execution_id is None:
+        return None
+    execution = await db.get(Execution, execution_id)
+    if execution is None:
+        return None
+    device = await db.get(Device, execution.device_id) if execution.device_id else None
+    if device is None or device.agent_id != agent_id:
+        return None
+    if execution.session_token is not None and session_token != execution.session_token:
+        return None
+    if execution.status not in WRITE_STATES:
+        return None
+    return execution
 
 
 async def mark_agent_offline(db: AsyncSession, agent_id: int) -> None:
@@ -34,7 +63,7 @@ async def handle_register(db: AsyncSession, ws: WebSocket, payload: dict) -> dic
     agent = (
         await db.execute(select(Agent).where(Agent.agent_id == agent_id_str))
     ).scalar_one_or_none()
-    if agent is None or agent.agent_key != agent_key:
+    if agent is None or not verify_psk(agent_key, agent.agent_key):
         await ws.close(code=1008, reason="Agent 认证失败")
         return None
 
@@ -92,8 +121,11 @@ async def handle_device_list(db: AsyncSession, agent_id: int, payload: dict) -> 
 
 async def handle_log(db: AsyncSession, agent_id: int, payload: dict) -> None:
     execution_id = payload.get("execution_id")
+    execution = await _bound_execution(db, agent_id, execution_id, payload.get("session_token"))
+    if execution is None:
+        return
     log = ExecutionLog(
-        execution_id=execution_id,
+        execution_id=execution.id,
         level=payload.get("level") or "INFO",
         message=payload.get("message") or "",
         source="agent",
@@ -120,6 +152,12 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
     step_order = payload.get("step_order")
     if execution_id is None or case_id is None or step_order is None:
         return
+    execution = await _bound_execution(db, agent_id, execution_id, payload.get("session_token"))
+    if execution is None:
+        return
+    screenshot_path = payload.get("screenshot_path")
+    if not validate_object_key(execution_id, screenshot_path):
+        screenshot_path = None
     execution_case = (
         await db.execute(
             select(ExecutionCase).where(
@@ -161,7 +199,7 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
             duration=payload.get("duration"),
             actual_value=payload.get("actual_value"),
             error_message=payload.get("error_message"),
-            screenshot_path=payload.get("screenshot_path"),
+            screenshot_path=screenshot_path,
         )
         db.add(step)
     else:
@@ -170,7 +208,7 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
         step.duration = payload.get("duration")
         step.actual_value = payload.get("actual_value")
         step.error_message = payload.get("error_message")
-        step.screenshot_path = payload.get("screenshot_path")
+        step.screenshot_path = screenshot_path
     await db.flush()
 
     if execution_case.status == "pending":
@@ -210,6 +248,9 @@ async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict
     execution_id = payload.get("execution_id")
     case_id = payload.get("case_id")
     if execution_id is None or case_id is None:
+        return
+    execution = await _bound_execution(db, agent_id, execution_id, payload.get("session_token"))
+    if execution is None:
         return
     execution_case = (
         await db.execute(
@@ -256,7 +297,7 @@ async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict
 
 async def handle_execution_result(db: AsyncSession, agent_id: int, payload: dict) -> None:
     execution_id = payload.get("execution_id")
-    execution = await db.get(Execution, execution_id)
+    execution = await _bound_execution(db, agent_id, execution_id, payload.get("session_token"))
     if execution is None:
         return
     status = (payload.get("status") or "error").lower()

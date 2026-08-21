@@ -8,9 +8,11 @@ from sqlalchemy import select as sa_select
 
 from app.core.config import reports_dir
 from app.core.database import SessionLocal
+from app.core.security import hash_psk
 from app.main import app
-from app.models import Agent, Execution, Report
-from app.services import worker_service
+from app.models import Agent, Device, Execution, Report
+from app.services import report_service, worker_service
+from app.services.screenshot_store import resolve_screenshot_path, validate_object_key
 from app.ws import handlers
 
 REG = {"username": "pytest_report_user", "email": "rp@tl-tek.com", "password": "test123"}
@@ -25,7 +27,7 @@ async def client():
 
 async def _make_agent() -> int:
     async with SessionLocal() as db:
-        agent = Agent(agent_key="sk-rp", agent_id=f"pytest_rp_agent_{uuid.uuid4().hex[:6]}", status="offline")
+        agent = Agent(agent_key=hash_psk("sk-rp"), agent_id=f"pytest_rp_agent_{uuid.uuid4().hex[:6]}", status="offline")
         db.add(agent)
         await db.commit()
         return agent.id
@@ -69,24 +71,30 @@ async def _setup(client: AsyncClient) -> tuple[str, int]:
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
         await worker_service.create_execution_cases_from_execution(db, execution)
+        device = Device(agent_id=agent_id, name="rp-device", platform="android", udid=f"u-{uuid.uuid4().hex[:8]}", status="busy")
+        db.add(device)
+        await db.flush()
+        execution.device_id = device.id
         execution.status = "running"
+        execution.session_token = "rp-token"
         execution.started_at = datetime.now(UTC)
         await db.commit()
         await handlers.handle_step_result(
             db,
             agent_id,
-            {"execution_id": execution_id, "case_id": case_id, "step_order": 1, "action": "input", "status": "passed", "actual_value": "admin"},
+            {"execution_id": execution_id, "session_token": "rp-token", "case_id": case_id, "step_order": 1, "action": "input", "status": "passed", "actual_value": "admin"},
         )
         await handlers.handle_step_result(
             db,
             agent_id,
-            {"execution_id": execution_id, "case_id": case_id, "step_order": 2, "action": "click", "status": "passed"},
+            {"execution_id": execution_id, "session_token": "rp-token", "case_id": case_id, "step_order": 2, "action": "click", "status": "passed"},
         )
         await handlers.handle_assertion_result(
             db,
             agent_id,
             {
                 "execution_id": execution_id,
+                "session_token": "rp-token",
                 "case_id": case_id,
                 "assertions": [{"type": "text_equals", "expected": "admin", "actual": "admin", "status": "pass"}],
             },
@@ -183,3 +191,39 @@ async def test_report_permission_denied(client: AsyncClient):
     resp = await client.get(f"/api/reports/{report_id}/detail", headers=other_headers)
     assert resp.status_code == 403
     _cleanup(execution_id)
+
+
+async def test_report_screenshot_resolution_is_contained():
+    """CR-01：报告生成器只能读取 execution_{id}/screenshots/ 内文件。"""
+    exec_id = 424242
+    bad = [
+        r"C:\Windows\win.ini",
+        r"\\server\share\x",
+        "../x.png",
+        f"execution_{exec_id}/../../etc/passwd",
+        f"execution_{exec_id}/screenshots/..\\..\\win.ini",
+        f"execution_{exec_id}/win.ini",
+        f"execution_{exec_id}/screenshots/a.exe",
+        f"execution_{exec_id}/screenshots/sub/a.png",
+    ]
+    for key in bad:
+        assert validate_object_key(exec_id, key) is False
+        assert resolve_screenshot_path(exec_id, key) is None
+
+    good = f"execution_{exec_id}/screenshots/ab12.png"
+    assert validate_object_key(exec_id, good) is True
+    path = resolve_screenshot_path(exec_id, good)
+    assert path is not None
+    assert path.is_relative_to((reports_dir() / f"execution_{exec_id}").resolve())
+
+    # 报告详情聚合时，越界路径被置空，不产生 base64
+    detail = {
+        "execution": {"id": exec_id},
+        "cases": [
+            {"steps": [{"screenshot": "screenshots/../../win.ini"}, {"screenshot": "screenshots/a.png"}]}
+        ],
+    }
+    report_service._embed_screenshots(detail)
+    assert detail["cases"][0]["steps"][0]["screenshot_base64"] is None
+
+    _cleanup(exec_id)

@@ -15,6 +15,7 @@ from app.models import (
     ExecutionStep,
     Report,
 )
+from app.services.screenshot_store import resolve_screenshot_path, validate_object_key
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates" / "reports"
 
@@ -88,7 +89,7 @@ async def get_report_detail(db: AsyncSession, execution_id: int) -> dict:
                         "duration": s.duration,
                         "actual_value": s.actual_value,
                         "error_message": s.error_message,
-                        "screenshot": _rel_screenshot(s.screenshot_path),
+                        "screenshot": _rel_screenshot(execution_id, s.screenshot_path),
                     }
                     for s in steps
                 ],
@@ -141,27 +142,29 @@ async def get_report_detail(db: AsyncSession, execution_id: int) -> dict:
     }
 
 
-def _rel_screenshot(path: str | None) -> str | None:
-    if not path:
+def _rel_screenshot(execution_id: int, path: str | None) -> str | None:
+    if not path or not validate_object_key(execution_id, path):
         return None
     # DB 中为 execution_{id}/screenshots/xxx.png，剥掉 execution_{id}/ 前缀
-    return path.split("/", 1)[1] if "/" in path else path
+    return path.split("/", 1)[1]
 
 
 def _embed_screenshots(detail: dict) -> None:
-    base = reports_dir()
+    execution_id = detail["execution"]["id"]
     for case in detail["cases"]:
         for step in case["steps"]:
             if not step["screenshot"]:
                 continue
-            file_path = (base / f"execution_{detail['execution']['id']}" / step["screenshot"]).resolve()
-            if file_path.is_file() and file_path.read_bytes():
-                try:
-                    data = file_path.read_bytes()
-                    step["screenshot_base64"] = base64.b64encode(data).decode()
-                except OSError:
-                    step["screenshot_base64"] = None
-            else:
+            # screenshot 字段为 screenshots/xxx.png（已剥掉 execution_{id}/ 前缀）
+            object_key = f"execution_{execution_id}/{step['screenshot']}"
+            file_path = resolve_screenshot_path(execution_id, object_key)
+            if file_path is None or not file_path.is_file():
+                step["screenshot_base64"] = None
+                continue
+            try:
+                data = file_path.read_bytes()
+                step["screenshot_base64"] = base64.b64encode(data).decode()
+            except OSError:
                 step["screenshot_base64"] = None
 
 

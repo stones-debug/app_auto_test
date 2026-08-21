@@ -1,4 +1,4 @@
-from sqlalchemy import String
+from sqlalchemy import Boolean, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -13,3 +13,4 @@ class User(Base, TimestampMixin):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)  # Argon2id
     status: Mapped[str] = mapped_column(String(20), default="active")
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

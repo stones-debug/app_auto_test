@@ -5,7 +5,6 @@ import type { PageData } from './projects'
 export interface Agent {
   id: number
   agent_id: string
-  agent_key: string
   hostname: string | null
   platform: string | null
   ip: string | null
@@ -14,6 +13,15 @@ export interface Agent {
   last_heartbeat: string | null
   created_at: string
   device_count: number
+}
+
+export interface CreateAgentResult {
+  id: number
+  agent_id: string
+  agent_key: string
+  hostname: string | null
+  platform: string | null
+  status: string
 }
 
 export interface Device {
@@ -35,7 +43,7 @@ export function listAgents() {
 }
 
 export function createAgent(data: { hostname?: string; platform?: string }) {
-  return request.post<Agent>('/agents', data)
+  return request.post<CreateAgentResult>('/agents', data)
 }
 
 export function deleteAgent(id: number) {

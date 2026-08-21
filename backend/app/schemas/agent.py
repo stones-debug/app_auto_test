@@ -8,10 +8,9 @@ class AgentCreate(BaseModel):
     platform: str | None = None
 
 
-class AgentOut(BaseModel):
+class AgentListItem(BaseModel):
     id: int
     agent_id: str
-    agent_key: str
     hostname: str | None
     platform: str | None
     ip: str | None
@@ -20,6 +19,17 @@ class AgentOut(BaseModel):
     last_heartbeat: datetime | None
     created_at: datetime
     device_count: int = 0
+
+    model_config = {"from_attributes": True}
+
+
+class AgentCreateResponse(BaseModel):
+    id: int
+    agent_id: str
+    agent_key: str  # 仅创建时一次性返回
+    hostname: str | None
+    platform: str | None
+    status: str
 
     model_config = {"from_attributes": True}
 

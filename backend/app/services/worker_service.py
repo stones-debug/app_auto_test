@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+import secrets
 from collections.abc import Callable
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
@@ -366,6 +367,7 @@ async def run_execution(
 
     execution.device_id = device.id
     execution.status = "running"
+    execution.session_token = secrets.token_urlsafe(32)
     execution.started_at = datetime.now(UTC)
     await db.commit()
     logger.info("[%s] execution=%s 开始执行，设备=%s", worker_id, execution.id, device.name)
@@ -394,6 +396,7 @@ async def run_execution(
         {
             "type": "start_test",
             "execution_id": execution.id,
+            "session_token": execution.session_token,
             "parameters": execution.parameters,
             "device": {"udid": device.udid, "platform": device.platform},
             "cases": payload_cases,

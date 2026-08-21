@@ -7,6 +7,7 @@ export interface UserInfo {
   id: number
   username: string
   email: string
+  is_admin?: boolean
 }
 
 export const useAuthStore = defineStore('auth', () => {

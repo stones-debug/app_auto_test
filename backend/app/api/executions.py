@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_project_permission
+from app.api.deps import get_current_user, get_project_permission, require_project_write
 from app.core.database import get_db
 from app.models import Execution, ExecutionCase, TestCase, TestSuite, User
 from app.schemas.execution import (
@@ -32,7 +32,13 @@ async def _get_execution_or_404(execution_id: int, db: AsyncSession) -> Executio
 
 
 async def _require_execution_access(execution: Execution, user: User, db: AsyncSession) -> None:
+    """读权限：项目可访问即可（viewer 只读）。"""
     await get_project_permission(execution.project_id, user, db)
+
+
+async def _require_execution_write(execution: Execution, user: User, db: AsyncSession) -> None:
+    """写权限（CR-04）：创建/停止/重试要求 owner/admin/member。"""
+    await require_project_write(execution.project_id, user, db)
 
 
 async def _get_case_or_404(case_id: int, db: AsyncSession) -> TestCase:
@@ -61,7 +67,7 @@ async def create_case_execution(
     db: AsyncSession = Depends(get_db),
 ):
     case = await _get_case_or_404(case_id, db)
-    await get_project_permission(case.project_id, user, db)
+    await require_project_write(case.project_id, user, db)
     return await execution_service.create_case_execution(
         db, case, user, body.device_id, body.parameters, body.timeout_seconds
     )
@@ -87,7 +93,7 @@ async def create_batch_execution(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="批量执行的套件必须属于同一项目")
         suites.append(suite)
     if project_id is not None:
-        await get_project_permission(project_id, user, db)
+        await require_project_write(project_id, user, db)
     return await execution_service.create_batch_execution(
         db, suites, user, body.device_id, body.parameters, body.timeout_seconds
     )
@@ -105,7 +111,7 @@ async def create_suite_execution(
     db: AsyncSession = Depends(get_db),
 ):
     suite = await _get_suite_or_404(suite_id, db)
-    await get_project_permission(suite.project_id, user, db)
+    await require_project_write(suite.project_id, user, db)
     return await execution_service.create_suite_execution(
         db, suite, user, body.device_id, body.parameters, body.timeout_seconds
     )
@@ -210,7 +216,7 @@ async def stop_execution(
     db: AsyncSession = Depends(get_db),
 ):
     execution = await _get_execution_or_404(execution_id, db)
-    await _require_execution_access(execution, user, db)
+    await _require_execution_write(execution, user, db)
     new_status = await execution_service.stop_execution(db, execution)
     return {"execution_id": execution.id, "status": new_status}
 
@@ -223,5 +229,5 @@ async def retry_execution(
     db: AsyncSession = Depends(get_db),
 ):
     execution = await _get_execution_or_404(execution_id, db)
-    await _require_execution_access(execution, user, db)
+    await _require_execution_write(execution, user, db)
     return await execution_service.retry_execution(db, execution, user, device_id)

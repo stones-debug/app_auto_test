@@ -23,6 +23,7 @@ class Execution(Base, TimestampMixin):
     device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id"))
     status: Mapped[str] = mapped_column(String(20), default="queued")
     parameters: Mapped[dict] = mapped_column(JSON, default=dict)
+    session_token: Mapped[str | None] = mapped_column(String(128))
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=1800)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

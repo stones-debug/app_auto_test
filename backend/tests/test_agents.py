@@ -1,9 +1,11 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from app.core.database import SessionLocal
+from app.core.security import hash_psk
 from app.main import app
-from app.models import Agent, Device, Execution
+from app.models import Agent, Device, Execution, User
 
 REG = {"username": "pytest_agent_user", "email": "ag@tl-tek.com", "password": "test123"}
 
@@ -17,6 +19,13 @@ async def client():
 
 async def _token(client: AsyncClient) -> str:
     await client.post("/api/auth/register", json=REG)
+    # 设备/Agent 管理为平台级资源，测试用户提升为平台管理员
+    async with SessionLocal() as db:
+        user = (await db.execute(
+            select(User).where(User.username == REG["username"])
+        )).scalar_one()
+        user.is_admin = True
+        await db.commit()
     login = await client.post(
         "/api/auth/login", json={"username": REG["username"], "password": REG["password"]}
     )
@@ -25,7 +34,7 @@ async def _token(client: AsyncClient) -> str:
 
 async def _create_agent_device() -> tuple[int, int]:
     async with SessionLocal() as db:
-        agent = Agent(agent_key="sk-t", agent_id="pytest_agent_mgmt", status="online")
+        agent = Agent(agent_key=hash_psk("sk-t"), agent_id="pytest_agent_mgmt", status="online")
         db.add(agent)
         await db.flush()
         device = Device(agent_id=agent.id, name="测试设备", platform="android", udid="u-mgmt", status="idle")
@@ -46,7 +55,28 @@ async def test_create_and_list_agents(client: AsyncClient):
 
     listed = await client.get("/api/agents", headers=headers)
     assert listed.status_code == 200
-    assert any(a["agent_id"] == body["agent_id"] for a in listed.json())
+    items = listed.json()
+    assert any(a["agent_id"] == body["agent_id"] for a in items)
+    # CR-03：列表不得暴露 Agent PSK
+    for item in items:
+        assert "agent_key" not in item
+
+
+async def test_agent_device_mgmt_requires_platform_admin(client: AsyncClient):
+    """CR-03：非平台管理员不能管理 Agent/设备或读取 PSK。"""
+    await client.post("/api/auth/register", json=REG)
+    login = await client.post(
+        "/api/auth/login", json={"username": REG["username"], "password": REG["password"]}
+    )
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    assert (await client.get("/api/agents", headers=headers)).status_code == 403
+    assert (await client.post("/api/agents", headers=headers, json={"hostname": "x"})).status_code == 403
+
+    agent_id, device_id = await _create_agent_device()
+    assert (await client.delete(f"/api/agents/{agent_id}", headers=headers)).status_code == 403
+    assert (await client.post(f"/api/devices/{device_id}/release", headers=headers)).status_code == 403
 
 
 async def test_device_list_and_release(client: AsyncClient):

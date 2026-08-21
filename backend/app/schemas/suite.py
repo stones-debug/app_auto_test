@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class SuiteCreate(BaseModel):
@@ -52,6 +52,17 @@ class VariableCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     value: str = ""
     description: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_scope_fk(self):
+        if self.scope == "project" and self.project_id is None:
+            raise ValueError("project scope 必须提供 project_id")
+        if self.scope == "suite" and self.suite_id is None:
+            raise ValueError("suite scope 必须提供 suite_id")
+        if self.scope == "case" and self.case_id is None:
+            raise ValueError("case scope 必须提供 case_id")
+        # 归属项目的解析与 global 外键清空由 API 层完成（CR-02）
+        return self
 
 
 class VariableUpdate(BaseModel):

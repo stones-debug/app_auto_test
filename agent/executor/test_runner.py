@@ -11,9 +11,10 @@ SendFn = Callable[[dict], Awaitable[None]]
 
 
 class RunnerReporter:
-    def __init__(self, send: SendFn, execution_id: int) -> None:
+    def __init__(self, send: SendFn, execution_id: int, session_token: str | None = None) -> None:
         self.send = send
         self.execution_id = execution_id
+        self.session_token = session_token
 
     async def step_result(
         self,
@@ -30,6 +31,7 @@ class RunnerReporter:
             {
                 "type": "step_result",
                 "execution_id": self.execution_id,
+                "session_token": self.session_token,
                 "case_id": case_id,
                 "step_order": step_order,
                 "action": action,
@@ -46,6 +48,7 @@ class RunnerReporter:
             {
                 "type": "assertion_result",
                 "execution_id": self.execution_id,
+                "session_token": self.session_token,
                 "case_id": case_id,
                 "assertions": assertions,
             }
@@ -63,6 +66,7 @@ class TestRunner:
         parameters: dict | None = None,
         should_stop: Callable[[], bool] | None = None,
         screenshots_dir: Path | None = None,
+        session_token: str | None = None,
     ) -> None:
         self.driver = driver
         self.send = send
@@ -70,6 +74,7 @@ class TestRunner:
         self.parameters = parameters or {}
         self.should_stop = should_stop or (lambda: False)
         self.screenshots_dir = screenshots_dir
+        self.session_token = session_token
 
     async def run_case(self, case: dict) -> str:
         case_id = case.get("case_id")
@@ -79,7 +84,7 @@ class TestRunner:
             self.parameters.get("variables", {}),
             self.screenshots_dir,
         )
-        reporter = RunnerReporter(self.send, self.execution_id)
+        reporter = RunnerReporter(self.send, self.execution_id, self.session_token)
         case_status = "passed"
 
         for step in case.get("steps_snapshot") or []:

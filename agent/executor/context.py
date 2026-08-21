@@ -1,5 +1,6 @@
 import re
 from pathlib import Path
+from uuid import uuid4
 
 from .driver import ElementNotFound
 
@@ -35,7 +36,15 @@ class ExecutionContext:
         return self.driver.find_element(locator_type, locator_value)
 
     def save_screenshot(self, filename: str = "screenshot.png") -> str:
-        self.screenshots_dir.mkdir(parents=True, exist_ok=True)
-        path = self.screenshots_dir / filename
-        self.driver.screenshot(str(path))
-        return str(path)
+        # 忽略用户提供的文件名，使用服务端安全文件名，避免任意路径写入（CR-13）
+        _ = filename
+        safe_name = f"{uuid4().hex}.png"
+        if self.screenshots_dir is None:
+            raise ValueError("未配置隔离的截图目录")
+        root = self.screenshots_dir.resolve()
+        target = (root / safe_name).resolve()
+        if not target.is_relative_to(root):
+            raise ValueError("截图路径越界")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        self.driver.screenshot(str(target))
+        return str(target)

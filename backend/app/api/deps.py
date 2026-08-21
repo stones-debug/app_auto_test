@@ -86,6 +86,32 @@ def require_project_role(*roles: str):
     return _checker
 
 
+def require_platform_admin():
+    """要求当前用户为平台管理员（设备/Agent 管理与 global 变量写等平台级资源）。"""
+
+    async def _checker(user: User = Depends(get_current_user)) -> User:
+        if not user.is_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="需要平台管理员权限")
+        return user
+
+    return _checker
+
+
+async def require_project_write(
+    project_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> tuple[Project, str | None]:
+    """要求用户在项目中具备 owner/admin/member 角色（写操作，CR-02/CR-04）。
+
+    与 require_project_role 等价，但可直接以参数形式调用。
+    """
+    project, role = await get_project_permission(project_id, user, db)
+    if role not in ("owner", "admin", "member"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    return project, role
+
+
 async def get_editable_project(
     perm: tuple[Project, str | None] = Depends(require_project_role("owner", "admin", "member")),
 ) -> Project:

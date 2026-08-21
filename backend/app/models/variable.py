@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -9,6 +9,21 @@ from app.models.base import TimestampMixin
 
 class Variable(Base, TimestampMixin):
     __tablename__ = "variables"
+    __table_args__ = (
+        # CR-02：scope 与外键组合必须合法
+        CheckConstraint(
+            "(scope = 'global' AND project_id IS NULL AND suite_id IS NULL AND case_id IS NULL)"
+            " OR (scope = 'project' AND project_id IS NOT NULL AND suite_id IS NULL AND case_id IS NULL)"
+            " OR (scope = 'suite' AND project_id IS NOT NULL AND suite_id IS NOT NULL AND case_id IS NULL)"
+            " OR (scope = 'case' AND project_id IS NOT NULL AND case_id IS NOT NULL AND suite_id IS NULL)",
+            name="ck_variables_scope_fk",
+        ),
+        # CR-02：作用域内名称唯一（并发创建冲突兜底）
+        Index("uq_variables_global_name", "name", unique=True, postgresql_where=text("scope = 'global'")),
+        Index("uq_variables_project_name", "project_id", "name", unique=True, postgresql_where=text("scope = 'project'")),
+        Index("uq_variables_suite_name", "suite_id", "name", unique=True, postgresql_where=text("scope = 'suite'")),
+        Index("uq_variables_case_name", "case_id", "name", unique=True, postgresql_where=text("scope = 'case'")),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     scope: Mapped[str] = mapped_column(String(20), nullable=False)  # global / project / suite / case
