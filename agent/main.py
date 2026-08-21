@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import logging.handlers
+import sys
 import tempfile
 import threading
 from pathlib import Path
@@ -34,6 +35,12 @@ def load_config(path: str) -> dict:
 def http_base_url(ws_url: str) -> str:
     """ws://host:port/xxx → http://host:port（截图上传走 HTTP，CR-07）。"""
     return ws_url.replace("ws://", "http://", 1).replace("wss://", "https://", 1).split("/")[0]
+
+
+def _out(text: str) -> None:
+    """窗口化打包（console=False）下 sys.stdout 为 None，print 会崩溃；统一安全输出。"""
+    if sys.stdout is not None:
+        print(text)
 
 
 class AgentApp:
@@ -221,7 +228,7 @@ class AgentApp:
 
 async def run_bind(bindings: BindingManager, user_key: str) -> None:
     result = await bindings.bind(user_key)
-    print(json.dumps({"status": "ok", "agent_id": result.get("agent_id"), "user_id": result.get("user_id")}, ensure_ascii=False))
+    _out(json.dumps({"status": "ok", "agent_id": result.get("agent_id"), "user_id": result.get("user_id")}, ensure_ascii=False))
 
 
 def build_agent_app(config: dict, install_id: str, creds: CredentialStore, bindings: BindingManager) -> tuple[AgentApp, AgentWSClient]:
@@ -327,12 +334,10 @@ async def main() -> None:
         logger.info("未找到配置文件，使用状态目录服务器地址: %s", config["server"])
 
     if args.self_check:
-        import sys
-
         from selfcheck import run_self_check
 
         result = run_self_check(args.config, state)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        _out(json.dumps(result, ensure_ascii=False, indent=2))
         # Windows 方案 §4.2：自检失败以非零码退出（CI / publish.ps1 门禁）
         sys.exit(0 if result["ok"] else 1)
 

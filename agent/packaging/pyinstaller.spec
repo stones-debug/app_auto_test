@@ -22,7 +22,8 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tests", "pytest", "uvicorn", "yaml"],
+    # 注意：不要排除 yaml（main.py 加载配置依赖 PyYAML）
+    excludes=["tests", "pytest", "uvicorn"],
     noarchive=False,
     optimize=1,
 )

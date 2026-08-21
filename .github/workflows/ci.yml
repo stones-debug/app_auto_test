@@ -108,7 +108,10 @@ jobs:
       - name: Self-check
         run: uv run python main.py --config config.yaml.example --self-check
       - name: Build with PyInstaller
-        run: uv run --with pyinstaller pyinstaller packaging/pyinstaller.spec --noconfirm
+        run: |
+          # `uv run` re-syncs without extras by default; ensure pystray/PIL are bundled
+          uv sync --all-extras
+          uv run --with pyinstaller pyinstaller packaging/pyinstaller.spec --noconfirm --distpath packaging/dist --workpath packaging/build
       - name: Compile installer
         shell: pwsh
         run: |

@@ -24,25 +24,31 @@ if (-not (Test-Path $configFile)) {
     $configFile = "config.yaml.example"
 }
 
+# PyInstaller / Inno outputs are fixed under packaging\ (spec/iss location), independent of CWD
+$packagingDir = $PSScriptRoot
+$distDir = Join-Path $packagingDir "dist"
+$workDir = Join-Path $packagingDir "build"
+$bundledApp = Join-Path $distDir "app-auto-test-agent"
+$installer = Join-Path $distDir "app-auto-test-agent-$Version-windows-x64-setup.exe"
+
 # 0) self-check
 Write-Host "== 0) Agent self-check (config: $configFile) =="
 uv run python main.py --config $configFile --self-check
 if ($LASTEXITCODE -ne 0) { throw "self-check failed" }
 
 if (-not $SkipBuild) {
-    # 1) PyInstaller onedir
+    # 1) PyInstaller onedir (explicit distpath/workpath so outputs never depend on CWD)
     Write-Host "== 1) PyInstaller =="
-    uv run --with pyinstaller pyinstaller packaging\pyinstaller.spec --noconfirm
+    # `uv run` re-syncs the env WITHOUT extras by default, which drops pystray/PIL
+    # (desktop tray). Sync with extras first so the bundle contains them.
+    uv sync --all-extras
+    if ($LASTEXITCODE -ne 0) { throw "uv sync --all-extras failed" }
+    uv run --with pyinstaller pyinstaller packaging\pyinstaller.spec --noconfirm `
+        --distpath $distDir --workpath $workDir
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 }
 
 # 2) bundle platform-tools if present
-$packagingDir = $PSScriptRoot
-# PyInstaller(基于 spec 文件)与 Inno(基于 iss 文件)的输出目录都相对 packaging\ 解析
-$distDir = Join-Path $packagingDir "dist"
-$bundledApp = Join-Path $distDir "app-auto-test-agent"
-$installer = Join-Path $distDir "app-auto-test-agent-$Version-windows-x64-setup.exe"
-
 $vendor = "vendor"
 if (Test-Path "$vendor\platform-tools\adb.exe") {
     Write-Host "== 2) copy platform-tools =="
