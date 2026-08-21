@@ -68,6 +68,12 @@ class ElementOut(BaseModel):
 class ElementUsage(BaseModel):
     case_id: int
     case_name: str
+    step_orders: list[int] = Field(default_factory=list)
+
+
+class ElementPageCount(BaseModel):
+    page_name: str
+    count: int
 
 
 class ElementPage(BaseModel):

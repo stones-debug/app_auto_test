@@ -112,6 +112,63 @@ async def test_element_crud_and_usage(client: AsyncClient):
     assert deleted.status_code == 204
 
 
+async def test_element_pages_grouping(client: AsyncClient):
+    """B3：element-pages 按 page_name 分组统计，NULL 归为"未分组"。"""
+    headers, project_id = await _setup(client)
+    for name, page in [
+        ("元素A", "登录页"),
+        ("元素B", "登录页"),
+        ("元素C", None),
+        ("元素D", "首页"),
+    ]:
+        resp = await client.post(
+            f"/api/projects/{project_id}/elements",
+            json={"name": name, "page_name": page, "locator_type": "id", "locator_value": name},
+            headers=headers,
+        )
+        assert resp.status_code == 201
+
+    pages = (
+        await client.get(f"/api/projects/{project_id}/element-pages", headers=headers)
+    ).json()
+    counts = {p["page_name"]: p["count"] for p in pages}
+    assert counts["登录页"] == 2
+    assert counts["未分组"] == 1
+    assert counts["首页"] == 1
+
+
+async def test_element_usage_step_orders(client: AsyncClient):
+    """B3：usage 返回引用该元素的步骤 step_orders（仅 steps）。"""
+    headers, project_id = await _setup(client)
+    el = await client.post(
+        f"/api/projects/{project_id}/elements",
+        json={"name": "用户名", "locator_type": "id", "locator_value": "username"},
+        headers=headers,
+    )
+    element_id = el.json()["id"]
+    # 两个步骤引用该元素（order 1/2），一个断言也引用（不计入 step_orders）
+    case = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "引用用例",
+            "steps": [
+                {"order": 1, "action": "input", "element_id": element_id, "params": {"value": "admin"}},
+                {"order": 2, "action": "click", "element_id": element_id, "params": {}},
+            ],
+            "assertions": [
+                {"order": 1, "type": "text_equals", "element_id": element_id, "params": {"expected": "x"}}
+            ],
+        },
+        headers=headers,
+    )
+    assert case.status_code == 201
+
+    usage = (await client.get(f"/api/elements/{element_id}/usage", headers=headers)).json()
+    assert len(usage) == 1
+    assert usage[0]["case_name"] == "引用用例"
+    assert usage[0]["step_orders"] == [1, 2]
+
+
 async def test_element_permission(client: AsyncClient):
     """非成员不能创建元素。"""
     reg = await client.post("/api/auth/register", json=OWNER)

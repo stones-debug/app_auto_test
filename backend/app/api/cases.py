@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_editable_project, get_project_permission
 from app.core.database import get_db
-from app.models import Project, TestCase, TestElement, TestModule, User
+from app.models import Execution, Project, TestCase, TestElement, TestModule, User
 from app.schemas.case import CaseCreate, CaseListItem, CaseOut, CasePage, CaseUpdate
 from app.utils.pagination import get_pagination
 
@@ -101,10 +101,31 @@ async def list_cases(
         ).scalars().all()
         modules = {m.id: m.name for m in mod_rows}
 
+    # 最近一次执行状态（B3）：type=case 且 case_id 匹配，取最新一条
+    case_ids = [r.id for r in rows]
+    last_exec: dict[int, tuple[str, datetime]] = {}
+    if case_ids:
+        exec_rows = (
+            await db.execute(
+                select(Execution.case_id, Execution.status, Execution.created_at)
+                .where(Execution.type == "case", Execution.case_id.in_(case_ids))
+                .order_by(Execution.created_at.desc())
+            )
+        ).all()
+        seen: set[int] = set()
+        for cid, st, created in exec_rows:
+            if cid not in seen:
+                last_exec[cid] = (st, created)
+                seen.add(cid)
+
     items = []
     for case in rows:
         item = CaseListItem.model_validate(case)
         item.module_name = modules.get(case.module_id) if case.module_id else None
+        item.step_count = len(case.steps or [])
+        item.assertion_count = len(case.assertions or [])
+        if case.id in last_exec:
+            item.last_execution_status, item.last_execution_at = last_exec[case.id]
         items.append(item)
     return {"total": total or 0, "page": pagination.page, "page_size": pagination.page_size, "items": items}
 

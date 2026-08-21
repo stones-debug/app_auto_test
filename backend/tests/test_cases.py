@@ -250,3 +250,45 @@ async def test_pagination_page_size_cap(client: AsyncClient):
     # 超过上限 → 422
     too_big = await client.get(f"/api/projects/{project_id}/cases?page=1&page_size=201", headers=headers)
     assert too_big.status_code == 422
+
+
+async def test_case_list_extended_fields(client: AsyncClient):
+    """B3：用例列表项返回 step_count/assertion_count/last_execution_status/last_execution_at。"""
+    headers, project_id = await _setup(client)
+    element_id = await _create_element(client, headers, project_id)
+    case = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "扩展字段用例",
+            "steps": [
+                {"order": 1, "action": "click", "element_id": element_id, "params": {}},
+                {"order": 2, "action": "back", "params": {}},
+            ],
+            "assertions": [{"order": 1, "type": "element_exists", "element_id": element_id, "params": {}}],
+        },
+        headers=headers,
+    )
+    case_id = case.json()["id"]
+
+    listed = (await client.get(f"/api/projects/{project_id}/cases", headers=headers)).json()
+    item = next(i for i in listed["items"] if i["id"] == case_id)
+    assert item["step_count"] == 2
+    assert item["assertion_count"] == 1
+    assert item["last_execution_status"] is None
+
+    # 建一次执行（无需 Agent 起跑，仅验证 last_execution 填充逻辑）
+    from app.core.database import SessionLocal
+    from app.models import Execution, Project
+
+    async with SessionLocal() as db:
+        proj = await db.get(Project, project_id)
+        exec_row = Execution(
+            project_id=project_id, type="case", case_id=case_id, status="passed", created_by=proj.owner_id,
+        )
+        db.add(exec_row)
+        await db.commit()
+
+    listed2 = (await client.get(f"/api/projects/{project_id}/cases", headers=headers)).json()
+    item2 = next(i for i in listed2["items"] if i["id"] == case_id)
+    assert item2["last_execution_status"] == "passed"
+    assert item2["last_execution_at"] is not None

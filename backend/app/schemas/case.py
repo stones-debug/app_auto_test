@@ -212,6 +212,10 @@ class CaseListItem(BaseModel):
     description: str | None
     status: str
     module_name: str | None = None
+    step_count: int = 0
+    assertion_count: int = 0
+    last_execution_status: str | None = None
+    last_execution_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_editable_project, get_project_permission
@@ -11,6 +11,7 @@ from app.schemas.element import (
     ElementCreate,
     ElementOut,
     ElementPage,
+    ElementPageCount,
     ElementUpdate,
     ElementUsage,
     ModuleCreate,
@@ -246,6 +247,29 @@ async def delete_element(
     await db.commit()
 
 
+@router.get("/projects/{project_id}/element-pages", response_model=list[ElementPageCount])
+async def element_pages(
+    project_id: int,
+    _perm: tuple[Project, str | None] = Depends(get_project_permission),
+    db: AsyncSession = Depends(get_db),
+):
+    """元素库页面分组统计（V2 §5.8）：按 page_name 分组，含"未分组"（NULL 归为未分组）。"""
+    rows = (
+        await db.execute(
+            select(TestElement.page_name, func.count())
+            .where(
+                TestElement.project_id == project_id,
+                TestElement.deleted_at.is_(None),
+            )
+            .group_by(TestElement.page_name)
+        )
+    ).all()
+    items: list[ElementPageCount] = []
+    for page_name, count in rows:
+        items.append(ElementPageCount(page_name=page_name or "未分组", count=count))
+    return items
+
+
 @router.get("/elements/{element_id}/usage", response_model=list[ElementUsage])
 async def element_usage(
     element_id: int,
@@ -267,14 +291,14 @@ async def element_usage(
     usage: list[ElementUsage] = []
     for case in cases:
         steps = case.steps or []
-        if any(
-            str(step.get("element_id")) == str(element_id)
-            for step in steps
-            if isinstance(step, dict)
-        ):
-            usage.append(ElementUsage(case_id=case.id, case_name=case.name))
-        for assertion in case.assertions or []:
-            if isinstance(assertion, dict) and str(assertion.get("element_id")) == str(element_id):
-                usage.append(ElementUsage(case_id=case.id, case_name=case.name))
-                break
+        step_orders: list[int] = []
+        for step in steps:
+            if isinstance(step, dict) and str(step.get("element_id")) == str(element_id):
+                order = step.get("order")
+                if order is not None:
+                    step_orders.append(int(order))
+        if step_orders:
+            usage.append(
+                ElementUsage(case_id=case.id, case_name=case.name, step_orders=sorted(step_orders))
+            )
     return usage
