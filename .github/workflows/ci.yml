@@ -103,17 +103,17 @@ jobs:
         run: uv sync --all-extras
       - name: Test
         run: uv run pytest tests/ -q
+      - name: Install Inno Setup + adb (for self-check)
+        run: choco install innosetup adb -y --no-progress
       - name: Self-check
         run: uv run python main.py --config config.yaml.example --self-check
-      - name: Install Inno Setup
-        run: choco install innosetup -y --no-progress
       - name: Build with PyInstaller
         run: uv run --with pyinstaller pyinstaller packaging/pyinstaller.spec --noconfirm
       - name: Compile installer
         shell: pwsh
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) { throw "ISCC.exe 未找到" }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found" }
           & $iscc "packaging/setup.iss" "/DAppVersion=1.1.0" "/DOutputDir=dist"
       - name: Verify installer + packaged self-check
         shell: pwsh

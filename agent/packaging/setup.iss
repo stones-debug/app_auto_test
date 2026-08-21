@@ -1,6 +1,7 @@
-; Inno Setup 安装脚本（Windows 方案 §4.2）
-; 用法: iscc packaging/setup.iss /DAppVersion=1.1.0 /DOutputDir=dist
-; 产物: app-auto-test-agent-<version>-windows-x64-setup.exe
+; Inno Setup installer script (Windows plan 4.2)
+; ASCII-only on purpose: Inno reads .iss as ANSI without BOM; keep this file ASCII.
+; Usage: iscc packaging\setup.iss /DAppVersion=1.1.0 /DOutputDir=dist
+; Output: app-auto-test-agent-<version>-windows-x64-setup.exe
 
 #ifndef AppVersion
   #define AppVersion "1.1.0"
@@ -12,7 +13,7 @@
   #define SourceDir "dist\app-auto-test-agent"
 #endif
 
-#define AppName "APP自动化测试平台 Agent"
+#define AppName "APP Auto Test Agent"
 #define AppExeName "app-auto-test-agent.exe"
 
 [Setup]
@@ -32,27 +33,26 @@ UninstallDisplayIcon={app}\{#AppExeName}
 SetupLogging=yes
 
 [Languages]
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "autostart"; Description: "登录 Windows 后自动启动 Agent"; GroupDescription: "启动选项:"
+Name: "autostart"; Description: "Start Agent automatically after Windows login"; GroupDescription: "Startup options:"
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"
-Name: "{autoprograms}\{#AppName} 卸载"; Filename: "{uninstallexe}"
+Name: "{autoprograms}\{#AppName} Uninstall"; Filename: "{uninstallexe}"
 
 [Registry]
-; 当前用户登录自启动（HKCU，无需管理员权限）
+; per-user autostart (HKCU, no admin rights)
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; \
   ValueName: "AppAutoTestAgent"; ValueData: """{app}\{#AppExeName}"" --desktop"; \
   Flags: uninsdeletevalue; Tasks: autostart
 
 [Run]
-Filename: "{app}\{#AppExeName}"; Parameters: "--desktop"; Description: "启动 Agent"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExeName}"; Parameters: "--desktop"; Description: "Start Agent"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{localappdata}\AppAutoTestAgent\logs"

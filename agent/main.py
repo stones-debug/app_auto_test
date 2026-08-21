@@ -327,10 +327,14 @@ async def main() -> None:
         logger.info("未找到配置文件，使用状态目录服务器地址: %s", config["server"])
 
     if args.self_check:
+        import sys
+
         from selfcheck import run_self_check
 
-        print(json.dumps(run_self_check(args.config, state), ensure_ascii=False, indent=2))
-        return
+        result = run_self_check(args.config, state)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        # Windows 方案 §4.2：自检失败以非零码退出（CI / publish.ps1 门禁）
+        sys.exit(0 if result["ok"] else 1)
 
     install_id = load_or_create_install_id(state)
     creds = CredentialStore(path=(state / "credentials") if state else None)

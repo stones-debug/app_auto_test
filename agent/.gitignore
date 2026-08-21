@@ -1,0 +1,12 @@
+# PyInstaller / Inno 打包产物
+packaging/build/
+packaging/dist/
+dist/
+build/
+*.spec.bak
+
+# 运行时状态
+config.yaml
+state/
+*.log
+__pycache__/
