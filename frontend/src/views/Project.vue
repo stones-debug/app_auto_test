@@ -1,6 +1,6 @@
 ﻿<script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 
 import {
@@ -10,19 +10,45 @@ import {
   updateProject,
   type Project,
 } from '@/api/projects'
+import { useLayoutStore } from '@/stores/layout'
 
 const router = useRouter()
+const route = useRoute()
+const layout = useLayoutStore()
+
 const loading = ref(false)
 const projects = ref<Project[]>([])
 const total = ref(0)
-const page = ref(1)
+const page = ref(Number(route.query.page ?? 1) || 1)
 const pageSize = ref(12)
-const visibility = ref('all')
-const keyword = ref('')
+const visibility = ref((route.query.scope as string) || 'all')
+const roleFilter = ref((route.query.role as string) || '')
+const keyword = ref((route.query.keyword as string) || '')
 
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
 const form = ref({ name: '', description: '', visibility: 'private' })
+
+// 后端无 keyword/role 过滤，前端本地过滤
+const visibleProjects = computed(() => {
+  let list = projects.value
+  if (keyword.value.trim()) {
+    const k = keyword.value.trim().toLowerCase()
+    list = list.filter((p) => p.name.toLowerCase().includes(k))
+  }
+  if (roleFilter.value) {
+    list = list.filter((p) => p.role === roleFilter.value)
+  }
+  return list
+})
+
+function syncUrl() {
+  const q: Record<string, string> = { page: String(page.value) }
+  if (visibility.value !== 'all') q.scope = visibility.value
+  if (roleFilter.value) q.role = roleFilter.value
+  if (keyword.value) q.keyword = keyword.value
+  router.replace({ path: '/projects', query: q })
+}
 
 async function load() {
   loading.value = true
@@ -37,6 +63,12 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+function onFilterChange() {
+  page.value = 1
+  syncUrl()
+  load()
 }
 
 function openCreate() {
@@ -68,14 +100,24 @@ async function save() {
 }
 
 async function remove(row: Project) {
-  await ElMessageBox.confirm(`确认删除项目「${row.name}」？`, '提示', { type: 'warning' })
+  const value = await ElMessageBox.prompt(
+    `删除项目「${row.name}」将永久移除其全部用例/元素/套件，请输入项目名确认：`,
+    '删除项目',
+    {
+      type: 'warning',
+      inputPlaceholder: row.name,
+      inputValidator: (v: string) => v === row.name || '请输入正确的项目名',
+    },
+  ).then((r) => r.value as string)
+  if (value !== row.name) return
   await deleteProject(row.id)
   ElMessage.success('已删除')
   await load()
 }
 
 function openProject(project: Project) {
-  router.push(`/projects/${project.id}/cases`)
+  layout.visitProject(project.id)
+  router.push(`/projects/${project.id}/overview`)
 }
 
 function visibilityLabel(v: string) {
@@ -90,25 +132,32 @@ function fmtDate(s: string) {
   return s ? new Date(s).toLocaleDateString() : ''
 }
 
+watch(keyword, onFilterChange)
 onMounted(load)
 </script>
 
 <template>
   <div>
     <div class="toolbar-card">
-      <el-input v-model="keyword" placeholder="按项目名称搜索" clearable class="search" @keyup.enter="page = 1; load()" />
-      <el-radio-group v-model="visibility" @change="page = 1; load()">
+      <el-input v-model="keyword" placeholder="按项目名称搜索" clearable class="search" />
+      <el-radio-group v-model="visibility" @change="onFilterChange">
         <el-radio-button value="all">全部</el-radio-button>
         <el-radio-button value="mine">我创建的</el-radio-button>
         <el-radio-button value="public">公开</el-radio-button>
       </el-radio-group>
+      <el-select v-model="roleFilter" placeholder="角色" clearable class="role-filter" @change="onFilterChange">
+        <el-option label="拥有者" value="owner" />
+        <el-option label="管理员" value="admin" />
+        <el-option label="成员" value="member" />
+        <el-option label="访客" value="viewer" />
+      </el-select>
       <span class="spacer"></span>
       <el-button type="primary" @click="openCreate">新建项目</el-button>
     </div>
 
     <div v-loading="loading">
-      <div v-if="projects.length" class="card-grid">
-        <div v-for="p in projects" :key="p.id" class="project-card" @dblclick="openProject(p)">
+      <div v-if="visibleProjects.length" class="card-grid">
+        <div v-for="p in visibleProjects" :key="p.id" class="project-card" @dblclick="openProject(p)">
           <div class="card-head">
             <span class="name">{{ p.name }}</span>
             <div class="tags">
@@ -128,8 +177,8 @@ onMounted(load)
             <span class="time">创建于 {{ fmtDate(p.created_at) }}</span>
             <span class="actions">
               <el-button size="small" type="primary" text @click="openProject(p)">进入</el-button>
-              <el-button size="small" text @click="openEdit(p)">编辑</el-button>
-              <el-button size="small" type="danger" text @click="remove(p)">删除</el-button>
+              <el-button v-if="p.role === 'owner' || p.role === 'admin'" size="small" text @click="openEdit(p)">编辑</el-button>
+              <el-button v-if="p.role === 'owner'" size="small" type="danger" text @click="remove(p)">删除</el-button>
             </span>
           </div>
         </div>
@@ -172,6 +221,9 @@ onMounted(load)
 <style scoped>
 .search {
   width: 220px;
+}
+.role-filter {
+  width: 120px;
 }
 .card-grid {
   display: grid;

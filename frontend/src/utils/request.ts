@@ -97,12 +97,14 @@ instance.interceptors.response.use(
 const _get = instance.get.bind(instance)
 const _post = instance.post.bind(instance)
 const _put = instance.put.bind(instance)
+const _patch = instance.patch.bind(instance)
 const _delete = instance.delete.bind(instance)
 
 export interface RequestInstance {
   get<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<T>
   post<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T>
   put<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T>
+  patch<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T>
   delete<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<T>
 }
 
@@ -113,6 +115,8 @@ const request: RequestInstance = {
     _post(url, data, config) as unknown as Promise<T>,
   put: <T>(url: string, data?: unknown, config?: AxiosRequestConfig) =>
     _put(url, data, config) as unknown as Promise<T>,
+  patch: <T>(url: string, data?: unknown, config?: AxiosRequestConfig) =>
+    _patch(url, data, config) as unknown as Promise<T>,
   delete: <T>(url: string, config?: AxiosRequestConfig) =>
     _delete(url, config) as unknown as Promise<T>,
 }

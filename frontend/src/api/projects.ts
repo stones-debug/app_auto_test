@@ -16,11 +16,16 @@ export interface Project {
 }
 
 export interface ProjectMember {
-  id: number
-  project_id: number
+  membership_id: number | null
   user_id: number
-  role: string
   username?: string | null
+  role: string
+}
+
+export interface UserCandidate {
+  id: number
+  username: string
+  email: string
 }
 
 export interface PageData<T> {
@@ -54,6 +59,20 @@ export function listMembers(projectId: number) {
   return request.get<ProjectMember[]>(`/projects/${projectId}/members`)
 }
 
+export function memberCandidates(projectId: number, keyword: string) {
+  return request.get<UserCandidate[]>(`/projects/${projectId}/member-candidates`, {
+    params: { keyword, limit: 20 },
+  })
+}
+
 export function addMember(projectId: number, data: { user_id: number; role: string }) {
   return request.post<ProjectMember>(`/projects/${projectId}/members`, data)
+}
+
+export function updateMember(projectId: number, userId: number, role: string) {
+  return request.patch<ProjectMember>(`/projects/${projectId}/members/${userId}`, { role })
+}
+
+export function removeMember(projectId: number, userId: number) {
+  return request.delete<void>(`/projects/${projectId}/members/${userId}`)
 }
