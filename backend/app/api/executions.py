@@ -11,6 +11,7 @@ from app.api.deps import (
     require_project_write,
 )
 from app.core.database import get_db
+from app.core.errors import api_error
 from app.core.ratelimit import rate_limit
 from app.models import Agent, Device, Execution, ExecutionCase, TestCase, TestSuite, User
 from app.schemas.execution import (
@@ -71,21 +72,24 @@ async def _validate_device_for_execution(
     - 设备忙/被锁/Agent 离线 → 409（并发安全最终仍由 Worker 原子锁保证）。
     """
     if device_id is None:
-        raise HTTPException(
+        raise api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"code": "DEVICE_REQUIRED", "message": "必须指定执行设备 device_id"},
+            code="DEVICE_REQUIRED",
+            message="必须指定执行设备 device_id",
         )
     device = await require_device_access(device_id, user, db)
     if device.status != "idle" or device.locked_by_execution is not None:
-        raise HTTPException(
+        raise api_error(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "DEVICE_BUSY", "message": "设备忙或已被其他执行占用"},
+            code="DEVICE_BUSY",
+            message="设备忙或已被其他执行占用",
         )
     agent = await db.get(Agent, device.agent_id)
     if agent is None or agent.status != "online":
-        raise HTTPException(
+        raise api_error(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "AGENT_OFFLINE", "message": "Agent 离线，设备不可用"},
+            code="AGENT_OFFLINE",
+            message="Agent 离线，设备不可用",
         )
     return device
 

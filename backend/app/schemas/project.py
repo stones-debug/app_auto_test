@@ -49,4 +49,6 @@ class ProjectMemberOut(BaseModel):
 
 class PageResult(BaseModel):
     total: int
+    page: int = 1
+    page_size: int = 20
     items: list[ProjectOut]

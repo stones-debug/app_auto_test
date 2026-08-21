@@ -55,6 +55,16 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 - 执行状态机**全小写**：`queued / running / stopping / passed / failed / error / stopped / cancelled`
 - Action/Assertion Registry 属于 agent 包，不属于 backend（backend/app/executor 目录可能废弃）
 
+## 编码测试规则（Step 门禁）
+- **测试只在整个 Step 全部子任务完成后才执行**。一个 Step 内若包含多个子步骤任务（后端接口 / 前端页面 / 迁移 / 文档等），必须等所有子任务都实现完成，才运行该 Step 的完整测试（后端 pytest / Agent pytest / 前端 vitest+build / ruff / alembic check）。
+- 禁止在 Step 中途对半成品跑完整测试集或提交；中途只做轻量语法自检（如 `ruff` 单文件、`vue-tsc` 单文件），不作为通过依据。
+- 每个 Step 完成时的验收命令（按需组合，全部通过才提交）：
+  - 后端：`uv run ruff check app/ tests/ worker.py scripts/` + `uv run pytest tests/ -q` + `uv run alembic check`
+  - Agent：`uv run ruff check .` + `uv run pytest tests/ -q`
+  - 前端：`npm run test`（vitest）+ `npm run build`（vue-tsc + vite）
+- Step 内子任务实现过程中发现的错误可当场修复，但**测试通过以整个 Step 完成后一次为准**；Step 间不共享半成品状态。
+- 提交时机：Step 门禁全部通过后提交一次，提交信息 `feat(backend|frontend|agent): Step N <内容>`。
+
 ## Git
 - 提交信息格式：`feat(backend|frontend|agent): Step N <内容>` 或 `chore: ...`
 - 每完成一个 Step（lint + 测试通过）提交一次；仓库 local git 身份已配置（shijinsong），无需再配

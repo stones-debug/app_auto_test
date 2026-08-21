@@ -36,6 +36,10 @@ async def test_project_crud(client: AsyncClient):
     listing = await client.get("/api/projects", headers=headers)
     assert listing.status_code == 200
     assert project_id in [p["id"] for p in listing.json()["items"]]
+    # B1：PageResult 统一携带 page/page_size
+    assert listing.json()["page"] == 1
+    assert listing.json()["page_size"] == 20
+    assert listing.json()["total"] >= 1
 
     detail = await client.get(f"/api/projects/{project_id}", headers=headers)
     assert detail.status_code == 200
