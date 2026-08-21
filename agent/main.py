@@ -125,11 +125,13 @@ class AgentApp:
                     }
                 )
             finally:
-                driver.quit()
+                # Windows 方案 §2：Appium 清理可能阻塞，进入工作线程
+                await asyncio.to_thread(driver.quit)
                 self.drivers.pop(execution_id, None)
 
     async def send_device_list(self, _reply: dict | None = None) -> None:
-        devices = discover_devices(self.config)
+        # Windows 方案 §2：ADB 扫描是阻塞命令，统一进入工作线程，不卡事件循环
+        devices = await asyncio.to_thread(discover_devices, self.config)
         await self.client.send({"type": "device_list", "devices": devices})
         logger.info("已上报 %s 台设备", len(devices))
 
@@ -159,7 +161,8 @@ class AgentApp:
             driver = self.drivers.get(execution_id)
             if driver is not None and hasattr(driver, "interrupt"):
                 try:
-                    driver.interrupt()
+                    # Windows 方案 §2：终止 Appium 会话可能阻塞，进入工作线程
+                    await asyncio.to_thread(driver.interrupt)
                 except Exception as exc:
                     logger.warning("interrupt 失败: %s", exc)
             task = self.executions.get(execution_id)

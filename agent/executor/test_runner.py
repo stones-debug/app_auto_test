@@ -1,3 +1,4 @@
+import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -8,6 +9,19 @@ from .context import ExecutionContext
 from .driver import StopRequested
 
 SendFn = Callable[[dict], Awaitable[None]]
+
+
+def _run_action_in_thread(action_cls, driver, context, params: dict) -> dict:
+    """Windows 方案 §2：动作在独立工作线程的专用事件循环中执行。
+
+    动作内部对 Appium/ADB 的同步调用（find_element/click/截图等）因此不会阻塞
+    主事件循环；停止时 interrupt() 在另一线程关闭 Appium 会话以打断阻塞命令。
+    """
+    return asyncio.run(action_cls().execute(driver, context, params))
+
+
+def _run_assertion_in_thread(assertion_cls, driver, context, params: dict) -> dict:
+    return asyncio.run(assertion_cls().verify(driver, context, params))
 
 
 class RunnerReporter:
@@ -116,7 +130,9 @@ class TestRunner:
                 effective = dict(step.get("params") or {})
                 if step.get("element_id") is not None and "element_id" not in effective:
                     effective["element_id"] = step["element_id"]
-                result = await action_cls().execute(self.driver, context, effective)
+                result = await asyncio.to_thread(
+                    _run_action_in_thread, action_cls, self.driver, context, effective
+                )
             except Exception as exc:
                 result = {"status": "failed", "error_message": str(exc)}
             duration = int((time.monotonic() - start) * 1000)
@@ -145,7 +161,9 @@ class TestRunner:
                 effective = dict(assertion.get("params") or {})
                 if assertion.get("element_id") is not None and "element_id" not in effective:
                     effective["element_id"] = assertion["element_id"]
-                res = await cls().verify(self.driver, context, effective)
+                res = await asyncio.to_thread(
+                    _run_assertion_in_thread, cls, self.driver, context, effective
+                )
             except Exception as exc:
                 res = {
                     "status": "failed",

@@ -1,9 +1,39 @@
-import pytest
-from sqlalchemy import delete, select, update
+"""测试公共夹具。
 
-from app.core.database import SessionLocal
-from app.core.ratelimit import reset_rate_limits
-from app.models import (
+Windows 方案 §2：测试强制使用独立 `test_platform_test` 数据库——
+- 导入任何 app 模块前把 DATABASE_URL 指向测试库（环境变量优先于 .env）；
+- 会话开始前确保测试库存在并执行 `alembic upgrade head`；
+- DATABASE_URL 不是测试库时直接拒绝运行（杜绝污染开发库）。
+"""
+
+import asyncio
+import os
+from pathlib import Path
+
+from sqlalchemy.engine import make_url
+
+# 必须先于 app.* 导入设置：pydantic-settings 中环境变量优先级高于 .env 文件
+_TEST_URL = os.environ.get(
+    "TEST_DATABASE_URL",
+    "postgresql+asyncpg://dev:dev123@127.0.0.1:5432/test_platform_test",
+)
+os.environ["DATABASE_URL"] = _TEST_URL
+
+import pytest  # noqa: E402
+from sqlalchemy import delete, select, text, update  # noqa: E402
+
+from app.core.config import settings  # noqa: E402
+
+if settings.database_url != _TEST_URL:
+    raise RuntimeError(
+        "测试必须运行在独立测试库上（拒绝污染开发库）。"
+        f"当前 DATABASE_URL={settings.database_url}，期望 {_TEST_URL}"
+        "；如需自定义测试库请设置 TEST_DATABASE_URL 环境变量。"
+    )
+
+from app.core.database import SessionLocal  # noqa: E402
+from app.core.ratelimit import reset_rate_limits  # noqa: E402
+from app.models import (  # noqa: E402
     Agent,
     Device,
     Execution,
@@ -24,6 +54,46 @@ from app.models import (
     User,
     Variable,
 )
+
+_BACKEND_DIR = Path(__file__).resolve().parents[1]
+
+
+async def _ensure_test_database() -> None:
+    """测试库不存在时创建（连接 postgres 维护库，CREATE DATABASE 不能进事务）。"""
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    url = make_url(_TEST_URL)
+    admin_engine = create_async_engine(
+        url.set(database="postgres"), isolation_level="AUTOCOMMIT"
+    )
+    try:
+        async with admin_engine.connect() as conn:
+            exists = await conn.scalar(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                {"name": url.database},
+            )
+            if not exists:
+                await conn.execute(text(f'CREATE DATABASE "{url.database}"'))
+    finally:
+        await admin_engine.dispose()
+
+
+def _run_migrations() -> None:
+    """在工作线程中执行 alembic upgrade（env.py 内部自行 asyncio.run，不能在事件循环内调用）。"""
+    from alembic.config import Config
+
+    from alembic import command
+
+    cfg = Config(str(_BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(_BACKEND_DIR / "alembic"))
+    command.upgrade(cfg, "head")
+
+
+@pytest.fixture(scope="session", autouse=True)
+async def _prepare_test_database():
+    await _ensure_test_database()
+    await asyncio.to_thread(_run_migrations)
+    yield
 
 
 @pytest.fixture(autouse=True)

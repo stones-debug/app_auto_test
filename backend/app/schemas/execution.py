@@ -43,6 +43,8 @@ class ExecutionOut(BaseModel):
     timeout_seconds: int
     started_at: datetime | None
     finished_at: datetime | None
+    stop_requested_at: datetime | None
+    finalized_at: datetime | None
     duration: int | None
     created_by: int | None
     retry_of: int | None
@@ -66,6 +68,8 @@ class ExecutionListItem(BaseModel):
     timeout_seconds: int
     started_at: datetime | None
     finished_at: datetime | None
+    stop_requested_at: datetime | None
+    finalized_at: datetime | None
     duration: int | None
     retry_of: int | None
     created_at: datetime

@@ -15,7 +15,7 @@ jobs:
         env:
           POSTGRES_USER: dev
           POSTGRES_PASSWORD: dev123
-          POSTGRES_DB: test_platform
+          POSTGRES_DB: test_platform_test
         ports:
           - 5432:5432
         options: >-
@@ -27,7 +27,8 @@ jobs:
       run:
         working-directory: backend
     env:
-      DATABASE_URL: postgresql+asyncpg://dev:dev123@127.0.0.1:5432/test_platform
+      # Windows 方案 §2：测试与迁移统一使用独立测试库
+      DATABASE_URL: postgresql+asyncpg://dev:dev123@127.0.0.1:5432/test_platform_test
       UV_CACHE_DIR: /tmp/uv-cache
     steps:
       - uses: actions/checkout@v4
@@ -80,5 +81,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies
         run: npm ci
+      - name: Test (Windows 方案 §2)
+        run: npm test
       - name: Type check + build
         run: npm run build

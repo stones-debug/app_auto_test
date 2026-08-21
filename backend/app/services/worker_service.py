@@ -271,12 +271,28 @@ def _add_log(db: AsyncSession, execution_id: int, level: str, message: str) -> N
     db.add(ExecutionLog(execution_id=execution_id, level=level, message=message, source="worker"))
 
 
+def _stop_grace_exceeded(execution: Execution) -> bool:
+    """Windows 方案 §2：停止宽限期从 stop_requested_at（用户请求停止时刻）起算。
+
+    无 stop_requested_at（历史数据/兼容路径）时回退旧口径：started_at + timeout + 宽限期。
+    """
+    now = datetime.now(UTC)
+    if execution.stop_requested_at is not None:
+        return (now - execution.stop_requested_at).total_seconds() > settings.execution_stop_grace_seconds
+    if execution.started_at is None:
+        return False
+    return (now - execution.started_at).total_seconds() > (
+        execution.timeout_seconds + settings.execution_stop_grace_seconds
+    )
+
+
 async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, message: str | None = None) -> None:
     """终态汇总（CR-10/CR-11）。
 
     - 条件更新：只有一个调用者从非终态推进到终态；
     - 状态归并：中断时当前 case 置 stopped/error、未执行步骤置 skipped、未执行 case 置 skipped；
-    - 报告幂等：reports.execution_id 唯一 + on_conflict_do_nothing，重复汇总不会产生多份报告。
+    - 报告幂等：reports.execution_id 唯一 + on_conflict_do_nothing，重复汇总不会产生多份报告；
+    - Windows 方案 §2：推进终态时写入 finalized_at（唯一终态汇总完成时刻）。
     """
     if message:
         _add_log(db, execution.id, "ERROR" if status_ == "error" else "INFO", message)
@@ -285,13 +301,14 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
     claimed = await db.execute(
         update(Execution)
         .where(Execution.id == execution.id, Execution.status.notin_(TERMINAL_STATES))
-        .values(status=status_, finished_at=now)
+        .values(status=status_, finished_at=now, finalized_at=now)
         .returning(Execution.id)
     )
     await db.flush()
     if claimed.scalar_one_or_none() is not None:
         execution.status = status_
         execution.finished_at = now
+        execution.finalized_at = now
         if execution.started_at is not None:
             execution.duration = int((now - execution.started_at).total_seconds() * 1000)
 
@@ -472,15 +489,13 @@ async def run_execution(
             return
         if current.status == "stopping":
             await agent_sender(device.agent_id, {"type": "stop_test", "execution_id": execution.id})
-            # CR-06：停止宽限期超时强制终态（与 timeout_scan 同口径）
-            if current.started_at is not None:
-                elapsed = (datetime.now(UTC) - current.started_at).total_seconds()
-                if elapsed > current.timeout_seconds + settings.execution_stop_grace_seconds:
-                    await _mark_terminal(
-                        db, current, "stopped",
-                        f"停止宽限期超时（>{settings.execution_stop_grace_seconds}s），强制结束",
-                    )
-                    return
+            # Windows 方案 §2：停止宽限期从 stop_requested_at 起算，超时强制终态（与 timeout_scan 同口径）
+            if _stop_grace_exceeded(current):
+                await _mark_terminal(
+                    db, current, "stopped",
+                    f"停止宽限期超时（>{settings.execution_stop_grace_seconds}s），强制结束",
+                )
+                return
         await asyncio.sleep(poll_interval)
 
 
@@ -520,19 +535,19 @@ async def timeout_scan(db: AsyncSession) -> None:
         await db.execute(select(Execution).where(Execution.status.in_(["running", "stopping"])))
     ).scalars().all()
     for execution in active:
-        if execution.started_at is None:
+        if execution.started_at is None and execution.stop_requested_at is None:
             continue
-        elapsed = (now - execution.started_at).total_seconds()
         if execution.status == "stopping":
-            # CR-06：stopping 使用统一 deadline（超时 + 停止宽限期），到点强制 stopped
-            deadline = execution.timeout_seconds + settings.execution_stop_grace_seconds
-            if elapsed > deadline:
+            # Windows 方案 §2：stopping 宽限期从 stop_requested_at 起算，到点强制 stopped
+            if _stop_grace_exceeded(execution):
                 await _mark_terminal(
                     db, execution, "stopped",
                     f"停止宽限期超时（>{settings.execution_stop_grace_seconds}s），强制结束",
                 )
-        elif elapsed > execution.timeout_seconds:
-            await _mark_terminal(db, execution, "error", f"执行超时（>{execution.timeout_seconds}s）")
+        elif execution.started_at is not None:
+            elapsed = (now - execution.started_at).total_seconds()
+            if elapsed > execution.timeout_seconds:
+                await _mark_terminal(db, execution, "error", f"执行超时（>{execution.timeout_seconds}s）")
 
 
 async def agent_heartbeat_scan(db: AsyncSession) -> None:

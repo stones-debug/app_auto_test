@@ -118,10 +118,11 @@ async def stop_execution(db: AsyncSession, execution: Execution) -> str:
     CR-12：queued 取消使用条件更新，与 Worker 原子认领竞争时只有一个赢家。
     """
     if execution.status == "queued":
+        now = datetime.now(UTC)
         result = await db.execute(
             update(Execution)
             .where(Execution.id == execution.id, Execution.status == "queued")
-            .values(status="cancelled", finished_at=datetime.now(UTC))
+            .values(status="cancelled", finished_at=now, stop_requested_at=now, finalized_at=now)
         )
         await db.execute(
             update(ExecutionQueue)
@@ -136,7 +137,7 @@ async def stop_execution(db: AsyncSession, execution: Execution) -> str:
         result = await db.execute(
             update(Execution)
             .where(Execution.id == execution.id, Execution.status == "running")
-            .values(status="stopping")
+            .values(status="stopping", stop_requested_at=datetime.now(UTC))
         )
         await db.commit()
         if result.rowcount != 1:

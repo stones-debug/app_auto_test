@@ -40,6 +40,10 @@ class Execution(Base, TimestampMixin):
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=1800)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Windows 方案 §2：停止宽限期从用户请求停止时刻起算
+    stop_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Windows 方案 §2：唯一终态汇总完成时刻（_mark_terminal 写入）
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     duration: Mapped[int | None] = mapped_column(Integer)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     retry_of: Mapped[int | None] = mapped_column(ForeignKey("executions.id"))

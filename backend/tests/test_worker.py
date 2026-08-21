@@ -6,6 +6,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.main import app
 from app.models import (
@@ -323,6 +324,8 @@ async def test_mark_terminal_derives_case_status(client: AsyncClient):
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
         assert execution.status == "error"
+        # Windows 方案 §2：唯一终态汇总完成时刻必须落库
+        assert execution.finalized_at is not None
         ec = (await db.execute(
             select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
         )).scalar_one()
@@ -463,6 +466,59 @@ async def test_timeout_scan_keeps_stopping_within_grace(client: AsyncClient):
         execution.status = "stopping"
         execution.device_id = device_id
         execution.started_at = datetime.now(UTC) - timedelta(seconds=5)
+        execution.timeout_seconds = 60
+        await db.commit()
+
+        await worker_service.timeout_scan(db)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution.status == "stopping"
+
+
+async def test_timeout_scan_forces_stopped_from_stop_requested_at(client: AsyncClient):
+    """Windows 方案 §2：stopping 宽限期从 stop_requested_at（用户请求停止时刻）起算。
+
+    started_at 很近（旧口径不会强制），但 stop_requested_at 已超过宽限期 → 必须强制 stopped。
+    """
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        execution.status = "stopping"
+        execution.device_id = device_id
+        execution.started_at = datetime.now(UTC) - timedelta(seconds=5)
+        execution.stop_requested_at = datetime.now(UTC) - timedelta(
+            seconds=settings.execution_stop_grace_seconds + 10
+        )
+        execution.timeout_seconds = 60
+        await db.commit()
+
+        await worker_service.timeout_scan(db)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution.status == "stopped"
+        assert execution.finalized_at is not None
+        device = await db.get(Device, device_id)
+        assert device.status == "idle"
+        assert device.locked_by_execution is None
+
+
+async def test_timeout_scan_keeps_stopping_within_grace_from_stop_requested_at(client: AsyncClient):
+    """Windows 方案 §2：stop_requested_at 在宽限期内时 stopping 不被误终态。"""
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}})
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        execution.status = "stopping"
+        execution.device_id = device_id
+        execution.started_at = datetime.now(UTC) - timedelta(minutes=10)
+        execution.stop_requested_at = datetime.now(UTC) - timedelta(seconds=5)
         execution.timeout_seconds = 60
         await db.commit()
 

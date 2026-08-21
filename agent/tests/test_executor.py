@@ -156,6 +156,43 @@ async def test_sleep_action(monkeypatch):
     assert slept == [2]
 
 
+# ---------- Windows 方案 §2：阻塞命令不阻塞事件循环 ----------
+
+
+async def test_blocking_driver_action_does_not_block_event_loop():
+    """慢驱动（time.sleep 模拟 Appium 阻塞命令）执行期间，事件循环仍必须运转。"""
+    import time as _time
+
+    class SlowDriver(MockDriver):
+        def find_element(self, locator_type: str, locator_value: str, wait_timeout: int = 10):
+            _time.sleep(0.3)  # 模拟阻塞的 Appium 命令
+            return super().find_element(locator_type, locator_value, wait_timeout)
+
+    case = _make_case(
+        steps=[{"order": 1, "action": "click", "element_id": 2, "params": {}}],
+    )
+    sent: list[dict] = []
+
+    async def fake_send(payload: dict):
+        sent.append(payload)
+
+    runner = TestRunner(SlowDriver(), fake_send, 100)
+    ticks: list[int] = []
+
+    async def ticker():
+        for _ in range(8):
+            await asyncio.sleep(0.05)
+            ticks.append(1)
+
+    task = asyncio.create_task(runner.run_case(case))
+    t = asyncio.create_task(ticker())
+    await asyncio.wait_for(task, timeout=5)
+    await t
+    # 若驱动同步跑在主循环上，0.3s 的 sleep 期间 ticker 无法推进
+    assert len(ticks) >= 3, f"事件循环疑似被阻塞，ticker 仅推进 {len(ticks)} 次"
+    assert sent[0]["status"] == "passed"
+
+
 # ---------- CR-07：截图上传接线 ----------
 
 

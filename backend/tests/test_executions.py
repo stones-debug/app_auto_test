@@ -176,6 +176,11 @@ async def test_list_get_logs_stop_retry(client: AsyncClient):
     assert stopped.status_code == 200
     assert stopped.json()["status"] == "cancelled"
 
+    # Windows 方案 §2：取消即终态，stop_requested_at/finalized_at 必须落库
+    detail_after = await client.get(f"/api/executions/{execution_id}", headers=headers)
+    assert detail_after.json()["stop_requested_at"] is not None
+    assert detail_after.json()["finalized_at"] is not None
+
     again = await client.post(f"/api/executions/{execution_id}/stop", headers=headers)
     assert again.status_code == 409
 
