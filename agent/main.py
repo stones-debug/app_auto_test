@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import yaml
 
@@ -32,9 +33,18 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(fh) or {}
 
 
-def http_base_url(ws_url: str) -> str:
-    """ws://host:port/xxx → http://host:port（截图上传走 HTTP，CR-07）。"""
-    return ws_url.replace("ws://", "http://", 1).replace("wss://", "https://", 1).split("/")[0]
+def http_origin(ws_url: str) -> str:
+    """ws://host:port/xxx → http://host:port（截图上传走 HTTP，CR-07）。
+
+    只接受 ws/wss：解析 netloc 并在 http/https 之间切换，丢弃 path/query/fragment。
+    """
+    parsed = urlsplit(ws_url)
+    if parsed.scheme not in {"ws", "wss"} or not parsed.hostname:
+        raise ValueError("server 必须是有效的 ws:// 或 wss:// 地址")
+    if parsed.username or parsed.password:
+        raise ValueError("server URL 不允许内嵌凭据")
+    scheme = "https" if parsed.scheme == "wss" else "http"
+    return urlunsplit((scheme, parsed.netloc, "", "", ""))
 
 
 def _out(text: str) -> None:
@@ -241,7 +251,7 @@ def build_agent_app(config: dict, install_id: str, creds: CredentialStore, bindi
     def key_provider() -> str:
         return config.get("agent_key") or bindings.machine_psk() or ""
 
-    base_url = http_base_url(config["server"])
+    base_url = http_origin(config["server"])
     client = AgentWSClient(
         url=config["server"],
         agent_key=key_provider,
@@ -349,7 +359,7 @@ async def main() -> None:
 
     install_id = load_or_create_install_id(state)
     creds = CredentialStore(path=(state / "credentials") if state else None)
-    base_url = http_base_url(config["server"])
+    base_url = http_origin(config["server"])
     bindings = BindingManager(base_url, install_id, creds)
 
     if args.bind:

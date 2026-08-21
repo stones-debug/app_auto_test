@@ -41,19 +41,31 @@ class AppiumDriver(BaseDriver):
             caps["automationName"] = "UiAutomator2"
         return caps
 
-    def _build_caps(self, package: str, activity: str | None, no_reset: bool) -> dict:
+    def _build_options(self, package: str, activity: str | None, no_reset: bool):
+        """构造 Appium 6 options（UiAutomator2 / XCUITest）。
+
+        通用配置与设备能力从 dict 加载进 options；Worker 下发的 udid/platformName/
+        automationName 为最高优先级，禁止通用配置覆盖目标 UDID。
+        """
+        from appium.options.android import UiAutomator2Options
+        from appium.options.ios import XCUITestOptions
+
         caps = dict(self.capabilities)
         caps.update(self._device_caps())
         if self.command_timeout:
             caps["newCommandTimeout"] = self.command_timeout
-        caps.update(
-            {
-                "appPackage": package,
-                "appActivity": activity,
-                "noReset": no_reset,
-            }
-        )
-        return caps
+        platform = (self.device.get("platform") or "").lower()
+        if platform == "ios":
+            options = XCUITestOptions()
+            caps["bundleId"] = package
+        else:
+            options = UiAutomator2Options()
+            caps["appPackage"] = package
+            if activity is not None:
+                caps["appActivity"] = activity
+        caps["noReset"] = no_reset
+        options.load_capabilities(caps)
+        return options
 
     def _ensure(self):
         if self.driver is None:
@@ -64,8 +76,8 @@ class AppiumDriver(BaseDriver):
             from appium import webdriver as appium_webdriver
         except ImportError as exc:
             raise RuntimeError("未安装 appium-python-client，无法使用 Appium 驱动（pip install 'agent[appium]'）") from exc
-        caps = self._build_caps(package, activity, no_reset)
-        self.driver = appium_webdriver.Remote(self.command_executor, caps)
+        options = self._build_options(package, activity, no_reset)
+        self.driver = appium_webdriver.Remote(command_executor=self.command_executor, options=options)
         logger.info("Appium 会话已创建: %s", self.driver.session_id)
 
     def close_app(self, package: str | None = None) -> None:

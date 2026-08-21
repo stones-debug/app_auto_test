@@ -53,9 +53,10 @@ async def test_first_bind_stores_machine_psk_and_revoke(tmp_path):
     assert result["machine_psk"] == "sk-first"
     assert creds.load("machine_psk") == "sk-first"
     assert creds.load("revoke_1") == "rev-1"
-    # 首次绑定请求不含 machine_psk
+    # 首次绑定请求不含 machine_psk，且走 {origin}/api/agent/bind
     bind_req = json.loads(requests_log[0]["body"])
     assert "machine_psk" not in bind_req
+    assert requests_log[0]["url"] == "http://test-server/api/agent/bind"
 
 
 async def test_second_bind_sends_machine_psk(tmp_path):

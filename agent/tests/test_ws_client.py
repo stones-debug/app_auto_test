@@ -199,7 +199,14 @@ async def test_uploader_resolves_callable_key(tmp_path, monkeypatch):
     requests_log: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        requests_log.append({"headers": dict(request.headers)})
+        requests_log.append(
+            {
+                "method": request.method,
+                "url": str(request.url),
+                "headers": dict(request.headers),
+                "content": request.read(),
+            }
+        )
         return httpx.Response(200, json={"path": "execution_1/screenshots/a.png"})
 
     uploader = Uploader(
@@ -212,4 +219,14 @@ async def test_uploader_resolves_callable_key(tmp_path, monkeypatch):
     file.write_bytes(b"png-data")
     result = await uploader.upload_screenshot(1, str(file), "sess")
     assert result == "execution_1/screenshots/a.png"
-    assert requests_log[0]["headers"]["x-agent-key"] == "sk-upload"
+    entry = requests_log[0]
+    assert entry["method"] == "POST"
+    assert entry["url"] == "http://t/api/agent/upload"
+    assert entry["headers"]["x-agent-key"] == "sk-upload"
+    body = entry["content"]
+    # multipart：文件内容 + 关键字段（execution_id / agent_id / session_token）
+    assert b"png-data" in body
+    assert b'name="execution_id"' in body or b"execution_id" in body
+    assert b"agent-u" in body
+    assert b"sess" in body
+    assert b"shot.png" in body

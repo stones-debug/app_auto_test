@@ -1,6 +1,8 @@
 import asyncio
 
-from main import AgentApp
+import pytest
+
+from main import AgentApp, http_origin
 
 
 class FakeClient:
@@ -85,3 +87,32 @@ async def test_duplicate_start_test_ignored():
     await app.on_message(msg)  # 重复消息
     assert app.executions[9] is task  # 未创建新任务
     await asyncio.wait_for(task, timeout=2)
+
+
+@pytest.mark.parametrize(
+    ("ws_url", "expected"),
+    [
+        ("ws://127.0.0.1:8001/ws/agent", "http://127.0.0.1:8001"),
+        ("ws://test-server.example/ws/agent", "http://test-server.example"),
+        ("ws://[::1]:8001/ws/agent", "http://[::1]:8001"),
+        ("ws://10.0.0.5:9000/ws/agent", "http://10.0.0.5:9000"),
+        ("wss://secure-host.test/ws/agent?x=1#frag", "https://secure-host.test"),
+        ("ws://host:8001", "http://host:8001"),
+    ],
+)
+def test_http_origin_maps_ws_to_http(ws_url: str, expected: str):
+    assert http_origin(ws_url) == expected
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "http://127.0.0.1:8001/ws/agent",  # 非法 scheme
+        "ftp://host/ws",  # 非法 scheme
+        "ws://",  # 无 hostname
+        "ws://user:pass@host/ws",  # 内嵌凭据
+    ],
+)
+def test_http_origin_rejects_invalid_urls(bad_url: str):
+    with pytest.raises(ValueError):
+        http_origin(bad_url)

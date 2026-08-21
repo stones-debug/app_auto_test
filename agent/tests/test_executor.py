@@ -278,13 +278,83 @@ async def test_create_driver_appium_uses_config_and_device():
     assert driver.command_executor == "http://10.0.0.8:4730"
     assert driver.command_timeout == 300
 
-    caps = driver._build_caps("com.demo.app", "com.demo.MainActivity", True)
-    assert caps["udid"] == "emulator-5554"
-    assert caps["platformName"] == "Android"
-    assert caps["automationName"] == "UiAutomator2"
-    assert caps["appPackage"] == "com.demo.app"
-    assert caps["newCommandTimeout"] == 300
-
     ios = AppiumDriver(device={"udid": "iphone-x", "platform": "ios"})
     assert ios._device_caps()["platformName"] == "iOS"
     assert ios._device_caps()["automationName"] == "XCUITest"
+
+
+async def test_appium_launch_uses_options_and_udid_wins(monkeypatch):
+    """Appium 6：通过 options= 建连；设备 UDID/platformName 不能被通用配置覆盖。"""
+    import appium.webdriver as appium_webdriver
+
+    calls: list[dict] = []
+
+    class FakeSession:
+        session_id = "sess-1"
+
+    class FakeDriver:
+        def __init__(self, **kwargs) -> None:
+            calls.append(kwargs)
+            self.session_id = "sess-1"
+            self._options = kwargs.get("options")
+
+    monkeypatch.setattr(appium_webdriver, "Remote", lambda *a, **kw: FakeDriver(**kw))
+
+    from executor.appium_driver import AppiumDriver
+
+    # Android：设备 UDID 优先，通用配置不能覆盖
+    android = AppiumDriver(
+        host="127.0.0.1",
+        port=4723,
+        capabilities={"appium:options": {"noReset": False}, "udid": "generic-01", "platformName": "iOS"},
+        device={"udid": "emulator-5554", "platform": "android"},
+        command_timeout=300,
+    )
+    android.launch_app("com.demo.app", "com.demo.MainActivity")
+    assert "options" in calls[0] and "command_executor" in calls[0]
+    options = calls[0]["options"]
+    assert options.get_capability("udid") == "emulator-5554"  # 设备 UDID 覆盖通用配置
+    assert options.get_capability("platformName") == "Android"
+    assert options.get_capability("automationName").lower() == "uiAutomator2".lower()
+    assert options.get_capability("appPackage") == "com.demo.app"
+    assert options.get_capability("appActivity") == "com.demo.MainActivity"
+    assert options.get_capability("newCommandTimeout") == 300
+
+    # iOS：bundleId 映射，忽略 activity，且不写入 appActivity
+    ios = AppiumDriver(
+        capabilities={"udid": "generic-02"},
+        device={"udid": "iphone-x", "platform": "ios"},
+    )
+    ios.launch_app("com.demo.ios.app", "ignored.Activity")
+    ios_options = calls[1]["options"]
+    assert ios_options.get_capability("udid") == "iphone-x"
+    assert ios_options.get_capability("platformName") == "iOS"
+    assert ios_options.get_capability("automationName") == "XCUITest"
+    assert ios_options.get_capability("bundleId") == "com.demo.ios.app"
+    assert ios_options.get_capability("appPackage") is None
+    assert ios_options.get_capability("appActivity") is None
+
+
+async def test_appium_no_activity_omits_null_capability(monkeypatch):
+    import appium.webdriver as appium_webdriver
+
+    captured: list[dict] = []
+
+    def fake_remote(*args, **kwargs):
+        captured.append(kwargs)
+
+        class D:
+            session_id = "sess-2"
+
+        return D()
+
+    monkeypatch.setattr(appium_webdriver, "Remote", fake_remote)
+
+    from executor.appium_driver import AppiumDriver
+
+    driver = AppiumDriver(device={"udid": "emulator-1", "platform": "android"})
+    driver.launch_app("com.demo.app", None)
+    assert "options" in captured[0]
+    options = captured[0]["options"]
+    assert options.get_capability("appActivity") is None
+    assert options.get_capability("appPackage") == "com.demo.app"
