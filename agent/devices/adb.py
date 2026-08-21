@@ -8,11 +8,32 @@
 import ipaddress
 import logging
 import re
+import shutil
 import subprocess
+import sys
+from pathlib import Path
 
 logger = logging.getLogger("agent.adb")
 
 ADB_TIMEOUT_SECONDS = 15
+
+
+def _find_adb() -> str:
+    """定位 adb 可执行文件：PATH → 打包随附（exe 旁 platform-tools）→ 开发目录（agent/vendor）→ CWD vendor。"""
+    path = shutil.which("adb")
+    if path:
+        return path
+    candidates: list[Path] = []
+    exe_dir = Path(sys.executable).resolve().parent
+    candidates.append(exe_dir / "platform-tools" / "adb.exe")
+    if hasattr(sys, "_MEIPASS"):
+        candidates.append(Path(sys._MEIPASS) / "platform-tools" / "adb.exe")
+    candidates.append(Path(__file__).resolve().parents[1] / "vendor" / "platform-tools" / "adb.exe")
+    candidates.append(Path("vendor") / "platform-tools" / "adb.exe")
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return "adb"
 
 # 设备状态 → 上报状态（Windows 方案 §4.1：只有 device 上报 idle）
 STATE_MAP = {
@@ -25,6 +46,8 @@ STATE_MAP = {
 }
 
 _HOSTNAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$")
+
+_ADB_EXE = _find_adb()
 
 
 class AdbError(Exception):
@@ -56,7 +79,7 @@ def _run(args: list[str], timeout: int = ADB_TIMEOUT_SECONDS) -> subprocess.Comp
     """执行 adb 命令（参数数组 + shell=False + 超时）。"""
     try:
         return subprocess.run(
-            ["adb", *args],
+            [_ADB_EXE, *args],
             capture_output=True,
             text=True,
             shell=False,
