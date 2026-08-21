@@ -12,7 +12,10 @@ a = Analysis(
     [str(project_root / "main.py")],
     pathex=[str(project_root)],
     binaries=[],
-    datas=[],
+    datas=[
+        # 运行时按 __file__ 相对定位的静态数据（_internal/executor/ 下）
+        (str(project_root / "executor" / "protocol_manifest.yaml"), "executor"),
+    ],
     hiddenimports=[
         "pystray._win32",
         "PIL._tkinter_finder",
