@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { executionStatusMeta } from '@/api/executions'
@@ -7,15 +7,19 @@ import { downloadReport, getReportDetail, reportFileUrl, type ReportDetail } fro
 import AuthenticatedImage from '@/components/AuthenticatedImage.vue'
 import DevicePicker from '@/components/DevicePicker.vue'
 import { useExecutionRetry } from '@/composables/useExecutionRetry'
+import { applyOnlyFailed } from '@/utils/reportFilter'
 
 const route = useRoute()
 const router = useRouter()
-const reportId = Number(route.params.id)
+// Step 7：reportId 改为 computed/watch，路由复用时重新加载
+const reportId = computed(() => Number(route.params.id))
 
 const loading = ref(false)
 const detail = ref<ReportDetail | null>(null)
+// Step 7：activeCases 存 case.id（el-collapse name 必须是 case.id，而非过滤后数组索引）
 const activeCases = ref<number[]>([])
 const onlyFailed = ref(false)
+let loadedReportId: number | null = null
 
 const { picker, retry: retryEntry, running: retrying } = useExecutionRetry()
 
@@ -47,34 +51,44 @@ function statusMeta(s: unknown) {
 }
 
 function expandAll() {
-  activeCases.value = displayCases.value.map((_, i) => i)
+  activeCases.value = displayCases.value.map((c) => c.id)
 }
 
 function collapseAll() {
   activeCases.value = []
 }
 
-function toggleOnlyFailed() {
-  onlyFailed.value = !onlyFailed.value
-  activeCases.value = onlyFailed.value ? displayCases.value.map((_, i) => i) : []
+// Step 7：checkbox 只使用 v-model；handler 接收新 boolean，不再自行反转
+function onOnlyFailedChange(value: string | number | boolean) {
+  if (!detail.value) return
+  activeCases.value = applyOnlyFailed(
+    activeCases.value,
+    Boolean(value),
+    detail.value.cases,
+  )
 }
 
 async function load() {
+  const id = reportId.value
+  if (!Number.isFinite(id) || id === loadedReportId) return
+  loadedReportId = id
   loading.value = true
   try {
-    detail.value = await getReportDetail(reportId)
-    // 默认展开 failed/error 用例
+    detail.value = await getReportDetail(id)
+    // 首次加载默认展开 failed/error
     activeCases.value = detail.value.cases
-      .map((c, i) => (['failed', 'error'].includes(c.status) ? i : -1))
-      .filter((i) => i >= 0)
+      .map((c) => (['failed', 'error'].includes(c.status) ? c.id : -1))
+      .filter((cid) => cid >= 0)
   } finally {
     loading.value = false
   }
 }
 
+watch(reportId, load, { immediate: true })
+
 async function download() {
   try {
-    await downloadReport(reportId)
+    await downloadReport(reportId.value)
     ElMessage.success('报告已生成并下载')
   } catch {
     ElMessage.error('报告生成失败')
@@ -92,8 +106,6 @@ function viewExecution() {
   const execId = Number(detail.value?.execution?.id)
   if (execId) router.push(`/executions/${execId}`)
 }
-
-onMounted(load)
 </script>
 
 <template>
@@ -137,13 +149,13 @@ onMounted(load)
         <div class="case-toolbar">
           <h2>用例明细</h2>
           <div class="case-actions">
-            <el-checkbox v-model="onlyFailed" @change="toggleOnlyFailed">只看失败/异常</el-checkbox>
+            <el-checkbox v-model="onlyFailed" @change="onOnlyFailedChange">只看失败/异常</el-checkbox>
             <el-button size="small" @click="expandAll">全部展开</el-button>
             <el-button size="small" @click="collapseAll">全部折叠</el-button>
           </div>
         </div>
         <el-collapse v-model="activeCases">
-          <el-collapse-item v-for="(c, idx) in displayCases" :key="c.id" :name="idx">
+          <el-collapse-item v-for="c in displayCases" :key="c.id" :name="c.id">
             <template #title>
               <span class="case-name">{{ c.case_name }}</span>
               <el-tag :type="statusMeta(c.status).type" size="small">{{ statusMeta(c.status).label }}</el-tag>

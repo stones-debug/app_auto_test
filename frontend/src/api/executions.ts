@@ -21,6 +21,7 @@ export interface ExecutionStep {
   duration: number | null
   actual_value: string | null
   error_message: string | null
+  artifact_id?: number | null
 }
 
 export interface ExecutionAssertion {

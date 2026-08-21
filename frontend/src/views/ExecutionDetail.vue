@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import {
@@ -15,21 +15,30 @@ import DevicePicker from '@/components/DevicePicker.vue'
 import ExecutionTimeline, { type TimelineCase } from '@/components/ExecutionTimeline.vue'
 import LiveLogViewer, { type LogEntry } from '@/components/LiveLogViewer.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
-import { useExecutionSocket } from '@/composables/useExecutionSocket'
 import { useExecutionRetry } from '@/composables/useExecutionRetry'
+import { useExecutionSocket } from '@/composables/useExecutionSocket'
 import { getToken } from '@/utils/request'
+import { liveLogKey, mergeExecutionLogs, type LogLike } from '@/utils/executionLogs'
 
 const route = useRoute()
 const router = useRouter()
-const executionId = Number(route.params.executionId)
+// Step 7：executionId 改 computed，路由复用/参数变化时重载
+const executionId = computed(() => Number(route.params.executionId))
 
 const loading = ref(false)
 const detail = ref<ExecutionDetail | null>(null)
-const logs = ref<ExecutionLog[]>([])
-const connected = ref(false)
-const connecting = ref(true)
 const stopping = ref(false)
 const reportId = ref<number | null>(null)
+
+// REST 日志（后端 id 去重）与 WS live 日志（单调递减临时 id，避免 Date.now 碰撞）
+const logs = ref<ExecutionLog[]>([])
+const liveLogs = ref<LogEntry[]>([])
+let liveIdCounter = 0
+let logKeys = new Set<string>()
+let completedPulled = false
+
+let socket: ReturnType<typeof useExecutionSocket> | null = null
+let staleId = 0 // loadAll 的异步完成检查：只允许当前路由的请求生效
 
 const timelineCases = computed<TimelineCase[]>(() => {
   return (detail.value?.cases ?? []).map((c) => ({
@@ -43,7 +52,8 @@ const timelineCases = computed<TimelineCase[]>(() => {
       duration: s.duration,
       actual_value: s.actual_value,
       error_message: s.error_message,
-      artifact_id: null,
+      // Step 7：保留 API 返回的 artifact_id（截图鉴权入口依赖）
+      artifact_id: s.artifact_id ?? null,
     })),
     assertions: (c.assertions ?? []).map((a) => ({
       assertion_type: a.assertion_type,
@@ -55,44 +65,61 @@ const timelineCases = computed<TimelineCase[]>(() => {
   }))
 })
 
-const logEntries = computed<LogEntry[]>(() =>
-  logs.value.map((l) => ({ id: l.id, level: l.level, message: l.message, source: l.source, created_at: l.created_at })),
-)
+const logEntries = computed<LogEntry[]>(() => {
+  const live: LogLike[] = liveLogs.value.map((l) => ({ id: l.id, level: l.level, message: l.message, source: l.source, created_at: l.created_at }))
+  return mergeExecutionLogs(logs.value, live) as LogEntry[]
+})
 
 function isTerminal(status: string) {
   return ['passed', 'failed', 'error', 'stopped', 'cancelled'].includes(status)
 }
 
-async function loadAll() {
+function resetLogs() {
+  logs.value = []
+  liveLogs.value = []
+  liveIdCounter = 0
+  logKeys = new Set()
+}
+
+async function loadAll(id: number) {
+  const myStale = ++staleId
   loading.value = true
   try {
-    detail.value = await getExecution(executionId)
-    const logData = await getExecutionLogs(executionId, { page_size: 200 })
+    const data = await getExecution(id)
+    if (staleId !== myStale) return // 旧请求晚到，不覆盖当前路由数据
+    detail.value = data
+    resetLogs()
+    const logData = await getExecutionLogs(id, { page_size: 200 })
+    if (staleId !== myStale) return
     logs.value = logData.items
-    if (isTerminal(detail.value.status)) {
-      connected.value = false
-      connecting.value = false
-      const rid = await findReportByExecution(executionId)
-      reportId.value = rid
+    reportId.value = null
+    completedPulled = false
+    if (isTerminal(data.status)) {
+      socket?.close()
+      const rid = await findReportByExecution(id)
+      if (staleId === myStale) reportId.value = rid
       return
     }
-    subscribe()
+    subscribe(id)
   } finally {
     loading.value = false
   }
 }
 
-function subscribe() {
-  if (!detail.value) return
+function subscribe(id: number) {
   const token = getToken() ?? ''
-  const ws = useExecutionSocket(detail.value.id, token, (msg) => {
+  // Step 7：subscribe 前强制关闭旧 socket（防止新老执行串流）
+  socket?.close()
+  const ws = useExecutionSocket(id, token, (msg) => {
     const type = msg.type as string
     if (type === 'status') {
       if (detail.value) detail.value.status = (msg.status as ExecutionStatus) ?? detail.value.status
-    } else if (type === 'log' && msg.execution_id === executionId) {
-      logs.value.push({
-        id: Date.now(),
-        execution_id: executionId,
+    } else if (type === 'log' && msg.execution_id === id) {
+      const key = liveLogKey(String(msg.level ?? ''), String(msg.message ?? ''), String(msg.timestamp ?? ''))
+      if (logKeys.has(key)) return
+      logKeys.add(key)
+      liveLogs.value.push({
+        id: --liveIdCounter, // 单调递减临时 id，避免 Date.now 同毫秒碰撞
         level: (msg.level as string) ?? 'INFO',
         message: (msg.message as string) ?? '',
         source: 'live',
@@ -101,9 +128,12 @@ function subscribe() {
     } else if (type === 'step_result') {
       updateCaseStatus(Number(msg.case_id), (msg.status as string) ?? 'running')
     } else if (type === 'completed') {
+      // Step 7：completed 只触发一次 REST 补拉并关闭 socket
+      if (completedPulled) return
+      completedPulled = true
       if (detail.value) detail.value.status = (msg.status as ExecutionStatus) ?? detail.value.status
-      connected.value = false
-      loadAll()
+      ws.close()
+      void loadAll(id)
     }
   })
   socket = ws
@@ -114,14 +144,12 @@ function updateCaseStatus(caseId: number, status: string) {
   if (ec) ec.status = status
 }
 
-let socket: { connected: { value: boolean }; close: () => void } | null = null
-
 const { picker, retry: retryEntry, running: retrying } = useExecutionRetry()
 
 async function stop() {
   stopping.value = true
   try {
-    await stopExecution(executionId)
+    await stopExecution(executionId.value)
     ElMessage.success('已请求停止')
     if (detail.value) detail.value.status = 'stopping'
   } finally {
@@ -131,7 +159,7 @@ async function stop() {
 
 async function retry() {
   // Step 5：重试统一走 DevicePicker，成功后跳新 execution 详情
-  await retryEntry(executionId, `执行 #${executionId}`)
+  await retryEntry(executionId.value, `执行 #${executionId.value}`)
 }
 
 function viewReport() {
@@ -143,7 +171,23 @@ function durationText(ms: number | null | undefined) {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
 }
 
-onMounted(loadAll)
+// Step 7：watch executionId——先关旧 socket，再清空 detail/logs/reportId，最后加载新 ID
+watch(
+  executionId,
+  (id, oldId) => {
+    if (id === oldId) return
+    socket?.close()
+    socket = null
+    detail.value = null
+    logs.value = []
+    liveLogs.value = []
+    reportId.value = null
+    completedPulled = false
+    if (Number.isFinite(id)) void loadAll(id)
+  },
+  { immediate: true },
+)
+
 onBeforeUnmount(() => socket?.close())
 </script>
 
@@ -184,7 +228,7 @@ onBeforeUnmount(() => socket?.close())
       </div>
       <div class="content-card log-card">
         <div class="v2-card-title">实时日志</div>
-        <LiveLogViewer :logs="logEntries" :connected="connected" :connecting="connecting" />
+        <LiveLogViewer :logs="logEntries" :connected="socket?.connected.value ?? false" :connecting="socket?.connecting.value ?? true" />
       </div>
     </div>
 

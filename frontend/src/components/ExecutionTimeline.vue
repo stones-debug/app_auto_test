@@ -1,5 +1,12 @@
 <script setup lang="ts">
 // V2 §5.14：执行时间线——用例、步骤、断言实时状态（幂等合并 case_id+step_order）
+// Step 7：有 artifact_id 的步骤展示鉴权截图入口（AuthenticatedImage Blob 加载）
+import { computed } from 'vue'
+
+import { useRoute } from 'vue-router'
+
+import AuthenticatedImage from '@/components/AuthenticatedImage.vue'
+
 export interface TimelineStep {
   step_order: number
   action: string
@@ -26,7 +33,14 @@ export interface TimelineCase {
   assertions: TimelineAssertion[]
 }
 
+// 模板中使用 cases（v-for），props 无需在脚本中显式引用
 defineProps<{ cases: TimelineCase[] }>()
+const route = useRoute()
+const executionId = computed(() => Number(route.params.executionId))
+
+function artifactUrl(artifactId: number): string {
+  return `/api/executions/${executionId.value}/artifacts/${artifactId}`
+}
 </script>
 
 <template>
@@ -43,6 +57,12 @@ defineProps<{ cases: TimelineCase[] }>()
         <span v-if="s.status === 'passed' && s.duration != null" class="step-duration v2-aux">
           {{ s.duration >= 1000 ? `${(s.duration / 1000).toFixed(1)}s` : `${s.duration}ms` }}
         </span>
+        <el-popover v-if="s.artifact_id" placement="left" :width="260" trigger="click">
+          <template #reference>
+            <el-button size="small" text type="primary" class="shot-btn">截图</el-button>
+          </template>
+          <AuthenticatedImage :src="artifactUrl(s.artifact_id)" alt="步骤截图" />
+        </el-popover>
         <span v-if="s.error_message" class="step-error v2-aux" :title="s.error_message">{{ s.error_message }}</span>
       </div>
       <div v-for="(a, i) in c.assertions" :key="`${c.case_id}-a${i}`" class="assertion-row">
@@ -109,5 +129,9 @@ defineProps<{ cases: TimelineCase[] }>()
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.shot-btn {
+  margin-left: 4px;
+  flex-shrink: 0;
 }
 </style>
