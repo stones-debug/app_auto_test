@@ -35,6 +35,17 @@ export const LOCATOR_TYPES = [
   { value: 'custom', label: '自定义' },
 ]
 
+export interface ElementPageCount {
+  page_name: string
+  count: number
+}
+
+export interface ElementUsage {
+  case_id: number
+  case_name: string
+  step_orders?: number[]
+}
+
 export function listModules(projectId: number, parentId?: number | null) {
   return request.get<TestModule[]>(`/projects/${projectId}/modules`, {
     params: parentId === undefined ? {} : { parent_id: parentId ?? 0 },
@@ -55,9 +66,20 @@ export function deleteModule(id: number) {
 
 export function listElements(
   projectId: number,
-  params?: { page?: number; page_size?: number; keyword?: string; platform?: string },
+  params?: {
+    page?: number
+    page_size?: number
+    keyword?: string
+    platform?: string
+    page_name?: string
+    locator_type?: string
+  },
 ) {
   return request.get<PageData<TestElement>>(`/projects/${projectId}/elements`, { params })
+}
+
+export function elementPages(projectId: number) {
+  return request.get<ElementPageCount[]>(`/projects/${projectId}/element-pages`)
 }
 
 export function createElement(projectId: number, data: Partial<TestElement>) {
@@ -77,5 +99,5 @@ export function deleteElement(id: number) {
 }
 
 export function elementUsage(id: number) {
-  return request.get<{ case_id: number; case_name: string }[]>(`/elements/${id}/usage`)
+  return request.get<ElementUsage[]>(`/elements/${id}/usage`)
 }

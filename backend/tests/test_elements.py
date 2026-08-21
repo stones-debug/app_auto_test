@@ -244,3 +244,34 @@ async def test_module_update_can_clear_parent(client: AsyncClient):
     cleared = await client.put(f"/api/modules/{b}", json={"parent_id": 0}, headers=headers)
     assert cleared.status_code == 200
     assert cleared.json()["parent_id"] is None
+
+
+async def test_element_list_page_name_and_locator_filters(client: AsyncClient):
+    """F8：元素列表支持 page_name（含未分组）与 locator_type 过滤。"""
+    headers, project_id = await _setup(client)
+    for name, page, locator in [
+        ("元素1", "登录页", "id"),
+        ("元素2", "登录页", "xpath"),
+        ("元素3", None, "id"),
+    ]:
+        await client.post(
+            f"/api/projects/{project_id}/elements",
+            json={"name": name, "page_name": page, "locator_type": locator, "locator_value": name},
+            headers=headers,
+        )
+
+    by_page = (await client.get(
+        f"/api/projects/{project_id}/elements?page_name=登录页", headers=headers
+    )).json()
+    assert by_page["total"] == 2
+
+    by_unset = (await client.get(
+        f"/api/projects/{project_id}/elements?page_name=未分组", headers=headers
+    )).json()
+    assert by_unset["total"] == 1
+
+    by_locator = (await client.get(
+        f"/api/projects/{project_id}/elements?locator_type=xpath", headers=headers
+    )).json()
+    assert by_locator["total"] == 1
+    assert by_locator["items"][0]["name"] == "元素2"

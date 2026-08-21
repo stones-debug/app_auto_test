@@ -8,16 +8,20 @@ import {
   addSuiteCase,
   createSuite,
   deleteSuite,
+  deleteVariable,
   listSuiteCases,
   listSuites,
+  listVariables,
   removeSuiteCase,
   reorderSuiteCases,
   updateSuite,
+  updateVariable,
   type Suite,
   type SuiteCase,
+  type Variable,
 } from '@/api/suites'
 import { listCases } from '@/api/cases'
-import RunDialog from '@/components/RunDialog.vue'
+import RunButton from '@/components/RunButton.vue'
 
 const route = useRoute()
 const projectId = Number(route.params.projectId)
@@ -25,8 +29,10 @@ const projectId = Number(route.params.projectId)
 const suites = ref<Suite[]>([])
 const activeSuite = ref<number | null>(null)
 const suiteCases = ref<SuiteCase[]>([])
-const runDialog = ref<{ open: () => void } | null>(null)
-const runningSuite = ref<Suite | null>(null)
+
+// 套件变量（V2 §5.7）
+const suiteVars = ref<Variable[]>([])
+const varEditing = ref<{ id: number; value: string } | null>(null)
 
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
@@ -47,6 +53,22 @@ async function loadSuites() {
 async function selectSuite(id: number) {
   activeSuite.value = id
   suiteCases.value = await listSuiteCases(id)
+  suiteVars.value = await listVariables({ scope: 'suite', suite_id: id })
+  varEditing.value = null
+}
+
+async function saveVarValue(v: Variable) {
+  if (!varEditing.value) return
+  await updateVariable(v.id, { value: varEditing.value.value })
+  varEditing.value = null
+  await selectSuite(activeSuite.value!)
+  ElMessage.success('变量已更新')
+}
+
+async function removeVar(v: Variable) {
+  await ElMessageBox.confirm(`确认删除变量「${v.name}」？`, '提示', { type: 'warning' })
+  await deleteVariable(v.id)
+  await selectSuite(activeSuite.value!)
 }
 
 function openCreate() {
@@ -114,11 +136,6 @@ async function onReorder() {
   await selectSuite(activeSuite.value)
 }
 
-function openRun(suite: Suite) {
-  runningSuite.value = suite
-  runDialog.value?.open()
-}
-
 onMounted(loadSuites)
 </script>
 
@@ -140,7 +157,7 @@ onMounted(loadSuites)
           <div class="suite-meta">
             <el-tag size="small" type="info">{{ s.case_count }} 个用例</el-tag>
             <span class="suite-actions">
-              <el-button size="small" type="success" text @click.stop="openRun(s)">运行</el-button>
+              <RunButton :type="'suite'" :id="s.id" :name="s.name" />
               <el-button size="small" text @click.stop="openEdit(s)">编辑</el-button>
               <el-button size="small" type="danger" text @click.stop="remove(s)">删除</el-button>
             </span>
@@ -169,6 +186,27 @@ onMounted(loadSuites)
           </template>
         </Draggable>
         <el-empty v-if="suiteCases.length === 0" description="该套件暂无用例，点击「添加用例」" />
+
+        <!-- 套件变量（V2 §5.7） -->
+        <el-collapse class="suite-vars">
+          <el-collapse-item title="套件变量" name="vars">
+            <div v-for="v in suiteVars" :key="v.id" class="var-row">
+              <span class="var-name">{{ v.name }}</span>
+              <el-input
+                v-if="varEditing?.id === v.id"
+                v-model="varEditing.value"
+                size="small"
+                class="var-input"
+                @keyup.enter="saveVarValue(v)"
+              />
+              <span v-else class="var-value">{{ v.value || '—' }}</span>
+              <el-button v-if="varEditing?.id === v.id" size="small" type="primary" text @click="saveVarValue(v)">保存</el-button>
+              <el-button v-else size="small" text @click="varEditing = { id: v.id, value: v.value }">编辑</el-button>
+              <el-button size="small" type="danger" text @click="removeVar(v)">删除</el-button>
+            </div>
+            <el-empty v-if="suiteVars.length === 0" description="暂无套件变量" :image-size="40" />
+          </el-collapse-item>
+        </el-collapse>
       </template>
       <el-empty v-else description="请选择左侧套件" />
     </el-col>
@@ -204,14 +242,6 @@ onMounted(loadSuites)
       <el-button type="primary" @click="addCase">添加</el-button>
     </template>
   </el-dialog>
-
-  <RunDialog
-    v-if="runningSuite"
-    ref="runDialog"
-    :type="'suite'"
-    :id="runningSuite.id"
-    :name="runningSuite.name"
-  />
 </template>
 
 <style scoped>
@@ -266,5 +296,26 @@ onMounted(loadSuites)
 }
 .case-select {
   margin-top: 12px;
+}
+.suite-vars {
+  margin-top: 16px;
+}
+.var-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+}
+.var-name {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  min-width: 120px;
+  color: var(--text);
+}
+.var-value {
+  color: var(--text-2);
+  min-width: 160px;
+}
+.var-input {
+  width: 180px;
 }
 </style>

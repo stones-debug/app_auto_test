@@ -143,6 +143,8 @@ async def list_elements(
     pagination=Depends(get_pagination),
     keyword: str = "",
     platform: str = "",
+    page_name: str = "",
+    locator_type: str = "",
     _perm: tuple[Project, str | None] = Depends(get_project_permission),
     db: AsyncSession = Depends(get_db),
 ):
@@ -162,6 +164,16 @@ async def list_elements(
     if platform:
         query = query.where((TestElement.platform == platform) | (TestElement.platform == "both"))
         count_query = count_query.where((TestElement.platform == platform) | (TestElement.platform == "both"))
+    if page_name:
+        if page_name == "未分组":
+            query = query.where(TestElement.page_name.is_(None))
+            count_query = count_query.where(TestElement.page_name.is_(None))
+        else:
+            query = query.where(TestElement.page_name == page_name)
+            count_query = count_query.where(TestElement.page_name == page_name)
+    if locator_type:
+        query = query.where(TestElement.locator_type == locator_type)
+        count_query = count_query.where(TestElement.locator_type == locator_type)
 
     total = await db.scalar(count_query)
     rows = (

@@ -11,16 +11,18 @@ import {
   updateVariable,
   type Variable,
 } from '@/api/suites'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
 const projectId = Number(route.params.projectId)
+const auth = useAuthStore()
+const isPlatformAdmin = ref(auth.user?.is_admin ?? false)
 
 const scope = ref('project')
 const items = ref<Variable[]>([])
 
-const dialogVisible = ref(false)
-const editingId = ref<number | null>(null)
-const form = ref({ name: '', value: '', description: '' })
+// global 仅平台管理员可写（V2 §5.9）
+const canWrite = ref(true)
 
 async function load() {
   items.value = await listVariables({
@@ -28,6 +30,20 @@ async function load() {
     project_id: scope.value === 'project' ? projectId : undefined,
   })
 }
+
+function onScopeChange() {
+  // viewer 只读由后端 403 兜底；此处 global 仅管理员可写
+  if (scope.value === 'global') {
+    canWrite.value = isPlatformAdmin.value
+  } else {
+    canWrite.value = true
+  }
+  load()
+}
+
+const dialogVisible = ref(false)
+const editingId = ref<number | null>(null)
+const form = ref({ name: '', value: '', description: '' })
 
 function openCreate() {
   editingId.value = null
@@ -70,18 +86,19 @@ function scopeLabel(v: string) {
   return VARIABLE_SCOPES.find((s) => s.value === v)?.label ?? v
 }
 
-onMounted(load)
+onMounted(onScopeChange)
 </script>
 
 <template>
   <div>
     <div class="toolbar-card">
-      <el-radio-group v-model="scope" @change="load">
+      <el-radio-group v-model="scope" @change="onScopeChange">
         <el-radio-button value="project">项目变量</el-radio-button>
         <el-radio-button value="global">全局变量</el-radio-button>
       </el-radio-group>
+      <span v-if="scope === 'global'" class="scope-tip v2-aux">全局变量仅平台管理员可管理</span>
       <span class="spacer"></span>
-      <el-button type="primary" @click="openCreate">新建变量</el-button>
+      <el-button v-if="canWrite" type="primary" @click="openCreate">新建变量</el-button>
     </div>
 
     <el-table :data="items" stripe>
@@ -95,8 +112,10 @@ onMounted(load)
       <el-table-column prop="description" label="描述" min-width="180" show-overflow-tooltip />
       <el-table-column label="操作" width="160" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" text @click="openEdit(row as Variable)">编辑</el-button>
-          <el-button size="small" type="danger" text @click="remove(row as Variable)">删除</el-button>
+          <template v-if="canWrite || (row as Variable).scope !== 'global'">
+            <el-button size="small" text @click="openEdit(row as Variable)">编辑</el-button>
+            <el-button size="small" type="danger" text @click="remove(row as Variable)">删除</el-button>
+          </template>
         </template>
       </el-table-column>
     </el-table>
@@ -120,3 +139,9 @@ onMounted(load)
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.scope-tip {
+  color: var(--warning);
+}
+</style>

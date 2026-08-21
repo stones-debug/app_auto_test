@@ -7,9 +7,11 @@ import {
   LOCATOR_TYPES,
   createElement,
   deleteElement,
+  elementPages,
   elementUsage,
   listElements,
   updateElement,
+  type ElementPageCount,
   type TestElement,
 } from '@/api/elements'
 
@@ -20,9 +22,11 @@ const loading = ref(false)
 const items = ref<TestElement[]>([])
 const total = ref(0)
 const page = ref(1)
-const pageSize = ref(10)
+const pageSize = ref(20)
 const keyword = ref('')
 const platform = ref('')
+const pageGroups = ref<ElementPageCount[]>([])
+const selectedPage = ref('all')
 
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
@@ -46,12 +50,23 @@ async function load() {
       page_size: pageSize.value,
       keyword: keyword.value,
       platform: platform.value,
+      page_name: selectedPage.value === 'all' ? undefined : selectedPage.value,
     })
     items.value = data.items
     total.value = data.total
   } finally {
     loading.value = false
   }
+}
+
+async function loadPages() {
+  pageGroups.value = await elementPages(projectId)
+}
+
+function selectPage(name: string) {
+  selectedPage.value = name
+  page.value = 1
+  load()
 }
 
 function openCreate() {
@@ -122,52 +137,70 @@ function platformLabel(p: string) {
   return ({ both: '通用', android: 'Android', ios: 'iOS' } as Record<string, string>)[p] ?? p
 }
 
-onMounted(load)
+onMounted(() => {
+  loadPages()
+  load()
+})
 </script>
 
 <template>
-  <div>
-    <div class="toolbar-card">
-      <el-input v-model="keyword" placeholder="按名称搜索" clearable class="search" @keyup.enter="page = 1; load()" />
-      <el-select v-model="platform" placeholder="平台" clearable class="platform" @change="page = 1; load()">
-        <el-option label="Android" value="android" />
-        <el-option label="iOS" value="ios" />
-        <el-option label="通用" value="both" />
-      </el-select>
-      <el-button type="primary" @click="page = 1; load()">搜索</el-button>
-      <span class="spacer"></span>
-      <el-button type="primary" @click="openCreate">新建元素</el-button>
+  <div class="elements-layout">
+    <!-- 左：页面分组 -->
+    <div class="page-tree">
+      <div class="tree-head v2-card-title">页面分组</div>
+      <div class="tree-item" :class="{ active: selectedPage === 'all' }" @click="selectPage('all')">
+        全部
+      </div>
+      <div v-for="g in pageGroups" :key="g.page_name" class="tree-item" :class="{ active: selectedPage === g.page_name }" @click="selectPage(g.page_name)">
+        <span>{{ g.page_name }}</span>
+        <span class="count">{{ g.count }}</span>
+      </div>
     </div>
 
-    <el-table v-loading="loading" :data="items" stripe>
-      <el-table-column prop="name" label="名称" min-width="150" />
-      <el-table-column prop="page_name" label="页面" min-width="120" />
-      <el-table-column label="平台" width="90">
-        <template #default="{ row }">
-          <el-tag :type="platformType(row.platform)" size="small">{{ platformLabel(row.platform) }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="定位方式" width="160">
-        <template #default="{ row }">{{ locatorLabel(row.locator_type) }}</template>
-      </el-table-column>
-      <el-table-column prop="locator_value" label="定位值" min-width="180" show-overflow-tooltip />
-      <el-table-column label="操作" width="220" fixed="right">
-        <template #default="{ row }">
-          <el-button size="small" text @click="showUsage(row as TestElement)">引用</el-button>
-          <el-button size="small" text @click="openEdit(row as TestElement)">编辑</el-button>
-          <el-button size="small" type="danger" text @click="remove(row as TestElement)">删除</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+    <!-- 右：元素列表 -->
+    <div class="elements-main">
+      <div class="toolbar-card">
+        <el-input v-model="keyword" placeholder="按名称搜索" clearable class="search" @keyup.enter="page = 1; load()" />
+        <el-select v-model="platform" placeholder="平台" clearable class="platform" @change="page = 1; load()">
+          <el-option label="Android" value="android" />
+          <el-option label="iOS" value="ios" />
+          <el-option label="通用" value="both" />
+        </el-select>
+        <el-button type="primary" @click="page = 1; load()">搜索</el-button>
+        <span class="spacer"></span>
+        <el-button type="primary" @click="openCreate">新建元素</el-button>
+      </div>
 
-    <el-pagination
-      v-model:current-page="page"
-      v-model:page-size="pageSize"
-      :total="total"
-      layout="total, prev, pager, next"
-      class="pager"
-      @change="load"
-    />
+      <el-table v-loading="loading" :data="items" stripe>
+        <el-table-column prop="name" label="名称" min-width="150" />
+        <el-table-column prop="page_name" label="页面" min-width="120" />
+        <el-table-column label="平台" width="90">
+          <template #default="{ row }">
+            <el-tag :type="platformType(row.platform)" size="small">{{ platformLabel(row.platform) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="定位方式" width="160">
+          <template #default="{ row }">{{ locatorLabel(row.locator_type) }}</template>
+        </el-table-column>
+        <el-table-column prop="locator_value" label="定位值" min-width="180" show-overflow-tooltip />
+        <el-table-column label="操作" width="220" fixed="right">
+          <template #default="{ row }">
+            <el-button size="small" text @click="showUsage(row as TestElement)">引用</el-button>
+            <el-button size="small" text @click="openEdit(row as TestElement)">编辑</el-button>
+            <el-button size="small" type="danger" text @click="remove(row as TestElement)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <el-pagination
+        v-model:current-page="page"
+        v-model:page-size="pageSize"
+        :total="total"
+        layout="total, prev, pager, next"
+        class="pager"
+        @change="load"
+      />
+    </div>
 
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑元素' : '新建元素'" width="560px">
       <el-form label-width="90px">
@@ -213,6 +246,51 @@ onMounted(load)
 </template>
 
 <style scoped>
+.elements-layout {
+  display: flex;
+  gap: 16px;
+}
+.page-tree {
+  width: 220px;
+  flex-shrink: 0;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 12px;
+  align-self: flex-start;
+}
+.tree-head {
+  padding: 8px 12px;
+}
+.tree-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.tree-item:hover {
+  background: var(--primary-light);
+}
+.tree-item.active {
+  background: var(--primary-light);
+  color: var(--primary);
+  font-weight: 600;
+}
+.tree-item .count {
+  font-size: 12px;
+  color: var(--text-2);
+  background: var(--bg);
+  border-radius: 10px;
+  padding: 0 8px;
+}
+.elements-main {
+  flex: 1;
+  min-width: 0;
+}
 .search {
   width: 220px;
 }
