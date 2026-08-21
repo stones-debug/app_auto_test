@@ -3,6 +3,8 @@ from typing import Any
 from fastapi import Query
 from pydantic import BaseModel
 
+from app.core.config import settings
+
 
 class Pagination(BaseModel):
     page: int
@@ -13,7 +15,7 @@ class Pagination(BaseModel):
 
 def get_pagination(
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page_size: int = Query(20, ge=1, le=settings.max_page_size),
 ) -> Pagination:
     return Pagination(page=page, page_size=page_size, offset=(page - 1) * page_size, limit=page_size)
 

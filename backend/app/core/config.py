@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     worker_poll_interval: int = 2
     worker_claim_stale_minutes: int = 10
 
+    # 分页
+    max_page_size: int = 200
+
     # CR-21：接口限流（每分钟每 IP）
     rate_limit_auth_per_minute: int = 60
     rate_limit_upload_per_minute: int = 120

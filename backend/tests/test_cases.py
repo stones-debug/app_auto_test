@@ -229,3 +229,24 @@ async def test_list_status_filter_contract(client: AsyncClient):
 
     all_cases = await client.get(f"/api/projects/{project_id}/cases", headers=headers)
     assert all_cases.json()["total"] == 2
+
+
+async def test_pagination_page_size_cap(client: AsyncClient):
+    """分页：page_size=200 合法（前端 ElementSelector/Suite/日志均用 200），超上限 422。"""
+    headers, project_id = await _setup(client)
+    for i in range(3):
+        await client.post(
+            f"/api/projects/{project_id}/cases",
+            json={"name": f"用例{i}", "steps": [], "assertions": []},
+            headers=headers,
+        )
+
+    # 200 在允许范围内
+    big = await client.get(f"/api/projects/{project_id}/cases?page=1&page_size=200", headers=headers)
+    assert big.status_code == 200
+    assert big.json()["total"] == 3
+    assert len(big.json()["items"]) == 3
+
+    # 超过上限 → 422
+    too_big = await client.get(f"/api/projects/{project_id}/cases?page=1&page_size=201", headers=headers)
+    assert too_big.status_code == 422

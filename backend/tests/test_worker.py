@@ -186,16 +186,20 @@ async def test_select_and_lock_device(client: AsyncClient):
         e1 = Execution(project_id=project_id, type="case", status="queued")
         db.add(e1)
         await db.flush()
+        # 指定设备路径（确定性，避免共享库中其他在线 Agent 的设备干扰）
+        e1.device_id = device_id
         device = await worker_service.select_and_lock_device(db, e1)
         assert device is not None
         assert device.id == device_id
         assert device.status == "busy"
         assert device.locked_by_execution == e1.id
 
+        # 原子性：e2 无法锁定 e1 已占用的设备（可能拿到其他空闲设备或 None）
         e2 = Execution(project_id=project_id, type="case", status="queued")
         db.add(e2)
         await db.flush()
-        assert await worker_service.select_and_lock_device(db, e2) is None
+        device2 = await worker_service.select_and_lock_device(db, e2)
+        assert device2 is None or device2.id != device_id
         await db.rollback()
 
 
