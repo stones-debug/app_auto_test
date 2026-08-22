@@ -100,6 +100,7 @@ async function save() {
     ElMessage.warning('名称和定位值必填')
     return
   }
+  const isCreate = !editingId.value
   if (editingId.value) {
     await updateElement(editingId.value, form.value)
     ElMessage.success('已更新')
@@ -108,7 +109,14 @@ async function save() {
     ElMessage.success('已创建')
   }
   dialogVisible.value = false
-  await load()
+  if (isCreate) {
+    // 新建后回到「全部」并刷新分组树/第 1 页，保证新元素立即可见
+    selectedPage.value = 'all'
+    page.value = 1
+    await Promise.all([loadPages(), load()])
+  } else {
+    await load()
+  }
 }
 
 async function remove(row: TestElement) {
