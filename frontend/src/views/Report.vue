@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { executionStatusMeta } from '@/api/executions'
 import { listReports, type ReportListItem } from '@/api/reports'
+import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
+import { withProjectScope } from '@/navigation/workspaceScope'
 
 const router = useRouter()
+const navigation = useWorkspaceNavigation()
+const { projectId, isProjectWorkspace } = navigation
 
 const loading = ref(false)
 const items = ref<ReportListItem[]>([])
@@ -20,13 +24,13 @@ const summary = ref({ passed: 0, failed: 0, error: 0, success_rate: 0 })
 async function load() {
   loading.value = true
   try {
-    const data = await listReports({
+    const data = await listReports(withProjectScope(projectId.value, {
       page: page.value,
       page_size: pageSize.value,
       ...(statusFilter.value ? { status: statusFilter.value } : {}),
       ...(typeFilter.value ? { type: typeFilter.value } : {}),
       ...(keyword.value ? { keyword: keyword.value } : {}),
-    })
+    }))
     items.value = data.items
     total.value = data.total
     const passed = data.items.filter((i) => i.execution_status === 'passed').length
@@ -54,10 +58,17 @@ function durationText(ms: number | null) {
 }
 
 function openDetail(row: ReportListItem) {
-  router.push(`/reports/${row.id}`)
+  void router.push(navigation.reportDetail(row.id))
 }
 
-onMounted(load)
+watch(
+  projectId,
+  () => {
+    page.value = 1
+    void load()
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -104,6 +115,9 @@ onMounted(load)
       </el-table-column>
       <el-table-column label="名称" min-width="160" show-overflow-tooltip>
         <template #default="{ row }">{{ row.case_name ?? row.suite_name ?? '-' }}</template>
+      </el-table-column>
+      <el-table-column v-if="!isProjectWorkspace" label="项目" width="140" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.project_name ?? '-' }}</template>
       </el-table-column>
       <el-table-column label="状态" width="90">
         <template #default="{ row }">

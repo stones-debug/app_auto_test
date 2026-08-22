@@ -12,8 +12,10 @@ import StatusBadge from '@/components/StatusBadge.vue'
 import StatCard from '@/components/StatCard.vue'
 import { getDashboardOverview, type DashboardOverview } from '@/api/dashboard'
 import { executionStatusMeta } from '@/api/executions'
+import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 
 const router = useRouter()
+const navigation = useWorkspaceNavigation()
 const loading = ref(false)
 const data = ref<DashboardOverview | null>(null)
 const range = ref<'7d' | '30d' | '90d'>('7d')
@@ -122,7 +124,7 @@ function recentStatus(status: string) {
 }
 
 function openExecution(id: number) {
-  router.push(`/executions/${id}`)
+  void router.push(navigation.executionDetail(id))
 }
 
 watch(range, load)

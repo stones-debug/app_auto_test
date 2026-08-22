@@ -41,6 +41,29 @@ describe('路由契约（V2 F2）', () => {
     expect(paths.includes('/404')).toBe(true)
   })
 
+  it('项目工作区包含执行和报告列表/详情路由', () => {
+    const paths = router.getRoutes().map((r) => r.path)
+    expect(paths).toContain('/projects/:projectId/executions')
+    expect(paths).toContain('/projects/:projectId/executions/:executionId')
+    expect(paths).toContain('/projects/:projectId/reports')
+    expect(paths).toContain('/projects/:projectId/reports/:reportId')
+  })
+
+  it('全局与项目详情使用独立 workspace/sidebarKey 元数据', () => {
+    expect(router.getRoutes().find((r) => r.name === 'ExecutionDetail')?.meta).toMatchObject({
+      workspace: 'global',
+      sidebarKey: 'executions',
+    })
+    expect(router.getRoutes().find((r) => r.name === 'ProjectExecutionDetail')?.meta).toMatchObject({
+      workspace: 'project',
+      sidebarKey: 'executions',
+    })
+    expect(router.getRoutes().find((r) => r.name === 'ProjectReportDetail')?.meta).toMatchObject({
+      workspace: 'project',
+      sidebarKey: 'reports',
+    })
+  })
+
   it('兜底路由重定向到 /404（不再静默跳 /projects）', () => {
     const catchAll = router.getRoutes().find((r) => r.path === '/:pathMatch(.*)*')
     expect(catchAll?.redirect).toBe('/404')

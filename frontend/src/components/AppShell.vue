@@ -1,80 +1,100 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { globalWorkspaceMenus, projectWorkspaceMenus } from '@/navigation/workspaceSidebar'
 import { useAuthStore } from '@/stores/auth'
+import { useLayoutStore } from '@/stores/layout'
+import { useProjectContextStore } from '@/stores/projectContext'
 
 // V2 §2.2：AppShell —— 侧栏(全局导航+项目上下文) + 顶栏(面包屑/用户菜单) + 内容区。
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const layout = useLayoutStore()
+const projectContext = useProjectContextStore()
 
-const collapsed = ref(false)
 const projectId = computed(() => (route.params.projectId ? Number(route.params.projectId) : null))
+const isProjectWorkspace = computed(
+  () => route.meta.workspace === 'project' && projectId.value !== null,
+)
+const collapsed = computed(() => layout.collapsed)
+const activeKey = computed(() => String(route.meta.sidebarKey ?? ''))
 
-const globalMenus = [
-  { name: '工作台', path: '/dashboard', icon: 'Odometer' },
-  { name: '项目', path: '/projects', icon: 'FolderOpened' },
-  { name: '执行中心', path: '/executions', icon: 'VideoPlay' },
-  { name: '设备中心', path: '/devices', icon: 'Monitor' },
-  { name: '报告', path: '/reports', icon: 'TrendCharts' },
-]
-
-const projectMenus = computed(() => {
-  if (projectId.value === null) return []
-  const p = projectId.value
-  return [
-    { name: '概览', path: `/projects/${p}/overview`, icon: 'DataBoard' },
-    { name: '用例', path: `/projects/${p}/cases`, icon: 'Document' },
-    { name: '套件', path: `/projects/${p}/suites`, icon: 'Files' },
-    { name: '元素', path: `/projects/${p}/elements`, icon: 'Grid' },
-    { name: '变量', path: `/projects/${p}/variables`, icon: 'Coin' },
-    { name: '设置', path: `/projects/${p}/settings`, icon: 'Setting' },
-  ]
+const globalMenus = globalWorkspaceMenus()
+const projectMenus = computed(() => (
+  projectId.value === null ? [] : projectWorkspaceMenus(projectId.value)
+))
+const projectName = computed(() => {
+  if (projectContext.project?.id === projectId.value) return projectContext.project.name
+  return projectContext.loading ? '正在加载项目…' : `项目 #${projectId.value ?? '-'}`
 })
 
 const displayName = computed(() => auth.user?.username ?? '未登录')
 const avatarText = computed(() => (displayName.value ? displayName.value[0].toUpperCase() : '?'))
 
-function isActive(path: string) {
-  if (path === '/dashboard') return route.path === '/dashboard'
-  if (path === '/projects') return route.path.startsWith('/projects')
-  return route.path === path || route.path.startsWith(`${path}/`)
+function isActive(key: string) {
+  return activeKey.value === key
 }
 </script>
 
 <template>
   <el-container class="shell">
     <el-aside :width="collapsed ? '72px' : '232px'" class="sidebar">
-      <div class="logo" :class="{ collapsed }">
+      <div class="logo" :class="{ collapsed }" role="button" tabindex="0" @click="router.push('/dashboard')" @keyup.enter="router.push('/dashboard')">
         {{ collapsed ? 'ⓐ' : 'APP 自动化测试平台' }}
       </div>
       <div class="menu-area">
-        <div
-          v-for="m in globalMenus"
-          :key="m.path"
-          class="menu-item"
-          :class="{ active: isActive(m.path) }"
-          :title="collapsed ? m.name : undefined"
-          @click="router.push(m.path)"
-        >
-          <el-icon class="menu-icon"><component :is="m.icon" /></el-icon>
-          <span class="menu-text">{{ collapsed ? m.name.slice(0, 1) : m.name }}</span>
-        </div>
-        <template v-if="projectMenus.length">
-          <div class="menu-divider" />
+        <template v-if="isProjectWorkspace">
+          <div class="workspace-back" :title="collapsed ? '全部项目' : undefined" @click="router.push('/projects')">
+            <span>{{ collapsed ? '←' : '← 全部项目' }}</span>
+          </div>
+          <div class="project-identity" :class="{ collapsed }" :title="collapsed ? projectName : undefined">
+            <el-icon><FolderOpened /></el-icon>
+            <div v-if="!collapsed" class="project-copy">
+              <span class="project-name">{{ projectName }}</span>
+              <span v-if="projectContext.role" class="project-role">{{ projectContext.role }}</span>
+            </div>
+          </div>
           <div
             v-for="m in projectMenus"
-            :key="m.path"
-            class="menu-item project"
-            :class="{ active: isActive(m.path) }"
-            :title="collapsed ? m.name : undefined"
-            @click="router.push(m.path)"
+            :key="m.key"
+            class="project-menu-wrap"
           >
-            <el-icon class="menu-icon"><component :is="m.icon" /></el-icon>
-            <span class="menu-text">{{ collapsed ? '·' : m.name }}</span>
+            <div v-if="m.dividerBefore" class="menu-divider" />
+            <div
+              class="menu-item project"
+              :class="{ active: isActive(m.key) }"
+              :title="collapsed ? m.name : undefined"
+              @click="router.push(m.to)"
+            >
+              <el-icon class="menu-icon"><component :is="m.icon" /></el-icon>
+              <span class="menu-text">{{ collapsed ? '·' : m.name }}</span>
+            </div>
           </div>
         </template>
+        <template v-else>
+          <div
+            v-for="m in globalMenus"
+            :key="m.key"
+            class="menu-item"
+            :class="{ active: isActive(m.key) }"
+            :title="collapsed ? m.name : undefined"
+            @click="router.push(m.to)"
+          >
+            <el-icon class="menu-icon"><component :is="m.icon" /></el-icon>
+            <span class="menu-text">{{ collapsed ? m.name.slice(0, 1) : m.name }}</span>
+          </div>
+        </template>
+      </div>
+      <div
+        v-if="isProjectWorkspace"
+        class="global-exit"
+        :title="collapsed ? '返回全局工作台' : undefined"
+        @click="router.push('/dashboard')"
+      >
+        <el-icon><Odometer /></el-icon>
+        <span v-if="!collapsed">返回全局工作台</span>
       </div>
       <div class="sidebar-footer">
         <div class="avatar">{{ avatarText }}</div>
@@ -82,7 +102,7 @@ function isActive(path: string) {
           <div class="user-name">{{ displayName }}</div>
           <div class="user-role">{{ auth.user?.is_admin ? '平台管理员' : '用户' }}</div>
         </div>
-        <el-icon class="collapse-btn" @click="collapsed = !collapsed">
+        <el-icon class="collapse-btn" @click="layout.toggleCollapsed()">
           <svg viewBox="0 0 1024 1024" width="14" height="14"><path d="M338 512l238-238 45 45-193 193 193 193-45 45z" /></svg>
         </el-icon>
       </div>
@@ -132,6 +152,7 @@ function isActive(path: string) {
   flex-shrink: 0;
   white-space: nowrap;
   overflow: hidden;
+  cursor: pointer;
 }
 .logo.collapsed {
   font-size: 18px;
@@ -145,6 +166,52 @@ function isActive(path: string) {
   height: 1px;
   background: rgba(255, 255, 255, 0.08);
   margin: 8px 12px;
+}
+.workspace-back {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  margin-bottom: 8px;
+  color: #94a3b8;
+  font-size: 12px;
+  cursor: pointer;
+}
+.workspace-back:hover {
+  color: #fff;
+}
+.project-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 4px 10px;
+  padding: 10px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #e2e8f0;
+}
+.project-identity.collapsed {
+  justify-content: center;
+}
+.project-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.project-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+.project-role {
+  color: #94a3b8;
+  font-size: 11px;
+}
+.project-menu-wrap {
+  display: contents;
 }
 .menu-item {
   display: flex;
@@ -184,6 +251,21 @@ function isActive(path: string) {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+}
+.global-exit {
+  min-height: 42px;
+  padding: 0 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #94a3b8;
+  font-size: 13px;
+  cursor: pointer;
+}
+.global-exit:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
 }
 .avatar {
   width: 32px;

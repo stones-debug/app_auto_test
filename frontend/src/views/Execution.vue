@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import {
@@ -12,7 +12,11 @@ import StatusBadge from '@/components/StatusBadge.vue'
 import DevicePicker from '@/components/DevicePicker.vue'
 import { getDashboardOverview } from '@/api/dashboard'
 import { useExecutionRetry } from '@/composables/useExecutionRetry'
+import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
+import { withProjectScope } from '@/navigation/workspaceScope'
 
+const navigation = useWorkspaceNavigation()
+const { projectId, isProjectWorkspace } = navigation
 const router = useRouter()
 const loading = ref(false)
 const items = ref<ExecutionListItem[]>([])
@@ -30,13 +34,13 @@ const { picker, retry: retryEntry } = useExecutionRetry()
 async function load() {
   loading.value = true
   try {
-    const data = await listExecutions({
+    const data = await listExecutions(withProjectScope(projectId.value, {
       page: page.value,
       page_size: pageSize.value,
       status: statusFilter.value,
       type: typeFilter.value,
       keyword: keyword.value || undefined,
-    })
+    }))
     items.value = data.items
     total.value = data.total
   } finally {
@@ -46,7 +50,7 @@ async function load() {
 
 async function loadSummary() {
   try {
-    const data = await getDashboardOverview({})
+    const data = await getDashboardOverview(withProjectScope(projectId.value, {}))
     const sc = data.status_counts
     summary.value = {
       active: sc.running + sc.stopping,
@@ -73,7 +77,7 @@ function isActive(status: string) {
 }
 
 function openDetail(id: number) {
-  router.push(`/executions/${id}`)
+  void router.push(navigation.executionDetail(id))
 }
 
 async function stop(row: ExecutionListItem) {
@@ -93,9 +97,17 @@ function onSearch() {
   load()
 }
 
+watch(
+  projectId,
+  () => {
+    page.value = 1
+    void load()
+    void loadSummary()
+  },
+  { immediate: true },
+)
+
 onMounted(() => {
-  load()
-  loadSummary()
   // 活跃执行每 5 秒轮询当前页
   timer = setInterval(() => {
     if (document.visibilityState === 'visible') {
@@ -156,7 +168,7 @@ onBeforeUnmount(() => {
       <el-table-column label="名称" min-width="180" show-overflow-tooltip>
         <template #default="{ row }">{{ row.case_name ?? row.suite_name ?? '-' }}</template>
       </el-table-column>
-      <el-table-column label="项目" width="140" show-overflow-tooltip>
+      <el-table-column v-if="!isProjectWorkspace" label="项目" width="140" show-overflow-tooltip>
         <template #default="{ row }">{{ row.project_name ?? '-' }}</template>
       </el-table-column>
       <el-table-column label="设备" width="120" show-overflow-tooltip>

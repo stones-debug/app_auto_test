@@ -17,11 +17,13 @@ import LiveLogViewer, { type LogEntry } from '@/components/LiveLogViewer.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { useExecutionRetry } from '@/composables/useExecutionRetry'
 import { useExecutionSocket } from '@/composables/useExecutionSocket'
+import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { getToken } from '@/utils/request'
 import { liveLogKey, mergeExecutionLogs, type LogLike } from '@/utils/executionLogs'
 
 const route = useRoute()
 const router = useRouter()
+const navigation = useWorkspaceNavigation()
 // Step 7：executionId 改 computed，路由复用/参数变化时重载
 const executionId = computed(() => Number(route.params.executionId))
 
@@ -87,6 +89,8 @@ async function loadAll(id: number) {
   try {
     const data = await getExecution(id)
     if (staleId !== myStale) return // 旧请求晚到，不覆盖当前路由数据
+    await navigation.normalizeProjectDetail('execution', id, data.project_id)
+    if (staleId !== myStale) return
     detail.value = data
     resetLogs()
     const logData = await getExecutionLogs(id, { page_size: 200 })
@@ -163,7 +167,7 @@ async function retry() {
 }
 
 function viewReport() {
-  if (reportId.value != null) router.push(`/reports/${reportId.value}`)
+  if (reportId.value != null) void router.push(navigation.reportDetail(reportId.value))
 }
 
 function durationText(ms: number | null | undefined) {
@@ -195,7 +199,7 @@ onBeforeUnmount(() => socket?.close())
   <div v-loading="loading">
     <div class="head-bar">
       <div>
-        <el-button size="small" text @click="router.push('/executions')">← 返回执行中心</el-button>
+        <el-button size="small" text @click="navigation.back('execution')">← 返回</el-button>
         <div class="head-title">
           <span class="v2-page-title">执行 #{{ executionId }}</span>
           <StatusBadge v-if="detail" :status="detail.status" />

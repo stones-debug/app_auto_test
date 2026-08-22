@@ -7,12 +7,14 @@ import { downloadReport, getReportDetail, reportFileUrl, type ReportDetail } fro
 import AuthenticatedImage from '@/components/AuthenticatedImage.vue'
 import DevicePicker from '@/components/DevicePicker.vue'
 import { useExecutionRetry } from '@/composables/useExecutionRetry'
+import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { applyOnlyFailed } from '@/utils/reportFilter'
 
 const route = useRoute()
 const router = useRouter()
+const navigation = useWorkspaceNavigation()
 // Step 7：reportId 改为 computed/watch，路由复用时重新加载
-const reportId = computed(() => Number(route.params.id))
+const reportId = computed(() => Number(route.params.reportId ?? route.params.id))
 
 const loading = ref(false)
 const detail = ref<ReportDetail | null>(null)
@@ -74,7 +76,9 @@ async function load() {
   loadedReportId = id
   loading.value = true
   try {
-    detail.value = await getReportDetail(id)
+    const data = await getReportDetail(id)
+    await navigation.normalizeProjectDetail('report', id, data.execution.project_id)
+    detail.value = data
     // 首次加载默认展开 failed/error
     activeCases.value = detail.value.cases
       .map((c) => (['failed', 'error'].includes(c.status) ? c.id : -1))
@@ -103,8 +107,8 @@ async function retryThis() {
 }
 
 function viewExecution() {
-  const execId = Number(detail.value?.execution?.id)
-  if (execId) router.push(`/executions/${execId}`)
+  const execId = Number(detail.value?.execution.id)
+  if (execId) void router.push(navigation.executionDetail(execId))
 }
 </script>
 
@@ -120,7 +124,7 @@ function viewExecution() {
           <div class="head-actions">
             <el-button @click="viewExecution">查看执行</el-button>
             <el-button :loading="retrying" @click="retryThis">重试</el-button>
-            <el-button @click="router.push('/reports')">返回列表</el-button>
+            <el-button @click="navigation.back('report')">返回</el-button>
             <el-button type="primary" @click="download">下载 HTML 报告</el-button>
           </div>
         </div>

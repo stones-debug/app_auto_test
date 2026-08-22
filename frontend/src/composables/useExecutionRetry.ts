@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 
 import type { Execution } from '@/api/executions'
 import type { RetryTarget } from '@/composables/useDeviceSelect'
+import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 
 export type PickerLike = {
   open: (target: RetryTarget, options?: { timeout_seconds?: number }) => Promise<Execution | null>
@@ -15,6 +16,7 @@ export type PickerLike = {
  */
 export function useExecutionRetry() {
   const router = useRouter()
+  const navigation = useWorkspaceNavigation()
   const picker = ref<PickerLike | null>(null)
   const running = ref(false)
 
@@ -25,7 +27,7 @@ export function useExecutionRetry() {
       const exec = await picker.value.open({ kind: 'retry', executionId, name })
       if (exec) {
         ElMessage.success(`已创建重试执行 #${exec.id}`)
-        router.push(`/executions/${exec.id}`)
+        await router.push(navigation.executionDetail(exec.id))
       }
       return exec
     } finally {

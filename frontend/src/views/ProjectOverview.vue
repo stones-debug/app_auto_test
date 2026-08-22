@@ -13,11 +13,13 @@ import StatCard from '@/components/StatCard.vue'
 import { getDashboardOverview } from '@/api/dashboard'
 import { useProjectContextStore } from '@/stores/projectContext'
 import { usePermission } from '@/composables/usePermission'
+import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 
 const route = useRoute()
 const router = useRouter()
 const ctx = useProjectContextStore()
 const { canWriteAssets, canExecute } = usePermission()
+const navigation = useWorkspaceNavigation()
 
 const projectId = computed(() => Number(route.params.projectId))
 const loading = ref(false)
@@ -87,7 +89,7 @@ onBeforeUnmount(() => {
         <StatCard label="用例" :value="ctx.project?.case_count ?? 0" @click="router.push(`/projects/${projectId}/cases`)" />
         <StatCard label="套件" :value="ctx.project?.suite_count ?? 0" @click="router.push(`/projects/${projectId}/suites`)" />
         <StatCard label="元素" :value="ctx.project?.element_count ?? 0" @click="router.push(`/projects/${projectId}/elements`)" />
-        <StatCard label="成功率" :value="overview.stats.success_rate > 0 ? overview.stats.success_rate.toFixed(1) + '%' : '—'" tone="success" @click="router.push('/reports')" />
+        <StatCard label="成功率" :value="overview.stats.success_rate > 0 ? overview.stats.success_rate.toFixed(1) + '%' : '—'" tone="success" @click="router.push(navigation.reportList())" />
       </div>
 
       <div class="chart-card">
@@ -99,7 +101,7 @@ onBeforeUnmount(() => {
         <div class="v2-card-title">最近执行</div>
         <el-empty v-if="!overview.recent_executions.length" description="暂无执行记录" :image-size="60" />
         <div v-else>
-          <div v-for="e in overview.recent_executions" :key="e.id" class="recent-item" @click="router.push(`/executions/${e.id}`)">
+          <div v-for="e in overview.recent_executions" :key="e.id" class="recent-item" @click="router.push(navigation.executionDetail(e.id))">
             <span class="recent-id">#{{ e.id }}</span>
             <StatusBadge :status="e.status" />
             <span class="spacer" />
