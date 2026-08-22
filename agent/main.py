@@ -57,6 +57,18 @@ def _out(text: str) -> None:
         print(text)
 
 
+def should_run_desktop(explicit_desktop: bool, *, frozen: bool | None = None) -> bool:
+    """决定是否启动桌面界面。
+
+    源码运行默认保持无头模式，便于开发和服务化部署；PyInstaller 打包后的
+    ``console=False`` EXE 没有控制台，因此无参数启动（双击/开始菜单）必须默认
+    进入桌面模式。``frozen`` 参数仅用于让该打包分支可稳定测试。
+    """
+    if frozen is None:
+        frozen = bool(getattr(sys, "frozen", False))
+    return explicit_desktop or frozen
+
+
 class AgentApp:
     def __init__(
         self,
@@ -471,7 +483,7 @@ async def main() -> None:
         return
 
     app, client = build_agent_app(config, install_id, creds, bindings)
-    if args.desktop:
+    if should_run_desktop(args.desktop):
         run_desktop(app, client, state or state_dir(state), config["server"])
         return
     await serve_agent(app, client)

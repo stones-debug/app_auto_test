@@ -110,7 +110,7 @@
 ## 5. 构建、测试与验收
 
 - 增加 Windows 构建配置：PyInstaller `onedir` 生成 Agent 目录，Inno Setup 生成版本化 `app-auto-test-agent-<version>-windows-x64-setup.exe`。
-- 安装器创建开始菜单和卸载项、注册当前用户登录自启动；安装完成后启动托盘 Agent。默认不需要管理员权限。
+- 安装器创建开始菜单和卸载项、注册当前用户登录自启动；安装完成后启动托盘 Agent。打包后的 EXE 无参数启动（包括双击和开始菜单）默认打开桌面管理窗口，源码运行仍默认使用无头模式；开始菜单、自启动和安装完成启动项同时显式传入 `--desktop`。默认不需要管理员权限。
 - Windows CI 执行 Agent 测试、`--self-check`、PyInstaller、安装器编译和 SHA-256 manifest 生成。若配置证书则执行 Authenticode 签名；当前内网版本允许无证书发布，但保留 Windows SmartScreen 提示说明。
 - 后端覆盖：Key 生成/查看/重置、首次和追加绑定、解绑、管理员权限、越权设备访问、默认设备、下载令牌、路径穿越、设备锁竞争、停止宽限期和唯一终态汇总。
 - Agent 覆盖：ADB 输出解析、USB 热插拔、无线配对/连接失败、设备快照、机器凭据恢复、多用户绑定、Appium 阻塞停止、托盘控制器和打包资源定位。

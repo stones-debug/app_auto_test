@@ -42,7 +42,7 @@ Name: "autostart"; Description: "Start Agent automatically after Windows login";
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Parameters: "--desktop"
 Name: "{autoprograms}\{#AppName} Uninstall"; Filename: "{uninstallexe}"
 
 [Registry]

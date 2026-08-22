@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from main import AgentApp, http_origin
+from main import AgentApp, http_origin, should_run_desktop
 
 
 class FakeClient:
@@ -11,6 +11,19 @@ class FakeClient:
 
     async def send(self, payload: dict) -> None:
         self.sent.append(payload)
+
+
+@pytest.mark.parametrize(
+    ("explicit_desktop", "frozen", "expected"),
+    [
+        (False, False, False),  # python main.py：保持无头模式
+        (True, False, True),  # python main.py --desktop：显式桌面模式
+        (False, True, True),  # 打包 EXE 双击/开始菜单：默认桌面模式
+        (True, True, True),
+    ],
+)
+def test_desktop_mode_selection(explicit_desktop: bool, frozen: bool, expected: bool):
+    assert should_run_desktop(explicit_desktop, frozen=frozen) is expected
 
 
 def _sleep_case(duration: float = 5) -> list[dict]:
