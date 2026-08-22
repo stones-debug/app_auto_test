@@ -24,6 +24,8 @@ appium_ready_timeout: 60
 # appium_capabilities:
 #   appium:options:
 #     noReset: true
+# “启动 APP”步骤未填写 Activity 时，Agent 会通过目标设备的 ADB 自动解析 MAIN/LAUNCHER；
+# 如应用没有标准桌面入口，可在步骤中显式填写 Activity，或在这里配置 appActivity。
 
 # 驱动模式：mock（默认，无需真机）/ appium（真实 Appium）
 driver: "mock"

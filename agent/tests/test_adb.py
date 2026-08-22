@@ -169,3 +169,72 @@ def test_adb_missing_translated(monkeypatch):
     monkeypatch.setattr(adb.subprocess, "run", runner)
     with pytest.raises(adb.AdbError, match="未找到 adb"):
         adb.connect("192.168.1.10", 5555)
+
+
+# ---------- Android MAIN/LAUNCHER Activity 解析 ----------
+
+
+def test_resolve_launcher_activity_parses_metadata_and_component(monkeypatch):
+    calls: list[list[str]] = []
+
+    def runner(args, timeout=15):
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout=(
+                "priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=false\n"
+                "com.uniapp.testalias/io.dcloud.PandoraEntry\n"
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(adb, "_run", runner)
+    activity = adb.resolve_launcher_activity("emulator-5554", "com.uniapp.testalias")
+
+    assert activity == "io.dcloud.PandoraEntry"
+    assert calls == [[
+        "-s", "emulator-5554", "shell", "cmd", "package", "resolve-activity", "--brief",
+        "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER",
+        "com.uniapp.testalias",
+    ]]
+
+
+def test_resolve_launcher_activity_falls_back_to_pm_and_expands_relative_name(monkeypatch):
+    calls: list[list[str]] = []
+
+    def runner(args, timeout=15):
+        calls.append(args)
+        if "cmd" in args:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="cmd: Can't find service: package")
+        return subprocess.CompletedProcess(
+            args, 0, stdout="com.example.demo/.MainActivity\n", stderr=""
+        )
+
+    monkeypatch.setattr(adb, "_run", runner)
+
+    assert adb.resolve_launcher_activity("device-1", "com.example.demo") == "com.example.demo.MainActivity"
+    assert len(calls) == 2
+    assert calls[1][3:5] == ["pm", "resolve-activity"]
+
+
+def test_resolve_launcher_activity_reports_not_installed(monkeypatch):
+    def runner(args, timeout=15):
+        if "path" in args:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout="No activity found\n", stderr="")
+
+    monkeypatch.setattr(adb, "_run", runner)
+    with pytest.raises(adb.AdbError, match="未安装应用 com.example.missing"):
+        adb.resolve_launcher_activity("device-1", "com.example.missing")
+
+
+def test_resolve_launcher_activity_reports_missing_launcher(monkeypatch):
+    def runner(args, timeout=15):
+        if "path" in args:
+            return subprocess.CompletedProcess(args, 0, stdout="package:/data/app/base.apk\n", stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout="No activity found\n", stderr="")
+
+    monkeypatch.setattr(adb, "_run", runner)
+    with pytest.raises(adb.AdbError, match="没有可解析的 MAIN/LAUNCHER"):
+        adb.resolve_launcher_activity("device-1", "com.example.service")

@@ -48,6 +48,10 @@ STATE_MAP = {
 }
 
 _HOSTNAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$")
+_PACKAGE_RE = re.compile(r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+$")
+_COMPONENT_RE = re.compile(
+    r"^(?P<package>[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+)/(?P<activity>[A-Za-z0-9_.$]+)$"
+)
 
 _ADB_EXE = _find_adb()
 
@@ -178,6 +182,60 @@ def disconnect(host: str, port: int, timeout: int = ADB_TIMEOUT_SECONDS) -> str:
     if proc.returncode != 0:
         raise AdbError(f"断开失败：{message or '未知错误'}")
     return message or "已断开"
+
+
+def _parse_resolved_activity(output: str, package: str) -> str | None:
+    """从不同 Android 版本的 resolve-activity 输出中提取 Activity。"""
+    for line in output.splitlines():
+        match = _COMPONENT_RE.fullmatch(line.strip())
+        if match is None or match.group("package") != package:
+            continue
+        activity = match.group("activity")
+        return f"{package}{activity}" if activity.startswith(".") else activity
+    return None
+
+
+def resolve_launcher_activity(udid: str, package: str) -> str:
+    """解析已安装 Android 应用的 MAIN/LAUNCHER Activity。
+
+    优先使用 ``cmd package``，并兼容仅支持 ``pm resolve-activity`` 的旧系统。
+    返回完整 Activity 类名；无法解析时区分包未安装和没有标准启动入口。
+    """
+    udid = udid.strip()
+    package = package.strip()
+    if not udid:
+        raise AdbError("无法解析启动 Activity：缺少 Android 设备 UDID")
+    if not _PACKAGE_RE.fullmatch(package):
+        raise AdbError(f"无法解析启动 Activity：无效的 Android 包名 {package!r}")
+
+    intent_args = [
+        "--brief",
+        "-a",
+        "android.intent.action.MAIN",
+        "-c",
+        "android.intent.category.LAUNCHER",
+        package,
+    ]
+    errors: list[str] = []
+    for resolver in (["cmd", "package", "resolve-activity"], ["pm", "resolve-activity"]):
+        proc = _run(["-s", udid, "shell", *resolver, *intent_args])
+        output = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
+        if proc.returncode == 0:
+            activity = _parse_resolved_activity(output, package)
+            if activity:
+                return activity
+        if output:
+            errors.append(output)
+
+    installed = _run(["-s", udid, "shell", "pm", "path", package])
+    if installed.returncode != 0 or not (installed.stdout or "").strip().startswith("package:"):
+        raise AdbError(f"设备 {udid} 未安装应用 {package}")
+
+    detail = f"；ADB 输出：{' | '.join(errors)}" if errors else ""
+    raise AdbError(
+        f"应用 {package} 已安装，但 Manifest 中没有可解析的 MAIN/LAUNCHER Activity{detail}。"
+        "请在启动 APP 步骤中显式填写 Activity"
+    )
 
 
 def heal_offline_emulator(udid: str) -> str:

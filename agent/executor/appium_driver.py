@@ -1,7 +1,7 @@
 import logging
 from typing import TYPE_CHECKING
 
-from .driver import BaseDriver
+from .driver import BaseDriver, DriverError
 
 if TYPE_CHECKING:
     from appium.webdriver.webdriver import WebDriver
@@ -71,6 +71,51 @@ class AppiumDriver(BaseDriver):
         options.load_capabilities(caps)
         return options
 
+    def _configured_android_capability(self, name: str) -> str | None:
+        """读取普通、W3C 前缀或 appium:options 中的 Android capability。"""
+        candidates = (name, f"appium:{name}")
+        for key in candidates:
+            value = self.capabilities.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        appium_options = self.capabilities.get("appium:options")
+        if isinstance(appium_options, dict):
+            for key in candidates:
+                value = appium_options.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return None
+
+    def _resolve_android_activity(self, package: str, activity: str | None) -> tuple[str, bool]:
+        """返回有效 Activity 及其是否由 ADB 自动解析。"""
+        explicit = activity.strip() if isinstance(activity, str) else ""
+        if explicit:
+            return explicit, False
+
+        configured = self._configured_android_capability("appActivity")
+        if configured:
+            return configured, False
+
+        udid = str(self.device.get("udid") or "").strip()
+        from devices.adb import AdbError, resolve_launcher_activity
+
+        try:
+            resolved = resolve_launcher_activity(udid, package)
+        except AdbError as exc:
+            raise DriverError(
+                f"无法自动识别应用 {package} 的启动 Activity：{exc}。"
+                "请确认包名正确，或在“启动 APP”步骤中显式填写 Activity"
+            ) from exc
+        logger.info("已自动解析 Android 启动 Activity: %s/%s", package, resolved)
+        return resolved, True
+
+    def _apply_auto_activity_wait(self, options, package: str) -> None:
+        """自动解析入口时兼容 launcher alias、闪屏页和跳板 Activity。"""
+        if self._configured_android_capability("appWaitPackage") is None:
+            options.set_capability("appWaitPackage", package)
+        if self._configured_android_capability("appWaitActivity") is None:
+            options.set_capability("appWaitActivity", "*")
+
     def _ensure(self) -> "WebDriver":
         if self.driver is None:
             raise RuntimeError("Appium 会话未启动，请先执行 launch_app")
@@ -81,8 +126,27 @@ class AppiumDriver(BaseDriver):
             from appium import webdriver as appium_webdriver
         except ImportError as exc:
             raise RuntimeError("未安装 appium-python-client，无法使用 Appium 驱动（pip install 'agent[appium]'）") from exc
-        options = self._build_options(package, activity, no_reset)
-        self.driver = appium_webdriver.Remote(command_executor=self.command_executor, options=options)
+        package = str(package or "").strip()
+        if not package:
+            raise DriverError("启动 APP 失败：包名不能为空")
+
+        platform = (self.device.get("platform") or "").lower()
+        resolved_activity = activity
+        auto_resolved = False
+        if platform != "ios":
+            resolved_activity, auto_resolved = self._resolve_android_activity(package, activity)
+
+        options = self._build_options(package, resolved_activity, no_reset)
+        if auto_resolved:
+            self._apply_auto_activity_wait(options, package)
+        try:
+            self.driver = appium_webdriver.Remote(
+                command_executor=self.command_executor,
+                options=options,
+            )
+        except Exception as exc:
+            target = package if platform == "ios" else f"{package}/{resolved_activity}"
+            raise DriverError(f"Appium 启动应用失败（{target}）：{exc}") from exc
         logger.info("Appium 会话已创建: %s", self.driver.session_id)
 
     def close_app(self, package: str | None = None) -> None:
