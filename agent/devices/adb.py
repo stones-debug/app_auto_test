@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 logger = logging.getLogger("agent.adb")
@@ -177,3 +178,36 @@ def disconnect(host: str, port: int, timeout: int = ADB_TIMEOUT_SECONDS) -> str:
     if proc.returncode != 0:
         raise AdbError(f"断开失败：{message or '未知错误'}")
     return message or "已断开"
+
+
+def heal_offline_emulator(udid: str) -> str:
+    """雷电/模拟器双 adb 通道互踢时自愈：emulator-NNNN offline → adb connect 127.0.0.1:NNNN+1。
+
+    返回自愈后可用的在线 udid（优先原 udid，其次 TCP 通道）；无法自愈时原样返回。
+    """
+    try:
+        current = next((d for d in list_devices() if d["udid"] == udid), None)
+        if current is not None and current["status"] == "idle":
+            return udid
+    except Exception:
+        pass
+    match = re.fullmatch(r"emulator-(\d+)", udid)
+    if not match:
+        return udid
+    tcp = f"127.0.0.1:{int(match.group(1)) + 1}"
+    try:
+        connect(tcp, int(match.group(1)) + 1)
+    except Exception:
+        pass
+    time.sleep(2)
+    try:
+        devices = list_devices()
+    except Exception:
+        return udid
+    for d in devices:
+        if d["udid"] == tcp and d["status"] == "idle":
+            return tcp
+    for d in devices:
+        if d["udid"] == udid and d["status"] == "idle":
+            return udid
+    return udid

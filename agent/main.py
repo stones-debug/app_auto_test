@@ -14,6 +14,7 @@ import yaml
 from appium_lifecycle import AppiumServer
 from binding import BindingManager
 from credentials import CredentialStore
+from devices.adb import heal_offline_emulator
 from devices.registry import DeviceRegistry
 from execution_supervisor import ExecutionRuntime
 from executor import StopRequested, TestRunner, create_driver
@@ -158,8 +159,16 @@ class AgentApp:
             if mode == "appium":
                 # Windows 方案 §4.1：Appium 按需隐藏启动，执行结束后清理
                 await self._ensure_appium()
+            # 模拟器双 adb 通道互踢时设备可能 offline：先自愈再构造驱动
+            device = message.get("device") or {}
+            udid = device.get("udid")
+            if udid:
+                healed = await asyncio.to_thread(heal_offline_emulator, udid)
+                if healed != udid:
+                    logger.info("设备 %s 离线，已切换至在线通道 %s", udid, healed)
+                    device = {**device, "udid": healed}
             # CR-08：用配置的 host/port/capabilities + Worker 下发的设备信息构造驱动
-            driver = create_driver(mode, config=self.config, device=message.get("device"))
+            driver = create_driver(mode, config=self.config, device=device)
             runtime.driver = driver
             tmpdir = tempfile.TemporaryDirectory(prefix=f"exec_{execution_id}_")
             screenshots_dir = Path(tmpdir.name) / "screenshots"
