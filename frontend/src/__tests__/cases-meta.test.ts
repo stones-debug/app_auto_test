@@ -11,7 +11,7 @@ import {
 } from '@/api/cases'
 
 describe('CR-09 动作/断言元数据契约', () => {
-  it('覆盖 Agent Registry 全部 13 个动作', () => {
+  it('覆盖 Agent Registry 全部 14 个动作', () => {
     const values = ACTIONS.map((a) => a.value).sort()
     expect(values).toEqual(
       [
@@ -21,6 +21,7 @@ describe('CR-09 动作/断言元数据契约', () => {
         'input',
         'clear',
         'swipe',
+        'swipe_to_find',
         'scroll',
         'back',
         'sleep',

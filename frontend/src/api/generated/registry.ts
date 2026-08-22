@@ -50,6 +50,12 @@ export const ACTIONS: ActionMeta[] = [
     { key: 'direction', label: '方向', type: 'select', options: [{ value: 'up', label: '上滑' }, { value: 'down', label: '下滑' }, { value: 'left', label: '左滑' }, { value: 'right', label: '右滑' }], default: 'up' },
     { key: 'duration', label: '时长(ms)', type: 'number', default: 500, min: 0 },
   ] },
+  { value: 'swipe_to_find', label: '滑动查找元素', needsElement: true, fields: [
+    { key: 'direction', label: '方向', type: 'select', options: [{ value: 'up', label: '上滑' }, { value: 'down', label: '下滑' }], default: 'up' },
+    { key: 'max_swipes', label: '最大滑动次数', type: 'number', default: 5, min: 1, max: 50 },
+    { key: 'wait_timeout', label: '每次查找等待秒数', type: 'number', default: 2, min: 0, max: 300 },
+    { key: 'duration', label: '滑动时长(ms)', type: 'number', default: 500, min: 0 },
+  ] },
   { value: 'scroll', label: '滚动到元素', needsElement: true, fields: [
   ] },
   { value: 'back', label: '返回键', needsElement: false, fields: [

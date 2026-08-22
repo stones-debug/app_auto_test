@@ -1,6 +1,6 @@
 import asyncio
 
-from .driver import StopRequested
+from .driver import ElementNotFound, StopRequested
 
 
 class BaseAction:
@@ -67,6 +67,34 @@ class SwipeAction(BaseAction):
     async def execute(self, driver, context, params: dict) -> dict:
         driver.swipe(params.get("direction", "up"), duration=params.get("duration", 500))
         return {"status": "passed"}
+
+
+@register_action("swipe_to_find")
+class SwipeToFindAction(BaseAction):
+    """上下滑动页面直至找到目标元素（最多 max_swipes 次滑动，每次滑动前短等待查找）。
+
+    找到返回 passed + found_after_swipes（0 表示未滑动即找到）；
+    滑完仍未找到抛 ElementNotFound（步骤失败并附可读信息）。
+    """
+
+    async def execute(self, driver, context, params: dict) -> dict:
+        max_swipes = int(params.get("max_swipes", 5))
+        direction = params.get("direction", "up")
+        wait_timeout = params.get("wait_timeout", 2)
+        duration = int(params.get("duration", 500))
+        stop = getattr(context, "should_stop", None)
+        last_error: ElementNotFound | None = None
+        for i in range(max_swipes + 1):
+            if stop is not None and stop():
+                raise StopRequested("执行被用户停止")
+            try:
+                context.find_element(params.get("element_id"), wait_timeout=wait_timeout)
+                return {"status": "passed", "found_after_swipes": i}
+            except ElementNotFound as exc:
+                last_error = exc
+            if i < max_swipes:
+                driver.swipe(direction, duration=duration)
+        raise ElementNotFound(f"滑动 {max_swipes} 次后仍未找到元素（{direction}，{last_error}）")
 
 
 @register_action("scroll")

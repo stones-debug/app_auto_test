@@ -137,6 +137,53 @@
       ]
     },
     {
+      "name": "swipe_to_find",
+      "label": "滑动查找元素",
+      "version": 1,
+      "needs_element": true,
+      "params": [
+        {
+          "name": "direction",
+          "type": "select",
+          "default": "up",
+          "label": "方向",
+          "options": [
+            {
+              "value": "up",
+              "label": "上滑"
+            },
+            {
+              "value": "down",
+              "label": "下滑"
+            }
+          ]
+        },
+        {
+          "name": "max_swipes",
+          "type": "integer",
+          "default": 5,
+          "min": 1,
+          "max": 50,
+          "label": "最大滑动次数"
+        },
+        {
+          "name": "wait_timeout",
+          "type": "integer",
+          "default": 2,
+          "min": 0,
+          "max": 300,
+          "label": "每次查找等待秒数"
+        },
+        {
+          "name": "duration",
+          "type": "integer",
+          "default": 500,
+          "min": 0,
+          "label": "滑动时长(ms)"
+        }
+      ]
+    },
+    {
       "name": "scroll",
       "label": "滚动到元素",
       "version": 1,

@@ -37,6 +37,13 @@ class SwipeParams(ParamsBase):
     duration: int = Field(default=500, ge=0)
 
 
+class SwipeToFindParams(ParamsBase):
+    direction: Literal['up', 'down'] = 'up'
+    max_swipes: int = Field(default=5, ge=1, le=50)
+    wait_timeout: int = Field(default=2, ge=0, le=300)
+    duration: int = Field(default=500, ge=0)
+
+
 class ScrollParams(ParamsBase):
     pass
 
@@ -109,6 +116,7 @@ STEP_PARAM_MODELS: dict[str, type[ParamsBase]] = {
     'input': InputParams,  # noqa: F821
     'clear': ClearParams,  # noqa: F821
     'swipe': SwipeParams,  # noqa: F821
+    'swipe_to_find': SwipeToFindParams,  # noqa: F821
     'scroll': ScrollParams,  # noqa: F821
     'back': BackParams,  # noqa: F821
     'sleep': SleepParams,  # noqa: F821

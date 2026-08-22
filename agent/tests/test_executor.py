@@ -32,6 +32,7 @@ async def test_registries_loaded():
     assert "input" in ACTION_REGISTRY
     assert "get_text" in ACTION_REGISTRY
     assert "sleep" in ACTION_REGISTRY
+    assert "swipe_to_find" in ACTION_REGISTRY
     assert "text_equals" in ASSERTION_REGISTRY
     assert "element_exists" in ASSERTION_REGISTRY
     assert "regex_match" in ASSERTION_REGISTRY
@@ -64,13 +65,13 @@ async def test_context_missing_element_snapshot_raises():
         context.find_element("999")
 
 
-async def _run_and_capture(case, parameters=None, should_stop=None):
+async def _run_and_capture(case, parameters=None, should_stop=None, driver=None):
     sent: list[dict] = []
 
     async def fake_send(payload: dict):
         sent.append(payload)
 
-    driver = MockDriver()
+    driver = driver or MockDriver()
     runner = TestRunner(driver, fake_send, 100, parameters, should_stop)
     status = await runner.run_case(case)
     return status, sent
@@ -479,8 +480,10 @@ async def test_appium_launch_uses_options_and_udid_wins(monkeypatch):
     assert ios_options.get_capability("appActivity") is None
 
 
-async def test_appium_no_activity_omits_null_capability(monkeypatch):
+async def test_appium_no_activity_resolves_launcher_and_waits_for_target_package(monkeypatch):
     import appium.webdriver as appium_webdriver
+
+    from devices import adb
 
     captured: list[dict] = []
 
@@ -493,12 +496,155 @@ async def test_appium_no_activity_omits_null_capability(monkeypatch):
         return D()
 
     monkeypatch.setattr(appium_webdriver, "Remote", fake_remote)
+    monkeypatch.setattr(
+        adb,
+        "resolve_launcher_activity",
+        lambda udid, package: "io.dcloud.PandoraEntry",
+    )
 
     from executor.appium_driver import AppiumDriver
 
     driver = AppiumDriver(device={"udid": "emulator-1", "platform": "android"})
-    driver.launch_app("com.demo.app", None)
+    driver.launch_app("com.uniapp.testalias", None)
     assert "options" in captured[0]
     options = captured[0]["options"]
-    assert options.get_capability("appActivity") is None
-    assert options.get_capability("appPackage") == "com.demo.app"
+    assert options.get_capability("appActivity") == "io.dcloud.PandoraEntry"
+    assert options.get_capability("appPackage") == "com.uniapp.testalias"
+    assert options.get_capability("appWaitPackage") == "com.uniapp.testalias"
+    assert options.get_capability("appWaitActivity") == "*"
+
+
+async def test_appium_explicit_activity_skips_adb_resolution(monkeypatch):
+    import appium.webdriver as appium_webdriver
+
+    from devices import adb
+
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        appium_webdriver,
+        "Remote",
+        lambda *args, **kwargs: type("D", (), {"session_id": "sess-3"})(),
+    )
+    monkeypatch.setattr(
+        adb,
+        "resolve_launcher_activity",
+        lambda *args: (_ for _ in ()).throw(AssertionError("显式 Activity 不应调用 ADB")),
+    )
+
+    from executor.appium_driver import AppiumDriver
+
+    driver = AppiumDriver(device={"udid": "emulator-1", "platform": "android"})
+    original_build = driver._build_options
+
+    def capture_options(package, activity, no_reset):
+        options = original_build(package, activity, no_reset)
+        captured.append({"options": options})
+        return options
+
+    monkeypatch.setattr(driver, "_build_options", capture_options)
+    driver.launch_app("com.demo.app", "  com.demo.MainActivity  ")
+
+    assert captured[0]["options"].get_capability("appActivity") == "com.demo.MainActivity"
+    assert captured[0]["options"].get_capability("appWaitActivity") is None
+
+
+async def test_appium_activity_resolution_failure_is_actionable(monkeypatch):
+    from devices import adb
+    from executor.appium_driver import AppiumDriver
+    from executor.driver import DriverError
+
+    def fail(_udid, _package):
+        raise adb.AdbError("设备 emulator-1 未安装应用 com.missing.app")
+
+    monkeypatch.setattr(adb, "resolve_launcher_activity", fail)
+    driver = AppiumDriver(device={"udid": "emulator-1", "platform": "android"})
+
+    with pytest.raises(DriverError, match="显式填写 Activity"):
+        driver.launch_app("com.missing.app", None)
+
+
+# ---------- swipe_to_find：滑动查找元素 ----------
+
+
+class _FoundAfterSwipesDriver(MockDriver):
+    """前 after 次查找抛 ElementNotFound，之后才命中；记录每次滑动参数。"""
+
+    def __init__(self, after: int = 2, initial_state: dict | None = None):
+        super().__init__(initial_state)
+        self.attempts = 0
+        self.after = after
+        self.swipes: list[tuple[str, int]] = []
+
+    def find_element(self, locator_type: str, locator_value: str, wait_timeout: int = 10):
+        self.attempts += 1
+        if self.attempts <= self.after:
+            from executor import ElementNotFound
+
+            raise ElementNotFound(f"尚未出现: {locator_value}")
+        from executor.driver import MockElement
+
+        return MockElement(locator_value)
+
+    def swipe(self, direction: str, duration: int = 500) -> None:
+        self.swipes.append((direction, duration))
+
+
+async def test_swipe_to_find_found_after_swipes():
+    from executor.actions import ACTION_REGISTRY
+
+    action = ACTION_REGISTRY["swipe_to_find"]()
+    driver = _FoundAfterSwipesDriver(after=3)
+    context = ExecutionContext(driver, _make_case([]))
+    result = await action.execute(
+        driver, context, {"element_id": 1, "direction": "up", "max_swipes": 5, "duration": 500}
+    )
+    assert result["status"] == "passed"
+    assert result["found_after_swipes"] == 3
+    assert driver.swipes == [("up", 500), ("up", 500), ("up", 500)]
+
+
+async def test_swipe_to_find_found_without_swipe():
+    from executor.actions import ACTION_REGISTRY
+
+    action = ACTION_REGISTRY["swipe_to_find"]()
+    driver = _FoundAfterSwipesDriver(after=0)
+    context = ExecutionContext(driver, _make_case([]))
+    result = await action.execute(
+        driver, context, {"element_id": 1, "direction": "down", "max_swipes": 3}
+    )
+    assert result["status"] == "passed"
+    assert result["found_after_swipes"] == 0
+    assert driver.swipes == []
+
+
+async def test_swipe_to_find_exhausted_raises_with_message():
+    from executor import ElementNotFound
+    from executor.actions import ACTION_REGISTRY
+
+    action = ACTION_REGISTRY["swipe_to_find"]()
+    driver = _FoundAfterSwipesDriver(after=99)  # 永远找不到
+    context = ExecutionContext(driver, _make_case([]))
+    with pytest.raises(ElementNotFound, match="滑动 2 次后仍未找到元素"):
+        await action.execute(driver, context, {"element_id": 1, "max_swipes": 2})
+
+
+async def test_swipe_to_find_respects_stop():
+    from executor.actions import ACTION_REGISTRY
+
+    action = ACTION_REGISTRY["swipe_to_find"]()
+    driver = _FoundAfterSwipesDriver(after=99)
+    context = ExecutionContext(driver, _make_case([]), should_stop=lambda: True)
+    with pytest.raises(StopRequested):
+        await action.execute(driver, context, {"element_id": 1, "max_swipes": 5})
+
+
+async def test_swipe_to_find_step_through_runner():
+    """Runner 整链：滑动 3 次后找到元素 → 步骤 passed。"""
+    case = _make_case(
+        steps=[
+            {"order": 1, "action": "swipe_to_find", "element_id": 1, "params": {"max_swipes": 5}},
+        ],
+    )
+    status, sent = await _run_and_capture(case, driver=_FoundAfterSwipesDriver(after=3))
+    assert status == "passed"
+    assert sent[0]["status"] == "passed"
