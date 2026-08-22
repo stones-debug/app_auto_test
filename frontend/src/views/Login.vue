@@ -137,8 +137,6 @@ async function handleSubmit() {
             已有账号？<a @click="switchMode('login')">去登录</a>
           </template>
         </div>
-
-        <div class="divider"><span>或</span></div>
         <div class="version">APP 自动化测试平台 v1.0</div>
       </div>
     </div>
@@ -262,23 +260,6 @@ async function handleSubmit() {
 }
 .switch-mode a:hover {
   text-decoration: underline;
-}
-.divider {
-  display: flex;
-  align-items: center;
-  color: var(--text-2);
-  font-size: 12px;
-  margin: 24px 0 12px;
-}
-.divider::before,
-.divider::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--border);
-}
-.divider span {
-  padding: 0 12px;
 }
 .version {
   text-align: center;
