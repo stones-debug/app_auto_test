@@ -33,6 +33,13 @@ export interface Variable {
   updated_at: string
 }
 
+export interface SuitePage {
+  total: number
+  page: number
+  page_size: number
+  items: Suite[]
+}
+
 export const VARIABLE_SCOPES = [
   { value: 'global', label: '全局' },
   { value: 'project', label: '项目' },
@@ -40,8 +47,9 @@ export const VARIABLE_SCOPES = [
   { value: 'case', label: '用例' },
 ]
 
-export function listSuites(projectId: number) {
-  return request.get<Suite[]>(`/projects/${projectId}/suites`)
+export async function listSuites(projectId: number) {
+  const data = await request.get<SuitePage>(`/projects/${projectId}/suites`)
+  return data.items
 }
 
 export function createSuite(projectId: number, data: { name: string; description?: string }) {
