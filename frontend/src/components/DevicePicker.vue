@@ -5,24 +5,60 @@ import type { Execution } from '@/api/executions'
 import { useDeviceSelect, type RunTarget } from '@/composables/useDeviceSelect'
 
 // V2 §5.12：统一设备选择器（所有运行入口复用，含重试入口）。
-// 通过 ref.open(target, options) 触发；默认设备可用时直接创建执行返回 Execution，
-// 否则打开选择弹窗并返回 null。选中运行成功通过 emit('created') 携带 Execution 通知父级。
+// 通过 ref.open(target, options) 触发；默认设备可用时直接创建执行返回 Execution；
+// 否则打开选择弹窗——open 的 Promise 会保持 pending 直到弹窗流程结束
+// （运行成功 resolve 执行对象 / 取消 resolve null），父级 await 后统一跳转/提示。
 const emit = defineEmits<{ created: [execution: Execution] }>()
 
 const timeout = ref(1800)
 const { dialogVisible, devices, selectedId, setAsDefault, running, reason, open, confirmRun, close } =
   useDeviceSelect()
 
+/** 弹窗路径的 open() 挂起解析器（成功/取消时唤醒父级 await）。 */
+let openResolve: ((exec: Execution | null) => void) | null = null
+
+function settleOpen(exec: Execution | null) {
+  openResolve?.(exec)
+  openResolve = null
+}
+
 async function run() {
   const exec = await confirmRun({ timeout_seconds: timeout.value })
-  if (exec) emit('created', exec)
+  if (exec) {
+    settleOpen(exec)
+    emit('created', exec)
+  }
+}
+
+function cancel() {
+  settleOpen(null)
+  close()
+}
+
+function onClosed() {
+  // 弹窗被关闭（取消/遮罩/X/运行成功后的收起）→ 挂起的 open() 以 null 结束
+  settleOpen(null)
+  close()
 }
 
 defineExpose({
-  /** 返回直接创建的 Execution；需要选择弹窗时返回 null（弹窗已打开）。 */
+  /**
+   * 默认设备直跑成功 → resolve Execution；
+   * 需要选择弹窗时保持 pending，运行成功 resolve Execution、取消 resolve null。
+   */
   open: (target: RunTarget, options: { timeout_seconds?: number } = {}): Promise<Execution | null> => {
     if (options.timeout_seconds) timeout.value = options.timeout_seconds
-    return open(target, { timeout_seconds: options.timeout_seconds })
+    return new Promise((resolve) => {
+      openResolve = resolve
+      open(target, { timeout_seconds: options.timeout_seconds }).then((exec) => {
+        if (exec !== null) {
+          // 默认设备直跑成功：直接返回
+          openResolve = null
+          resolve(exec)
+        }
+        // exec === null → 弹窗已打开，等待 run()/cancel()/@closed 收敛
+      })
+    })
   },
   close,
 })
@@ -35,7 +71,7 @@ defineExpose({
     width="440px"
     :close-on-click-modal="false"
     append-to-body
-    @closed="close()"
+    @closed="onClosed"
   >
     <el-form label-width="80px">
       <el-form-item label="设备">
@@ -55,7 +91,7 @@ defineExpose({
       </el-form-item>
     </el-form>
     <template #footer>
-      <el-button @click="close()">取消</el-button>
+      <el-button @click="cancel">取消</el-button>
       <el-button type="primary" :loading="running" :disabled="!selectedId" @click="run">运行</el-button>
     </template>
   </el-dialog>
