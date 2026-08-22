@@ -60,7 +60,9 @@ async def _status_counts(db: AsyncSession, project_ids: list[int], since: dateti
 
 
 async def _trend(db: AsyncSession, project_ids: list[int], since: datetime) -> list[dict]:
-    day_col = func.date_trunc("day", Execution.created_at)
+    # date_trunc 按 PG 会话时区截断（本机 Asia/Shanghai）；to_char 直接产出本地日字符串，
+    # 避免 asyncpg 转 UTC 后 date() 把桶日期提前一天（08-22 → 08-21）
+    day_col = func.to_char(func.date_trunc("day", Execution.created_at), "YYYY-MM-DD")
     rows = (
         await db.execute(
             select(day_col.label("day"), Execution.status, func.count())
@@ -69,10 +71,12 @@ async def _trend(db: AsyncSession, project_ids: list[int], since: datetime) -> l
             .order_by(day_col)
         )
     ).all()
-    by_day: dict = {}
+    by_day: dict[str, dict] = {}
     for day, st, cnt in rows:
-        key = day.date().isoformat()
-        bucket = by_day.setdefault(key, {"date": key, "total": 0, "passed": 0, "failed": 0, "error": 0})
+        key = str(day)
+        bucket = by_day.setdefault(
+            key, {"date": key, "total": 0, "passed": 0, "failed": 0, "error": 0}
+        )
         bucket["total"] += cnt
         if st == "passed":
             bucket["passed"] += cnt
@@ -80,7 +84,16 @@ async def _trend(db: AsyncSession, project_ids: list[int], since: datetime) -> l
             bucket["failed"] += cnt
         elif st == "error":
             bucket["error"] += cnt
-    return list(by_day.values())
+    # 零填充 since..今天 的每个本地日，趋势线在横轴上连续可见
+    out: list[dict] = []
+    start = since.astimezone().date()
+    today = datetime.now(UTC).astimezone().date()
+    day = start
+    while day <= today:
+        key = day.isoformat()
+        out.append(by_day.pop(key, {"date": key, "total": 0, "passed": 0, "failed": 0, "error": 0}))
+        day += timedelta(days=1)
+    return out
 
 
 async def _recent_executions(db: AsyncSession, project_ids: list[int], limit: int = 10) -> list[dict]:

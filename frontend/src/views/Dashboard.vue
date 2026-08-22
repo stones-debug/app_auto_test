@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import * as echarts from 'echarts/core'
 import { LineChart, PieChart } from 'echarts/charts'
@@ -27,6 +27,8 @@ async function load() {
   loading.value = true
   try {
     data.value = await getDashboardOverview({ range: range.value })
+    // 图表容器在 v-if="data" 内，首次赋值后需等 DOM 更新再初始化 ECharts
+    await nextTick()
     renderCharts()
   } finally {
     loading.value = false

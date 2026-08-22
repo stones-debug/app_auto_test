@@ -121,3 +121,54 @@ async def test_dashboard_range_validation(client: AsyncClient):
     )
     assert resp2.status_code == 200
     assert resp2.json()["range"] == "7d"
+
+
+async def test_dashboard_trend_zero_filled_and_local_day(client: AsyncClient):
+    """趋势按本地日期零填充（since..今天连成轴线），桶日期与执行创建日一致。"""
+    token = await _register_and_login(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    project = await client.post("/api/projects", headers=headers, json={"name": "趋势项目", "visibility": "private"})
+    project_id = project.json()["id"]
+    _agent_id, device_id = await create_bound_agent_device(USER["username"])
+    element = await client.post(
+        f"/api/projects/{project_id}/elements",
+        headers=headers,
+        json={"name": "按钮", "locator_type": "id", "locator_value": "btn"},
+    )
+    case = await client.post(
+        f"/api/projects/{project_id}/cases",
+        headers=headers,
+        json={
+            "name": "用例",
+            "steps": [{"order": 1, "action": "click", "element_id": element.json()["id"], "params": {}}],
+            "assertions": [],
+        },
+    )
+    exec_resp = await client.post(
+        f"/api/executions/cases/{case.json()['id']}",
+        headers=headers,
+        json={"device_id": device_id, "parameters": {}},
+    )
+    execution_id = exec_resp.json()["id"]
+
+    from datetime import UTC, datetime
+
+    from app.core.database import SessionLocal
+    from app.models import Execution
+
+    async with SessionLocal() as db:
+        e = await db.get(Execution, execution_id)
+        e.status = "passed"
+        e.finished_at = datetime.now(UTC)
+        await db.commit()
+
+    body = (await client.get("/api/dashboard/overview?range=7d", headers=headers)).json()
+    trend = body["trend"]
+    assert len(trend) >= 7  # 7d 至少 7 个本地日（含零填充）
+    today_key = datetime.now(UTC).astimezone().date().isoformat()
+    last = trend[-1]
+    assert last["date"] == today_key  # 最后一个桶必须是本地今天
+    today_bucket = next((t for t in trend if t["date"] == today_key), None)
+    assert today_bucket is not None and today_bucket["passed"] == 1  # 今天的执行计入今天
+    dates = [t["date"] for t in trend]
+    assert dates == sorted(dates)  # 按日期递增
