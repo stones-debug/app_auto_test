@@ -72,7 +72,8 @@ async function loadMembers() {
   }
 }
 
-async function searchCandidates() {
+async function searchCandidates(query: string) {
+  keyword.value = query
   if (!keyword.value.trim()) {
     candidates.value = []
     return

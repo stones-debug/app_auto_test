@@ -53,7 +53,7 @@ class ProjectMemberOut(BaseModel):
 class UserCandidateOut(BaseModel):
     id: int
     username: str
-    email: str
+    email: str | None = None
 
 
 class PageResult(BaseModel):
