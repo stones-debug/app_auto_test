@@ -46,7 +46,7 @@ function renderTrend() {
   trendChart ??= echarts.init(trendEl.value)
   trendChart.setOption({
     tooltip: { trigger: 'axis' },
-    legend: { data: ['通过', '失败', '异常'] },
+    legend: { data: ['通过', '失败', '异常'], top: 0, right: 0 },
     grid: { left: 40, right: 16, top: 32, bottom: 24 },
     xAxis: { type: 'category', data: data.value!.trend.map((t) => t.date.slice(5)) },
     yAxis: { type: 'value', minInterval: 1 },
