@@ -85,7 +85,6 @@ async function handleLogin() {
           </el-form-item>
           <div class="row-between">
             <el-checkbox v-model="remember">记住我</el-checkbox>
-            <span class="forgot">忘记密码？</span>
           </div>
           <el-button type="primary" class="login-btn" size="large" :loading="loading" @click="handleLogin">
             登 录
@@ -190,11 +189,6 @@ async function handleLogin() {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 20px;
-}
-.forgot {
-  font-size: 13px;
-  color: var(--primary);
-  cursor: pointer;
 }
 .login-btn {
   width: 100%;
