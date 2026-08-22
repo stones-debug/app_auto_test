@@ -20,8 +20,8 @@ const range = ref<'7d' | '30d' | '90d'>('7d')
 
 let trendChart: echarts.ECharts | null = null
 let donutChart: echarts.ECharts | null = null
-let trendEl: HTMLElement | null = null
-let donutEl: HTMLElement | null = null
+const trendEl = ref<HTMLElement | null>(null)
+const donutEl = ref<HTMLElement | null>(null)
 
 async function load() {
   loading.value = true
@@ -42,8 +42,8 @@ function renderCharts() {
 }
 
 function renderTrend() {
-  if (!trendEl) return
-  trendChart ??= echarts.init(trendEl)
+  if (!trendEl.value) return
+  trendChart ??= echarts.init(trendEl.value)
   trendChart.setOption({
     tooltip: { trigger: 'axis' },
     legend: { data: ['通过', '失败', '异常'] },
@@ -59,8 +59,8 @@ function renderTrend() {
 }
 
 function renderDonut() {
-  if (!donutEl) return
-  donutChart ??= echarts.init(donutEl)
+  if (!donutEl.value) return
+  donutChart ??= echarts.init(donutEl.value)
   const counts = data.value!.status_counts
   const map: Record<string, { name: string; color: string }> = {
     passed: { name: '通过', color: '#10b981' },
