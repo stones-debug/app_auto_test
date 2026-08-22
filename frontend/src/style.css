@@ -15,11 +15,8 @@
   --text-2: #64748b;
   --border: #e2e8f0;
 
-  /* 侧边栏（白色基调） */
-  --sidebar-bg: #ffffff;
-  --sidebar-text: #475569;
-  --sidebar-text-active: #4f46e5;
-  --sidebar-border: #e2e8f0;
+  /* 侧边栏 */
+  --sidebar-bg: #1e293b;
 
   /* V2 布局令牌（§3.1） */
   --sidebar-width: 232px;

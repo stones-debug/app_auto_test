@@ -47,8 +47,7 @@ function isActive(path: string) {
   <el-container class="shell">
     <el-aside :width="collapsed ? '72px' : '232px'" class="sidebar">
       <div class="logo" :class="{ collapsed }">
-        <el-icon class="logo-icon"><FolderOpened /></el-icon>
-        <span v-if="!collapsed" class="logo-text">APP 自动化测试平台</span>
+        {{ collapsed ? 'ⓐ' : 'APP 自动化测试平台' }}
       </div>
       <div class="menu-area">
         <div
@@ -60,7 +59,7 @@ function isActive(path: string) {
           @click="router.push(m.path)"
         >
           <el-icon class="menu-icon"><component :is="m.icon" /></el-icon>
-          <span v-if="!collapsed" class="menu-text">{{ m.name }}</span>
+          <span class="menu-text">{{ collapsed ? m.name.slice(0, 1) : m.name }}</span>
         </div>
         <template v-if="projectMenus.length">
           <div class="menu-divider" />
@@ -73,7 +72,7 @@ function isActive(path: string) {
             @click="router.push(m.path)"
           >
             <el-icon class="menu-icon"><component :is="m.icon" /></el-icon>
-            <span v-if="!collapsed" class="menu-text">{{ m.name }}</span>
+            <span class="menu-text">{{ collapsed ? '·' : m.name }}</span>
           </div>
         </template>
       </div>
@@ -84,8 +83,7 @@ function isActive(path: string) {
           <div class="user-role">{{ auth.user?.is_admin ? '平台管理员' : '用户' }}</div>
         </div>
         <el-icon class="collapse-btn" @click="collapsed = !collapsed">
-          <svg v-if="collapsed" viewBox="0 0 1024 1024" width="14" height="14"><path d="M686 512l-238 238-45-45 193-193-193-193 45-45z" /></svg>
-          <svg v-else viewBox="0 0 1024 1024" width="14" height="14"><path d="M338 512l238-238 45 45-193 193 193 193-45 45z" /></svg>
+          <svg viewBox="0 0 1024 1024" width="14" height="14"><path d="M338 512l238-238 45 45-193 193 193 193-45 45z" /></svg>
         </el-icon>
       </div>
     </el-aside>
@@ -117,7 +115,6 @@ function isActive(path: string) {
 }
 .sidebar {
   background: var(--sidebar-bg);
-  border-right: 1px solid var(--sidebar-border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -127,28 +124,17 @@ function isActive(path: string) {
   height: var(--header-height);
   display: flex;
   align-items: center;
-  justify-content: flex-start;
-  gap: 8px;
-  padding: 0 16px;
-  color: var(--primary);
+  justify-content: center;
+  color: #fff;
   font-size: 15px;
   font-weight: 600;
-  border-bottom: 1px solid var(--sidebar-border);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   flex-shrink: 0;
   white-space: nowrap;
   overflow: hidden;
 }
 .logo.collapsed {
-  justify-content: center;
-  padding: 0;
-}
-.logo-icon {
-  font-size: 20px;
-  flex-shrink: 0;
-}
-.logo-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 18px;
 }
 .menu-area {
   flex: 1;
@@ -157,7 +143,7 @@ function isActive(path: string) {
 }
 .menu-divider {
   height: 1px;
-  background: var(--sidebar-border);
+  background: rgba(255, 255, 255, 0.08);
   margin: 8px 12px;
 }
 .menu-item {
@@ -166,32 +152,34 @@ function isActive(path: string) {
   gap: 10px;
   padding: 10px 12px;
   border-radius: 8px;
-  color: var(--sidebar-text);
+  color: #94a3b8;
   font-size: 14px;
   cursor: pointer;
   margin-bottom: 2px;
   transition: all 0.15s;
 }
 .menu-item:hover {
-  background: #f1f5f9;
-  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+  color: #cbd5e1;
 }
 .menu-item.active {
-  background: var(--primary-light);
-  color: var(--sidebar-text-active);
-  font-weight: 600;
+  background: rgba(79, 70, 229, 0.35);
+  color: #fff;
 }
 .menu-item.project.active {
-  background: #ecfdf5;
-  color: #059669;
+  background: rgba(16, 185, 129, 0.25);
 }
 .menu-icon {
   font-size: 16px;
   flex-shrink: 0;
 }
+.menu-text {
+  white-space: nowrap;
+  overflow: hidden;
+}
 .sidebar-footer {
   padding: 10px 12px;
-  border-top: 1px solid var(--sidebar-border);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -215,12 +203,12 @@ function isActive(path: string) {
   min-width: 0;
 }
 .user-name {
-  color: var(--text);
+  color: #e2e8f0;
   font-size: 13px;
   font-weight: 500;
 }
 .user-role {
-  color: var(--text-2);
+  color: #64748b;
   font-size: 11px;
 }
 .collapse-btn {
