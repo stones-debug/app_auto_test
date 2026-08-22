@@ -12,6 +12,7 @@ declare module 'vue' {
     ConfirmAction: typeof import('./components/ConfirmAction.vue')['default']
     DataTable: typeof import('./components/DataTable.vue')['default']
     DevicePicker: typeof import('./components/DevicePicker.vue')['default']
+    ElAlert: typeof import('element-plus/es')['ElAlert']
     ElAside: typeof import('element-plus/es')['ElAside']
     ElButton: typeof import('element-plus/es')['ElButton']
     ElCard: typeof import('element-plus/es')['ElCard']
