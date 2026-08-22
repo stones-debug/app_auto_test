@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -51,6 +52,8 @@ class Settings(BaseSettings):
     agent_user_key_encryption_key: str = ""
 
     # Worker
+    worker_mode: Literal["embedded", "external", "disabled"] = "embedded"
+    worker_id: str = "worker-001"
     worker_poll_interval: int = 2
     worker_claim_stale_minutes: int = 10
 

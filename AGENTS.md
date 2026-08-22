@@ -14,7 +14,7 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 ## 后端 backend/（FastAPI + SQLAlchemy 2.0 async + asyncpg）
 命令均需在 `backend/` 目录下执行：
 - 启动：`uv run uvicorn app.main:app --host 127.0.0.1 --port 8001`（**端口 8001**，本机 8000 被 C-Lodop 打印服务占用；长驻进程用 `Start-Process ... -WindowStyle Hidden` 后台启动，或用 `start-backend.ps1 -NoReload`）
-- Worker：`uv run python worker.py --worker-id worker-001 --enable-scans`（独立进程，可用 `start-worker.ps1`；扫描任务仅 worker-001 启用）
+- Worker 默认以 `WORKER_MODE=embedded` 随 FastAPI lifespan 启动，无需额外进程；切换为 `WORKER_MODE=external` 后可运行 `uv run python worker.py --worker-id worker-001 --enable-scans`（可用 `start-worker.ps1`，扫描任务仅一个外部实例启用）
 - 迁移：`uv run alembic revision --autogenerate -m "..."` → 审阅生成的迁移 → `uv run alembic upgrade head`
 - 测试：`uv run pytest tests/ -q`（pytest-asyncio `asyncio_mode=auto`）
 - Lint：`uv run ruff check app/ tests/ worker.py scripts/ --fix`（选 `E,F,W,I,UP,B`，忽略 `E501,B008`；B008 是 FastAPI 的 `Depends` 默认参数惯例，勿"修复"）
@@ -49,7 +49,7 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 - 软删除用 `deleted_at`（projects/test_modules/test_elements/test_cases/test_suites），其余表硬删
 
 ## 架构要点（V1.1 §10，务必遵守）
-- 进程职责三分：**FastAPI** = WS 网关 + 执行细节落库(execution_steps/assertions/logs) + 广播；**Worker** = 队列消费(SKIP LOCKED) + 设备原子锁 + 终态汇总(reports 统计行) + 扫描/每日清理；**Agent** = Action/Assertion Registry 实际执行
+- 逻辑职责三分：**FastAPI** = WS 网关 + 执行细节落库(execution_steps/assertions/logs) + 广播；**Worker runtime** = 队列消费(SKIP LOCKED) + 设备原子锁 + 终态汇总(reports 统计行) + 扫描/每日清理（默认嵌入 FastAPI，也可独立进程）；**Agent** = Action/Assertion Registry 实际执行
 - 报告：查看由前端渲染 `GET /api/reports/{id}/detail` 聚合数据；HTML 仅用户点下载时按需生成（`report_service.render_report_html`，截图 base64 内嵌、幂等缓存）
 - Worker 与 Agent **无直接 WS**：经 `/internal/ws/agents/{id}/send` 由 FastAPI 转发（`X-Internal-Token`）
 - 执行状态机**全小写**：`queued / running / stopping / passed / failed / error / stopped / cancelled`

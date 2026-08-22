@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -20,14 +21,41 @@ from app.api.reports import router as reports_router
 from app.api.suites import router as suites_router
 from app.api.variables import router as variables_router
 from app.core.config import BASE_DIR, settings, validate_security_baseline
+from app.services.worker_runtime import WorkerRuntime
+from app.ws.managers import agent_manager
 from app.ws.routes import router as ws_router
+
+# 使用 Uvicorn 的应用日志通道，确保默认启动命令也能看到 Worker 模式。
+logger = logging.getLogger("uvicorn.error")
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     # CR-21：生产环境启动前校验安全基线（默认密钥/弱配置直接拒绝启动）
     validate_security_baseline()
-    yield
+    runtime: WorkerRuntime | None = None
+    if settings.worker_mode == "embedded":
+        runtime = WorkerRuntime(
+            settings.worker_id,
+            enable_scans=True,
+            agent_sender=agent_manager.send,
+        )
+        await runtime.start()
+        logger.info(
+            "FastAPI 已启动嵌入式 Worker（id=%s, scans=true）",
+            settings.worker_id,
+        )
+    elif settings.worker_mode == "external":
+        logger.info("Worker 模式为 external，请单独启动 worker.py")
+    else:
+        logger.warning("Worker 模式为 disabled：执行只会入队，不会被消费")
+    _app.state.worker_runtime = runtime
+    try:
+        yield
+    finally:
+        if runtime is not None:
+            await runtime.stop()
+        _app.state.worker_runtime = None
 
 
 app = FastAPI(

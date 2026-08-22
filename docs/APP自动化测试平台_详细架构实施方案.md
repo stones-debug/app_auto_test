@@ -1742,25 +1742,25 @@ LOG_RETENTION_DAYS=7
 
 > 本章为设计评审后的补充设计，对正文中的冲突或缺失部分给出最终口径。**凡与本章冲突之处，以本章为准。**
 
-### 10.1 进程职责划分（解决执行引擎归属矛盾）
+### 10.1 逻辑职责与运行模式（解决执行引擎归属矛盾）
 
-| 进程 | 职责 | 不允许做 |
+| 组件 | 职责 | 不允许做 |
 |------|------|----------|
-| FastAPI | 认证 / REST / WS 网关（前端 + Agent）、执行细节落库（execution_steps / execution_assertions / execution_logs）、实时广播 | 执行测试动作、生成报告 |
-| Worker | 队列消费（SKIP LOCKED）、设备原子抢占与释放、执行状态推进、超时/心跳扫描、报告生成 | 直接持有 Agent WS 连接 |
+| FastAPI | 认证 / REST / WS 网关（前端 + Agent）、执行细节落库（execution_steps / execution_assertions / execution_logs）、实时广播；默认托管嵌入式 Worker runtime | 执行测试动作 |
+| Worker runtime | 队列消费（SKIP LOCKED）、设备原子抢占与释放、执行状态推进、超时/心跳扫描、报告生成；可嵌入 FastAPI 或作为独立进程运行 | 独立模式下直接持有 Agent WS 连接 |
 | Agent | 设备发现、Appium 会话管理、**Action / Assertion Registry 执行**、截图与文件上传 | 直接写业务库（状态/结果仅经 WS 回传） |
 
 **关键结论**：
 
 1. 正文 3.6 节的 Action / Assertion Registry（位于 `backend/app/executor/`）**移入 agent 包**（`agent/executor/`）。Appium driver 只存在于 Agent 侧，Worker 进程无 driver，不执行具体动作。
 2. Agent 执行动作后，经 WS 将 `step_result` / `log` / `execution_result` 回传 FastAPI，**由 FastAPI 统一落库并广播**（保持"先入库再推送"原则，避免 Worker/FastAPI 双写）。
-3. Worker 只做调度与终态处理：轮询终态 → 生成报告 → 释放设备锁 → 队列置 done。
-4. **调度与超时扫描（APScheduler）只在 Worker 内运行**，且多实例部署时仅 `worker-001` 启用，避免多进程重复扫描。
+3. Worker runtime 只做调度与终态处理：轮询终态 → 生成报告 → 释放设备锁 → 队列置 done；默认 `WORKER_MODE=embedded`，由 FastAPI lifespan 启停，日常部署只启动一个 Uvicorn 进程。
+4. `WORKER_MODE=external` 时 FastAPI 不启动 runtime，改由独立 `worker.py` 托管；`disabled` 仅提供 API 且不消费队列。调度与超时扫描（APScheduler）只允许一个 runtime 启用，禁止嵌入式与独立模式同时运行。
 5. WS 协议修订：移除 Agent 回传的 `execution_result.report_path`（3.5.2），报告由 Worker 生成后写 `reports` 表，前端从 `/api/reports` 读取。
 
 ### 10.2 Worker ↔ Agent 通信中转（解决链路断裂）
 
-WS 连接只存在于 FastAPI 进程内，Worker 是独立进程，无法直接向 Agent 发消息。V1 采用**内部转发接口**：
+WS 连接只存在于 FastAPI 进程内。嵌入式 Worker runtime 直接调用当前进程的 `agent_manager.send`；独立 Worker 无法直接向 Agent 发消息，继续采用**内部转发接口**：
 
 ```http
 POST /internal/ws/agents/{agent_id}/send
@@ -1768,7 +1768,7 @@ X-Internal-Token: <配置在 .env 的内部令牌>
 Body: { "type": "start_test", "execution_id": 10001, ... }
 ```
 
-- FastAPI 校验内部令牌后向指定 Agent 的 WS 会话转发消息；Agent 不在线返回 409。
+- 嵌入模式不产生内部 HTTP 回环；外部模式下 FastAPI 校验内部令牌后向指定 Agent 的 WS 会话转发消息，Agent 不在线返回 409。
 - 反向流程（Agent → Worker 状态推进）无需 WS：Worker 每 5s 轮询 `executions.status` 是否进入终态。
 - **部署约束（V1）**：多 uvicorn worker 时 WS 连接分散在各进程，内部转发可能落在不含该连接的进程。V1 明确 WS 网关以**单进程运行**（Gunicorn 仅启 1 个 Uvicorn Worker，或独立 ws-gateway 进程）；跨进程广播在 V2 引入 Redis Pub/Sub 解决。
 
@@ -1776,12 +1776,13 @@ Body: { "type": "start_test", "execution_id": 10001, ... }
 
 ```
 前端 ──POST /api/executions/...──► FastAPI：创建 execution(QUEUED) + 入队
-Worker ◄──轮询── SELECT ... FOR UPDATE SKIP LOCKED（认领任务）
-Worker：原子抢占设备（10.5 节 SQL）
-Worker ──POST /internal/ws/agents/{aid}/send──► FastAPI ──WS start_test──► Agent
+Worker runtime ◄──轮询── SELECT ... FOR UPDATE SKIP LOCKED（认领任务）
+Worker runtime：原子抢占设备（10.5 节 SQL）
+嵌入模式：Worker runtime ──agent_manager.send──► Agent
+外部模式：Worker ──POST /internal/ws/agents/{aid}/send──► FastAPI ──WS──► Agent
 Agent 逐步骤执行 ──WS step_result / log──► FastAPI：落库 + 广播前端
 Agent ──WS execution_result──► FastAPI：更新 executions 状态
-Worker（每 5s 轮询）检测终态 → 生成报告 → 释放设备锁 → 队列置 done
+Worker runtime（每 5s 轮询）检测终态 → 生成报告 → 释放设备锁 → 队列置 done
 ```
 
 ### 10.3 元素定位快照补全

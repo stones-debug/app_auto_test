@@ -19,6 +19,7 @@ from app.models import (
     Report,
 )
 from app.services import worker_service
+from app.services.worker_runtime import WorkerRuntime
 from tests.helpers import create_bound_agent_device
 
 REG = {"username": "pytest_worker_user", "email": "pw@tl-tek.com", "password": "test123"}
@@ -80,6 +81,79 @@ async def _create_execution(client: AsyncClient, token: str, case_id: int, param
     )
     assert resp.status_code == 201, resp.text
     return resp.json()["id"]
+
+
+async def test_embedded_runtime_consumes_and_finalizes_execution(client: AsyncClient):
+    """只启动嵌入 runtime 即可完成队列消费、报告汇总和设备释放。"""
+    token, case_id = await _setup_case(client)
+    agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(
+        client,
+        token,
+        case_id,
+        {"variables": {"btn_id": "login-button"}},
+        device_id,
+    )
+    sent_messages: list[tuple[int, dict]] = []
+    terminal_tasks: list[asyncio.Task] = []
+
+    async def sender(target_agent_id: int, payload: dict) -> bool:
+        sent_messages.append((target_agent_id, payload))
+
+        async def finish_execution() -> None:
+            await asyncio.sleep(0.02)
+            async with SessionLocal() as finish_db:
+                execution = await finish_db.get(Execution, execution_id)
+                execution.status = "passed"
+                execution.finished_at = datetime.now(UTC)
+                await finish_db.commit()
+
+        terminal_tasks.append(asyncio.create_task(finish_execution()))
+        return True
+
+    runtime = WorkerRuntime(
+        "fastapi-embedded-test",
+        enable_scans=False,
+        agent_sender=sender,
+        poll_interval=0.01,
+        execution_poll_interval=0.01,
+    )
+    await runtime.start()
+    try:
+        async with asyncio.timeout(3):
+            while True:
+                async with SessionLocal() as check_db:
+                    queue = (
+                        await check_db.execute(
+                            select(ExecutionQueue).where(
+                                ExecutionQueue.execution_id == execution_id
+                            )
+                        )
+                    ).scalar_one()
+                    if queue.status == "done":
+                        break
+                await asyncio.sleep(0.01)
+    finally:
+        await runtime.stop()
+        if terminal_tasks:
+            await asyncio.gather(*terminal_tasks)
+
+    assert len(sent_messages) == 1
+    assert sent_messages[0][0] == agent_id
+    assert sent_messages[0][1]["type"] == "start_test"
+    assert sent_messages[0][1]["execution_id"] == execution_id
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        device = await db.get(Device, device_id)
+        report = (
+            await db.execute(select(Report).where(Report.execution_id == execution_id))
+        ).scalar_one()
+        assert execution.status == "passed"
+        assert execution.finalized_at is not None
+        assert device.status == "idle"
+        assert device.locked_by_execution is None
+        assert report.total == 1
 
 
 # ---------- 变量渲染 ----------

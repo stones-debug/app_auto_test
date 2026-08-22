@@ -61,7 +61,17 @@ if ($Seed) {
 }
 
 $mode = if ($NoReload) { "no-reload" } else { "reload" }
-Write-Host "[start] uvicorn app.main:app --host $ListenHost --port $Port ($mode)"
+$workerMode = "embedded"
+if (Test-Path ".env") {
+    $workerModeLine = Get-Content ".env" |
+        Where-Object { $_ -match '^\s*WORKER_MODE\s*=' } |
+        Select-Object -First 1
+    if ($workerModeLine) {
+        $workerMode = ($workerModeLine -split '=', 2)[1].Trim().Trim('"').Trim("'")
+    }
+}
+Write-Host "[start] FastAPI + Worker mode=$workerMode ($mode)"
+Write-Host "[start] uvicorn app.main:app --host $ListenHost --port $Port"
 
 if ($NoReload) {
     uv run uvicorn app.main:app --host $ListenHost --port $Port

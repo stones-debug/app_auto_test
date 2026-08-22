@@ -3,9 +3,9 @@
 Start the Task Worker (queue consumer + scheduler scans).
 
 .DESCRIPTION
-- Adds uv to PATH if missing.
+- Optional external-mode compatibility entrypoint.
+- Requires WORKER_MODE=external in backend/.env.
 - Runs `uv run python worker.py --worker-id <id> --enable-scans`.
-- Scans (reclaim/timeout/heartbeat/daily-cleanup) only enabled here.
 
 .EXAMPLE
 .\start-worker.ps1
@@ -27,5 +27,6 @@ if (Test-Path (Join-Path $uvPath "uv.exe")) {
 }
 
 Set-Location $BackendDir
-Write-Host "[start] worker.py --worker-id $WorkerId --enable-scans"
+Write-Host "[start] external worker.py --worker-id $WorkerId --enable-scans"
+Write-Host "[hint] backend/.env must contain WORKER_MODE=external"
 uv run python worker.py --worker-id $WorkerId --enable-scans

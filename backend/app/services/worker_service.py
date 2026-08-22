@@ -3,7 +3,7 @@ import json
 import logging
 import re
 import secrets
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -405,7 +405,7 @@ async def run_execution(
     execution_id: int,
     worker_id: str,
     *,
-    agent_sender: Callable[[int, dict], bool] | None = None,
+    agent_sender: Callable[[int, dict], Awaitable[bool]] | None = None,
     poll_interval: float = 5.0,
 ) -> None:
     agent_sender = agent_sender or _default_agent_sender
