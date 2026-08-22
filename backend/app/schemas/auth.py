@@ -3,7 +3,7 @@ from pydantic import BaseModel, EmailStr, Field
 
 class RegisterRequest(BaseModel):
     username: str = Field(min_length=3, max_length=100)
-    email: EmailStr
+    email: EmailStr | None = None
     password: str = Field(min_length=6, max_length=128)
 
 
@@ -26,7 +26,7 @@ class RefreshRequest(BaseModel):
 class UserOut(BaseModel):
     id: int
     username: str
-    email: str
+    email: str | None = None
     status: str
     is_admin: bool = False
 

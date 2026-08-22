@@ -201,7 +201,7 @@ onMounted(() => {
                   placeholder="输入用户名搜索"
                   class="w-full"
                 >
-                  <el-option v-for="c in candidates" :key="c.id" :label="`${c.username} (${c.email})`" :value="c" />
+                  <el-option v-for="c in candidates" :key="c.id" :label="`${c.username} (${c.email ?? ''})`" :value="c" />
                 </el-select>
               </el-form-item>
               <el-form-item label="角色">

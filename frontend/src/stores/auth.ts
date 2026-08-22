@@ -6,7 +6,7 @@ import request, { clearTokens, getRefreshToken, getToken, setRememberMe, setToke
 export interface UserInfo {
   id: number
   username: string
-  email: string
+  email?: string | null
   is_admin?: boolean
 }
 
@@ -19,6 +19,16 @@ export const useAuthStore = defineStore('auth', () => {
     setRememberMe(remember)
     const res = await request.post<{ access_token: string; refresh_token: string; user: UserInfo }>(
       '/auth/login',
+      { username, password },
+    )
+    setTokens(res.access_token, res.refresh_token)
+    token.value = res.access_token
+    user.value = res.user
+  }
+
+  async function register(username: string, password: string): Promise<void> {
+    const res = await request.post<{ access_token: string; refresh_token: string; user: UserInfo }>(
+      '/auth/register',
       { username, password },
     )
     setTokens(res.access_token, res.refresh_token)
@@ -47,5 +57,5 @@ export const useAuthStore = defineStore('auth', () => {
     window.location.href = '/login'
   }
 
-  return { user, token, isLoggedIn, login, fetchMe, logout }
+  return { user, token, isLoggedIn, login, register, fetchMe, logout }
 })

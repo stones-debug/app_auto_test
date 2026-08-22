@@ -11,37 +11,67 @@ const auth = useAuthStore()
 const form = ref({ username: '', password: '' })
 const remember = ref(true)
 const loading = ref(false)
+const mode = ref<'login' | 'register'>('login')
 const fieldErrors = ref<{ username?: string; password?: string }>({})
+const registerError = ref('')
+
+function switchMode(m: 'login' | 'register') {
+  if (mode.value === m) return
+  mode.value = m
+  registerError.value = ''
+  fieldErrors.value = {}
+  form.value.password = ''
+}
 
 function onUsernameBlur() {
-  if (!form.value.username.trim()) {
+  const name = form.value.username.trim()
+  if (!name) {
     fieldErrors.value.username = '请输入用户名'
+  } else if (mode.value === 'register' && name.length < 3) {
+    fieldErrors.value.username = '用户名至少 3 个字符'
   } else {
     delete fieldErrors.value.username
   }
 }
 
 function onPasswordBlur() {
-  if (!form.value.password) {
+  const pwd = form.value.password
+  if (!pwd) {
     fieldErrors.value.password = '请输入密码'
+  } else if (mode.value === 'register' && pwd.length < 6) {
+    fieldErrors.value.password = '密码至少 6 位'
   } else {
     delete fieldErrors.value.password
   }
 }
 
-async function handleLogin() {
+function errorDetail(e: unknown) {
+  const d = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+  return typeof d === 'string' ? d : undefined
+}
+
+async function handleSubmit() {
   onUsernameBlur()
   onPasswordBlur()
   if (fieldErrors.value.username || fieldErrors.value.password) return
   loading.value = true
+  registerError.value = ''
   try {
-    await auth.login(form.value.username, form.value.password, remember.value)
+    if (mode.value === 'register') {
+      await auth.register(form.value.username.trim(), form.value.password)
+    } else {
+      await auth.login(form.value.username.trim(), form.value.password, remember.value)
+    }
     const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/dashboard'
     router.push(redirect)
-  } catch {
-    // 失败保留用户名，清空密码
-    form.value.password = ''
-    ElMessage.error('用户名或密码错误')
+  } catch (e) {
+    if (mode.value === 'register') {
+      registerError.value = errorDetail(e) ?? '注册失败，请稍后重试'
+    } else {
+      // 失败保留用户名，清空密码
+      form.value.password = ''
+      ElMessage.error('用户名或密码错误')
+    }
   } finally {
     loading.value = false
   }
@@ -66,10 +96,10 @@ async function handleLogin() {
 
     <div class="form-side">
       <div class="login-card">
-        <h2 class="welcome">欢迎回来</h2>
-        <p class="subtitle">请登录你的账号以继续</p>
+        <h2 class="welcome">{{ mode === 'login' ? '欢迎回来' : '创建账号' }}</h2>
+        <p class="subtitle">{{ mode === 'login' ? '请登录你的账号以继续' : '填写用户名和密码即可注册' }}</p>
 
-        <el-form label-position="top" @keyup.enter="handleLogin">
+        <el-form label-position="top" @keyup.enter="handleSubmit">
           <el-form-item label="用户名" :error="fieldErrors.username">
             <el-input v-model="form.username" placeholder="请输入用户名" size="large" @blur="onUsernameBlur" />
           </el-form-item>
@@ -83,13 +113,30 @@ async function handleLogin() {
               @blur="onPasswordBlur"
             />
           </el-form-item>
-          <div class="row-between">
+          <div v-if="mode === 'login'" class="row-between">
             <el-checkbox v-model="remember">记住我</el-checkbox>
           </div>
-          <el-button type="primary" class="login-btn" size="large" :loading="loading" @click="handleLogin">
-            登 录
+          <el-alert
+            v-if="registerError"
+            class="reg-error"
+            type="error"
+            :closable="false"
+            show-icon
+            :title="registerError"
+          />
+          <el-button type="primary" class="login-btn" size="large" :loading="loading" @click="handleSubmit">
+            {{ mode === 'login' ? '登 录' : '注 册' }}
           </el-button>
         </el-form>
+
+        <div class="switch-mode">
+          <template v-if="mode === 'login'">
+            没有账号？<a @click="switchMode('register')">立即注册</a>
+          </template>
+          <template v-else>
+            已有账号？<a @click="switchMode('login')">去登录</a>
+          </template>
+        </div>
 
         <div class="divider"><span>或</span></div>
         <div class="version">APP 自动化测试平台 v1.0</div>
@@ -198,6 +245,23 @@ async function handleLogin() {
 }
 .login-btn:hover {
   box-shadow: 0 6px 16px rgba(79, 70, 229, 0.35);
+}
+.reg-error {
+  margin-bottom: 16px;
+}
+.switch-mode {
+  text-align: center;
+  margin-top: 18px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.switch-mode a {
+  color: var(--primary);
+  cursor: pointer;
+  font-weight: 500;
+}
+.switch-mode a:hover {
+  text-decoration: underline;
 }
 .divider {
   display: flex;

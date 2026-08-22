@@ -25,7 +25,7 @@ export interface ProjectMember {
 export interface UserCandidate {
   id: number
   username: string
-  email: string
+  email: string | null
 }
 
 export interface PageData<T> {

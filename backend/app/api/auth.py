@@ -54,10 +54,15 @@ async def register(
     db: AsyncSession = Depends(get_db),
 ) -> TokenResponse:
     existing = await db.execute(
-        select(User).where((User.username == body.username) | (User.email == body.email))
+        select(User).where(
+            (User.username == body.username)
+            if not body.email
+            else (User.username == body.username) | (User.email == body.email)
+        )
     )
     if existing.scalar_one_or_none():
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="用户名或邮箱已存在")
+        detail = "用户名或邮箱已存在" if body.email else "用户名已存在"
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
 
     user = User(
         username=body.username,

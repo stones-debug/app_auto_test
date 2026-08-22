@@ -62,3 +62,25 @@ async def test_refresh_flow(client: AsyncClient):
     # 已被轮换的 refresh token 再次使用应失败
     reuse = await client.post("/api/auth/refresh", json={"refresh_token": refresh_token})
     assert reuse.status_code == 401
+
+
+async def test_register_without_email(client: AsyncClient):
+    reg = await client.post(
+        "/api/auth/register",
+        json={"username": "pytest_noemail", "password": "test123"},
+    )
+    assert reg.status_code == 201
+    body = reg.json()
+    assert body["user"]["username"] == "pytest_noemail"
+    assert body["user"]["email"] is None
+    assert body["access_token"] and body["refresh_token"]
+
+
+async def test_register_duplicate_username(client: AsyncClient):
+    await _ensure_user(client)
+    reg = await client.post(
+        "/api/auth/register",
+        json={"username": REG["username"], "password": "test456"},
+    )
+    assert reg.status_code == 409
+    assert reg.json()["detail"] == "用户名已存在"
