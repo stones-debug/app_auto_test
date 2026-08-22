@@ -6,9 +6,20 @@
 // biome-ignore lint: disable
 export {}
 declare global {
+  const Coin: typeof import('@element-plus/icons-vue')['Coin']
+  const DataBoard: typeof import('@element-plus/icons-vue')['DataBoard']
+  const Document: typeof import('@element-plus/icons-vue')['Document']
   const EffectScope: typeof import('vue')['EffectScope']
   const ElMessage: typeof import('element-plus/es')['ElMessage']
   const ElMessageBox: typeof import('element-plus/es')['ElMessageBox']
+  const Files: typeof import('@element-plus/icons-vue')['Files']
+  const FolderOpened: typeof import('@element-plus/icons-vue')['FolderOpened']
+  const Grid: typeof import('@element-plus/icons-vue')['Grid']
+  const Monitor: typeof import('@element-plus/icons-vue')['Monitor']
+  const Odometer: typeof import('@element-plus/icons-vue')['Odometer']
+  const Setting: typeof import('@element-plus/icons-vue')['Setting']
+  const TrendCharts: typeof import('@element-plus/icons-vue')['TrendCharts']
+  const VideoPlay: typeof import('@element-plus/icons-vue')['VideoPlay']
   const acceptHMRUpdate: typeof import('pinia')['acceptHMRUpdate']
   const computed: typeof import('vue')['computed']
   const createApp: typeof import('vue')['createApp']
@@ -21,14 +32,12 @@ declare global {
   const getActivePinia: typeof import('pinia')['getActivePinia']
   const getCurrentInstance: typeof import('vue')['getCurrentInstance']
   const getCurrentScope: typeof import('vue')['getCurrentScope']
-  const getCurrentWatcher: typeof import('vue').getCurrentWatcher
   const h: typeof import('vue')['h']
   const inject: typeof import('vue')['inject']
   const isProxy: typeof import('vue')['isProxy']
   const isReactive: typeof import('vue')['isReactive']
   const isReadonly: typeof import('vue')['isReadonly']
   const isRef: typeof import('vue')['isRef']
-  const isShallow: typeof import('vue').isShallow
   const mapActions: typeof import('pinia')['mapActions']
   const mapGetters: typeof import('pinia')['mapGetters']
   const mapState: typeof import('pinia')['mapState']

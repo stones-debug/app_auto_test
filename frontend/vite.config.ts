@@ -11,7 +11,26 @@ export default defineConfig({
     vue(),
     // Step 11：Element Plus 按需自动引入 + 按需样式（component API 双出口统一 css）
     AutoImport({
-      imports: ['vue', 'vue-router', 'pinia'],
+      imports: [
+        'vue',
+        'vue-router',
+        'pinia',
+        {
+          '@element-plus/icons-vue': [
+            'Odometer',
+            'FolderOpened',
+            'VideoPlay',
+            'Monitor',
+            'TrendCharts',
+            'DataBoard',
+            'Document',
+            'Files',
+            'Grid',
+            'Coin',
+            'Setting',
+          ],
+        },
+      ],
       resolvers: [ElementPlusResolver({ importStyle: 'css' })],
       dts: 'src/auto-imports.d.ts',
     }),
