@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as echarts from 'echarts/core'
 import { LineChart } from 'echarts/charts'
@@ -23,13 +23,15 @@ const projectId = computed(() => Number(route.params.projectId))
 const loading = ref(false)
 const overview = ref<Awaited<ReturnType<typeof getDashboardOverview>> | null>(null)
 let trendChart: echarts.ECharts | null = null
-let trendEl: HTMLElement | null = null
+const trendEl = ref<HTMLElement | null>(null)
 
 async function load() {
   loading.value = true
   try {
     await ctx.load(projectId.value, { force: true })
     overview.value = await getDashboardOverview({ project_id: projectId.value, range: '30d' })
+    // 图表容器在 v-if="overview" 内，赋值后需等 DOM 更新再初始化 ECharts
+    await nextTick()
     renderChart()
   } finally {
     loading.value = false
@@ -37,8 +39,8 @@ async function load() {
 }
 
 function renderChart() {
-  if (!trendEl || !overview.value) return
-  trendChart ??= echarts.init(trendEl)
+  if (!trendEl.value || !overview.value) return
+  trendChart ??= echarts.init(trendEl.value)
   trendChart.setOption({
     tooltip: { trigger: 'axis' },
     legend: { data: ['通过', '失败', '异常'] },
