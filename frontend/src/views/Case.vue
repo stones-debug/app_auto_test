@@ -3,7 +3,7 @@ import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { CASE_STATUS, cloneCase, deleteCase, listCases, type TestCase } from '@/api/cases'
-import { listModules } from '@/api/elements'
+import { createModule, listModules } from '@/api/elements'
 import RunButton from '@/components/RunButton.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 
@@ -60,6 +60,31 @@ function openCreate() {
   router.push(`/projects/${projectId}/cases/new`)
 }
 
+// 新增模块（模块树下方入口）
+const moduleDialogVisible = ref(false)
+const newModuleName = ref('')
+const moduleCreating = ref(false)
+
+function openCreateModule() {
+  newModuleName.value = ''
+  moduleDialogVisible.value = true
+}
+
+async function submitCreateModule() {
+  const name = newModuleName.value.trim()
+  if (!name) return
+  moduleCreating.value = true
+  try {
+    const mod = await createModule(projectId, { name })
+    moduleDialogVisible.value = false
+    ElMessage.success('模块已创建')
+    await loadModules()
+    selectModule(String(mod.id))
+  } finally {
+    moduleCreating.value = false
+  }
+}
+
 function openEdit(row: TestCase) {
   router.push(`/projects/${projectId}/cases/${row.id}/edit`)
 }
@@ -105,7 +130,27 @@ onMounted(() => {
       <div v-for="m in treeModules" :key="m.id" class="tree-item" :class="{ active: selectedModule === String(m.id) }" @click="selectModule(String(m.id))">
         {{ m.name }}
       </div>
+      <el-button class="add-module" text type="primary" @click="openCreateModule">+ 新增模块</el-button>
     </div>
+
+    <el-dialog v-model="moduleDialogVisible" title="新增模块" width="420px">
+      <el-form label-width="80px" @submit.prevent="submitCreateModule">
+        <el-form-item label="模块名称" required>
+          <el-input
+            v-model="newModuleName"
+            placeholder="请输入模块名称"
+            maxlength="255"
+            @keyup.enter="submitCreateModule"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="moduleDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="moduleCreating" :disabled="!newModuleName.trim()" @click="submitCreateModule">
+          创建
+        </el-button>
+      </template>
+    </el-dialog>
 
     <!-- 右：列表 -->
     <div class="cases-main">
@@ -198,6 +243,13 @@ onMounted(() => {
   background: var(--primary-light);
   color: var(--primary);
   font-weight: 600;
+}
+.add-module {
+  width: 100%;
+  margin-top: 8px;
+  justify-content: center;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
 }
 .cases-main {
   flex: 1;
