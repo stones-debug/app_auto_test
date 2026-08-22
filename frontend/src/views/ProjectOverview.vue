@@ -88,7 +88,7 @@ onBeforeUnmount(() => {
       <div class="kpi-row">
         <StatCard label="用例" :value="ctx.project?.case_count ?? 0" @click="router.push(`/projects/${projectId}/cases`)" />
         <StatCard label="套件" :value="ctx.project?.suite_count ?? 0" @click="router.push(`/projects/${projectId}/suites`)" />
-        <StatCard label="元素" :value="ctx.project?.element_count ?? 0" @click="router.push(`/projects/${projectId}/elements`)" />
+        <StatCard label="元素" :value="ctx.project?.element_count ?? 0" @click="router.push(`/elements?project=${projectId}`)" />
         <StatCard label="成功率" :value="overview.stats.success_rate > 0 ? overview.stats.success_rate.toFixed(1) + '%' : '—'" tone="success" @click="router.push(navigation.reportList())" />
       </div>
 

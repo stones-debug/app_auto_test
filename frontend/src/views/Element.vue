@@ -2,11 +2,15 @@
 import { onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
-
+import { useAuthStore } from '@/stores/auth'
+import { listProjects } from '@/api/projects'
 import {
   LOCATOR_TYPES,
+  copyElement,
   createElement,
+  createElementGroup,
   deleteElement,
+  deleteElementGroup,
   elementPages,
   elementUsage,
   listElements,
@@ -15,8 +19,8 @@ import {
   type TestElement,
 } from '@/api/elements'
 
+const auth = useAuthStore()
 const route = useRoute()
-const projectId = Number(route.params.projectId)
 
 const loading = ref(false)
 const items = ref<TestElement[]>([])
@@ -25,31 +29,50 @@ const page = ref(1)
 const pageSize = ref(20)
 const keyword = ref('')
 const platform = ref('')
+const projectFilter = ref<number | undefined>()
 const pageGroups = ref<ElementPageCount[]>([])
 const selectedPage = ref('all')
+const projects = ref<{ id: number; name: string }[]>([])
 
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
-const form = ref({
+const form = ref<{
+  project_id?: number
+  name: string
+  page_name: string
+  platform: string
+  locator_type: string
+  locator_value: string
+  description: string
+}>({
+  project_id: undefined,
   name: '',
   page_name: '',
-  platform: 'both' as string,
+  platform: 'both',
   locator_type: 'id',
   locator_value: '',
   description: '',
 })
 
+const groupDialogVisible = ref(false)
+const groupName = ref('')
+
 const usageDialogVisible = ref(false)
 const usageCases = ref<{ case_id: number; case_name: string }[]>([])
+
+function canEdit(row: TestElement) {
+  return !!auth.user && row.created_by === auth.user.id
+}
 
 async function load() {
   loading.value = true
   try {
-    const data = await listElements(projectId, {
+    const data = await listElements({
       page: page.value,
       page_size: pageSize.value,
-      keyword: keyword.value,
-      platform: platform.value,
+      keyword: keyword.value || undefined,
+      platform: platform.value || undefined,
+      project_id: projectFilter.value,
       page_name: selectedPage.value === 'all' ? undefined : selectedPage.value,
     })
     items.value = data.items
@@ -60,7 +83,19 @@ async function load() {
 }
 
 async function loadPages() {
-  pageGroups.value = await elementPages(projectId)
+  pageGroups.value = await elementPages()
+}
+
+async function loadProjects() {
+  const data = await listProjects({ page: 1, page_size: 100 })
+  projects.value = data.items
+  // 从全局元素页跳入时可带 project 筛选（如项目概览跳转）
+  const q = Number(route.query.project)
+  if (q) {
+    projectFilter.value = q
+    page.value = 1
+    await load()
+  }
 }
 
 function selectPage(name: string) {
@@ -72,6 +107,7 @@ function selectPage(name: string) {
 function openCreate() {
   editingId.value = null
   form.value = {
+    project_id: projectFilter.value ?? projects.value[0]?.id,
     name: '',
     page_name: '',
     platform: 'both',
@@ -85,6 +121,7 @@ function openCreate() {
 function openEdit(row: TestElement) {
   editingId.value = row.id
   form.value = {
+    project_id: row.project_id,
     name: row.name,
     page_name: row.page_name ?? '',
     platform: row.platform ?? 'both',
@@ -96,6 +133,10 @@ function openEdit(row: TestElement) {
 }
 
 async function save() {
+  if (!form.value.project_id) {
+    ElMessage.warning('请选择项目')
+    return
+  }
   if (!form.value.name || !form.value.locator_value) {
     ElMessage.warning('名称和定位值必填')
     return
@@ -105,7 +146,7 @@ async function save() {
     await updateElement(editingId.value, form.value)
     ElMessage.success('已更新')
   } else {
-    await createElement(projectId, form.value)
+    await createElement({ ...form.value, project_id: form.value.project_id })
     ElMessage.success('已创建')
   }
   dialogVisible.value = false
@@ -123,12 +164,42 @@ async function remove(row: TestElement) {
   await ElMessageBox.confirm(`确认删除元素「${row.name}」？`, '提示', { type: 'warning' })
   await deleteElement(row.id)
   ElMessage.success('已删除')
-  await load()
+  await Promise.all([loadPages(), load()])
+}
+
+async function copyRow(row: TestElement) {
+  await copyElement(row.id)
+  ElMessage.success(`已复制「${row.name}」`)
+  await Promise.all([loadPages(), load()])
 }
 
 async function showUsage(row: TestElement) {
   usageCases.value = await elementUsage(row.id)
   usageDialogVisible.value = true
+}
+
+async function addGroup() {
+  const name = groupName.value.trim()
+  if (!name) {
+    ElMessage.warning('请输入分组名称')
+    return
+  }
+  await createElementGroup(name)
+  groupDialogVisible.value = false
+  groupName.value = ''
+  selectedPage.value = name
+  page.value = 1
+  await Promise.all([loadPages(), load()])
+}
+
+async function removeGroup(g: ElementPageCount) {
+  if (!g.group_id || g.count > 0) return
+  await ElMessageBox.confirm(`确认删除自定义分组「${g.page_name}」？`, '提示', { type: 'warning' })
+  await deleteElementGroup(g.group_id)
+  if (selectedPage.value === g.page_name) {
+    selectedPage.value = 'all'
+  }
+  await loadPages()
 }
 
 function locatorLabel(type: string) {
@@ -147,6 +218,7 @@ function platformLabel(p: string) {
 
 onMounted(() => {
   loadPages()
+  loadProjects()
   load()
 })
 </script>
@@ -157,18 +229,28 @@ onMounted(() => {
     <div class="page-tree">
       <div class="tree-head v2-card-title">页面分组</div>
       <div class="tree-item" :class="{ active: selectedPage === 'all' }" @click="selectPage('all')">
-        全部
+        <span>全部</span><span class="count">{{ total }}</span>
       </div>
-      <div v-for="g in pageGroups" :key="g.page_name" class="tree-item" :class="{ active: selectedPage === g.page_name }" @click="selectPage(g.page_name)">
+      <div v-for="g in pageGroups" :key="g.page_name" class="tree-item tree-group" :class="{ active: selectedPage === g.page_name }" @click="selectPage(g.page_name)">
         <span>{{ g.page_name }}</span>
-        <span class="count">{{ g.count }}</span>
+        <span class="group-right">
+          <el-icon v-if="g.group_id && g.count === 0" class="group-del-icon" title="删除分组" @click.stop="removeGroup(g)"><Delete /></el-icon>
+          <span class="count">{{ g.count }}</span>
+        </span>
       </div>
+      <el-button class="add-group-btn" text type="primary" @click="groupDialogVisible = true">
+        <el-icon><Plus /></el-icon>
+        <span>新增分组</span>
+      </el-button>
     </div>
 
     <!-- 右：元素列表 -->
     <div class="elements-main">
       <div class="toolbar-card">
         <el-input v-model="keyword" placeholder="按名称搜索" clearable class="search" @keyup.enter="page = 1; load()" />
+        <el-select v-model="projectFilter" placeholder="全部项目" clearable class="platform" @change="page = 1; load()">
+          <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
+        </el-select>
         <el-select v-model="platform" placeholder="平台" clearable class="platform" @change="page = 1; load()">
           <el-option label="Android" value="android" />
           <el-option label="iOS" value="ios" />
@@ -181,21 +263,32 @@ onMounted(() => {
 
       <el-table v-loading="loading" :data="items" stripe>
         <el-table-column prop="name" label="名称" min-width="150" />
-        <el-table-column prop="page_name" label="页面" min-width="120" />
+        <el-table-column prop="project_name" label="项目" min-width="120">
+          <template #default="{ row }">
+            <span>{{ row.project_name ?? '未知项目' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="page_name" label="页面" min-width="110" />
         <el-table-column label="平台" width="90">
           <template #default="{ row }">
             <el-tag :type="platformType(row.platform)" size="small">{{ platformLabel(row.platform) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="定位方式" width="160">
+        <el-table-column label="定位方式" width="150">
           <template #default="{ row }">{{ locatorLabel(row.locator_type) }}</template>
         </el-table-column>
-        <el-table-column prop="locator_value" label="定位值" min-width="180" show-overflow-tooltip />
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column prop="locator_value" label="定位值" min-width="170" show-overflow-tooltip />
+        <el-table-column label="创建者" width="110">
+          <template #default="{ row }">{{ row.created_by_name ?? '—' }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="230" fixed="right">
           <template #default="{ row }">
             <el-button size="small" text @click="showUsage(row as TestElement)">引用</el-button>
-            <el-button size="small" text @click="openEdit(row as TestElement)">编辑</el-button>
-            <el-button size="small" type="danger" text @click="remove(row as TestElement)">删除</el-button>
+            <el-button size="small" text @click="copyRow(row as TestElement)">复制</el-button>
+            <template v-if="canEdit(row as TestElement)">
+              <el-button size="small" text @click="openEdit(row as TestElement)">编辑</el-button>
+              <el-button size="small" type="danger" text @click="remove(row as TestElement)">删除</el-button>
+            </template>
           </template>
         </el-table-column>
       </el-table>
@@ -212,11 +305,16 @@ onMounted(() => {
 
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑元素' : '新建元素'" width="560px">
       <el-form label-width="90px">
+        <el-form-item label="项目" required>
+          <el-select v-model="form.project_id" class="full" :disabled="!!editingId">
+            <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="名称" required>
           <el-input v-model="form.name" />
         </el-form-item>
         <el-form-item label="页面">
-          <el-input v-model="form.page_name" placeholder="所属页面名" />
+          <el-input v-model="form.page_name" placeholder="所属页面名，如登录页" />
         </el-form-item>
         <el-form-item label="平台">
           <el-radio-group v-model="form.platform">
@@ -240,6 +338,14 @@ onMounted(() => {
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" @click="save">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="groupDialogVisible" title="新增页面分组" width="420px">
+      <el-input v-model="groupName" placeholder="输入分组名称，如 登录页" @keyup.enter="addGroup" />
+      <template #footer>
+        <el-button @click="groupDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="addGroup">创建</el-button>
       </template>
     </el-dialog>
 
@@ -268,7 +374,7 @@ onMounted(() => {
   align-self: flex-start;
 }
 .tree-head {
-  padding: 8px 12px;
+  padding: 8px 12px 12px;
 }
 .tree-item {
   display: flex;
@@ -295,15 +401,32 @@ onMounted(() => {
   border-radius: 10px;
   padding: 0 8px;
 }
+.group-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.group-del-icon {
+  font-size: 13px;
+  color: var(--text-2);
+}
+.group-del-icon:hover {
+  color: var(--el-color-danger);
+}
+.add-group-btn {
+  width: 100%;
+  margin-top: 8px;
+  justify-content: flex-start;
+}
 .elements-main {
   flex: 1;
   min-width: 0;
 }
 .search {
-  width: 220px;
+  width: 200px;
 }
 .platform {
-  width: 130px;
+  width: 140px;
 }
 .full {
   width: 100%;

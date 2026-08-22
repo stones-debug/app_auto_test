@@ -3,8 +3,7 @@ import { onMounted, ref } from 'vue'
 
 import { listElements, type TestElement } from '@/api/elements'
 
-const props = defineProps<{
-  projectId: number
+defineProps<{
   modelValue?: number | null
 }>()
 
@@ -18,7 +17,7 @@ const loading = ref(false)
 async function load() {
   loading.value = true
   try {
-    const data = await listElements(props.projectId, { page: 1, page_size: 200 })
+    const data = await listElements({ page: 1, page_size: 200 })
     elements.value = data.items
   } finally {
     loading.value = false
@@ -46,7 +45,7 @@ onMounted(load)
       v-for="e in elements"
       :key="e.id"
       :value="e.id"
-      :label="`${e.name} (${e.locator_type}: ${e.locator_value})`"
+      :label="`[${e.project_name ?? '?'}] ${e.name} (${e.locator_type}: ${e.locator_value})`"
     />
   </el-select>
 </template>

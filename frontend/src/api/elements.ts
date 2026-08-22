@@ -14,14 +14,24 @@ export interface TestModule {
 export interface TestElement {
   id: number
   project_id: number
+  project_name?: string | null
   name: string
   page_name?: string | null
   platform?: string | null
   locator_type: string
   locator_value: string
   description?: string | null
+  created_by?: number | null
+  created_by_name?: string | null
   created_at: string
   updated_at: string
+}
+
+export interface ElementGroup {
+  id: number
+  name: string
+  created_by?: number | null
+  created_at: string
 }
 
 export const LOCATOR_TYPES = [
@@ -38,6 +48,7 @@ export const LOCATOR_TYPES = [
 export interface ElementPageCount {
   page_name: string
   count: number
+  group_id?: number | null
 }
 
 export interface ElementUsage {
@@ -65,25 +76,37 @@ export function deleteModule(id: number) {
 }
 
 export function listElements(
-  projectId: number,
   params?: {
     page?: number
     page_size?: number
     keyword?: string
     platform?: string
     page_name?: string
+    project_id?: number
     locator_type?: string
   },
 ) {
-  return request.get<PageData<TestElement>>(`/projects/${projectId}/elements`, { params })
+  return request.get<PageData<TestElement>>('/elements', { params })
 }
 
-export function elementPages(projectId: number) {
-  return request.get<ElementPageCount[]>(`/projects/${projectId}/element-pages`)
+export function elementPages() {
+  return request.get<ElementPageCount[]>('/elements/pages')
 }
 
-export function createElement(projectId: number, data: Partial<TestElement>) {
-  return request.post<TestElement>(`/projects/${projectId}/elements`, data)
+export function createElement(data: Partial<TestElement>) {
+  return request.post<TestElement>('/elements', data)
+}
+
+export function copyElement(id: number) {
+  return request.post<TestElement>(`/elements/${id}/copy`)
+}
+
+export function createElementGroup(name: string) {
+  return request.post<ElementGroup>('/elements/groups', { name })
+}
+
+export function deleteElementGroup(groupId: number) {
+  return request.delete<void>(`/elements/groups/${groupId}`)
 }
 
 export function getElement(id: number) {

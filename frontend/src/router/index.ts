@@ -42,6 +42,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '项目管理', workspace: 'global', sidebarKey: 'projects' },
       },
       {
+        path: 'elements',
+        name: 'Elements',
+        component: () => import('@/views/Element.vue'),
+        meta: { title: '元素库', workspace: 'global', sidebarKey: 'elements' },
+      },
+      {
         path: 'projects/:projectId',
         component: () => import('@/layouts/ProjectLayout.vue'),
         redirect: (to) => `/projects/${to.params.projectId}/overview`,
@@ -78,9 +84,7 @@ const routes: RouteRecordRaw[] = [
           },
           {
             path: 'elements',
-            name: 'Elements',
-            component: () => import('@/views/Element.vue'),
-            meta: { title: '元素库', workspace: 'project', sidebarKey: 'elements' },
+            redirect: (to) => ({ name: 'Elements', query: { project: to.params.projectId } }),
           },
           {
             path: 'variables',

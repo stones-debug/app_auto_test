@@ -237,7 +237,7 @@ onMounted(async () => {
             <div class="step-body">
               <div v-if="stepMeta(element).needsElement" class="step-row">
                 <span class="field-label">元素</span>
-                <ElementSelector :project-id="projectId" v-model="element.element_id" />
+                <ElementSelector v-model="element.element_id" />
               </div>
               <div v-for="f in stepMeta(element).fields" :key="f.key" class="step-row">
                 <span class="field-label">{{ f.label }}</span>
@@ -292,7 +292,7 @@ onMounted(async () => {
             <div class="step-body">
               <div v-if="assertMeta(element).needsElement" class="step-row">
                 <span class="field-label">元素</span>
-                <ElementSelector :project-id="projectId" v-model="element.element_id" />
+                <ElementSelector v-model="element.element_id" />
               </div>
               <div v-for="f in assertMeta(element).fields" :key="f.key" class="step-row">
                 <span class="field-label">{{ f.label }}</span>

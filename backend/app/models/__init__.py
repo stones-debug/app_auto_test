@@ -1,7 +1,7 @@
 from app.core.database import Base
 from app.models.agent import Agent, AgentUser, Device, DevicePreference, UserAgentKey
 from app.models.case import TestCase, TestSuite, TestSuiteCase
-from app.models.element import TestElement, TestModule
+from app.models.element import ElementGroup, TestElement, TestModule
 from app.models.execution import (
     Execution,
     ExecutionAssertion,
@@ -27,6 +27,7 @@ __all__ = [
     "TestSuiteCase",
     "TestElement",
     "TestModule",
+    "ElementGroup",
     "Execution",
     "ExecutionAssertion",
     "ExecutionCase",

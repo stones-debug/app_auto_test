@@ -28,6 +28,7 @@ class ModuleOut(BaseModel):
 
 
 class ElementCreate(BaseModel):
+    project_id: int | None = None
     name: str = Field(min_length=1, max_length=255)
     page_name: str | None = None
     platform: str = Field(default="both", pattern="^(android|ios|both)$")
@@ -53,12 +54,15 @@ class ElementUpdate(BaseModel):
 class ElementOut(BaseModel):
     id: int
     project_id: int
+    project_name: str | None = None
     name: str
     page_name: str | None
     platform: str | None
     locator_type: str
     locator_value: str
     description: str | None
+    created_by: int | None = None
+    created_by_name: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -74,6 +78,20 @@ class ElementUsage(BaseModel):
 class ElementPageCount(BaseModel):
     page_name: str
     count: int
+    group_id: int | None = None  # 自定义分组 id；元素聚合页为 None
+
+
+class ElementGroupCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+
+class ElementGroupOut(BaseModel):
+    id: int
+    name: str
+    created_by: int | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class ElementPage(BaseModel):
