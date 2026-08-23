@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+vi.mock('element-plus', () => ({
+  ElMessage: { warning: vi.fn(), success: vi.fn() },
+}))
 vi.mock('@/api/agents', () => ({
   getDefaultDevice: vi.fn(),
   listDevices: vi.fn(),
@@ -38,7 +41,7 @@ describe('useDeviceSelect（Windows 方案 §4.2 自动选机）', () => {
     mRetry.mockResolvedValue({ id: 300, status: 'queued' } as never)
   })
 
-  it('case：默认设备可用 → 直接创建执行返回 Execution，不弹窗', async () => {
+  it('case：默认设备可用 → 仍弹窗选择，且预选默认设备（不直跑）', async () => {
     mGetDefault.mockResolvedValue({
       device_id: 11,
       device: IDLE,
@@ -47,12 +50,13 @@ describe('useDeviceSelect（Windows 方案 §4.2 自动选机）', () => {
     } as never)
     const select = useDeviceSelect()
     const exec = await select.open({ kind: 'case', id: 1, name: '用例' }, { timeout_seconds: 1800 })
-    expect(exec?.id).toBe(100)
-    expect(select.dialogVisible.value).toBe(false)
-    expect(mCreateCase).toHaveBeenCalledWith(1, { timeout_seconds: 1800, device_id: 11 })
+    expect(exec).toBeNull()
+    expect(select.dialogVisible.value).toBe(true)
+    expect(select.selectedId.value).toBe(11)
+    expect(mCreateCase).not.toHaveBeenCalled()
   })
 
-  it('suite：默认设备可用 → 直接创建套件执行', async () => {
+  it('suite：默认设备可用 → 弹窗并预选默认设备，不直跑', async () => {
     mGetDefault.mockResolvedValue({
       device_id: 11,
       device: IDLE,
@@ -61,11 +65,13 @@ describe('useDeviceSelect（Windows 方案 §4.2 自动选机）', () => {
     } as never)
     const select = useDeviceSelect()
     const exec = await select.open({ kind: 'suite', id: 2, name: '套件' }, {})
-    expect(exec?.id).toBe(200)
-    expect(mCreateSuite).toHaveBeenCalledWith(2, { device_id: 11 })
+    expect(exec).toBeNull()
+    expect(select.dialogVisible.value).toBe(true)
+    expect(select.selectedId.value).toBe(11)
+    expect(mCreateSuite).not.toHaveBeenCalled()
   })
 
-  it('retry：默认设备可用 → 发送 {device_id, timeout_seconds?}，不伪装成 case/suite 创建', async () => {
+  it('retry：弹窗预选默认设备；确认运行调用 {device_id, timeout_seconds?}，不伪装成 case/suite', async () => {
     mGetDefault.mockResolvedValue({
       device_id: 11,
       device: IDLE,
@@ -77,13 +83,16 @@ describe('useDeviceSelect（Windows 方案 §4.2 自动选机）', () => {
       { kind: 'retry', executionId: 333, name: '执行 #333' },
       { timeout_seconds: 600 },
     )
-    expect(exec?.id).toBe(300)
+    expect(exec).toBeNull()
+    expect(select.selectedId.value).toBe(11)
+    const run = await select.confirmRun({ timeout_seconds: 600 })
+    expect(run?.id).toBe(300)
     expect(mRetry).toHaveBeenCalledWith(333, { device_id: 11, timeout_seconds: 600 })
     expect(mCreateCase).not.toHaveBeenCalled()
     expect(mCreateSuite).not.toHaveBeenCalled()
   })
 
-  it('默认设备忙碌 → 弹窗选择，且只列空闲设备，返回 null', async () => {
+  it('默认设备忙碌 → 弹窗选择，且只列空闲设备，预选回退首个空闲设备', async () => {
     mGetDefault.mockResolvedValue({
       device_id: 11,
       device: { ...IDLE, status: 'busy' },
@@ -99,15 +108,18 @@ describe('useDeviceSelect（Windows 方案 §4.2 自动选机）', () => {
     expect(select.dialogVisible.value).toBe(true)
     expect(mListDevices).toHaveBeenCalled()
     expect(select.devices.value.map((d) => d.id)).toEqual([11])
+    // 默认设备不在空闲列表 → 回退第一个空闲设备
+    expect(select.selectedId.value).toBe(11)
     expect(select.reason.value).toContain('忙')
   })
 
-  it('未设置默认设备 → 弹窗选择，返回 null', async () => {
+  it('未设置默认设备 → 弹窗选择，预选列表第一个设备', async () => {
     mGetDefault.mockResolvedValue({ device_id: null, device: null, available: false, reason: '未设置默认设备' } as never)
     const select = useDeviceSelect()
     const exec = await select.open({ kind: 'suite', id: 2, name: '套件' }, {})
     expect(exec).toBeNull()
     expect(select.dialogVisible.value).toBe(true)
+    expect(select.selectedId.value).toBe(11)
   })
 
   it('弹窗确认运行：携带 device_id，勾选后设为默认，返回 Execution', async () => {
@@ -123,18 +135,19 @@ describe('useDeviceSelect（Windows 方案 §4.2 自动选机）', () => {
     expect(select.dialogVisible.value).toBe(false)
   })
 
-  it('并发占用（DEVICE_BUSY）→ 提示并刷新，不自动换设备，返回 null', async () => {
-    mGetDefault.mockResolvedValue({ device_id: 11, device: IDLE, available: true, reason: '' } as never)
+  it('弹窗确认运行遇并发占用（DEVICE_BUSY）→ 提示并刷新，不自动换设备，返回 null', async () => {
+    mGetDefault.mockResolvedValue({ device_id: null, device: null, available: false, reason: '' } as never)
     mCreateCase.mockRejectedValue(conflictError('DEVICE_BUSY') as never)
     const select = useDeviceSelect()
-    const exec = await select.open(
+    await select.open(
       { kind: 'case', id: 1, name: '用例' },
       { timeout_seconds: 1800 },
     )
-    // 默认设备被占 → 弹窗，不自动改用其他设备
+    select.selectedId.value = 11
+    const exec = await select.confirmRun({ timeout_seconds: 1800 })
     expect(exec).toBeNull()
+    // 弹窗保持打开，等待用户重新选择
     expect(select.dialogVisible.value).toBe(true)
-    expect(select.reason.value).toContain('占用')
     expect(mCreateCase).toHaveBeenCalledTimes(1)
   })
 

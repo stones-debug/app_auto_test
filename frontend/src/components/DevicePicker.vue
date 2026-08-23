@@ -5,8 +5,8 @@ import type { Execution } from '@/api/executions'
 import { useDeviceSelect, type RunTarget } from '@/composables/useDeviceSelect'
 
 // V2 §5.12：统一设备选择器（所有运行入口复用，含重试入口）。
-// 通过 ref.open(target, options) 触发；默认设备可用时直接创建执行返回 Execution；
-// 否则打开选择弹窗——open 的 Promise 会保持 pending 直到弹窗流程结束
+// 通过 ref.open(target, options) 触发；始终弹出设备选择弹窗并预选当前用户默认设备；
+// open 的 Promise 保持 pending 直到弹窗流程结束
 // （运行成功 resolve 执行对象 / 取消 resolve null），父级 await 后统一跳转/提示。
 const emit = defineEmits<{ created: [execution: Execution] }>()
 
@@ -43,8 +43,8 @@ function onClosed() {
 
 defineExpose({
   /**
-   * 默认设备直跑成功 → resolve Execution；
-   * 需要选择弹窗时保持 pending，运行成功 resolve Execution、取消 resolve null。
+   * 始终弹出设备选择弹窗（预选用户默认设备）；
+   * 运行成功 resolve Execution、取消 resolve null。
    */
   open: (target: RunTarget, options: { timeout_seconds?: number } = {}): Promise<Execution | null> => {
     if (options.timeout_seconds) timeout.value = options.timeout_seconds
@@ -52,7 +52,7 @@ defineExpose({
       openResolve = resolve
       open(target, { timeout_seconds: options.timeout_seconds }).then((exec) => {
         if (exec !== null) {
-          // 默认设备直跑成功：直接返回
+          // 保留兜底：composable 直跑成功时直接返回
           openResolve = null
           resolve(exec)
         }
