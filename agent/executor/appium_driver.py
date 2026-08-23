@@ -261,15 +261,39 @@ class AppiumDriver(BaseDriver):
         self._ensure()
         element.click()
 
+    def _resolve_editable_element(self, element):
+        """将 uni-app 等框架带 resource-id 的外层节点解析为实际 EditText。"""
+        if (self.device.get("platform") or "").lower() != "android":
+            return element
+
+        from appium.webdriver.common.appiumby import AppiumBy
+        from selenium.common.exceptions import InvalidSelectorException, NoSuchElementException
+
+        try:
+            editable = element.find_element(AppiumBy.CLASS_NAME, "android.widget.EditText")
+        except (AttributeError, InvalidSelectorException, NoSuchElementException):
+            return element
+        logger.info("输入元素已从外层节点解析为 android.widget.EditText 子控件")
+        return editable
+
     def input(self, element, value: str, clear_first: bool = True) -> None:
         self._ensure()
-        if clear_first:
-            element.clear()
-        element.send_keys(value)
+        from selenium.common.exceptions import InvalidElementStateException
+
+        target = self._resolve_editable_element(element)
+        try:
+            if clear_first:
+                target.clear()
+            target.send_keys(value)
+        except InvalidElementStateException as exc:
+            raise DriverError(
+                "输入失败：定位到的控件不可编辑。请确认元素指向输入框或包含 "
+                "android.widget.EditText 的外层容器，并确认控件处于启用状态"
+            ) from exc
 
     def clear(self, element) -> None:
         self._ensure()
-        element.clear()
+        self._resolve_editable_element(element).clear()
 
     def get_text(self, element) -> str:
         self._ensure()

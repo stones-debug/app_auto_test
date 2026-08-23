@@ -347,6 +347,113 @@ async def test_appium_explicit_xpath_is_not_rewritten():
     assert driver.find_element("xpath", xpath, wait_timeout=1) == "server-button"
 
 
+async def test_appium_input_uses_editable_descendant_of_uniapp_wrapper():
+    from appium.webdriver.common.appiumby import AppiumBy
+
+    from executor.appium_driver import AppiumDriver
+
+    class Editable:
+        def __init__(self) -> None:
+            self.cleared = False
+            self.value = ""
+
+        def clear(self):
+            self.cleared = True
+
+        def send_keys(self, value):
+            self.value = value
+
+    editable = Editable()
+
+    class Wrapper:
+        def find_element(self, by, value):
+            assert (by, value) == (AppiumBy.CLASS_NAME, "android.widget.EditText")
+            return editable
+
+    driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
+    driver.driver = object()
+
+    driver.input(Wrapper(), "116.247.83.156")
+
+    assert editable.cleared is True
+    assert editable.value == "116.247.83.156"
+
+
+async def test_appium_input_keeps_direct_editable_element_when_no_child():
+    from selenium.common.exceptions import NoSuchElementException
+
+    from executor.appium_driver import AppiumDriver
+
+    class Editable:
+        def __init__(self) -> None:
+            self.cleared = False
+            self.value = ""
+
+        def find_element(self, by, value):
+            raise NoSuchElementException(f"{by}={value}")
+
+        def clear(self):
+            self.cleared = True
+
+        def send_keys(self, value):
+            self.value = value
+
+    editable = Editable()
+    driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
+    driver.driver = object()
+
+    driver.input(editable, "9337")
+
+    assert editable.cleared is True
+    assert editable.value == "9337"
+
+
+async def test_appium_input_reports_actionable_error_for_non_editable_element():
+    from selenium.common.exceptions import InvalidElementStateException, NoSuchElementException
+
+    from executor.appium_driver import AppiumDriver
+    from executor.driver import DriverError
+
+    class DisabledElement:
+        def find_element(self, by, value):
+            raise NoSuchElementException(f"{by}={value}")
+
+        def clear(self):
+            raise InvalidElementStateException("not editable")
+
+        def send_keys(self, value):
+            raise AssertionError(f"不应继续输入: {value}")
+
+    driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
+    driver.driver = object()
+
+    with pytest.raises(DriverError, match="定位到的控件不可编辑"):
+        driver.input(DisabledElement(), "value")
+
+
+async def test_appium_clear_uses_editable_descendant():
+    from executor.appium_driver import AppiumDriver
+
+    class Editable:
+        cleared = False
+
+        def clear(self):
+            self.cleared = True
+
+    editable = Editable()
+
+    class Wrapper:
+        def find_element(self, by, value):
+            return editable
+
+    driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
+    driver.driver = object()
+
+    driver.clear(Wrapper())
+
+    assert editable.cleared is True
+
+
 async def test_regex_match_assertion():
     from executor.assertions import RegexMatchAssertion
 
