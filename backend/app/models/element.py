@@ -23,7 +23,9 @@ class TestElement(Base, TimestampMixin, SoftDeleteMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     page_name: Mapped[str | None] = mapped_column(String(255))
     platform: Mapped[str | None] = mapped_column(String(20), default="both")  # android / ios / both
-    locator_type: Mapped[str] = mapped_column(String(50), nullable=False)  # id / xpath / accessibility_id / ...
+    locator_type: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )  # id / resource_id / xpath / accessibility_id / ...
     locator_value: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))

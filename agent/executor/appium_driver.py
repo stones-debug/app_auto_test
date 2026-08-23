@@ -9,6 +9,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger("agent.appium")
 
 
+def _xpath_literal(value: str) -> str:
+    """将任意字符串编码为 XPath 字面量。"""
+    if '"' not in value:
+        return f'"{value}"'
+    if "'" not in value:
+        return f"'{value}'"
+    parts = value.split('"')
+    return "concat(" + ", '\"', ".join(f'"{part}"' for part in parts) + ")"
+
+
+def _resource_id_xpath(resource_id: str) -> str:
+    """把纯 resource-id 转为精确 XPath，并保留可编辑子节点后缀。"""
+    editable_suffix = "//android.widget.EditText"
+    has_editable_suffix = resource_id.endswith(editable_suffix)
+    pure_resource_id = resource_id[: -len(editable_suffix)] if has_editable_suffix else resource_id
+    xpath = f"//*[@resource-id={_xpath_literal(pure_resource_id)}]"
+    return f"{xpath}{editable_suffix}" if has_editable_suffix else xpath
+
+
 class AppiumDriver(BaseDriver):
     """真实 Appium WebDriver 封装（需安装 appium-python-client）。
 
@@ -174,7 +193,11 @@ class AppiumDriver(BaseDriver):
         driver = self._ensure()
         normalized_type = str(locator_type or "").strip().lower()
         normalized_value = str(locator_value or "").strip()
-        by = getattr(AppiumBy, normalized_type.upper(), None) or By.XPATH
+        if normalized_type == "resource_id":
+            by = AppiumBy.XPATH
+            normalized_value = _resource_id_xpath(normalized_value)
+        else:
+            by = getattr(AppiumBy, normalized_type.upper(), None) or By.XPATH
 
         timeout = wait_timeout if wait_timeout is not None else 10
         if timeout <= 0:

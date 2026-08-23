@@ -528,7 +528,7 @@ CREATE TABLE test_elements (
     name VARCHAR(255) NOT NULL,
     page_name VARCHAR(255),
     platform VARCHAR(20),                        -- android / ios / both
-    locator_type VARCHAR(50),                    -- id / xpath / accessibility_id / class_name / uiautomator / predicate / coordinate / custom
+    locator_type VARCHAR(50),                    -- id / resource_id / xpath / accessibility_id / class_name / uiautomator / predicate / coordinate / custom
     locator_value TEXT NOT NULL,
     description TEXT,
     created_by BIGINT REFERENCES users(id),
@@ -1795,6 +1795,7 @@ ALTER TABLE execution_cases
 ```
 
 - Worker 创建 `execution_cases` 时，从 `test_elements` 抓取用例引用的全部元素（含 locator_type / locator_value / platform），以 `element_id` 为 key 写入 `elements_snapshot`。
+- Android 混合应用可使用 `resource_id` 定位类型，`locator_value` 只保存纯 resource-id。Agent 将其转换为 `//*[@resource-id="..."]`；输入和清空动作若未显式指定可编辑子节点，自动追加 `//android.widget.EditText`，其他动作仍定位 resource-id 节点本身。
 - `ExecutionContext.find_element`（正文 3.6.3）改为只从 `elements_snapshot` 解析，杜绝查询实时表。
 - 抓取快照时按 `element_id` 直接查询（含已逻辑删除记录），避免用例引用元素被删除导致执行失败。
 

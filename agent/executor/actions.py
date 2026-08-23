@@ -49,7 +49,7 @@ class ClickAction(BaseAction):
 @register_action("input")
 class InputAction(BaseAction):
     async def execute(self, driver, context, params: dict) -> dict:
-        element = context.find_element(params.get("element_id"))
+        element = context.find_element(params.get("element_id"), editable=True)
         driver.input(element, str(params.get("value", "")), clear_first=params.get("clear_first", True))
         return {"status": "passed"}
 
@@ -57,7 +57,7 @@ class InputAction(BaseAction):
 @register_action("clear")
 class ClearAction(BaseAction):
     async def execute(self, driver, context, params: dict) -> dict:
-        element = context.find_element(params.get("element_id"))
+        element = context.find_element(params.get("element_id"), editable=True)
         driver.clear(element)
         return {"status": "passed"}
 

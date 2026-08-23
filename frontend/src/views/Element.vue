@@ -223,6 +223,13 @@ function locatorLabel(type: string) {
   return LOCATOR_TYPES.find((t) => t.value === type)?.label ?? type
 }
 
+function locatorValuePlaceholder(type: string) {
+  if (type === 'resource_id') {
+    return '填写纯 resource-id，如 src-views-login-input-username'
+  }
+  return "如 com.demo:id/btn_login / //*[@text='登录']"
+}
+
 type TagType = 'primary' | 'success' | 'info' | 'warning' | 'danger'
 
 function platformType(p: string): TagType {
@@ -356,7 +363,10 @@ onMounted(() => {
           </el-select>
         </el-form-item>
         <el-form-item label="定位值" required>
-          <el-input v-model="form.locator_value" placeholder="如 com.demo:id/btn_login / //*[@text='登录']" />
+          <el-input v-model="form.locator_value" :placeholder="locatorValuePlaceholder(form.locator_type)" />
+          <div v-if="form.locator_type === 'resource_id'" class="field-help">
+            输入和清空动作会自动定位其下的 android.widget.EditText。
+          </div>
         </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="form.description" type="textarea" :rows="2" />
@@ -460,5 +470,10 @@ onMounted(() => {
 }
 .full {
   width: 100%;
+}
+.field-help {
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 20px;
 }
 </style>

@@ -33,7 +33,7 @@ class ElementCreate(BaseModel):
     page_name: str | None = None
     platform: str = Field(default="both", pattern="^(android|ios|both)$")
     locator_type: str = Field(
-        pattern="^(id|xpath|accessibility_id|class_name|uiautomator|predicate|coordinate|custom)$"
+        pattern="^(id|resource_id|xpath|accessibility_id|class_name|uiautomator|predicate|coordinate|custom)$"
     )
     locator_value: str = Field(min_length=1)
     description: str | None = None
@@ -54,7 +54,7 @@ class ElementUpdate(BaseModel):
     platform: str | None = Field(default=None, pattern="^(android|ios|both)$")
     locator_type: str | None = Field(
         default=None,
-        pattern="^(id|xpath|accessibility_id|class_name|uiautomator|predicate|coordinate|custom)$",
+        pattern="^(id|resource_id|xpath|accessibility_id|class_name|uiautomator|predicate|coordinate|custom)$",
     )
     locator_value: str | None = Field(default=None, min_length=1)
     description: str | None = None

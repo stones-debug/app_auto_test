@@ -37,13 +37,23 @@ class ExecutionContext:
 
         return _VAR_RE.sub(repl, text)
 
-    def find_element(self, element_id, wait_timeout: float | None = None):
+    def find_element(
+        self,
+        element_id,
+        wait_timeout: float | None = None,
+        *,
+        editable: bool = False,
+    ):
         key = str(element_id)
         data = self.elements_snapshot.get(key)
         if data is None:
             raise ElementNotFound(f"元素快照缺失: element_id={element_id}")
         locator_type = data.get("locator_type") or "id"
         locator_value = self.render(data.get("locator_value") or "")
+        if editable and locator_type == "resource_id":
+            editable_suffix = "//android.widget.EditText"
+            if not locator_value.endswith(editable_suffix):
+                locator_value = f"{locator_value}{editable_suffix}"
         return self.driver.find_element(locator_type, locator_value, wait_timeout=wait_timeout)
 
     def save_screenshot(self, filename: str = "screenshot.png") -> str:

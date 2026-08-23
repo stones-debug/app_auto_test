@@ -36,6 +36,7 @@ export interface ElementGroup {
 
 export const LOCATOR_TYPES = [
   { value: 'id', label: 'ID' },
+  { value: 'resource_id', label: 'Resource ID (Android)' },
   { value: 'xpath', label: 'XPath' },
   { value: 'accessibility_id', label: 'Accessibility ID' },
   { value: 'class_name', label: 'Class Name' },

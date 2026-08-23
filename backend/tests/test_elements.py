@@ -79,7 +79,7 @@ async def test_element_crud_and_usage(client: AsyncClient):
             "name": "登录按钮",
             "page_name": "登录页",
             "platform": "both",
-            "locator_type": "id",
+            "locator_type": "resource_id",
             "locator_value": "btn_login",
             "description": "登录按钮",
         },
@@ -93,6 +93,7 @@ async def test_element_crud_and_usage(client: AsyncClient):
     )
     assert listing.status_code == 200
     assert listing.json()["total"] == 1
+    assert listing.json()["items"][0]["locator_type"] == "resource_id"
     assert listing.json()["items"][0]["locator_value"] == "btn_login"
 
     detail = await client.get(f"/api/elements/{element_id}", headers=headers)

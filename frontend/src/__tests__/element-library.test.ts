@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { elementPageFilter, totalElementCount } from '@/api/elements'
+import { LOCATOR_TYPES, elementPageFilter, totalElementCount } from '@/api/elements'
 
 describe('元素库页面分组', () => {
   it('全部计数来自分组全量统计，不随当前列表筛选总数变化', () => {
@@ -17,5 +17,12 @@ describe('元素库页面分组', () => {
     expect(elementPageFilter('all')).toBeUndefined()
     expect(elementPageFilter('未分组')).toBe('未分组')
     expect(elementPageFilter('登录页')).toBe('登录页')
+  })
+
+  it('提供 Android Resource ID 定位方式', () => {
+    expect(LOCATOR_TYPES).toContainEqual({
+      value: 'resource_id',
+      label: 'Resource ID (Android)',
+    })
   })
 })

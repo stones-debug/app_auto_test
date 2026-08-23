@@ -65,6 +65,37 @@ async def test_context_missing_element_snapshot_raises():
         context.find_element("999")
 
 
+async def test_resource_id_input_and_clear_auto_select_edit_text():
+    from executor.actions import ClearAction, InputAction
+
+    resource_id = "src-components-l-popup-input-ip"
+    editable_locator = f"{resource_id}//android.widget.EditText"
+    driver = MockDriver()
+    context = ExecutionContext(
+        driver,
+        _make_case([], elements={"1": {"locator_type": "resource_id", "locator_value": resource_id}}),
+    )
+
+    await InputAction().execute(driver, context, {"element_id": 1, "value": "116.247.83.156"})
+    assert driver.state[editable_locator] == "116.247.83.156"
+
+    await ClearAction().execute(driver, context, {"element_id": 1})
+    assert driver.state[editable_locator] == ""
+
+
+async def test_resource_id_non_editable_lookup_keeps_resource_node():
+    resource_id = "src-views-login-btn-setServerIp"
+    driver = MockDriver()
+    context = ExecutionContext(
+        driver,
+        _make_case([], elements={"1": {"locator_type": "resource_id", "locator_value": resource_id}}),
+    )
+
+    element = context.find_element(1)
+
+    assert element.locator_value == resource_id
+
+
 async def _run_and_capture(case, parameters=None, should_stop=None, driver=None):
     sent: list[dict] = []
 
@@ -289,6 +320,35 @@ async def test_appium_explicit_xpath_is_not_rewritten():
     driver.driver = XPathSession()
 
     assert driver.find_element("xpath", xpath, wait_timeout=1) == "server-button"
+
+
+@pytest.mark.parametrize(
+    ("locator_value", "expected_xpath"),
+    [
+        (
+            "src-views-login-btn-setServerIp",
+            '//*[@resource-id="src-views-login-btn-setServerIp"]',
+        ),
+        (
+            "src-components-l-popup-input-ip//android.widget.EditText",
+            '//*[@resource-id="src-components-l-popup-input-ip"]//android.widget.EditText',
+        ),
+    ],
+)
+async def test_appium_resource_id_is_converted_to_exact_xpath(locator_value, expected_xpath):
+    from appium.webdriver.common.appiumby import AppiumBy
+
+    from executor.appium_driver import AppiumDriver
+
+    class ResourceIdSession:
+        def find_element(self, by, value):
+            assert (by, value) == (AppiumBy.XPATH, expected_xpath)
+            return "resource-element"
+
+    driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
+    driver.driver = ResourceIdSession()
+
+    assert driver.find_element("resource_id", locator_value, wait_timeout=1) == "resource-element"
 
 
 async def test_appium_input_uses_selected_editable_element_directly():
