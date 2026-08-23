@@ -25,6 +25,7 @@ export function projectWorkspaceMenus(projectId: number): WorkspaceMenuItem[] {
     { key: 'overview', name: '概览', to: { name: 'ProjectOverview', params }, icon: 'DataBoard' },
     { key: 'cases', name: '用例', to: { name: 'Cases', params }, icon: 'Document' },
     { key: 'suites', name: '套件', to: { name: 'Suites', params }, icon: 'Files' },
+    { key: 'elements', name: '元素库', to: { name: 'Elements', query: { project: projectId } }, icon: 'Grid' },
     { key: 'variables', name: '变量', to: { name: 'Variables', params }, icon: 'Coin' },
     {
       key: 'executions',
