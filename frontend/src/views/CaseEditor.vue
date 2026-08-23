@@ -267,6 +267,9 @@ onMounted(async () => {
           </el-card>
         </template>
       </Draggable>
+      <div class="add-more">
+        <el-button type="primary" plain class="w-full" @click="addStep">+ 添加步骤</el-button>
+      </div>
     </div>
 
     <div class="content-card mb16">
@@ -320,6 +323,9 @@ onMounted(async () => {
           </el-card>
         </template>
       </Draggable>
+      <div class="add-more">
+        <el-button type="primary" plain class="w-full" @click="addAssertion">+ 添加断言</el-button>
+      </div>
     </div>
 
     <div class="content-card mb16">
@@ -331,6 +337,9 @@ onMounted(async () => {
         <el-input v-model="entry.key" placeholder="变量名" class="var-name" />
         <el-input v-model="entry.value" placeholder="变量值" class="var-value" />
         <el-button type="danger" text @click="removeVariable(idx)">删除</el-button>
+      </div>
+      <div class="add-more">
+        <el-button type="primary" plain class="w-full" @click="addVariable">+ 添加变量</el-button>
       </div>
     </div>
 
@@ -452,6 +461,13 @@ onMounted(async () => {
 }
 .var-value {
   flex: 1;
+}
+.add-more {
+  margin-top: 10px;
+}
+.add-more .w-full {
+  width: 100%;
+  border-style: dashed;
 }
 .footer {
   position: sticky;
