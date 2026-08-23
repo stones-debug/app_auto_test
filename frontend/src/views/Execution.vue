@@ -48,8 +48,7 @@ async function load() {
   }
 }
 
-async function loadSummary() {
-  try {
+async function loadSummary() {  try {
     const data = await getDashboardOverview(withProjectScope(projectId.value, {}))
     const sc = data.status_counts
     summary.value = {
@@ -70,6 +69,14 @@ function typeLabel(t: string) {
 function durationText(ms: number | null | undefined) {
   if (ms == null) return '-'
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
+}
+
+function fmtTime(t: string | null | undefined) {
+  if (!t) return '-'
+  const d = new Date(t)
+  if (Number.isNaN(d.getTime())) return t
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
 function isActive(status: string) {
@@ -185,7 +192,9 @@ onBeforeUnmount(() => {
       <el-table-column label="创建人" width="100" show-overflow-tooltip>
         <template #default="{ row }">{{ row.created_by_name ?? '-' }}</template>
       </el-table-column>
-      <el-table-column prop="created_at" label="创建时间" width="170" />
+      <el-table-column label="创建时间" width="170">
+        <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
+      </el-table-column>
       <el-table-column label="操作" width="200" fixed="right">
         <template #default="{ row }">
           <el-button size="small" type="primary" text @click="openDetail(row.id)">详情</el-button>
