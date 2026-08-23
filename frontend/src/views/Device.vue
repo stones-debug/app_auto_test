@@ -20,6 +20,7 @@ import {
 import { createMyAgentKey, getMyAgentKey, regenerateMyAgentKey, type AgentKey } from '@/api/me'
 import { getDownloadToken, getLatestRelease, releaseDownloadUrl, type ReleaseManifest } from '@/api/releases'
 import { useAuthStore } from '@/stores/auth'
+import { formatDateTime } from '@/utils/format'
 
 const auth = useAuthStore()
 const isAdmin = ref(auth.user?.is_admin ?? false)
@@ -125,7 +126,7 @@ function allDevices(): Device[] {
 }
 
 function fmtTime(t: string | null) {
-  return t ? new Date(t).toLocaleString() : '-'
+  return t ? formatDateTime(t) : '-'
 }
 
 const dialogOpen = ref(false)

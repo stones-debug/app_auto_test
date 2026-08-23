@@ -11,6 +11,7 @@ import {
   type Project,
 } from '@/api/projects'
 import { useLayoutStore } from '@/stores/layout'
+import { formatDateTime } from '@/utils/format'
 
 const router = useRouter()
 const route = useRoute()
@@ -129,7 +130,7 @@ function roleLabel(r: string | null | undefined) {
 }
 
 function fmtDate(s: string) {
-  return s ? new Date(s).toLocaleDateString() : ''
+  return formatDateTime(s)
 }
 
 watch(keyword, onFilterChange)

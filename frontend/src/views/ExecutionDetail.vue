@@ -20,6 +20,7 @@ import { useExecutionSocket } from '@/composables/useExecutionSocket'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { getToken } from '@/utils/request'
 import { liveLogKey, mergeExecutionLogs, type LogLike } from '@/utils/executionLogs'
+import { formatDateTime } from '@/utils/format'
 
 const route = useRoute()
 const router = useRouter()
@@ -220,8 +221,8 @@ onBeforeUnmount(() => socket?.close())
       <el-descriptions-item label="类型">{{ detail.type }}</el-descriptions-item>
       <el-descriptions-item label="设备">#{{ detail.device_id ?? '-' }} ({{ detail.device_name ?? '-' }})</el-descriptions-item>
       <el-descriptions-item label="超时">{{ detail.timeout_seconds }}s</el-descriptions-item>
-      <el-descriptions-item label="开始时间">{{ detail.started_at ?? '-' }}</el-descriptions-item>
-      <el-descriptions-item label="结束时间">{{ detail.finished_at ?? '-' }}</el-descriptions-item>
+      <el-descriptions-item label="开始时间">{{ formatDateTime(detail.started_at) }}</el-descriptions-item>
+      <el-descriptions-item label="结束时间">{{ formatDateTime(detail.finished_at) }}</el-descriptions-item>
       <el-descriptions-item label="耗时">{{ durationText(detail.duration) }}</el-descriptions-item>
     </el-descriptions>
 

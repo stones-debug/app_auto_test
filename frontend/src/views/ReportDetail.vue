@@ -9,6 +9,7 @@ import DevicePicker from '@/components/DevicePicker.vue'
 import { useExecutionRetry } from '@/composables/useExecutionRetry'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { applyOnlyFailed } from '@/utils/reportFilter'
+import { formatDateTime } from '@/utils/format'
 
 const route = useRoute()
 const router = useRouter()
@@ -132,8 +133,8 @@ function viewExecution() {
           <div class="meta"><span class="label">类型</span>{{ typeLabel(detail.execution.type) }}</div>
           <div class="meta"><span class="label">设备</span>#{{ detail.execution.device_id ?? '自动' }}</div>
           <div class="meta"><span class="label">超时</span>{{ detail.execution.timeout_seconds }}s</div>
-          <div class="meta"><span class="label">开始</span>{{ detail.execution.started_at ?? '-' }}</div>
-          <div class="meta"><span class="label">结束</span>{{ detail.execution.finished_at ?? '-' }}</div>
+          <div class="meta"><span class="label">开始</span>{{ formatDateTime(detail.execution.started_at) }}</div>
+          <div class="meta"><span class="label">结束</span>{{ formatDateTime(detail.execution.finished_at) }}</div>
           <div class="meta"><span class="label">耗时</span>{{ durationText(detail.execution.duration) }}</div>
         </div>
       </div>
@@ -220,7 +221,9 @@ function viewExecution() {
           </el-table-column>
           <el-table-column prop="message" label="消息" min-width="300" show-overflow-tooltip />
           <el-table-column prop="source" label="来源" width="90" />
-          <el-table-column prop="created_at" label="时间" width="180" />
+          <el-table-column label="时间" width="180">
+            <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
+          </el-table-column>
         </el-table>
         <el-empty v-else description="暂无日志" :image-size="60" />
       </div>

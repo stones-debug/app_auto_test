@@ -6,6 +6,7 @@ import { executionStatusMeta } from '@/api/executions'
 import { listReports, type ReportListItem } from '@/api/reports'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { withProjectScope } from '@/navigation/workspaceScope'
+import { formatDateTime } from '@/utils/format'
 
 const router = useRouter()
 const navigation = useWorkspaceNavigation()
@@ -143,7 +144,9 @@ watch(
           <el-tag v-else type="info" size="small">按需</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="created_at" label="时间" width="180" />
+      <el-table-column label="时间" width="180">
+        <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
+      </el-table-column>
       <el-table-column label="操作" width="90" fixed="right">
         <template #default="{ row }">
           <el-button size="small" type="primary" text @click="openDetail(row as ReportListItem)">查看</el-button>

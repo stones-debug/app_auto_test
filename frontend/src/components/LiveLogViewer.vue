@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 
+import { formatDateTime } from '@/utils/format'
+
 // V2 §5.14：实时日志查看器——增量日志、级别过滤、自动滚动、连接状态。
 export interface LogEntry {
   id?: number
@@ -85,7 +87,7 @@ function scrollToBottom() {
     </div>
     <div ref="container" class="log-body" @scroll="onScroll">
       <div v-for="(log, i) in filtered" :key="log.id ?? i" class="log-line" :style="{ color: LEVEL_COLOR[log.level] ?? 'var(--text)' }">
-        <span class="log-time v2-aux">{{ log.created_at ? new Date(log.created_at).toLocaleTimeString() : '' }}</span>
+        <span class="log-time v2-aux">{{ formatDateTime(log.created_at) }}</span>
         <span class="log-level">{{ log.level }}</span>
         <span class="log-msg">{{ log.message }}</span>
       </div>

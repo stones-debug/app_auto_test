@@ -6,6 +6,7 @@ import { CASE_STATUS, cloneCase, deleteCase, listCases, type TestCase } from '@/
 import { createModule, listModules } from '@/api/elements'
 import RunButton from '@/components/RunButton.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
+import { formatDateTime } from '@/utils/format'
 
 const route = useRoute()
 const router = useRouter()
@@ -189,7 +190,9 @@ onMounted(() => {
             <span v-else class="v2-aux">{{ lastExecLabel(row.last_execution_status) }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="updated_at" label="更新时间" width="180" />
+        <el-table-column label="更新时间" width="180">
+          <template #default="{ row }">{{ formatDateTime(row.updated_at) }}</template>
+        </el-table-column>
         <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
             <RunButton v-if="(row as TestCase).status !== 'disabled'" :type="'case'" :id="(row as TestCase).id" :name="(row as TestCase).name" />

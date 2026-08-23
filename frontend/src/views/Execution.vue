@@ -14,6 +14,7 @@ import { getDashboardOverview } from '@/api/dashboard'
 import { useExecutionRetry } from '@/composables/useExecutionRetry'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { withProjectScope } from '@/navigation/workspaceScope'
+import { formatDateTime } from '@/utils/format'
 
 const navigation = useWorkspaceNavigation()
 const { projectId, isProjectWorkspace } = navigation
@@ -72,11 +73,7 @@ function durationText(ms: number | null | undefined) {
 }
 
 function fmtTime(t: string | null | undefined) {
-  if (!t) return '-'
-  const d = new Date(t)
-  if (Number.isNaN(d.getTime())) return t
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  return formatDateTime(t)
 }
 
 function isActive(status: string) {
