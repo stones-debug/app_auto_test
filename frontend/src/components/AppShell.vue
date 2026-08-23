@@ -42,7 +42,8 @@ function isActive(key: string) {
   <el-container class="shell">
     <el-aside :width="collapsed ? '72px' : '232px'" class="sidebar">
       <div class="logo" :class="{ collapsed }" role="button" tabindex="0" @click="router.push('/dashboard')" @keyup.enter="router.push('/dashboard')">
-        {{ collapsed ? 'ⓐ' : 'APP 自动化测试平台' }}
+        <img src="/favicon.svg" alt="" class="logo-mark" />
+        <span v-if="!collapsed">APP 自动化测试平台</span>
       </div>
       <div class="menu-area">
         <template v-if="isProjectWorkspace">
@@ -156,6 +157,16 @@ function isActive(key: string) {
 }
 .logo.collapsed {
   font-size: 18px;
+}
+.logo-mark {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  margin-right: 8px;
+  flex-shrink: 0;
+}
+.logo.collapsed .logo-mark {
+  margin-right: 0;
 }
 .menu-area {
   flex: 1;

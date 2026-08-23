@@ -44,6 +44,7 @@ exe = EXE(
     upx=False,
     console=False,  # 托盘应用无控制台窗口
     disable_windowed_traceback=False,
+    icon=str(project_root / "packaging" / "assets" / "agent.ico"),
 )
 
 coll = COLLECT(

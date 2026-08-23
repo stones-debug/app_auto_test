@@ -151,13 +151,19 @@ class DesktopController:
     def _start_tray(self) -> None:
         try:
             import pystray
-            from PIL import Image, ImageDraw
         except ImportError:
-            logger.warning("pystray/Pillow 不可用，仅窗口模式运行")
+            logger.warning("pystray 不可用，仅窗口模式运行")
             return
-        image = Image.new("RGB", (64, 64), "#409EFF")
-        draw = ImageDraw.Draw(image)
-        draw.rectangle((16, 16, 48, 48), fill="white")
+        try:
+            from desktop.logo import tray_icon
+
+            image = tray_icon()
+        except Exception:
+            logger.warning("品牌图标生成失败，使用默认图标")
+            from PIL import Image, ImageDraw
+
+            image = Image.new("RGB", (64, 64), "#4f46e5")
+            ImageDraw.Draw(image).rectangle((16, 16, 48, 48), fill="white")
         menu = pystray.Menu(
             pystray.MenuItem("打开窗口", self._show_window, default=True),
             pystray.MenuItem("退出", self._on_quit),

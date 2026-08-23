@@ -57,6 +57,21 @@ def _out(text: str) -> None:
         print(text)
 
 
+BANNER = r"""
+    _     ____   ____
+   / \   |  _ \ |  _ \
+  / _ \  | |_) || |_) |
+ / ___ \ |  __/ |  __/
+/_/   \_\|_|    |_|
+"""
+
+
+def print_banner() -> None:
+    """控制台启动横幅：logo 字样 + 名称版本（桌面打包版无控制台时静默）。"""
+    _out(BANNER)
+    _out(f"APP 自动化测试平台 · Device Agent v{__version__}")
+
+
 def should_run_desktop(explicit_desktop: bool, *, frozen: bool | None = None) -> bool:
     """决定是否启动桌面界面。
 
@@ -472,6 +487,7 @@ async def main() -> None:
         # Windows 方案 §4.2：自检失败以非零码退出（CI / publish.ps1 门禁）
         sys.exit(0 if result["ok"] else 1)
 
+    print_banner()
     # Step 10：Registry 与 manifest 单一来源一致性断言（不一致拒绝启动）
     verify_registry_matches_manifest()
 

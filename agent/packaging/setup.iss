@@ -15,6 +15,7 @@
 
 #define AppName "APP Auto Test Agent"
 #define AppExeName "app-auto-test-agent.exe"
+#define AgentIcon "assets\agent.ico"
 
 [Setup]
 AppId={{8E3C0A1B-4F2A-4C1D-9B6A-2D3E5F7A9B0C}
@@ -30,6 +31,7 @@ Compression=lzma2
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#AppExeName}
+SetupIconFile={#AgentIcon}
 SetupLogging=yes
 
 [Languages]

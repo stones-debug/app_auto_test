@@ -84,6 +84,7 @@ async function handleSubmit() {
       <div class="deco deco-1"></div>
       <div class="deco deco-2"></div>
       <div class="brand-inner">
+        <img src="/favicon.svg" alt="APP 自动化测试平台" class="brand-logo" />
         <div class="brand-title">APP 自动化测试平台</div>
         <div class="brand-desc">一站式移动端自动化测试解决方案</div>
         <ul class="highlights">
@@ -182,6 +183,13 @@ async function handleSubmit() {
   position: relative;
   max-width: 420px;
   padding: 0 24px;
+}
+.brand-logo {
+  width: 72px;
+  height: 72px;
+  border-radius: 16px;
+  margin-bottom: 20px;
+  box-shadow: 0 10px 24px rgba(79, 70, 229, 0.25);
 }
 .brand-title {
   font-size: 34px;

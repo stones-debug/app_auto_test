@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from main import AgentApp, build_agent_app, http_origin, should_run_desktop
+from main import BANNER, AgentApp, build_agent_app, http_origin, print_banner, should_run_desktop
 
 
 class FakeClient:
@@ -24,6 +24,15 @@ class FakeClient:
 )
 def test_desktop_mode_selection(explicit_desktop: bool, frozen: bool, expected: bool):
     assert should_run_desktop(explicit_desktop, frozen=frozen) is expected
+
+
+def test_banner_contains_brand(capsys: pytest.CaptureFixture[str]) -> None:
+    """启动横幅包含品牌标识与版本信息（console 模式）。"""
+    assert BANNER.strip()
+    print_banner()
+    out = capsys.readouterr().out
+    assert "APP" in out
+    assert "Device Agent" in out
 
 
 def test_build_agent_app_uses_install_identity_and_machine_psk():
