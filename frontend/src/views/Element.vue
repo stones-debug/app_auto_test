@@ -154,11 +154,12 @@ async function save() {
     return
   }
   const isCreate = !editingId.value
+  const payload = { ...form.value, project_id: form.value.project_id, page_name: form.value.page_name || null }
   if (editingId.value) {
-    await updateElement(editingId.value, form.value)
+    await updateElement(editingId.value, payload)
     ElMessage.success('已更新')
   } else {
-    await createElement({ ...form.value, project_id: form.value.project_id })
+    await createElement(payload)
     ElMessage.success('已创建')
   }
   dialogVisible.value = false
@@ -330,7 +331,17 @@ onMounted(() => {
           <el-input v-model="form.name" />
         </el-form-item>
         <el-form-item label="页面">
-          <el-input v-model="form.page_name" placeholder="所属页面名，如登录页" />
+          <el-select
+            v-model="form.page_name"
+            filterable
+            allow-create
+            default-first-option
+            class="full"
+            placeholder="选择页面分组，如 登录页"
+          >
+            <el-option label="未分组" value="" />
+            <el-option v-for="g in pageGroups" :key="g.page_name" :label="g.page_name" :value="g.page_name" />
+          </el-select>
         </el-form-item>
         <el-form-item label="平台">
           <el-radio-group v-model="form.platform">
