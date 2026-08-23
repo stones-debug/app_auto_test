@@ -373,6 +373,41 @@ async def test_element_copy_creates_for_current_user(client: AsyncClient):
     assert copied["project_id"] == p1
 
 
+async def test_element_update_can_move_project(client: AsyncClient):
+    """V3：编辑时可迁移元素项目（创建者+目标项目写权限）；无权限目标项目 403；非创建者 403。"""
+    h_owner, p1 = await _setup(client)
+    p2 = (await client.post("/api/projects", json={"name": "迁移目标项目"}, headers=h_owner)).json()["id"]
+    h_stranger = await _register_user(client, "pytest_stranger", "stranger@tl-tek.com")
+    p3 = (await client.post("/api/projects", json={"name": "他人项目"}, headers=h_stranger)).json()["id"]
+
+    el = (await client.post(
+        "/api/elements",
+        headers=h_owner,
+        json={"project_id": p1, "name": "待迁移", "locator_type": "id", "locator_value": "mv"},
+    )).json()
+    el_id = el["id"]
+
+    # 无权限目标项目（他人项目）→ 403
+    denied = await client.put(
+        f"/api/elements/{el_id}", json={"project_id": p3}, headers=h_owner
+    )
+    assert denied.status_code == 403
+
+    # 迁移成功
+    moved = (await client.put(
+        f"/api/elements/{el_id}", json={"project_id": p2}, headers=h_owner
+    )).json()
+    assert moved["project_id"] == p2
+    assert moved["project_name"] == "迁移目标项目"
+    assert moved["created_by_name"] == "pytest_owner"
+
+    # 旧项目列表不含、新项目包含
+    old = (await client.get(f"/api/elements?project_id={p1}", headers=h_owner)).json()
+    assert all(i["id"] != el_id for i in old["items"])
+    new = (await client.get(f"/api/elements?project_id={p2}", headers=h_owner)).json()
+    assert any(i["id"] == el_id for i in new["items"])
+
+
 async def test_element_group_custom(client: AsyncClient):
     """V3：自定义分组创建/重名 409/删除仅创建者；空分组出现在分组统计。"""
     h1, _ = await _setup(client)

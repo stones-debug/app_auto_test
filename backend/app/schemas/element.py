@@ -48,6 +48,7 @@ class ElementCreate(BaseModel):
 
 
 class ElementUpdate(BaseModel):
+    project_id: int | None = None
     name: str | None = Field(default=None, min_length=1, max_length=255)
     page_name: str | None = None
     platform: str | None = Field(default=None, pattern="^(android|ios|both)$")

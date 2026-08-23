@@ -338,6 +338,12 @@ async def update_element(
 ):
     element = await _load_element_or_404(element_id, db)
     await _require_creator(element, user)
+    # V3：编辑时可迁移元素所属项目（仅创建者；需目标项目写权限）
+    if body.project_id is not None and body.project_id != element.project_id:
+        _target, role = await get_project_permission(body.project_id, user, db)
+        if role not in ("owner", "admin", "member"):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="目标项目无编辑权限")
+        element.project_id = body.project_id
     # page_name 允许显式 null/空白来清除分组；不能沿用“value is not None”判断。
     if "page_name" in body.model_fields_set:
         element.page_name = body.page_name
