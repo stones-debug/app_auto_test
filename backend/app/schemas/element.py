@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ModuleCreate(BaseModel):
@@ -38,6 +38,14 @@ class ElementCreate(BaseModel):
     locator_value: str = Field(min_length=1)
     description: str | None = None
 
+    @field_validator("page_name")
+    @classmethod
+    def normalize_page_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
 
 class ElementUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
@@ -49,6 +57,14 @@ class ElementUpdate(BaseModel):
     )
     locator_value: str | None = Field(default=None, min_length=1)
     description: str | None = None
+
+    @field_validator("page_name")
+    @classmethod
+    def normalize_page_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
 
 
 class ElementOut(BaseModel):

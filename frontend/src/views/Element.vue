@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { useAuthStore } from '@/stores/auth'
@@ -11,9 +11,11 @@ import {
   createElementGroup,
   deleteElement,
   deleteElementGroup,
+  elementPageFilter,
   elementPages,
   elementUsage,
   listElements,
+  totalElementCount,
   updateElement,
   type ElementPageCount,
   type TestElement,
@@ -31,6 +33,7 @@ const keyword = ref('')
 const platform = ref('')
 const projectFilter = ref<number | undefined>()
 const pageGroups = ref<ElementPageCount[]>([])
+const allTotal = computed(() => totalElementCount(pageGroups.value))
 const selectedPage = ref('all')
 const projects = ref<{ id: number; name: string }[]>([])
 
@@ -73,7 +76,7 @@ async function load() {
       keyword: keyword.value || undefined,
       platform: platform.value || undefined,
       project_id: projectFilter.value,
-      page_name: selectedPage.value === 'all' ? undefined : selectedPage.value,
+      page_name: elementPageFilter(selectedPage.value),
     })
     items.value = data.items
     total.value = data.total
@@ -156,7 +159,8 @@ async function save() {
     page.value = 1
     await Promise.all([loadPages(), load()])
   } else {
-    await load()
+    // 编辑可能改变或清空页面分组，列表与左侧计数必须一起刷新。
+    await Promise.all([loadPages(), load()])
   }
 }
 
@@ -198,6 +202,9 @@ async function removeGroup(g: ElementPageCount) {
   await deleteElementGroup(g.group_id)
   if (selectedPage.value === g.page_name) {
     selectedPage.value = 'all'
+    page.value = 1
+    await Promise.all([loadPages(), load()])
+    return
   }
   await loadPages()
 }
@@ -229,7 +236,7 @@ onMounted(() => {
     <div class="page-tree">
       <div class="tree-head v2-card-title">页面分组</div>
       <div class="tree-item" :class="{ active: selectedPage === 'all' }" @click="selectPage('all')">
-        <span>全部</span><span class="count">{{ total }}</span>
+        <span>全部</span><span class="count">{{ allTotal }}</span>
       </div>
       <div v-for="g in pageGroups" :key="g.page_name" class="tree-item tree-group" :class="{ active: selectedPage === g.page_name }" @click="selectPage(g.page_name)">
         <span>{{ g.page_name }}</span>

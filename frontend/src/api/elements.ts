@@ -124,3 +124,11 @@ export function deleteElement(id: number) {
 export function elementUsage(id: number) {
   return request.get<ElementUsage[]>(`/elements/${id}/usage`)
 }
+
+export function elementPageFilter(pageName: string): string | undefined {
+  return pageName === 'all' ? undefined : pageName
+}
+
+export function totalElementCount(pages: ElementPageCount[]): number {
+  return pages.reduce((sum, page) => sum + page.count, 0)
+}

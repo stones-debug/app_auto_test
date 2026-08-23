@@ -1,7 +1,10 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import update
 
+from app.core.database import SessionLocal
 from app.main import app
+from app.models import TestElement as ElementModel
 
 OWNER = {"username": "pytest_owner", "email": "owner@tl-tek.com", "password": "test123"}
 
@@ -389,3 +392,79 @@ async def test_element_group_custom(client: AsyncClient):
     assert (await client.delete(f"/api/elements/groups/{group_id}", headers=h1)).status_code == 204
     pages_after = (await client.get("/api/elements/pages", headers=h1)).json()
     assert "我的新分组" not in {p["page_name"] for p in pages_after}
+
+
+async def test_global_ungrouped_handles_null_blank_and_whitespace(client: AsyncClient):
+    """未分组统计和列表统一覆盖 NULL、空字符串、纯空格及清空分组。"""
+    headers, project_id = await _setup(client)
+    created = []
+    for name, page_name in [
+        ("NULL元素", None),
+        ("历史空串元素", "临时页"),
+        ("历史空格元素", "临时页"),
+    ]:
+        response = await client.post(
+            "/api/elements",
+            headers=headers,
+            json={
+                "project_id": project_id,
+                "name": name,
+                "page_name": page_name,
+                "locator_type": "id",
+                "locator_value": name,
+            },
+        )
+        assert response.status_code == 201
+        created.append(response.json())
+
+    # 模拟修复前已落库的空字符串/纯空格历史数据。
+    async with SessionLocal() as db:
+        await db.execute(
+            update(ElementModel)
+            .where(ElementModel.id == created[1]["id"])
+            .values(page_name="")
+        )
+        await db.execute(
+            update(ElementModel)
+            .where(ElementModel.id == created[2]["id"])
+            .values(page_name="   ")
+        )
+        await db.commit()
+
+    named = (
+        await client.post(
+            "/api/elements",
+            headers=headers,
+            json={
+                "project_id": project_id,
+                "name": "可清空元素",
+                "page_name": "  登录页  ",
+                "locator_type": "id",
+                "locator_value": "clearable",
+            },
+        )
+    ).json()
+    assert named["page_name"] == "登录页"
+    cleared = await client.put(
+        f"/api/elements/{named['id']}",
+        headers=headers,
+        json={"page_name": "   "},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["page_name"] is None
+
+    pages = (await client.get("/api/elements/pages", headers=headers)).json()
+    counts = {item["page_name"]: item["count"] for item in pages}
+    assert counts["未分组"] == 4
+    assert "" not in counts
+
+    ungrouped = (
+        await client.get("/api/elements?page_name=未分组", headers=headers)
+    ).json()
+    assert ungrouped["total"] == 4
+    assert {item["name"] for item in ungrouped["items"]} == {
+        "NULL元素",
+        "历史空串元素",
+        "历史空格元素",
+        "可清空元素",
+    }

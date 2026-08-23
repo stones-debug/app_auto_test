@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_editable_project, get_project_permission
@@ -164,6 +164,11 @@ async def _require_creator(element: TestElement, user: User) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅元素创建者可修改")
 
 
+def _ungrouped_element_condition():
+    """兼容历史数据：NULL、空字符串和纯空格都属于“未分组”。"""
+    return or_(TestElement.page_name.is_(None), func.btrim(TestElement.page_name) == "")
+
+
 @router.get("/elements", response_model=ElementPage)
 async def list_elements(
     pagination=Depends(get_pagination),
@@ -185,7 +190,9 @@ async def list_elements(
         conditions.append((TestElement.platform == platform) | (TestElement.platform == "both"))
     if page_name:
         conditions.append(
-            TestElement.page_name.is_(None) if page_name == "未分组" else TestElement.page_name == page_name
+            _ungrouped_element_condition()
+            if page_name == "未分组"
+            else TestElement.page_name == page_name
         )
     if locator_type:
         conditions.append(TestElement.locator_type == locator_type)
@@ -255,14 +262,18 @@ async def element_pages(
     db: AsyncSession = Depends(get_db),
 ):
     """V3：全库页面分组统计：自定义分组（含空分组）+ 元素 page_name 聚合，跨项目。"""
+    normalized_page = func.coalesce(
+        func.nullif(func.btrim(TestElement.page_name), ""),
+        "未分组",
+    )
     rows = (
         await db.execute(
-            select(TestElement.page_name, func.count())
+            select(normalized_page, func.count())
             .where(TestElement.deleted_at.is_(None))
-            .group_by(TestElement.page_name)
+            .group_by(normalized_page)
         )
     ).all()
-    counts = {page_name or "未分组": count for page_name, count in rows}
+    counts = {page_name: count for page_name, count in rows}
 
     groups = (await db.execute(select(ElementGroup).order_by(ElementGroup.id))).scalars().all()
     items: list[ElementPageCount] = []
@@ -327,7 +338,10 @@ async def update_element(
 ):
     element = await _load_element_or_404(element_id, db)
     await _require_creator(element, user)
-    for field in ("name", "page_name", "platform", "locator_type", "locator_value", "description"):
+    # page_name 允许显式 null/空白来清除分组；不能沿用“value is not None”判断。
+    if "page_name" in body.model_fields_set:
+        element.page_name = body.page_name
+    for field in ("name", "platform", "locator_type", "locator_value", "description"):
         value = getattr(body, field)
         if value is not None:
             setattr(element, field, value)
@@ -438,8 +452,8 @@ async def list_elements_legacy(
         count_query = count_query.where((TestElement.platform == platform) | (TestElement.platform == "both"))
     if page_name:
         if page_name == "未分组":
-            query = query.where(TestElement.page_name.is_(None))
-            count_query = count_query.where(TestElement.page_name.is_(None))
+            query = query.where(_ungrouped_element_condition())
+            count_query = count_query.where(_ungrouped_element_condition())
         else:
             query = query.where(TestElement.page_name == page_name)
             count_query = count_query.where(TestElement.page_name == page_name)
@@ -490,17 +504,21 @@ async def element_pages_legacy(
     db: AsyncSession = Depends(get_db),
 ):
     """旧版元素库页面分组统计（兼容遗留）：按 page_name 分组，含"未分组"（NULL 归为未分组）。"""
+    normalized_page = func.coalesce(
+        func.nullif(func.btrim(TestElement.page_name), ""),
+        "未分组",
+    )
     rows = (
         await db.execute(
-            select(TestElement.page_name, func.count())
+            select(normalized_page, func.count())
             .where(
                 TestElement.project_id == project_id,
                 TestElement.deleted_at.is_(None),
             )
-            .group_by(TestElement.page_name)
+            .group_by(normalized_page)
         )
     ).all()
     items: list[ElementPageCount] = []
     for page_name, count in rows:
-        items.append(ElementPageCount(page_name=page_name or "未分组", count=count))
+        items.append(ElementPageCount(page_name=page_name, count=count))
     return items
