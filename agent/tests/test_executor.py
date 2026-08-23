@@ -252,6 +252,101 @@ async def test_appium_find_element_wait_success(monkeypatch):
     assert found == "element:soon"
 
 
+async def test_appium_nonstandard_id_uses_exact_resource_id_xpath_directly():
+    from appium.webdriver.common.appiumby import AppiumBy
+    from selenium.common.exceptions import NoSuchElementException
+
+    from executor.appium_driver import AppiumDriver
+
+    calls: list[tuple[str, str]] = []
+
+    class UniAppSession:
+        def find_element(self, by, value):
+            calls.append((by, value))
+            if by == AppiumBy.XPATH and value == (
+                '//*[@resource-id="src-components-l-popup-input-port"]'
+            ):
+                return "port-input"
+            raise NoSuchElementException(value)
+
+    driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
+    driver.driver = UniAppSession()
+
+    found = driver.find_element("id", "src-components-l-popup-input-port", wait_timeout=1)
+
+    assert found == "port-input"
+    assert calls == [
+        (AppiumBy.XPATH, '//*[@resource-id="src-components-l-popup-input-port"]'),
+    ]
+
+
+async def test_appium_standard_android_id_keeps_native_id_strategy():
+    from appium.webdriver.common.appiumby import AppiumBy
+
+    from executor.appium_driver import AppiumDriver
+
+    calls: list[tuple[str, str]] = []
+
+    class AndroidSession:
+        def find_element(self, by, value):
+            calls.append((by, value))
+            return "login-button"
+
+    driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
+    driver.driver = AndroidSession()
+
+    found = driver.find_element("id", "login_btn", wait_timeout=1)
+
+    assert found == "login-button"
+    assert calls == [(AppiumBy.ID, "login_btn")]
+
+
+async def test_appium_bare_xpath_is_normalized_to_resource_id_xpath():
+    from appium.webdriver.common.appiumby import AppiumBy
+    from selenium.common.exceptions import NoSuchElementException
+
+    from executor.appium_driver import AppiumDriver
+
+    calls: list[tuple[str, str]] = []
+
+    class UniAppSession:
+        def find_element(self, by, value):
+            calls.append((by, value))
+            if by == AppiumBy.XPATH and value == (
+                '//*[@resource-id="src-views-login-btn-setServerIp"]'
+            ):
+                return "server-button"
+            raise NoSuchElementException(value)
+
+    driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
+    driver.driver = UniAppSession()
+
+    found = driver.find_element("xpath", "src-views-login-btn-setServerIp", wait_timeout=1)
+
+    assert found == "server-button"
+    assert calls == [
+        (AppiumBy.XPATH, '//*[@resource-id="src-views-login-btn-setServerIp"]'),
+    ]
+
+
+async def test_appium_explicit_xpath_is_not_rewritten():
+    from appium.webdriver.common.appiumby import AppiumBy
+
+    from executor.appium_driver import AppiumDriver
+
+    xpath = '//*[@resource-id="src-views-login-btn-setServerIp"]'
+
+    class XPathSession:
+        def find_element(self, by, value):
+            assert (by, value) == (AppiumBy.XPATH, xpath)
+            return "server-button"
+
+    driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
+    driver.driver = XPathSession()
+
+    assert driver.find_element("xpath", xpath, wait_timeout=1) == "server-button"
+
+
 async def test_regex_match_assertion():
     from executor.assertions import RegexMatchAssertion
 

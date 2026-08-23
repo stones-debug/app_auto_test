@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from .driver import BaseDriver, DriverError
@@ -7,6 +8,36 @@ if TYPE_CHECKING:
     from appium.webdriver.webdriver import WebDriver
 
 logger = logging.getLogger("agent.appium")
+
+_BARE_RESOURCE_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+_STANDARD_ANDROID_ID_RE = re.compile(
+    r"^(?:[A-Za-z][A-Za-z0-9_.]*:id/)?[a-z][a-z0-9_]*$"
+)
+
+
+def _xpath_literal(value: str) -> str:
+    """将任意字符串安全编码为 XPath 字符串字面量。"""
+    if '"' not in value:
+        return f'"{value}"'
+    if "'" not in value:
+        return f"'{value}'"
+    parts = value.split('"')
+    arguments: list[str] = []
+    for index, part in enumerate(parts):
+        if part:
+            arguments.append(f'"{part}"')
+        if index < len(parts) - 1:
+            arguments.append("'\"'")
+    return f"concat({', '.join(arguments)})"
+
+
+def _resource_id_xpath(value: str) -> str:
+    return f"//*[@resource-id={_xpath_literal(value)}]"
+
+
+def _requires_exact_resource_id_lookup(value: str) -> bool:
+    """判断 ID 是否不符合 Android 的包名:id/资源名约定。"""
+    return _STANDARD_ANDROID_ID_RE.fullmatch(value) is None
 
 
 class AppiumDriver(BaseDriver):
@@ -172,18 +203,59 @@ class AppiumDriver(BaseDriver):
         from .driver import ElementNotFound
 
         driver = self._ensure()
-        by = getattr(AppiumBy, locator_type.upper(), None) or By.XPATH
+        normalized_type = str(locator_type or "").strip().lower()
+        normalized_value = str(locator_value or "").strip()
+        by = getattr(AppiumBy, normalized_type.upper(), None) or By.XPATH
+        resolved_value = normalized_value
+        compatibility_mode: str | None = None
+
+        # UiAutomator2 默认会把裸 ID 自动补为 <appPackage>:id/<value>。uni-app 的
+        # WebView 可访问性节点可能直接使用带连字符的 resource-id；当前驱动即使关闭
+        # ID 自动补全也无法命中该类节点，因此直接使用已验证可用的精确 XPath。
+        is_android = (self.device.get("platform") or "").lower() == "android"
+        if (
+            normalized_type == "id"
+            and is_android
+            and _requires_exact_resource_id_lookup(normalized_value)
+        ):
+            by = AppiumBy.XPATH
+            resolved_value = _resource_id_xpath(normalized_value)
+            compatibility_mode = "精确 resource-id XPath"
+        elif (
+            normalized_type == "xpath"
+            and is_android
+            and _BARE_RESOURCE_ID_RE.fullmatch(normalized_value)
+        ):
+            # 兼容历史数据：定位方式选择了 XPath，但保存的是裸 resource-id。
+            by = AppiumBy.XPATH
+            resolved_value = _resource_id_xpath(normalized_value)
+            compatibility_mode = "精确 resource-id XPath"
+
+        def log_compatibility() -> None:
+            if compatibility_mode:
+                logger.warning(
+                    "元素 %s=%s 已通过%s兼容定位；"
+                    "该 resource-id 不符合 Android 标准包名前缀格式",
+                    normalized_type,
+                    normalized_value,
+                    compatibility_mode,
+                )
+
         timeout = wait_timeout if wait_timeout is not None else 10
         if timeout <= 0:
-            return driver.find_element(by, locator_value)
+            element = driver.find_element(by, resolved_value)
+            log_compatibility()
+            return element
         try:
-            return WebDriverWait(driver, timeout).until(
-                EC.presence_of_element_located((by, locator_value))
+            element = WebDriverWait(driver, timeout).until(
+                EC.presence_of_element_located((by, resolved_value))
             )
         except TimeoutException:
             raise ElementNotFound(
-                f"元素等待超时: {locator_type}={locator_value} ({timeout}s)"
+                f"元素等待超时: {normalized_type}={normalized_value} ({timeout}s)"
             ) from None
+        log_compatibility()
+        return element
 
     def click(self, element) -> None:
         self._ensure()
