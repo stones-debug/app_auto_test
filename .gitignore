@@ -27,6 +27,7 @@ AppAutoTestAgent/
 .env.*.local
 *.pem
 agent/config.yaml
+/agent/user_key.txt
 *.key
 docs/previews
 

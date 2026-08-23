@@ -131,7 +131,7 @@
 
 ### 3.3 绑定管理（Agent 侧）
 - 启动时从 Credential Manager 恢复机器 PSK → `GET /api/agent/bindings` 拉取已绑定用户；
-- 用户在本机录入 `uak_...` Key → `POST /api/agent/bind`（后续绑定）→ 保存撤销凭据；
+- 用户在本机录入 `uak_...` Key → `POST /api/agent/bind`（后续绑定）→ 保存撤销凭据，并将最近使用的 Key 明文写入运行目录 `user_key.txt` 供掩码回填；
 - 解绑：`DELETE /api/agent/bindings/{id}`。
 
 ### 3.4 测试
@@ -150,7 +150,7 @@
 
 ### 4.1 桌面控制器（`agent/desktop/`）
 - `agent/desktop/tray.py`：pystray 托盘（图标、菜单：打开窗口/连接无线设备/退出）；
-- `agent/desktop/window.py`：Tkinter 主窗——服务器地址（可改并持久化到 LocalAppData 配置）、Agent ID、版本、在线状态、Appium 状态；已绑定用户列表 + Key 输入框 + 绑定/解绑；设备表；"连接无线设备"对话框（地址/端口 + 可选配对地址/端口/配对码）；手动刷新、无线断开、打开日志目录；
+- `agent/desktop/window.py`：Tkinter 主窗——卡片式服务器连接、Agent ID/版本/在线/Appium 状态；已绑定用户列表 + 默认掩码且可显示/隐藏的 Key 输入框（绑定成功后明文保存到运行目录 `user_key.txt`）+ 绑定/解绑；带设备计数的设备表；"连接无线设备"对话框（地址/端口 + 可选配对地址/端口/配对码）；手动刷新、无线断开、打开日志目录；
 - `agent/desktop/app.py`：主入口——启动 asyncio 网络循环于独立后台线程（`asyncio.run` in thread），Tkinter 主循环在 UI 线程；UI 与网络层经线程安全队列通信；
 - 程序数据/日志/临时截图放 `%LOCALAPPDATA%\AppAutoTestAgent\`；日志按大小轮转（`logging.handlers.RotatingFileHandler`，如 2MB×5）。
 

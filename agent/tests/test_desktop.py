@@ -6,7 +6,15 @@ from types import SimpleNamespace
 
 from binding import BindingManager
 from credentials import CredentialStore, FileCredentialBackend
-from desktop.controller import AsyncBridge, DesktopController, load_server_url, save_server_url
+from desktop.controller import (
+    USER_KEY_FILENAME,
+    AsyncBridge,
+    DesktopController,
+    load_server_url,
+    load_user_key,
+    save_server_url,
+    save_user_key,
+)
 from main import AgentApp
 
 
@@ -19,6 +27,22 @@ def test_server_url_falls_back_to_default(tmp_path):
     assert load_server_url(tmp_path, "ws://default") == "ws://default"
     save_server_url(tmp_path, "  ")
     assert load_server_url(tmp_path, "ws://default") == "ws://default"
+
+
+def test_user_key_persist_roundtrip_in_runtime_dir(tmp_path):
+    save_user_key(tmp_path, "  uak_public_secret  ")
+
+    assert load_user_key(tmp_path) == "uak_public_secret"
+    assert (tmp_path / USER_KEY_FILENAME).read_text(encoding="utf-8") == "uak_public_secret"
+
+
+def test_user_key_missing_returns_empty(tmp_path):
+    assert load_user_key(tmp_path) == ""
+
+
+def test_user_key_invalid_text_returns_empty(tmp_path):
+    (tmp_path / USER_KEY_FILENAME).write_bytes(b"\xff\xfe\x00")
+    assert load_user_key(tmp_path) == ""
 
 
 async def test_async_bridge_runs_coroutine_on_loop_thread():
@@ -67,6 +91,68 @@ class StubBridge:
         self.loop.call_soon_threadsafe(self.loop.stop)
         self.thread.join(timeout=5)
         self.loop.close()
+
+
+class FakeVar:
+    def __init__(self, value="") -> None:
+        self.value = value
+
+    def get(self):
+        return self.value
+
+    def set(self, value) -> None:
+        self.value = value
+
+
+def test_bind_saves_key_and_keeps_masked_input_value(tmp_path, monkeypatch):
+    class FakeBindings:
+        async def bind(self, key):
+            assert key == "uak_public_secret"
+            return {"agent_id": "agent-1"}
+
+    app = SimpleNamespace(bindings=FakeBindings())
+    bridge = StubBridge()
+    try:
+        ctrl = DesktopController(
+            app,
+            bridge,
+            tmp_path / "state",
+            tmp_path / "logs",
+            "ws://t",
+            runtime_dir=tmp_path / "runtime",
+        )
+        ctrl.key_var = FakeVar("uak_public_secret")
+        ctrl._refresh_bindings = lambda: None
+        messages: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            "tkinter.messagebox.showinfo",
+            lambda title, message: messages.append((title, message)),
+        )
+
+        ctrl._on_bind()
+
+        assert ctrl.key_var.get() == "uak_public_secret"
+        assert load_user_key(tmp_path / "runtime") == "uak_public_secret"
+        assert messages and messages[0][0] == "绑定成功"
+    finally:
+        bridge.close()
+
+
+def test_toggle_key_visibility_defaults_to_masked(tmp_path):
+    app = SimpleNamespace()
+    ctrl = DesktopController(app, None, tmp_path, tmp_path, "ws://t", runtime_dir=tmp_path)
+    entry_options: list[dict] = []
+    button_options: list[dict] = []
+    ctrl.key_entry = SimpleNamespace(configure=lambda **kwargs: entry_options.append(kwargs))
+    ctrl.key_visibility_button = SimpleNamespace(
+        configure=lambda **kwargs: button_options.append(kwargs)
+    )
+
+    ctrl._toggle_key_visibility()
+    ctrl._toggle_key_visibility()
+
+    assert entry_options == [{"show": ""}, {"show": "•"}]
+    assert button_options == [{"text": "隐藏"}, {"text": "显示"}]
 
 
 def test_refresh_bindings_unbound_does_not_crash(tmp_path):

@@ -1941,7 +1941,7 @@ RUNNING ←── Worker 认领后经内部接口通知 FastAPI 更新
 
 1. **多用户绑定与权限**：
    - 每用户一条专属 Key `uak_<public_id>_<secret>`（public_id 为 hex，secret 可含下划线）；库中仅存 Argon2 哈希 + Fernet 密文（`AGENT_USER_KEY_ENCRYPTION_KEY` 派生密钥），明文仅 GET `/api/me/agent-key` 解密返回。
-   - `POST /api/agent/bind`：首绑（user_key+install_id）创建 Agent 与机器 PSK；追加绑定（machine_psk+另一用户 Key）只加 `agent_users`。机器 PSK 与撤销凭据只返回一次，用户 Key 不落库不写日志。
+   - `POST /api/agent/bind`：首绑（user_key+install_id）创建 Agent 与机器 PSK；追加绑定（machine_psk+另一用户 Key）只加 `agent_users`。机器 PSK 与撤销凭据只返回一次，用户 Key 不以明文写入服务端数据库或日志；桌面 Agent 在绑定成功后可将最近使用的 Key 明文保存为 EXE 运行目录下的 `user_key.txt`，启动时仅以掩码回填。
    - 普通用户只可见/可用其绑定 Agent 下的资源（`/agents`、`/devices`、详情、执行均校验）；平台管理员不受限。
    - 解绑：机器侧 `DELETE /api/agent/bindings/{id}`（机器 PSK+撤销凭据）；用户侧 `DELETE /api/agents/{id}/bindings/me`。
 2. **设备与执行**：
@@ -1952,7 +1952,7 @@ RUNNING ←── Worker 认领后经内部接口通知 FastAPI 更新
 3. **Windows Agent**：
    - 交付 Inno Setup 安装包（LocalAppData 安装、HKCU 登录自启动、免管理员）；托盘（pystray）+ Tkinter 管理窗口；asyncio 网络循环在后台线程。
    - `adb devices -l` 每 3s 轮询（工作线程），设备集合变化立即上报 `device_list`，无变化每 30s 全量；`unauthorized`→提示允许 USB 调试，`offline`→连接异常，仅 `device` 上报 idle。
-   - 机器 PSK/撤销凭据存 Windows Credential Manager（回退 LocalAppData 文件）；Appium 按需隐藏启动（127.0.0.1），执行结束/退出清理 Session 与子进程树。
+   - 机器 PSK/撤销凭据存 Windows Credential Manager（回退 LocalAppData 文件）；最近使用的用户 Key 按桌面交互要求明文保存在运行目录 `user_key.txt`，输入框默认掩码；Appium 按需隐藏启动（127.0.0.1），执行结束/退出清理 Session 与子进程树。
    - 安装包托管于后端 `AGENT_RELEASES_PATH`：`latest.json`（version/filename/sha256/size/published_at）+ 5 分钟限定文件名下载 JWT + FileResponse 流式下载（防路径穿越）。
 4. **执行时间戳**：
    - `stop_requested_at`：用户请求停止时刻（queued 取消与 running→stopping 均写入）；停止宽限期从此起算（`execution_stop_grace_seconds`），无值时回退 started_at+timeout 口径。

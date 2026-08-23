@@ -8,10 +8,15 @@
 
 import asyncio
 import logging
+import sys
 import threading
 from pathlib import Path
 
+from version import __version__
+
 logger = logging.getLogger("agent.desktop")
+
+USER_KEY_FILENAME = "user_key.txt"
 
 
 class AsyncBridge:
@@ -53,6 +58,31 @@ def save_server_url(state_dir: Path, url: str) -> None:
     (state_dir / "server_url.txt").write_text(url.strip(), encoding="utf-8")
 
 
+def default_runtime_dir() -> Path:
+    """返回运行目录：打包版取 EXE 目录，源码版取当前工作目录。"""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path.cwd()
+
+
+def load_user_key(runtime_dir: Path) -> str:
+    """从运行目录读取上次成功绑定的用户 Key。"""
+    file = runtime_dir / USER_KEY_FILENAME
+    if not file.exists():
+        return ""
+    try:
+        return file.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as exc:
+        logger.warning("用户 Key 读取失败: %s", exc)
+        return ""
+
+
+def save_user_key(runtime_dir: Path, key: str) -> None:
+    """将用户 Key 明文保存到运行目录，供桌面输入框下次回填。"""
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    (runtime_dir / USER_KEY_FILENAME).write_text(key.strip(), encoding="utf-8")
+
+
 class DesktopController:
     """托盘 + 窗口控制器。run() 必须在主线程调用（Tk 要求）。"""
 
@@ -63,16 +93,19 @@ class DesktopController:
         state_dir: Path,
         log_dir: Path,
         server_url: str,
+        runtime_dir: Path | None = None,
     ) -> None:
         self.app = app
         self.bridge = bridge
         self.state_dir = state_dir
         self.log_dir = log_dir
         self.server_url = server_url
+        self.runtime_dir = runtime_dir or default_runtime_dir()
         self._root = None
         self._tray = None
         self._device_rows: dict[str, int] = {}
         self._refresh_job: str | None = None
+        self._key_visible = False
 
     # ---------- 启动 ----------
 
@@ -86,8 +119,20 @@ class DesktopController:
         root = tk.Tk()
         self._root = root
         root.title("APP 自动化测试平台 Agent")
-        root.geometry("760x560")
+        root.geometry("900x700")
+        root.minsize(820, 620)
         root.resizable(True, True)
+        root.configure(background="#f4f6fb")
+
+        try:
+            from PIL import ImageTk
+
+            from desktop.logo import icon
+
+            self._window_icon = ImageTk.PhotoImage(icon(64))
+            root.iconphoto(True, self._window_icon)
+        except Exception as exc:
+            logger.debug("窗口图标加载失败: %s", exc)
 
         self._build_ui(root, ttk)
         self._start_tray()
@@ -99,52 +144,238 @@ class DesktopController:
     def _build_ui(self, root, ttk) -> None:
         from tkinter import StringVar
 
-        pad = {"padx": 8, "pady": 4}
+        self._configure_styles(root, ttk)
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(0, weight=1)
 
-        # 顶部：服务器 + 状态
-        top = ttk.Frame(root)
-        top.pack(fill="x", **pad)
-        ttk.Label(top, text="服务器:").pack(side="left")
-        self.server_var = StringVar(value=self.server_url)
-        entry = ttk.Entry(top, textvariable=self.server_var, width=40)
-        entry.pack(side="left", padx=4)
-        ttk.Button(top, text="保存", command=self._on_save_server).pack(side="left")
+        page = ttk.Frame(root, style="Page.TFrame", padding=(24, 20, 24, 18))
+        page.grid(row=0, column=0, sticky="nsew")
+        page.columnconfigure(0, weight=1)
+        page.rowconfigure(4, weight=1)
+
+        # 品牌标题
+        header = ttk.Frame(page, style="Page.TFrame")
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 16))
+        header.columnconfigure(0, weight=1)
+        title_box = ttk.Frame(header, style="Page.TFrame")
+        title_box.grid(row=0, column=0, sticky="w")
+        ttk.Label(title_box, text="APP 自动化测试平台", style="Title.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(
+            title_box,
+            text="Device Agent · 管理连接、用户绑定与本地测试设备",
+            style="Subtitle.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(header, text=f"v{__version__}", style="Version.TLabel").grid(
+            row=0, column=1, sticky="ne", padx=(12, 0)
+        )
+
+        # 运行状态概览
+        status_card = ttk.Frame(page, style="Card.TFrame", padding=(18, 14))
+        status_card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        for index in range(3):
+            status_card.columnconfigure(index, weight=1)
+        self.agent_id_var = StringVar(value="-")
+        self.connection_var = StringVar(value="正在连接")
+        self.appium_var = StringVar(value="已停止")
         self.status_var = StringVar(value="状态：初始化…")
-        ttk.Label(top, textvariable=self.status_var, foreground="#666").pack(side="left", padx=12)
+        self._status_item(status_card, ttk, 0, "AGENT ID", self.agent_id_var)
+        self._status_item(status_card, ttk, 1, "服务器连接", self.connection_var)
+        self._status_item(status_card, ttk, 2, "APPIUM 服务", self.appium_var)
 
-        # 绑定区
-        bind_frame = ttk.LabelFrame(root, text="已绑定用户 / 绑定")
-        bind_frame.pack(fill="x", **pad)
-        self.key_var = StringVar()
-        ttk.Entry(bind_frame, textvariable=self.key_var, width=52, show="•").pack(side="left", padx=4)
-        ttk.Button(bind_frame, text="绑定 Key", command=self._on_bind).pack(side="left")
-        self.bindings_var = StringVar(value="未绑定")
-        ttk.Label(bind_frame, textvariable=self.bindings_var, foreground="#555").pack(side="left", padx=12)
+        settings = ttk.Frame(page, style="Page.TFrame")
+        settings.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        settings.columnconfigure(0, weight=1)
+        settings.columnconfigure(1, weight=1)
+
+        # 服务器设置
+        server_card = ttk.Frame(settings, style="Card.TFrame", padding=(18, 16))
+        server_card.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        server_card.columnconfigure(0, weight=1)
+        ttk.Label(server_card, text="服务器连接", style="SectionTitle.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w"
+        )
+        ttk.Label(
+            server_card, text="修改后重启 Agent 生效", style="Hint.TLabel"
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(3, 10))
+        self.server_var = StringVar(value=self.server_url)
+        ttk.Entry(server_card, textvariable=self.server_var, style="Field.TEntry").grid(
+            row=2, column=0, sticky="ew", padx=(0, 8)
+        )
+        ttk.Button(
+            server_card, text="保存地址", command=self._on_save_server, style="Secondary.TButton"
+        ).grid(row=2, column=1)
+
+        # 用户 Key 与绑定
+        bind_card = ttk.Frame(settings, style="Card.TFrame", padding=(18, 16))
+        bind_card.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        bind_card.columnconfigure(0, weight=1)
+        ttk.Label(bind_card, text="用户绑定", style="SectionTitle.TLabel").grid(
+            row=0, column=0, columnspan=3, sticky="w"
+        )
+        self.bindings_var = StringVar(value="正在读取绑定信息…")
+        ttk.Label(bind_card, textvariable=self.bindings_var, style="Hint.TLabel").grid(
+            row=1, column=0, columnspan=3, sticky="w", pady=(3, 10)
+        )
+        self.key_var = StringVar(value=load_user_key(self.runtime_dir))
+        self.key_entry = ttk.Entry(
+            bind_card, textvariable=self.key_var, show="•", style="Field.TEntry"
+        )
+        self.key_entry.grid(row=2, column=0, sticky="ew", padx=(0, 6))
+        self.key_visibility_button = ttk.Button(
+            bind_card,
+            text="显示",
+            command=self._toggle_key_visibility,
+            style="Ghost.TButton",
+            width=5,
+        )
+        self.key_visibility_button.grid(row=2, column=1, padx=(0, 6))
+        ttk.Button(
+            bind_card, text="绑定", command=self._on_bind, style="Accent.TButton", width=7
+        ).grid(row=2, column=2)
+        ttk.Label(
+            bind_card,
+            text=f"Key 明文保存在运行目录的 {USER_KEY_FILENAME}",
+            style="Micro.TLabel",
+        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
         # 设备表
-        device_frame = ttk.LabelFrame(root, text="本地设备（3 秒自动刷新）")
-        device_frame.pack(fill="both", expand=True, **pad)
+        device_card = ttk.Frame(page, style="Card.TFrame", padding=(18, 16, 18, 14))
+        device_card.grid(row=4, column=0, sticky="nsew")
+        device_card.columnconfigure(0, weight=1)
+        device_card.rowconfigure(2, weight=1)
+        ttk.Label(device_card, text="本地设备", style="SectionTitle.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        self.device_count_var = StringVar(value="正在扫描设备…")
+        ttk.Label(device_card, textvariable=self.device_count_var, style="Hint.TLabel").grid(
+            row=1, column=0, sticky="w", pady=(3, 10)
+        )
+        table = ttk.Frame(device_card, style="Card.TFrame")
+        table.grid(row=2, column=0, sticky="nsew")
+        table.columnconfigure(0, weight=1)
+        table.rowconfigure(0, weight=1)
         columns = ("name", "udid", "address", "conn", "status")
-        tree = ttk.Treeview(device_frame, columns=columns, show="headings", height=8)
+        tree = ttk.Treeview(table, columns=columns, show="headings", height=8)
         for col, title, width in (
-            ("name", "名称", 160),
-            ("udid", "序列号/地址", 180),
-            ("address", "地址", 140),
-            ("conn", "连接", 70),
-            ("status", "状态", 110),
+            ("name", "设备名称", 180),
+            ("udid", "序列号 / 地址", 220),
+            ("address", "网络地址", 150),
+            ("conn", "连接方式", 90),
+            ("status", "当前状态", 110),
         ):
             tree.heading(col, text=title)
             tree.column(col, width=width, anchor="w")
-        tree.pack(fill="both", expand=True, padx=4, pady=4)
+        scrollbar = ttk.Scrollbar(table, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
         self.tree = tree
 
         # 操作按钮
-        actions = ttk.Frame(root)
-        actions.pack(fill="x", **pad)
-        ttk.Button(actions, text="手动刷新", command=self._refresh_all).pack(side="left")
-        ttk.Button(actions, text="连接无线设备", command=self._open_wifi_dialog).pack(side="left", padx=4)
-        ttk.Button(actions, text="打开日志目录", command=self._open_log_dir).pack(side="left", padx=4)
-        ttk.Button(actions, text="退出", command=self._on_quit).pack(side="right")
+        actions = ttk.Frame(page, style="Page.TFrame")
+        actions.grid(row=5, column=0, sticky="ew", pady=(14, 0))
+        ttk.Button(
+            actions, text="刷新设备", command=self._refresh_all, style="Secondary.TButton"
+        ).pack(side="left")
+        ttk.Button(
+            actions, text="连接无线设备", command=self._open_wifi_dialog, style="Secondary.TButton"
+        ).pack(side="left", padx=8)
+        ttk.Button(
+            actions, text="打开日志目录", command=self._open_log_dir, style="Secondary.TButton"
+        ).pack(side="left")
+        ttk.Label(actions, text="设备每 3 秒自动刷新", style="Micro.TLabel").pack(
+            side="left", padx=12
+        )
+        ttk.Button(actions, text="退出 Agent", command=self._on_quit, style="Danger.TButton").pack(
+            side="right"
+        )
+
+    @staticmethod
+    def _configure_styles(root, ttk) -> None:
+        style = ttk.Style(root)
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+        font = ("Microsoft YaHei UI", 10)
+        style.configure(".", font=font)
+        style.configure("Page.TFrame", background="#f4f6fb")
+        style.configure("Card.TFrame", background="#ffffff")
+        style.configure(
+            "Title.TLabel",
+            background="#f4f6fb",
+            foreground="#172033",
+            font=("Microsoft YaHei UI", 20, "bold"),
+        )
+        style.configure("Subtitle.TLabel", background="#f4f6fb", foreground="#64748b")
+        style.configure(
+            "Version.TLabel",
+            background="#e9e7ff",
+            foreground="#4f46e5",
+            padding=(10, 5),
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
+        style.configure(
+            "SectionTitle.TLabel",
+            background="#ffffff",
+            foreground="#172033",
+            font=("Microsoft YaHei UI", 11, "bold"),
+        )
+        style.configure("Hint.TLabel", background="#ffffff", foreground="#64748b")
+        style.configure(
+            "Micro.TLabel",
+            background="#ffffff",
+            foreground="#94a3b8",
+            font=("Microsoft YaHei UI", 8),
+        )
+        style.configure(
+            "StatusName.TLabel",
+            background="#ffffff",
+            foreground="#94a3b8",
+            font=("Microsoft YaHei UI", 8, "bold"),
+        )
+        style.configure(
+            "StatusValue.TLabel",
+            background="#ffffff",
+            foreground="#26324a",
+            font=("Microsoft YaHei UI", 11, "bold"),
+        )
+        style.configure("Field.TEntry", fieldbackground="#f8fafc", padding=(10, 8))
+        style.configure("TButton", padding=(12, 8), borderwidth=0)
+        style.configure("Secondary.TButton", background="#eef2f7", foreground="#334155")
+        style.map("Secondary.TButton", background=[("active", "#e2e8f0")])
+        style.configure("Ghost.TButton", background="#f8fafc", foreground="#4f46e5")
+        style.map("Ghost.TButton", background=[("active", "#eef2ff")])
+        style.configure("Accent.TButton", background="#4f46e5", foreground="#ffffff")
+        style.map("Accent.TButton", background=[("active", "#4338ca")])
+        style.configure("Danger.TButton", background="#fff1f2", foreground="#be123c")
+        style.map("Danger.TButton", background=[("active", "#ffe4e6")])
+        style.configure(
+            "Treeview",
+            background="#ffffff",
+            fieldbackground="#ffffff",
+            foreground="#334155",
+            rowheight=34,
+            borderwidth=0,
+        )
+        style.configure(
+            "Treeview.Heading",
+            background="#f8fafc",
+            foreground="#64748b",
+            padding=(8, 8),
+            relief="flat",
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
+        style.map("Treeview", background=[("selected", "#e9e7ff")], foreground=[("selected", "#312e81")])
+
+    @staticmethod
+    def _status_item(parent, ttk, column: int, title: str, variable) -> None:
+        box = ttk.Frame(parent, style="Card.TFrame", padding=(8, 0))
+        box.grid(row=0, column=column, sticky="ew")
+        ttk.Label(box, text=title, style="StatusName.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(box, textvariable=variable, style="StatusValue.TLabel").grid(
+            row=1, column=0, sticky="w", pady=(4, 0)
+        )
 
     # ---------- 托盘 ----------
 
@@ -194,9 +425,13 @@ class DesktopController:
     def _refresh_status(self) -> None:
         app = self.app
         agent_id = getattr(app.client, "agent_id", "-") if app.client else "-"
-        online = "在线" if app.client is not None else "离线"
-        appium = "运行中" if app.appium.running else "停止"
+        ws = getattr(app.client, "ws", None) if app.client else None
+        online = "在线" if ws is not None else "等待连接"
+        appium = "运行中" if app.appium.running else "已停止"
         self.status_var.set(f"Agent: {agent_id} | 连接: {online} | Appium: {appium}")
+        self.agent_id_var.set(str(agent_id))
+        self.connection_var.set(online)
+        self.appium_var.set(appium)
 
     def _refresh_bindings(self) -> None:
         async def _load():
@@ -242,6 +477,10 @@ class DesktopController:
         for iid in list(tree.get_children("")):
             if iid not in {f"d{u}" for u in seen}:
                 tree.delete(iid)
+        count = len(devices)
+        self.device_count_var.set(
+            f"已发现 {count} 台设备 · 每 3 秒自动刷新" if count else "暂未发现设备，请通过 USB 或无线方式连接"
+        )
 
     # ---------- 操作 ----------
 
@@ -269,9 +508,25 @@ class DesktopController:
         except Exception as exc:
             messagebox.showerror("绑定失败", str(exc))
             return
-        self.key_var.set("")
-        messagebox.showinfo("绑定成功", f"已绑定用户（Agent: {result.get('agent_id')}）")
+        try:
+            save_user_key(self.runtime_dir, key)
+        except OSError as exc:
+            messagebox.showwarning(
+                "绑定成功",
+                f"用户已绑定，但 Key 无法保存到运行目录：{exc}",
+            )
+        else:
+            messagebox.showinfo(
+                "绑定成功",
+                f"已绑定用户（Agent: {result.get('agent_id')}）\nKey 已保存并以掩码显示。",
+            )
         self._refresh_bindings()
+
+    def _toggle_key_visibility(self) -> None:
+        """切换 Key 明文/掩码显示，默认始终为掩码。"""
+        self._key_visible = not self._key_visible
+        self.key_entry.configure(show="" if self._key_visible else "•")
+        self.key_visibility_button.configure(text="隐藏" if self._key_visible else "显示")
 
     def _open_wifi_dialog(self) -> None:
         from tkinter import StringVar, Toplevel, ttk

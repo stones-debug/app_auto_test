@@ -2,7 +2,7 @@
 
 - 机器 PSK 与各用户撤销凭据保存在 CredentialStore；
 - 首次绑定创建 Agent 并保存 PSK；追加绑定携带 PSK 只新增关联；
-- 用户 Key 不落盘、不写日志。
+- BindingManager 不记录用户 Key、不写日志；桌面端可按界面配置单独回填。
 """
 
 import logging
