@@ -110,6 +110,14 @@ async def _validate_device_for_execution(
     return device
 
 
+def _reject_current_screen_for_non_case(parameters: dict) -> None:
+    if parameters.get("attach_to_current_app"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="复用当前设备界面仅支持执行单个用例",
+        )
+
+
 @router.post(
     "/executions/cases/{case_id}",
     response_model=ExecutionOut,
@@ -141,6 +149,7 @@ async def create_batch_execution(
     _rl: None = Depends(rate_limit("execution")),  # CR-21：执行创建限流
     db: AsyncSession = Depends(get_db),
 ):
+    _reject_current_screen_for_non_case(body.parameters)
     suites: list[TestSuite] = []
     project_id: int | None = None
     for sid in body.suite_ids:
@@ -170,6 +179,7 @@ async def create_suite_execution(
     _rl: None = Depends(rate_limit("execution")),  # CR-21：执行创建限流
     db: AsyncSession = Depends(get_db),
 ):
+    _reject_current_screen_for_non_case(body.parameters)
     suite = await _get_suite_or_404(suite_id, db)
     await require_project_write(suite.project_id, user, db)
     await _validate_device_for_execution(body.device_id, user, db)

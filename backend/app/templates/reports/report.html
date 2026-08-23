@@ -71,11 +71,12 @@
       {% if case.error_message %}<div class="error-box">{{ case.error_message }}</div>{% endif %}
       {% if case.steps %}
       <table>
-        <thead><tr><th>#</th><th>动作</th><th>参数</th><th>状态</th><th>结果/错误</th><th>截图</th></tr></thead>
+        <thead><tr><th>#</th><th>阶段</th><th>动作</th><th>参数</th><th>状态</th><th>结果/错误</th><th>截图</th></tr></thead>
         <tbody>
         {% for step in case.steps %}
           <tr>
             <td>{{ step.step_order }}</td>
+            <td>{{ '前置' if step.phase == 'setup' else ('后置' if step.phase == 'teardown' else '主体') }}</td>
             <td>{{ step.action }}</td>
             <td style="word-break:break-all">{{ step.parameters }}</td>
             <td class="{{ 'step-ok' if step.status == 'passed' else 'step-fail' }}">{{ step.status }}</td>

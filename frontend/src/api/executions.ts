@@ -16,6 +16,7 @@ export interface ExecutionStep {
   id: number
   step_order: number
   action: string
+  phase?: 'setup' | 'main' | 'teardown'
   parameters: Record<string, unknown>
   status: string
   duration: number | null
@@ -106,6 +107,12 @@ export interface RunOptions {
   device_id?: number | null
   parameters?: Record<string, unknown>
   timeout_seconds?: number
+}
+
+export interface ExecutionRunSettings {
+  use_pre_steps: boolean
+  use_post_steps: boolean
+  attach_to_current_app: boolean
 }
 
 export function listExecutions(params?: {

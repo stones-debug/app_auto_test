@@ -5,10 +5,8 @@ import { useRoute, useRouter } from 'vue-router'
 import Draggable from 'vuedraggable'
 
 import {
-  ACTIONS,
   ASSERTION_TYPES,
   CASE_STATUS,
-  actionMeta,
   assertionMeta,
   createCase,
   defaultParams,
@@ -17,9 +15,11 @@ import {
   updateCase,
   type Assertion,
   type Step,
+  type StepPhase,
   type TestCase,
 } from '@/api/cases'
 import { listModules } from '@/api/elements'
+import CaseStepEditor from '@/components/CaseStepEditor.vue'
 import ElementSelector from '@/components/ElementSelector.vue'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 
@@ -61,39 +61,23 @@ watch(
 )
 const loadedOnce = ref(false)
 
-function stepMeta(step: Step) {
-  return actionMeta(step.action)
-}
-
 function assertMeta(assertion: Assertion) {
   return assertionMeta(assertion.type)
 }
 
-function addStep() {
-  const steps = form.steps as Step[]
-  steps.push({
-    order: steps.length + 1,
-    action: 'click',
-    params: defaultParams(actionMeta('click').fields),
-    element_id: null,
-    description: '',
-    continue_on_failure: false,
+function phaseSteps(phase: StepPhase) {
+  return computed<Step[]>({
+    get: () => (form.steps as Step[]).filter((step) => (step.phase ?? 'main') === phase),
+    set: (steps) => {
+      const other = (form.steps as Step[]).filter((step) => (step.phase ?? 'main') !== phase)
+      form.steps = [...other, ...steps.map((step, index) => ({ ...step, phase, order: index + 1 }))]
+    },
   })
 }
 
-function onStepActionChange(step: Step) {
-  // CR-09：切换动作后按元数据重建参数
-  step.params = defaultParams(actionMeta(step.action).fields)
-}
-
-function removeStep(index: number) {
-  ;(form.steps as Step[]).splice(index, 1)
-  reorderSteps()
-}
-
-function reorderSteps() {
-  ;(form.steps as Step[]).forEach((s, i) => (s.order = i + 1))
-}
+const setupSteps = phaseSteps('setup')
+const mainSteps = phaseSteps('main')
+const teardownSteps = phaseSteps('teardown')
 
 function addAssertion() {
   const assertions = form.assertions as Assertion[]
@@ -212,65 +196,29 @@ onMounted(async () => {
       </el-form>
     </div>
 
-    <div class="content-card mb16">
-      <div class="section-title-row">
-        <span class="section-title">执行步骤</span>
-        <el-button type="primary" size="small" @click="addStep">添加步骤</el-button>
-      </div>
-      <Draggable v-model="form.steps" item-key="order" handle=".drag-handle" class="step-list" @end="reorderSteps">
-        <template #item="{ element, index }">
-          <el-card class="step-card step" shadow="never">
-            <div class="step-head">
-              <span class="drag-handle">⠿</span>
-              <span class="step-badge step">{{ index + 1 }}</span>
-              <el-select
-                v-model="element.action"
-                class="action-select"
-                @change="onStepActionChange(element)"
-              >
-                <el-option v-for="a in ACTIONS" :key="a.value" :label="a.label" :value="a.value" />
-              </el-select>
-              <span class="continue-label">失败后继续</span>
-              <el-switch v-model="element.continue_on_failure" size="small" />
-              <el-button type="danger" text size="small" @click="removeStep(index)">删除</el-button>
-            </div>
-            <div class="step-body">
-              <div v-if="stepMeta(element).needsElement" class="step-row">
-                <span class="field-label">元素</span>
-                <ElementSelector v-model="element.element_id" />
-              </div>
-              <div v-for="f in stepMeta(element).fields" :key="f.key" class="step-row">
-                <span class="field-label">{{ f.label }}</span>
-                <el-select
-                  v-if="f.type === 'select'"
-                  v-model="element.params![f.key]"
-                  class="w-200"
-                >
-                  <el-option v-for="o in f.options" :key="o.value" :label="o.label" :value="o.value" />
-                </el-select>
-                <el-switch v-else-if="f.type === 'switch'" v-model="element.params![f.key]" />
-                <el-input
-                  v-else
-                  v-model="element.params![f.key]"
-                  :type="f.type === 'number' ? 'number' : 'text'"
-                  :min="f.min"
-                  :max="f.max"
-                  :placeholder="f.placeholder"
-                  class="w-200"
-                />
-              </div>
-              <div class="step-row">
-                <span class="field-label">描述</span>
-                <el-input v-model="element.description" placeholder="步骤说明（可选）" />
-              </div>
-            </div>
-          </el-card>
-        </template>
-      </Draggable>
-      <div class="add-more">
-        <el-button type="primary" plain class="w-full" @click="addStep">+ 添加步骤</el-button>
-      </div>
-    </div>
+    <CaseStepEditor
+      v-model="setupSteps"
+      phase="setup"
+      title="前置操作"
+      description="运行时勾选后，在每个用例主体步骤之前执行"
+      tone="warning"
+    />
+
+    <CaseStepEditor
+      v-model="mainSteps"
+      phase="main"
+      title="执行步骤"
+      description="用例的主体操作，始终执行"
+      tone="primary"
+    />
+
+    <CaseStepEditor
+      v-model="teardownSteps"
+      phase="teardown"
+      title="后置操作"
+      description="运行时勾选后，在断言完成后执行；主体失败时仍会尝试清理"
+      tone="success"
+    />
 
     <div class="content-card mb16">
       <div class="section-title-row">

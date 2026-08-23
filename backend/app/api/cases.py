@@ -56,11 +56,15 @@ async def _check_elements_belong(
 
 
 async def _check_orders_unique(steps: list | None, assertions: list | None) -> None:
-    """Step 4：step order 与 assertion order 不得重复（快照用 JSON 列，无 DB 唯一约束）。"""
-    step_orders = [int(s["order"]) for s in (steps or []) if isinstance(s, dict) and "order" in s]
+    """同一阶段内 step order 与 assertion order 不得重复。"""
+    step_orders = [
+        (str(s.get("phase") or "main"), int(s["order"]))
+        for s in (steps or [])
+        if isinstance(s, dict) and "order" in s
+    ]
     if len(step_orders) != len(set(step_orders)):
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="步骤 order 不得重复"
+            status_code=status.HTTP_400_BAD_REQUEST, detail="同一阶段内步骤 order 不得重复"
         )
     assertion_orders = [
         int(a["order"]) for a in (assertions or []) if isinstance(a, dict) and "order" in a

@@ -197,6 +197,8 @@ class AgentApp:
             # CR-08：用配置的 host/port/capabilities + Worker 下发的设备信息构造驱动
             driver = create_driver(mode, config=self.config, device=device)
             runtime.driver = driver
+            if parameters.get("attach_to_current_app"):
+                await asyncio.to_thread(driver.attach_to_current_app)
             tmpdir = tempfile.TemporaryDirectory(prefix=f"exec_{execution_id}_")
             screenshots_dir = Path(tmpdir.name) / "screenshots"
             runner = TestRunner(

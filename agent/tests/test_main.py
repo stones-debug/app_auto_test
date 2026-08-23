@@ -87,6 +87,31 @@ async def test_start_test_runs_in_background_task():
     assert 1 not in app.runtimes  # 完成回调清理
 
 
+async def test_start_test_current_screen_mode_attaches_driver(monkeypatch):
+    from executor.driver import MockDriver
+
+    driver = MockDriver()
+    monkeypatch.setattr("main.create_driver", lambda *args, **kwargs: driver)
+    app = AgentApp({"driver": "mock"})
+    app.client = FakeClient()
+    await app.on_message(
+        {
+            "type": "start_test",
+            "execution_id": 2,
+            "session_token": "t-2",
+            "parameters": {"attach_to_current_app": True},
+            "device": {"udid": "u-2", "platform": "android"},
+            "cases": _sleep_case(0.01),
+        }
+    )
+
+    await asyncio.wait_for(app.runtimes[2].task, timeout=2)
+
+    assert driver.launched is True
+    results = [m for m in app.client.sent if m["type"] == "execution_result"]
+    assert results and results[0]["status"] == "passed"
+
+
 async def test_stop_test_interrupts_blocking_execution():
     """CR-06：stop_test 立即生效（打断 sleep 等阻塞动作）并上报 stopped。"""
     app = AgentApp({"driver": "mock"})

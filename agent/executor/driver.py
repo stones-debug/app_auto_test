@@ -29,6 +29,10 @@ class MockElement:
 class BaseDriver:
     """驱动抽象：MockDriver 与 AppiumDriver 共用接口。"""
 
+    def attach_to_current_app(self) -> None:
+        """建立会话但不启动应用，直接操作设备当前前台界面。"""
+        raise NotImplementedError
+
     def launch_app(self, package: str, activity: str | None = None, no_reset: bool = True) -> None:
         raise NotImplementedError
 
@@ -83,6 +87,9 @@ class MockDriver(BaseDriver):
         self.state: dict[str, str] = dict(initial_state or {})
         self.screenshots: list[str] = []
         self.launched = False
+
+    def attach_to_current_app(self) -> None:
+        self.launched = True
 
     def launch_app(self, package: str, activity: str | None = None, no_reset: bool = True) -> None:
         self.launched = True

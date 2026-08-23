@@ -325,6 +325,7 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
             "execution_id": execution_id,
             "case_id": case_id,
             "step_order": step_order,
+            "phase": snapshot.get("phase") or "main",
             "status": step.status,
             "case_status": execution_case.status,
             "duration": step.duration,

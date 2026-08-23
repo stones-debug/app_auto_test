@@ -189,6 +189,39 @@ async def test_create_suite_and_batch_execution(client: AsyncClient):
     assert batch.json()["parameters"]["suite_ids"] == [suite_id]
 
 
+async def test_current_screen_mode_only_allows_single_case(client: AsyncClient):
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+    element_id = await _create_element(client, token, project_id)
+    case_id = await _create_case(client, token, project_id, element_id)
+    suite_id = await _create_suite(client, token, project_id, case_id)
+    device_id = await _create_agent_device(client, token)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    case_run = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers=headers,
+        json={"device_id": device_id, "parameters": {"attach_to_current_app": True}},
+    )
+    assert case_run.status_code == 201
+    assert case_run.json()["parameters"]["attach_to_current_app"] is True
+
+    suite_run = await client.post(
+        f"/api/executions/suites/{suite_id}",
+        headers=headers,
+        json={"device_id": device_id, "parameters": {"attach_to_current_app": True}},
+    )
+    assert suite_run.status_code == 400
+    assert "仅支持执行单个用例" in suite_run.json()["detail"]
+
+    invalid = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers=headers,
+        json={"device_id": device_id, "parameters": {"use_pre_steps": "false"}},
+    )
+    assert invalid.status_code == 422
+
+
 async def test_batch_requires_same_project(client: AsyncClient):
     token = await _register_and_login(client)
     p1 = await _create_project(client, token, "批处理项目A")

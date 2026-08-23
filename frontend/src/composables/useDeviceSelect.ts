@@ -7,6 +7,7 @@ import {
   createSuiteExecution,
   retryExecution,
   type Execution,
+  type ExecutionRunSettings,
   type RunOptions,
 } from '@/api/executions'
 
@@ -25,6 +26,19 @@ export function apiErrorCode(error: unknown): string | null {
 
 export const CONFLICT_CODES = new Set(['DEVICE_BUSY', 'AGENT_OFFLINE', 'DEVICE_REQUIRED'])
 
+export function buildRunParameters(
+  kind: RunTarget['kind'],
+  settings: ExecutionRunSettings,
+): Record<string, unknown> {
+  if (kind === 'retry') return {}
+  const parameters: Record<string, unknown> = {
+    use_pre_steps: settings.use_pre_steps,
+    use_post_steps: settings.use_post_steps,
+  }
+  if (kind === 'case') parameters.attach_to_current_app = settings.attach_to_current_app
+  return parameters
+}
+
 /**
  * Windows 方案 §4.2：运行入口选机，供「普通运行 / 重试」三类入口统一复用。
  * V2：始终弹出设备选择弹窗并预选当前用户默认设备（可用）；未设默认或默认不可用则回退首个空闲设备。
@@ -37,6 +51,7 @@ export function useDeviceSelect() {
   const setAsDefault = ref(false)
   const running = ref(false)
   const reason = ref('')
+  const targetKind = ref<RunTarget['kind'] | null>(null)
   let target: RunTarget | null = null
   let defaultDeviceId: number | null = null
 
@@ -68,6 +83,7 @@ export function useDeviceSelect() {
   async function open(t: RunTarget, _options?: RunOptions): Promise<Execution | null> {
     void _options // 保留签名兼容调用方；弹窗内确认运行时才应用超时等选项
     target = t
+    targetKind.value = t.kind
     reason.value = ''
     try {
       const def = await getDefaultDevice()
@@ -124,6 +140,7 @@ export function useDeviceSelect() {
     setAsDefault,
     running,
     reason,
+    targetKind,
     open,
     confirmRun,
     loadDevices,

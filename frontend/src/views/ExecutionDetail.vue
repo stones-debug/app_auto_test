@@ -53,6 +53,7 @@ const timelineCases = computed<TimelineCase[]>(() => {
     steps: (c.steps ?? []).map((s) => ({
       step_order: s.step_order,
       action: s.action,
+      phase: s.phase,
       parameters: s.parameters,
       status: s.status,
       duration: s.duration,

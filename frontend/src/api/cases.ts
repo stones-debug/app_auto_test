@@ -19,9 +19,12 @@ export {
   type ParamField,
 }
 
+export type StepPhase = 'setup' | 'main' | 'teardown'
+
 export interface Step {
   order: number
   action: string
+  phase?: StepPhase
   element_id?: number | null
   params?: Record<string, unknown>
   description?: string
@@ -87,7 +90,12 @@ export function defaultParams(fields: ParamField[]): Record<string, unknown> {
 export function normalizeStep(step: Step): Step {
   const { continue_on_failure: legacy, ...params } = (step.params ?? {}) as Record<string, unknown>
   void legacy
-  return { ...step, params, continue_on_failure: step.continue_on_failure ?? false }
+  return {
+    ...step,
+    phase: step.phase ?? 'main',
+    params,
+    continue_on_failure: step.continue_on_failure ?? false,
+  }
 }
 
 export function listCases(

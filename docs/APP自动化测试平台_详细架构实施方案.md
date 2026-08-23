@@ -1802,6 +1802,7 @@ ALTER TABLE execution_cases
 - `execution_steps.parameters` 必须保存 `steps_snapshot` 中变量渲染后的 `params`；详情聚合对历史空值从快照回退。Agent 每个步骤结束后必须上报一条 `log`，FastAPI 先写入 `execution_logs` 再广播，供执行详情实时展示并由报告聚合复用。
 - `ExecutionContext.find_element`（正文 3.6.3）改为只从 `elements_snapshot` 解析，杜绝查询实时表。
 - 抓取快照时按 `element_id` 直接查询（含已逻辑删除记录），避免用例引用元素被删除导致执行失败。
+- 用例 `steps` 中每项增加 `phase=setup|main|teardown`，缺省为 `main`；三个阶段分别维护从 1 开始的 `order`。Worker 根据执行参数 `use_pre_steps/use_post_steps` 选择阶段，并按 setup → main → teardown 重新编号写入 `steps_snapshot`。Agent 执行顺序为前置 → 主体 → 断言 → 后置；主体或断言失败时仍尝试后置操作，后置失败会使该用例失败。
 
 ### 10.4 执行 API 请求体与停止机制
 
@@ -1811,7 +1812,12 @@ ALTER TABLE execution_cases
 POST /api/executions/cases/{case_id}
 {
   "device_id": 12,                // 必填；由前端设备选择器传入
-  "parameters": { "variables": { "username": "u1" } },
+  "parameters": {
+    "variables": { "username": "u1" },
+    "use_pre_steps": true,
+    "use_post_steps": true,
+    "attach_to_current_app": false
+  },
   "timeout_seconds": 1800
 }
 
@@ -1824,6 +1830,9 @@ POST /api/executions/suites/batch
   "timeout_seconds": 1800
 }
 ```
+
+- `use_pre_steps/use_post_steps` 缺省均为 false；套件执行时逐个用例应用各自的前置/后置阶段。
+- `attach_to_current_app` 仅允许单用例执行。为 true 时 Agent 创建不含 `appPackage/appActivity/bundleId` 的 Appium 会话，保持设备当前前台界面，并将快照中的 `launch_app` 记录为已跳过；套件和批量执行携带该参数返回 400。
 
 **停止机制（新增 `STOPPING` 状态）**：
 

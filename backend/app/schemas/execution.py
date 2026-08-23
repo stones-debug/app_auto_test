@@ -1,7 +1,16 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+RUN_OPTION_KEYS = ("use_pre_steps", "use_post_steps", "attach_to_current_app")
+
+
+def _validate_run_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
+    for key in RUN_OPTION_KEYS:
+        if key in parameters and not isinstance(parameters[key], bool):
+            raise ValueError(f"{key} 必须是布尔值")
+    return parameters
 
 
 class ExecutionCreate(BaseModel):
@@ -9,12 +18,16 @@ class ExecutionCreate(BaseModel):
     parameters: dict[str, Any] = Field(default_factory=dict)
     timeout_seconds: int | None = Field(default=None, ge=60, le=7200)
 
+    _run_parameters = field_validator("parameters")(_validate_run_parameters)
+
 
 class BatchExecutionCreate(BaseModel):
     suite_ids: list[int] = Field(min_length=1)
     device_id: int | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
     timeout_seconds: int | None = Field(default=None, ge=60, le=7200)
+
+    _run_parameters = field_validator("parameters")(_validate_run_parameters)
 
 
 class ExecutionRetryRequest(BaseModel):
@@ -42,6 +55,7 @@ class ExecutionStepOut(BaseModel):
     id: int
     step_order: int
     action: str
+    phase: str = "main"
     parameters: dict[str, Any] = Field(default_factory=dict)
     status: str
     duration: int | None

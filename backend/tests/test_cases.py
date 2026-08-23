@@ -110,6 +110,34 @@ async def test_case_jsonb_validation(client: AsyncClient):
     assert created.json()["assertions"][0]["type"] == "text_equals"
 
 
+async def test_case_steps_support_setup_main_teardown_phases(client: AsyncClient):
+    headers, project_id = await _setup(client)
+    steps = [
+        {"order": 1, "phase": "setup", "action": "sleep", "params": {"duration": 0}},
+        {"order": 1, "phase": "main", "action": "sleep", "params": {"duration": 0}},
+        {"order": 1, "phase": "teardown", "action": "back", "params": {}},
+    ]
+    created = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={"name": "分阶段用例", "steps": steps},
+        headers=headers,
+    )
+    assert created.status_code == 201, created.text
+    assert [step["phase"] for step in created.json()["steps"]] == [
+        "setup",
+        "main",
+        "teardown",
+    ]
+
+    duplicate = await client.put(
+        f"/api/cases/{created.json()['id']}",
+        json={"steps": [steps[0], {**steps[0], "action": "back", "params": {}}]},
+        headers=headers,
+    )
+    assert duplicate.status_code == 400
+    assert "同一阶段" in duplicate.json()["detail"]
+
+
 # ---------- CR-09：严格 schema ----------
 
 

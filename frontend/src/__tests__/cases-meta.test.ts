@@ -82,6 +82,7 @@ describe('Step 4 步骤顶层 continue_on_failure 与 click 等待契约', () =>
     const legacy = { order: 2, action: 'click', params: {} } as Step
     const norm = normalizeStep(legacy)
     expect(norm.continue_on_failure).toBe(false)
+    expect(norm.phase).toBe('main')
   })
 
   it('normalizeStep 剔除历史塞入 params 的 continue_on_failure', () => {

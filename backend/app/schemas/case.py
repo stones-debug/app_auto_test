@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -15,6 +15,7 @@ from app.schemas.generated_case_params import (  # noqa: F401  (ParamsBase ç”±ç”
 class StepCreate(BaseModel):
     order: int = Field(ge=1)
     action: str
+    phase: Literal["setup", "main", "teardown"] = "main"
     element_id: int | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     description: str | None = None

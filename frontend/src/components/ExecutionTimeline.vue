@@ -11,6 +11,7 @@ import { formatParameters } from '@/utils/parameters'
 export interface TimelineStep {
   step_order: number
   action: string
+  phase?: 'setup' | 'main' | 'teardown'
   parameters: Record<string, unknown>
   status: string
   duration?: number | null
@@ -55,6 +56,9 @@ function artifactUrl(artifactId: number): string {
       <div v-for="s in c.steps" :key="`${c.case_id}-${s.step_order}`" class="step-row">
         <span class="step-icon" :class="s.status">{{ s.status === 'passed' ? '✓' : s.status === 'failed' ? '✕' : '○' }}</span>
         <span class="step-order">#{{ s.step_order }}</span>
+        <el-tag v-if="s.phase && s.phase !== 'main'" size="small" :type="s.phase === 'setup' ? 'warning' : 'success'">
+          {{ s.phase === 'setup' ? '前置' : '后置' }}
+        </el-tag>
         <span class="step-action">{{ s.action }}</span>
         <span
           v-if="formatParameters(s.parameters)"

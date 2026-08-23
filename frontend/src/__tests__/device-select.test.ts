@@ -16,7 +16,7 @@ vi.mock('@/api/executions', () => ({
 
 import { getDefaultDevice, listDevices, setDefaultDevice } from '@/api/agents'
 import { createCaseExecution, createSuiteExecution, retryExecution } from '@/api/executions'
-import { apiErrorCode, useDeviceSelect } from '@/composables/useDeviceSelect'
+import { apiErrorCode, buildRunParameters, useDeviceSelect } from '@/composables/useDeviceSelect'
 
 const mGetDefault = vi.mocked(getDefaultDevice)
 const mListDevices = vi.mocked(listDevices)
@@ -169,5 +169,28 @@ describe('apiErrorCode', () => {
     expect(apiErrorCode(conflictError('DEVICE_REQUIRED'))).toBe('DEVICE_REQUIRED')
     expect(apiErrorCode(new Error('boom'))).toBeNull()
     expect(apiErrorCode({ response: { data: { detail: 'string' } } })).toBeNull()
+  })
+})
+
+describe('运行阶段参数', () => {
+  const settings = {
+    use_pre_steps: true,
+    use_post_steps: true,
+    attach_to_current_app: true,
+  }
+
+  it('单用例携带前置、后置和当前界面模式', () => {
+    expect(buildRunParameters('case', settings)).toEqual(settings)
+  })
+
+  it('套件不允许携带当前界面模式', () => {
+    expect(buildRunParameters('suite', settings)).toEqual({
+      use_pre_steps: true,
+      use_post_steps: true,
+    })
+  })
+
+  it('重试沿用原执行参数，不重新提交阶段选项', () => {
+    expect(buildRunParameters('retry', settings)).toEqual({})
   })
 })

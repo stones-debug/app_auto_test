@@ -129,6 +129,75 @@ class TestRunner:
             result["screenshot_path"] = None
             result["error_message"] = "截图上传失败，Agent 本地路径不回传服务端"
 
+    async def _run_steps(
+        self,
+        steps: list[dict],
+        case_id: int,
+        context: ExecutionContext,
+        reporter: RunnerReporter,
+        phase: str,
+    ) -> tuple[bool, bool]:
+        """执行一个阶段，返回 (阶段是否失败, 是否因失败中断阶段)。"""
+        failed = False
+        halted = False
+        phase_label = {"setup": "前置步骤", "teardown": "后置步骤"}.get(phase, "步骤")
+        for step in steps:
+            if self.should_stop():
+                raise StopRequested("执行被用户停止")
+            step_order = step.get("order") or step.get("step_order")
+            start = time.monotonic()
+            result: dict = {"status": "passed"}
+            action_name = str(step.get("action") or "unknown")
+            try:
+                if self.parameters.get("attach_to_current_app") and action_name == "launch_app":
+                    result = {
+                        "status": "passed",
+                        "actual_value": "已复用当前设备界面，跳过启动 APP",
+                    }
+                else:
+                    action_cls = ACTION_REGISTRY.get(step.get("action"))
+                    if action_cls is None:
+                        raise ValueError(f"未知动作: {step.get('action')}")
+                    effective = dict(step.get("params") or {})
+                    if step.get("element_id") is not None and "element_id" not in effective:
+                        effective["element_id"] = step["element_id"]
+                    result = await asyncio.to_thread(
+                        _run_action_in_thread, action_cls, self.driver, context, effective
+                    )
+            except StopRequested:
+                raise
+            except Exception as exc:
+                result = {"status": "failed", "error_message": str(exc)}
+            duration = int((time.monotonic() - start) * 1000)
+            await self._resolve_screenshot(result)
+            await reporter.step_result(
+                case_id,
+                step_order,
+                action_name,
+                result.get("status", "passed"),
+                duration,
+                actual_value=result.get("actual_value"),
+                error_message=result.get("error_message"),
+                screenshot_path=result.get("screenshot_path"),
+            )
+            step_status = result.get("status", "passed")
+            if step_status == "passed":
+                log_level = "INFO"
+                log_message = f"{phase_label} {step_order} {action_name} 执行通过（{duration}ms）"
+            else:
+                log_level = "ERROR"
+                error_message = str(result.get("error_message") or "未知错误")
+                log_message = (
+                    f"{phase_label} {step_order} {action_name} 执行失败（{duration}ms）：{error_message}"
+                )
+            await reporter.log(log_level, log_message, step_order)
+            if step_status == "failed":
+                failed = True
+                if not step.get("continue_on_failure", False):
+                    halted = True
+                    break
+        return failed, halted
+
     async def run_case(self, case: dict) -> str:
         case_id = int(case.get("case_id") or 0)
         context = ExecutionContext(
@@ -141,59 +210,26 @@ class TestRunner:
         reporter = RunnerReporter(self.send, self.execution_id, self.session_token)
         case_status = "passed"
 
-        for step in case.get("steps_snapshot") or []:
-            if self.should_stop():
-                raise StopRequested("执行被用户停止")
-            step_order = step.get("order") or step.get("step_order")
-            start = time.monotonic()
-            result: dict = {"status": "passed"}
-            try:
-                action_cls = ACTION_REGISTRY.get(step.get("action"))
-                if action_cls is None:
-                    raise ValueError(f"未知动作: {step.get('action')}")
-                effective = dict(step.get("params") or {})
-                if step.get("element_id") is not None and "element_id" not in effective:
-                    effective["element_id"] = step["element_id"]
-                result = await asyncio.to_thread(
-                    _run_action_in_thread, action_cls, self.driver, context, effective
-                )
-            except StopRequested:
-                # 动作线程内的停止信号（如 sleep 轮询）必须向外传播为整体 stopped
-                raise
-            except Exception as exc:
-                result = {"status": "failed", "error_message": str(exc)}
-            duration = int((time.monotonic() - start) * 1000)
-            await self._resolve_screenshot(result)
-            await reporter.step_result(
-                case_id,
-                step_order,
-                step.get("action"),
-                result.get("status", "passed"),
-                duration,
-                actual_value=result.get("actual_value"),
-                error_message=result.get("error_message"),
-                screenshot_path=result.get("screenshot_path"),
+        all_steps = case.get("steps_snapshot") or []
+        setup_steps = [s for s in all_steps if str(s.get("phase") or "main") == "setup"]
+        main_steps = [s for s in all_steps if str(s.get("phase") or "main") == "main"]
+        teardown_steps = [s for s in all_steps if str(s.get("phase") or "main") == "teardown"]
+
+        setup_failed, setup_halted = await self._run_steps(
+            setup_steps, case_id, context, reporter, "setup"
+        )
+        if setup_failed:
+            case_status = "failed"
+        if not setup_halted:
+            main_failed, _main_halted = await self._run_steps(
+                main_steps, case_id, context, reporter, "main"
             )
-            action_name = str(step.get("action") or "unknown")
-            step_status = result.get("status", "passed")
-            if step_status == "passed":
-                log_level = "INFO"
-                log_message = f"步骤 {step_order} {action_name} 执行通过（{duration}ms）"
-            else:
-                log_level = "ERROR"
-                error_message = str(result.get("error_message") or "未知错误")
-                log_message = (
-                    f"步骤 {step_order} {action_name} 执行失败（{duration}ms）：{error_message}"
-                )
-            await reporter.log(log_level, log_message, step_order)
-            if result.get("status") == "failed":
+            if main_failed:
                 case_status = "failed"
-                # Step 4：continue_on_failure 是 Step 顶层字段，不从 params 读取
-                if not step.get("continue_on_failure", False):
-                    break
 
         assertion_results: list[AssertionItem] = []
-        for assertion in case.get("assertions_snapshot") or []:
+        assertions = [] if setup_halted else (case.get("assertions_snapshot") or [])
+        for assertion in assertions:
             try:
                 cls = ASSERTION_REGISTRY.get(assertion.get("type"))
                 if cls is None:
@@ -223,4 +259,10 @@ class TestRunner:
             if res.get("status") != "passed":
                 case_status = "failed"
         await reporter.assertion_result(case_id, assertion_results)
+
+        teardown_failed, _teardown_halted = await self._run_steps(
+            teardown_steps, case_id, context, reporter, "teardown"
+        )
+        if teardown_failed:
+            case_status = "failed"
         return case_status

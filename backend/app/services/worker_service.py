@@ -114,8 +114,42 @@ async def _collect_element_ids(steps: list, assertions: list) -> set[int]:
     return ids
 
 
-async def build_case_snapshot(db: AsyncSession, case: TestCase, variable_map: dict) -> dict:
-    steps = render_value(deepcopy(case.steps or []), variable_map)
+async def build_case_snapshot(
+    db: AsyncSession,
+    case: TestCase,
+    variable_map: dict,
+    *,
+    use_pre_steps: bool = False,
+    use_post_steps: bool = False,
+) -> dict:
+    """构建不可变快照，并按运行选项选择前置/后置阶段。
+
+    存储态的三个阶段各自独立排序；下发前按 setup → main → teardown
+    重排为执行级唯一顺序，以兼容 execution_steps 唯一约束和实时消息。
+    """
+    stored_steps = render_value(deepcopy(case.steps or []), variable_map)
+    selected_steps: list[dict] = []
+    for phase in ("setup", "main", "teardown"):
+        if phase == "setup" and not use_pre_steps:
+            continue
+        if phase == "teardown" and not use_post_steps:
+            continue
+        phase_steps = [
+            step
+            for step in stored_steps
+            if isinstance(step, dict) and str(step.get("phase") or "main") == phase
+        ]
+        phase_steps.sort(key=lambda step: int(step.get("order") or 0))
+        for step in phase_steps:
+            selected_steps.append(
+                {
+                    **step,
+                    "phase": phase,
+                    "source_order": step.get("order"),
+                    "order": len(selected_steps) + 1,
+                }
+            )
+    steps = selected_steps
     assertions = render_value(deepcopy(case.assertions or []), variable_map)
 
     element_ids = await _collect_element_ids(steps, assertions)
@@ -185,7 +219,14 @@ async def create_execution_cases_from_execution(db: AsyncSession, execution: Exe
     created: list[ExecutionCase] = []
     for case in cases:
         variable_map = await build_variable_map(db, execution, case)
-        snapshot = await build_case_snapshot(db, case, variable_map)
+        options = execution.parameters or {}
+        snapshot = await build_case_snapshot(
+            db,
+            case,
+            variable_map,
+            use_pre_steps=bool(options.get("use_pre_steps")),
+            use_post_steps=bool(options.get("use_post_steps")),
+        )
         ec = ExecutionCase(
             execution_id=execution.id,
             case_id=case.id,

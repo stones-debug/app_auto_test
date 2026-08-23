@@ -9,6 +9,7 @@ declare module 'vue' {
   export interface GlobalComponents {
     AppShell: typeof import('./components/AppShell.vue')['default']
     AuthenticatedImage: typeof import('./components/AuthenticatedImage.vue')['default']
+    CaseStepEditor: typeof import('./components/CaseStepEditor.vue')['default']
     ConfirmAction: typeof import('./components/ConfirmAction.vue')['default']
     DataTable: typeof import('./components/DataTable.vue')['default']
     DevicePicker: typeof import('./components/DevicePicker.vue')['default']
@@ -25,6 +26,7 @@ declare module 'vue' {
     ElDescriptions: typeof import('element-plus/es')['ElDescriptions']
     ElDescriptionsItem: typeof import('element-plus/es')['ElDescriptionsItem']
     ElDialog: typeof import('element-plus/es')['ElDialog']
+    ElDivider: typeof import('element-plus/es')['ElDivider']
     ElDropdown: typeof import('element-plus/es')['ElDropdown']
     ElDropdownItem: typeof import('element-plus/es')['ElDropdownItem']
     ElDropdownMenu: typeof import('element-plus/es')['ElDropdownMenu']

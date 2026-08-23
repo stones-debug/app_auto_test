@@ -45,6 +45,7 @@ export interface ReportStep {
   id: number
   step_order: number
   action: string
+  phase?: 'setup' | 'main' | 'teardown'
   parameters: Record<string, unknown>
   status: string
   duration: number | null

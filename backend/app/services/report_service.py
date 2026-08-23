@@ -17,7 +17,7 @@ from app.services.screenshot_store import resolve_screenshot_path, validate_obje
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates" / "reports"
 # Step 8：HTML 缓存版本标记——修改模板/数据规则后旧缓存不再复用
-_REPORT_HTML_VERSION = "execution-parameters-v2"
+_REPORT_HTML_VERSION = "execution-phases-v3"
 
 
 def _execution_dict(execution: Execution) -> dict:
@@ -66,6 +66,7 @@ async def get_report_detail(db: AsyncSession, execution_id: int) -> dict:
                         "id": s["id"],
                         "step_order": s["step_order"],
                         "action": s["action"],
+                        "phase": s["phase"],
                         "parameters": s["parameters"],
                         "status": s["status"],
                         "duration": s["duration"],

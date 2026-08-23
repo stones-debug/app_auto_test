@@ -90,6 +90,50 @@ class AppiumDriver(BaseDriver):
         options.load_capabilities(caps)
         return options
 
+    def _build_current_app_options(self):
+        """构造不携带 appPackage/bundleId 的会话，保持当前前台应用不变。"""
+        from appium.options.android import UiAutomator2Options
+        from appium.options.ios import XCUITestOptions
+
+        caps = dict(self.capabilities)
+        caps.update(self._device_caps())
+        if self.command_timeout:
+            caps["newCommandTimeout"] = self.command_timeout
+        platform = (self.device.get("platform") or "").lower()
+        options = XCUITestOptions() if platform == "ios" else UiAutomator2Options()
+        caps.pop("appPackage", None)
+        caps.pop("appActivity", None)
+        caps.pop("bundleId", None)
+        caps.pop("appium:appPackage", None)
+        caps.pop("appium:appActivity", None)
+        caps.pop("appium:bundleId", None)
+        appium_options = caps.get("appium:options")
+        if isinstance(appium_options, dict):
+            appium_options = dict(appium_options)
+            for key in ("appPackage", "appActivity", "bundleId", "appium:appPackage", "appium:appActivity", "appium:bundleId"):
+                appium_options.pop(key, None)
+            caps["appium:options"] = appium_options
+        caps["noReset"] = True
+        if platform != "ios":
+            caps["dontStopAppOnReset"] = True
+        options.load_capabilities(caps)
+        return options
+
+    def attach_to_current_app(self) -> None:
+        """创建 Appium 会话并保持设备当前前台界面，不启动指定 APP。"""
+        try:
+            from appium import webdriver as appium_webdriver
+        except ImportError as exc:
+            raise RuntimeError("未安装 appium-python-client，无法使用 Appium 驱动（pip install 'agent[appium]'）") from exc
+        try:
+            self.driver = appium_webdriver.Remote(
+                command_executor=self.command_executor,
+                options=self._build_current_app_options(),
+            )
+        except Exception as exc:
+            raise DriverError(f"Appium 连接当前设备界面失败：{exc}") from exc
+        logger.info("Appium 当前界面会话已创建: %s", self.driver.session_id)
+
     def _configured_android_capability(self, name: str) -> str | None:
         """读取普通、W3C 前缀或 appium:options 中的 Android capability。"""
         candidates = (name, f"appium:{name}")

@@ -215,6 +215,69 @@ async def test_runner_continue_on_failure_not_read_from_params():
     assert len(step_msgs) == 1  # params 中的遗留字段不生效，仍停止
 
 
+async def test_runner_runs_teardown_after_main_failure():
+    driver = MockDriver()
+    case = _make_case(
+        steps=[
+            {"order": 1, "phase": "setup", "action": "input", "element_id": 1, "params": {"value": "ready"}},
+            {"order": 2, "phase": "main", "action": "no_such_action", "params": {}},
+            {"order": 3, "phase": "teardown", "action": "input", "element_id": 1, "params": {"value": "cleaned"}},
+        ],
+    )
+
+    status, sent = await _run_and_capture(case, driver=driver)
+
+    assert status == "failed"
+    assert driver.state["username"] == "cleaned"
+    step_msgs = [message for message in sent if message["type"] == "step_result"]
+    assert [message["action"] for message in step_msgs] == ["input", "no_such_action", "input"]
+    assert any("后置步骤 3" in message["message"] for message in sent if message["type"] == "log")
+
+
+async def test_runner_setup_failure_skips_main_but_still_runs_teardown():
+    driver = MockDriver()
+    case = _make_case(
+        steps=[
+            {"order": 1, "phase": "setup", "action": "no_such_action", "params": {}},
+            {"order": 2, "phase": "main", "action": "input", "element_id": 1, "params": {"value": "main"}},
+            {"order": 3, "phase": "teardown", "action": "input", "element_id": 1, "params": {"value": "cleaned"}},
+        ],
+    )
+
+    status, sent = await _run_and_capture(case, driver=driver)
+
+    assert status == "failed"
+    assert driver.state["username"] == "cleaned"
+    step_msgs = [message for message in sent if message["type"] == "step_result"]
+    assert [message["step_order"] for message in step_msgs] == [1, 3]
+
+
+async def test_runner_current_screen_mode_skips_launch_app_action():
+    driver = MockDriver()
+    driver.attach_to_current_app()
+    case = _make_case(
+        steps=[
+            {"order": 1, "action": "launch_app", "params": {"package": "com.demo"}},
+            {"order": 2, "action": "input", "element_id": 1, "params": {"value": "direct"}},
+        ],
+    )
+
+    status, sent = await _run_and_capture(
+        case,
+        parameters={"attach_to_current_app": True},
+        driver=driver,
+    )
+
+    assert status == "passed"
+    assert driver.state["username"] == "direct"
+    launch_result = next(
+        message
+        for message in sent
+        if message["type"] == "step_result" and message["action"] == "launch_app"
+    )
+    assert "跳过启动 APP" in launch_result["actual_value"]
+
+
 # ---------- Step 4：click 等待秒数契约 ----------
 
 
@@ -646,6 +709,40 @@ async def test_appium_launch_uses_options_and_udid_wins(monkeypatch):
     assert ios_options.get_capability("bundleId") == "com.demo.ios.app"
     assert ios_options.get_capability("appPackage") is None
     assert ios_options.get_capability("appActivity") is None
+
+
+async def test_appium_attach_current_screen_omits_app_capabilities(monkeypatch):
+    import appium.webdriver as appium_webdriver
+
+    calls: list[dict] = []
+
+    class FakeDriver:
+        session_id = "current-session"
+
+    def fake_remote(*args, **kwargs):
+        calls.append(kwargs)
+        return FakeDriver()
+
+    monkeypatch.setattr(appium_webdriver, "Remote", fake_remote)
+
+    from executor.appium_driver import AppiumDriver
+
+    driver = AppiumDriver(
+        capabilities={
+            "appPackage": "com.configured",
+            "appActivity": ".MainActivity",
+            "appium:options": {"appPackage": "com.nested", "appActivity": ".Nested"},
+        },
+        device={"udid": "emulator-5554", "platform": "android"},
+    )
+    driver.attach_to_current_app()
+
+    options = calls[0]["options"]
+    assert options.get_capability("udid") == "emulator-5554"
+    assert options.get_capability("appPackage") is None
+    assert options.get_capability("appActivity") is None
+    assert options.get_capability("noReset") is True
+    assert options.get_capability("dontStopAppOnReset") is True
 
 
 async def test_appium_no_activity_resolves_launcher_and_waits_for_target_package(monkeypatch):

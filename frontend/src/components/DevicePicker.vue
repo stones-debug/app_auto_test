@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 
-import type { Execution } from '@/api/executions'
-import { useDeviceSelect, type RunTarget } from '@/composables/useDeviceSelect'
+import type { Execution, ExecutionRunSettings } from '@/api/executions'
+import { buildRunParameters, useDeviceSelect, type RunTarget } from '@/composables/useDeviceSelect'
 
 // V2 §5.12：统一设备选择器（所有运行入口复用，含重试入口）。
 // 通过 ref.open(target, options) 触发；始终弹出设备选择弹窗并预选当前用户默认设备；
@@ -11,7 +11,10 @@ import { useDeviceSelect, type RunTarget } from '@/composables/useDeviceSelect'
 const emit = defineEmits<{ created: [execution: Execution] }>()
 
 const timeout = ref(1800)
-const { dialogVisible, devices, selectedId, setAsDefault, running, reason, open, confirmRun, close } =
+const usePreSteps = ref(false)
+const usePostSteps = ref(false)
+const attachToCurrentApp = ref(false)
+const { dialogVisible, devices, selectedId, setAsDefault, running, reason, targetKind, open, confirmRun, close } =
   useDeviceSelect()
 
 /** 弹窗路径的 open() 挂起解析器（成功/取消时唤醒父级 await）。 */
@@ -23,7 +26,12 @@ function settleOpen(exec: Execution | null) {
 }
 
 async function run() {
-  const exec = await confirmRun({ timeout_seconds: timeout.value })
+  const parameters = buildRunParameters(targetKind.value ?? 'retry', {
+    use_pre_steps: usePreSteps.value,
+    use_post_steps: usePostSteps.value,
+    attach_to_current_app: attachToCurrentApp.value,
+  })
+  const exec = await confirmRun({ timeout_seconds: timeout.value, parameters })
   if (exec) {
     settleOpen(exec)
     emit('created', exec)
@@ -46,8 +54,14 @@ defineExpose({
    * 始终弹出设备选择弹窗（预选用户默认设备）；
    * 运行成功 resolve Execution、取消 resolve null。
    */
-  open: (target: RunTarget, options: { timeout_seconds?: number } = {}): Promise<Execution | null> => {
+  open: (
+    target: RunTarget,
+    options: { timeout_seconds?: number; settings?: Partial<ExecutionRunSettings> } = {},
+  ): Promise<Execution | null> => {
     if (options.timeout_seconds) timeout.value = options.timeout_seconds
+    usePreSteps.value = options.settings?.use_pre_steps ?? false
+    usePostSteps.value = options.settings?.use_post_steps ?? false
+    attachToCurrentApp.value = options.settings?.attach_to_current_app ?? false
     return new Promise((resolve) => {
       openResolve = resolve
       open(target, { timeout_seconds: options.timeout_seconds }).then((exec) => {
@@ -89,6 +103,20 @@ defineExpose({
       <el-form-item label="超时(s)">
         <el-input-number v-model="timeout" :min="60" :max="7200" :step="60" />
       </el-form-item>
+      <template v-if="targetKind === 'case' || targetKind === 'suite'">
+        <el-divider content-position="left">执行选项</el-divider>
+        <el-form-item label="用例阶段">
+          <div class="option-list">
+            <el-checkbox v-model="usePreSteps">执行用例前置操作</el-checkbox>
+            <el-checkbox v-model="usePostSteps">执行用例后置操作</el-checkbox>
+          </div>
+          <div class="tip">套件运行时，每个用例分别应用其自身的前置和后置操作。</div>
+        </el-form-item>
+        <el-form-item v-if="targetKind === 'case'" label="启动方式">
+          <el-checkbox v-model="attachToCurrentApp">复用设备当前界面，不启动 APP</el-checkbox>
+          <div class="tip">Agent 将建立当前界面会话，并跳过用例中的“启动 APP”步骤。</div>
+        </el-form-item>
+      </template>
     </el-form>
     <template #footer>
       <el-button @click="cancel">取消</el-button>
@@ -109,5 +137,10 @@ defineExpose({
 }
 .tip.warn {
   color: #e6a23c;
+}
+.option-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
 }
 </style>

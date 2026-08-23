@@ -166,6 +166,44 @@ def test_render_text_and_undefined():
         worker_service.render_text("${undefined_var}", {})
 
 
+async def test_snapshot_selects_and_reorders_pre_main_post_steps(client: AsyncClient):
+    token, case_id = await _setup_case(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    updated = await client.put(
+        f"/api/cases/{case_id}",
+        headers=headers,
+        json={
+            "steps": [
+                {"order": 1, "phase": "setup", "action": "sleep", "params": {"duration": 0}},
+                {"order": 1, "phase": "main", "action": "back", "params": {}},
+                {"order": 1, "phase": "teardown", "action": "screenshot", "params": {}},
+            ]
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(
+        client,
+        token,
+        case_id,
+        {
+            "variables": {"btn_id": "login-button"},
+            "use_pre_steps": True,
+            "use_post_steps": True,
+        },
+        device_id,
+    )
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        cases = await worker_service.create_execution_cases_from_execution(db, execution)
+
+    steps = cases[0].steps_snapshot
+    assert [step["phase"] for step in steps] == ["setup", "main", "teardown"]
+    assert [step["order"] for step in steps] == [1, 2, 3]
+    assert [step["source_order"] for step in steps] == [1, 1, 1]
+
+
 # ---------- 队列认领 + Agent 不在线 ----------
 
 

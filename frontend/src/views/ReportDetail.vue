@@ -176,6 +176,9 @@ function viewExecution() {
 
             <el-table v-if="c.steps.length" :data="c.steps" size="small">
               <el-table-column prop="step_order" label="#" width="50" />
+              <el-table-column label="阶段" width="70">
+                <template #default="{ row }">{{ row.phase === 'setup' ? '前置' : row.phase === 'teardown' ? '后置' : '主体' }}</template>
+              </el-table-column>
               <el-table-column prop="action" label="动作" width="120" />
               <el-table-column label="参数" min-width="180" show-overflow-tooltip>
                 <template #default="{ row }">{{ formatParameters(row.parameters) || '-' }}</template>
