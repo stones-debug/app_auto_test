@@ -420,6 +420,9 @@ onMounted(() => {
 .group-del-icon:hover {
   color: var(--el-color-danger);
 }
+.el-button {
+  margin-left: 0px;
+}
 .add-group-btn {
   width: 100%;
   margin-top: 8px;
