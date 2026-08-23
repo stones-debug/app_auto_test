@@ -3,11 +3,20 @@ import { describe, expect, it } from 'vitest'
 import { liveLogKey, mergeExecutionLogs } from '@/utils/executionLogs'
 import { applyOnlyFailed } from '@/utils/reportFilter'
 import { executionWsUrl } from '@/composables/useExecutionSocket'
+import { formatParameters, hasParameters } from '@/utils/parameters'
 
 // node 环境无 location，executionWsUrl 依赖
 ;(globalThis as Record<string, unknown>).location = { protocol: 'http:', host: 'test.local' }
 
 describe('Step 7 执行详情：日志去重与 WS 状态', () => {
+  it('执行参数和步骤参数可格式化展示', () => {
+    const parameters = { variables: { account: 'admin' }, retry: false }
+    expect(hasParameters(parameters)).toBe(true)
+    expect(formatParameters(parameters)).toBe('{"variables":{"account":"admin"},"retry":false}')
+    expect(formatParameters(parameters, true)).toContain('\n  "variables"')
+    expect(formatParameters({})).toBe('')
+  })
+
   it('REST 与 WS live 同内容只保留一条（按后端 log id 去重）', () => {
     const rest = [
       { id: 1, level: 'INFO', message: '启动', created_at: '2026-08-22T00:00:01Z' },

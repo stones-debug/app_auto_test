@@ -24,6 +24,17 @@ TERMINAL_STATES = {"passed", "failed", "error", "stopped", "cancelled"}
 WRITE_STATES = {"running", "stopping"}
 
 
+def _step_snapshot(execution_case: ExecutionCase, step_order: int) -> dict:
+    """从不可变用例快照取步骤，保证执行参数按实际下发值落库。"""
+    for item in execution_case.steps_snapshot or []:
+        if not isinstance(item, dict):
+            continue
+        order = item.get("order") or item.get("step_order")
+        if order == step_order:
+            return item
+    return {}
+
+
 async def _bound_execution(
     db: AsyncSession,
     agent_id: int,
@@ -227,12 +238,16 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
         )
     ).scalar_one_or_none()
     now = datetime.now(UTC)
+    snapshot = _step_snapshot(execution_case, step_order)
+    snapshot_parameters = snapshot.get("params")
+    if not isinstance(snapshot_parameters, dict):
+        snapshot_parameters = {}
     if step is None:
         step = ExecutionStep(
             execution_case_id=execution_case.id,
             step_order=step_order,
-            action=payload.get("action") or "unknown",
-            parameters={},
+            action=payload.get("action") or snapshot.get("action") or "unknown",
+            parameters=dict(snapshot_parameters),
             status=payload.get("status") or "passed",
             started_at=now,
             finished_at=now,
@@ -243,6 +258,8 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
         )
         db.add(step)
     else:
+        if not step.parameters and snapshot_parameters:
+            step.parameters = dict(snapshot_parameters)
         step.status = payload.get("status") or step.status
         step.finished_at = now
         step.duration = payload.get("duration")

@@ -122,7 +122,11 @@ async def test_runner_passing_flow():
     assert status == "passed"
     step_types = [m["type"] for m in sent]
     assert step_types.count("step_result") == 2
+    assert step_types.count("log") == 2
     assert sent[0]["status"] == "passed"
+    log_messages = [m for m in sent if m["type"] == "log"]
+    assert log_messages[0]["level"] == "INFO"
+    assert "步骤 1 input 执行通过" in log_messages[0]["message"]
     assertion_msg = next(m for m in sent if m["type"] == "assertion_result")
     assert assertion_msg["assertions"][0]["status"] == "passed"
 
@@ -149,6 +153,9 @@ async def test_runner_unknown_action_fails():
     assert status == "failed"
     assert sent[0]["status"] == "failed"
     assert "未知动作" in (sent[0]["error_message"] or "")
+    error_log = next(m for m in sent if m["type"] == "log")
+    assert error_log["level"] == "ERROR"
+    assert "未知动作" in error_log["message"]
 
 
 async def test_runner_stop_requested():

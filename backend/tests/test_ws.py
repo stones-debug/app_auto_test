@@ -229,6 +229,7 @@ async def test_handle_log_step_result_execution_result(client: AsyncClient):
         )).scalar_one()
         assert step.status == "passed"
         assert step.actual_value == "OK"
+        assert step.parameters["wait_timeout"] == 10
 
         await handlers.handle_execution_result(db, agent_id, {"execution_id": execution_id, "session_token": "sess-token", "status": "PASSED"})
 

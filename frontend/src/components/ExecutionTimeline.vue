@@ -6,10 +6,12 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 
 import AuthenticatedImage from '@/components/AuthenticatedImage.vue'
+import { formatParameters } from '@/utils/parameters'
 
 export interface TimelineStep {
   step_order: number
   action: string
+  parameters: Record<string, unknown>
   status: string
   duration?: number | null
   actual_value?: string | null
@@ -54,6 +56,11 @@ function artifactUrl(artifactId: number): string {
         <span class="step-icon" :class="s.status">{{ s.status === 'passed' ? '✓' : s.status === 'failed' ? '✕' : '○' }}</span>
         <span class="step-order">#{{ s.step_order }}</span>
         <span class="step-action">{{ s.action }}</span>
+        <span
+          v-if="formatParameters(s.parameters)"
+          class="step-parameters v2-aux"
+          :title="formatParameters(s.parameters, true)"
+        >参数：{{ formatParameters(s.parameters) }}</span>
         <span v-if="s.status === 'passed' && s.duration != null" class="step-duration v2-aux">
           {{ s.duration >= 1000 ? `${(s.duration / 1000).toFixed(1)}s` : `${s.duration}ms` }}
         </span>
@@ -118,6 +125,12 @@ function artifactUrl(artifactId: number): string {
 }
 .step-action {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.step-parameters {
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .step-duration {
   margin-left: auto;

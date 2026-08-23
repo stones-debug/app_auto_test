@@ -40,6 +40,7 @@ class ReportStepOut(BaseModel):
     id: int
     step_order: int
     action: str
+    parameters: dict[str, Any]
     status: str
     duration: int | None
     actual_value: str | None

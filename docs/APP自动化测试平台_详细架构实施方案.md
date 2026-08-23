@@ -1796,6 +1796,7 @@ ALTER TABLE execution_cases
 
 - Worker 创建 `execution_cases` 时，从 `test_elements` 抓取用例引用的全部元素（含 locator_type / locator_value / platform），以 `element_id` 为 key 写入 `elements_snapshot`。
 - Android 混合应用可使用 `resource_id` 定位类型，`locator_value` 只保存纯 resource-id。Agent 将其转换为 `//*[@resource-id="..."]`；输入和清空动作若未显式指定可编辑子节点，自动追加 `//android.widget.EditText`，其他动作仍定位 resource-id 节点本身。
+- `execution_steps.parameters` 必须保存 `steps_snapshot` 中变量渲染后的 `params`；详情聚合对历史空值从快照回退。Agent 每个步骤结束后必须上报一条 `log`，FastAPI 先写入 `execution_logs` 再广播，供执行详情实时展示并由报告聚合复用。
 - `ExecutionContext.find_element`（正文 3.6.3）改为只从 `elements_snapshot` 解析，杜绝查询实时表。
 - 抓取快照时按 `element_id` 直接查询（含已逻辑删除记录），避免用例引用元素被删除导致执行失败。
 

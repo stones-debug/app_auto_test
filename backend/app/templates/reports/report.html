@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>执行报告 - {{ execution.id }}{% if report %}（{{ report.success_rate }}% 成功率）{% endif %}</title>
+<style>
+  :root { --primary: #2563eb; --danger: #dc2626; --success: #16a34a; --warn: #d97706; --text: #1f2937; --muted: #6b7280; --border: #e5e7eb; --bg: #f9fafb; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif; background: var(--bg); color: var(--text); padding: 24px; line-height: 1.6; }
+  .container { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .meta { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+  .summary { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+  .execution-parameters { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; margin-bottom: 20px; }
+  .execution-parameters pre { margin-top: 6px; white-space: pre-wrap; word-break: break-all; font-family: Consolas, monospace; font-size: 12px; }
+  .stat { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 12px 18px; min-width: 110px; }
+  .stat .num { font-size: 22px; font-weight: 700; }
+  .stat .label { font-size: 12px; color: var(--muted); }
+  .num.passed { color: var(--success); } .num.failed { color: var(--danger); } .num.error { color: var(--warn); }
+  .case { background: #fff; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 14px; overflow: hidden; }
+  .case-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .case-name { font-weight: 600; flex: 1; }
+  .badge { font-size: 12px; padding: 2px 10px; border-radius: 999px; font-weight: 600; }
+  .badge.passed { background: #dcfce7; color: var(--success); } .badge.failed { background: #fee2e2; color: var(--danger); }
+  .badge.error { background: #fef3c7; color: var(--warn); } .badge.skipped { background: #f3f4f6; color: var(--muted); }
+  .case-body { padding: 12px 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--bg); color: var(--muted); font-weight: 600; white-space: nowrap; }
+  .step-fail { color: var(--danger); } .step-ok { color: var(--success); }
+  .step-screenshot { max-width: 220px; border: 1px solid var(--border); border-radius: 6px; }
+  .logs { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .log-line { font-family: Consolas, monospace; font-size: 12px; border-bottom: 1px dashed var(--border); padding: 3px 0; }
+  .log-level { font-weight: 600; margin-right: 8px; }
+  .log-truncate-note { color: var(--warn); font-size: 13px; margin-bottom: 8px; }
+  .error-box { background: #fef2f2; border: 1px solid #fecaca; color: var(--danger); border-radius: 6px; padding: 8px 12px; font-size: 13px; margin: 8px 0; }
+  .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>执行报告 #{{ execution.id }}</h1>
+  <div class="meta">
+    类型：{{ execution.type }} ｜ 状态：{{ execution.status }} ｜
+    开始：{{ execution.started_at or '—' }} ｜ 结束：{{ execution.finished_at or '—' }} ｜
+    耗时：{{ execution.duration }}ms ｜ 生成于 {{ generated_at }}
+    {% if execution.retry_of %} ｜ 重试自 #{{ execution.retry_of }}{% endif %}
+  </div>
+
+  <div class="summary">
+    <div class="stat"><div class="num">{{ report.total }}</div><div class="label">用例总数</div></div>
+    <div class="stat"><div class="num passed">{{ report.passed }}</div><div class="label">通过</div></div>
+    <div class="stat"><div class="num failed">{{ report.failed }}</div><div class="label">失败</div></div>
+    <div class="stat"><div class="num error">{{ report.error_count }}</div><div class="label">异常</div></div>
+    <div class="stat"><div class="num">{{ report.success_rate }}%</div><div class="label">成功率</div></div>
+  </div>
+
+  <div class="execution-parameters">
+    <div style="font-weight:600">执行参数</div>
+    {% if execution.parameters %}<pre>{{ execution.parameters }}</pre>{% else %}<div class="empty">无执行参数</div>{% endif %}
+  </div>
+
+  {% for case in cases %}
+  <div class="case">
+    <div class="case-head">
+      <span class="case-name">{{ case.case_name }}{% if case.module_name %}<span style="color:var(--muted);font-weight:400;font-size:12px;margin-left:8px">{{ case.module_name }}</span>{% endif %}</span>
+      <span class="badge {{ case.status }}">{{ case.status }}</span>
+    </div>
+    <div class="case-body">
+      {% if case.error_message %}<div class="error-box">{{ case.error_message }}</div>{% endif %}
+      {% if case.steps %}
+      <table>
+        <thead><tr><th>#</th><th>动作</th><th>参数</th><th>状态</th><th>结果/错误</th><th>截图</th></tr></thead>
+        <tbody>
+        {% for step in case.steps %}
+          <tr>
+            <td>{{ step.step_order }}</td>
+            <td>{{ step.action }}</td>
+            <td style="word-break:break-all">{{ step.parameters }}</td>
+            <td class="{{ 'step-ok' if step.status == 'passed' else 'step-fail' }}">{{ step.status }}</td>
+            <td style="word-break:break-all">
+              {%- if step.status == 'passed' and step.actual_value %}{{ step.actual_value }}{% endif -%}
+              {%- if step.error_message %}{{ step.error_message }}{% endif -%}
+            </td>
+            <td>
+              {%- if step.screenshot_base64 -%}
+              <img class="step-screenshot" src="data:image/png;base64,{{ step.screenshot_base64 }}" alt="截图">
+              {%- elif step.screenshot -%}
+              <span style="color:var(--muted)">{{ step.screenshot }}</span>
+              {%- endif -%}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}<div class="empty">无步骤</div>{% endif %}
+
+      {% if case.assertions %}
+      <table style="margin-top:8px">
+        <thead><tr><th>#</th><th>断言</th><th>期望</th><th>实际</th><th>状态</th></tr></thead>
+        <tbody>
+        {% for a in case.assertions %}
+          <tr>
+            <td>{{ a.id }}</td>
+            <td>{{ a.assertion_type }}</td>
+            <td style="word-break:break-all">{{ a.expected_value }}</td>
+            <td style="word-break:break-all">{{ a.actual_value }}</td>
+            <td class="{{ 'step-ok' if a.status == 'passed' else 'step-fail' }}">{{ a.status }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+
+  <div class="logs">
+    <div style="font-weight:600;margin-bottom:8px">执行日志{% if logs_truncated and logs_total %}（仅展示最后 {{ logs|length }}/{{ logs_total }} 条）{% endif %}</div>
+    {% if logs %}
+      {% if logs_truncated or logs_total is defined %}
+      <div class="log-truncate-note">{% if logs_total is defined and logs|length < logs_total %}日志总量 {{ logs_total }} 条，当前仅展示最后 {{ logs|length }} 条。{% endif %}</div>
+      {% endif %}
+      {% for log in logs %}
+      <div class="log-line"><span class="log-level">{{ log.level }}</span>{{ log.created_at }}<span style="color:var(--muted)"> [{{ log.source }}]</span> {{ log.message }}</div>
+      {% endfor %}
+    {% else %}<div class="empty">暂无日志</div>{% endif %}
+  </div>
+</div>
+</body>
+</html>

@@ -11,10 +11,11 @@ from .protocol_messages import (
     AssertionItem,
     AssertionResultMessage,
     ExecutionResultMessage,
+    LogMessage,
     StepResultMessage,
 )
 
-Message = dict | StepResultMessage | AssertionResultMessage | ExecutionResultMessage
+Message = dict | StepResultMessage | AssertionResultMessage | ExecutionResultMessage | LogMessage
 SendFn = Callable[[Message], Awaitable[None]]
 
 
@@ -36,6 +37,23 @@ class RunnerReporter:
         self.send = send
         self.execution_id = execution_id
         self.session_token = session_token
+
+    async def log(
+        self,
+        level: str,
+        message: str,
+        step_order: int | None = None,
+    ) -> None:
+        msg: LogMessage = {
+            "type": "log",
+            "execution_id": self.execution_id,
+            "session_token": self.session_token,
+            "level": level,
+            "message": message,
+        }
+        if step_order is not None:
+            msg["step_order"] = step_order
+        await self.send(msg)
 
     async def step_result(
         self,
@@ -156,6 +174,18 @@ class TestRunner:
                 error_message=result.get("error_message"),
                 screenshot_path=result.get("screenshot_path"),
             )
+            action_name = str(step.get("action") or "unknown")
+            step_status = result.get("status", "passed")
+            if step_status == "passed":
+                log_level = "INFO"
+                log_message = f"步骤 {step_order} {action_name} 执行通过（{duration}ms）"
+            else:
+                log_level = "ERROR"
+                error_message = str(result.get("error_message") or "未知错误")
+                log_message = (
+                    f"步骤 {step_order} {action_name} 执行失败（{duration}ms）：{error_message}"
+                )
+            await reporter.log(log_level, log_message, step_order)
             if result.get("status") == "failed":
                 case_status = "failed"
                 # Step 4：continue_on_failure 是 Step 顶层字段，不从 params 读取

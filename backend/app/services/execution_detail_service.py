@@ -45,6 +45,15 @@ async def load_case_tree(db: AsyncSession, execution_id: int) -> list[dict]:
         ).all()
 
     step_by_case: dict[int, list[dict]] = {}
+    snapshot_parameters: dict[tuple[int, int], dict] = {}
+    for case in case_rows:
+        for item in case.steps_snapshot or []:
+            if not isinstance(item, dict):
+                continue
+            order = item.get("order") or item.get("step_order")
+            params = item.get("params")
+            if isinstance(order, int) and isinstance(params, dict):
+                snapshot_parameters[(case.id, order)] = params
     for s in steps:
         case_steps = step_by_case.setdefault(s.execution_case_id, [])
         case_steps.append(
@@ -52,7 +61,8 @@ async def load_case_tree(db: AsyncSession, execution_id: int) -> list[dict]:
                 "id": s.id,
                 "step_order": s.step_order,
                 "action": s.action,
-                "parameters": s.parameters or {},
+                "parameters": s.parameters
+                or snapshot_parameters.get((s.execution_case_id, s.step_order), {}),
                 "status": s.status,
                 "started_at": s.started_at,
                 "finished_at": s.finished_at,

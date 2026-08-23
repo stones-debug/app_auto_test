@@ -54,6 +54,7 @@ declare module 'vue' {
     ElTag: typeof import('element-plus/es')['ElTag']
     EmptyState: typeof import('./components/EmptyState.vue')['default']
     ErrorState: typeof import('./components/ErrorState.vue')['default']
+    ExecutionParameters: typeof import('./components/ExecutionParameters.vue')['default']
     ExecutionTimeline: typeof import('./components/ExecutionTimeline.vue')['default']
     FilterBar: typeof import('./components/FilterBar.vue')['default']
     LiveLogViewer: typeof import('./components/LiveLogViewer.vue')['default']

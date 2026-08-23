@@ -12,6 +12,7 @@ import {
 } from '@/api/executions'
 import { findReportByExecution } from '@/api/reports'
 import DevicePicker from '@/components/DevicePicker.vue'
+import ExecutionParameters from '@/components/ExecutionParameters.vue'
 import ExecutionTimeline, { type TimelineCase } from '@/components/ExecutionTimeline.vue'
 import LiveLogViewer, { type LogEntry } from '@/components/LiveLogViewer.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
@@ -51,6 +52,7 @@ const timelineCases = computed<TimelineCase[]>(() => {
     steps: (c.steps ?? []).map((s) => ({
       step_order: s.step_order,
       action: s.action,
+      parameters: s.parameters,
       status: s.status,
       duration: s.duration,
       actual_value: s.actual_value,
@@ -224,6 +226,9 @@ onBeforeUnmount(() => socket?.close())
       <el-descriptions-item label="开始时间">{{ formatDateTime(detail.started_at) }}</el-descriptions-item>
       <el-descriptions-item label="结束时间">{{ formatDateTime(detail.finished_at) }}</el-descriptions-item>
       <el-descriptions-item label="耗时">{{ durationText(detail.duration) }}</el-descriptions-item>
+      <el-descriptions-item label="执行参数" :span="3">
+        <ExecutionParameters :parameters="detail.parameters" />
+      </el-descriptions-item>
     </el-descriptions>
 
     <div class="detail-grid">

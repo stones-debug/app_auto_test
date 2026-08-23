@@ -45,6 +45,7 @@ export interface ReportStep {
   id: number
   step_order: number
   action: string
+  parameters: Record<string, unknown>
   status: string
   duration: number | null
   actual_value: string | null

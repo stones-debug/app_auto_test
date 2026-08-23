@@ -9,7 +9,7 @@ from sqlalchemy import select as sa_select
 from app.core.config import reports_dir
 from app.core.database import SessionLocal
 from app.main import app
-from app.models import Device, Execution, Report
+from app.models import Device, Execution, ExecutionCase, ExecutionStep, Report
 from app.services import report_service, worker_service
 from app.services.screenshot_store import resolve_screenshot_path, validate_object_key
 from app.ws import handlers
@@ -58,7 +58,7 @@ async def _setup(client: AsyncClient) -> tuple[str, int]:
     agent_id, device_id = await create_bound_agent_device(REG["username"])
     execution = await client.post(
         f"/api/executions/cases/{case_id}", headers=headers,
-        json={"device_id": device_id, "parameters": {}},
+        json={"device_id": device_id, "parameters": {"variables": {"account": "admin"}}},
     )
     assert execution.status_code == 201, execution.text
     execution_id = execution.json()["id"]
@@ -75,6 +75,17 @@ async def _setup(client: AsyncClient) -> tuple[str, int]:
         execution.session_token = "rp-token"
         execution.started_at = datetime.now(UTC)
         await db.commit()
+        await handlers.handle_log(
+            db,
+            agent_id,
+            {
+                "execution_id": execution_id,
+                "session_token": "rp-token",
+                "level": "INFO",
+                "message": "步骤 1 input 执行通过",
+                "step_order": 1,
+            },
+        )
         await handlers.handle_step_result(
             db,
             agent_id,
@@ -117,6 +128,21 @@ async def test_report_list_and_detail(client: AsyncClient):
     headers = {"Authorization": f"Bearer {token}"}
     report_id = await _report_id(execution_id)
 
+    # 模拟历史执行：旧逻辑已把步骤参数落成空字典，详情应从不可变快照恢复。
+    async with SessionLocal() as db:
+        step = (
+            await db.execute(
+                sa_select(ExecutionStep)
+                .join(ExecutionCase, ExecutionStep.execution_case_id == ExecutionCase.id)
+                .where(
+                    ExecutionCase.execution_id == execution_id,
+                    ExecutionStep.step_order == 1,
+                )
+            )
+        ).scalar_one()
+        step.parameters = {}
+        await db.commit()
+
     listed = await client.get("/api/reports", headers=headers)
     assert listed.status_code == 200
     item = next(i for i in listed.json()["items"] if i["id"] == report_id)
@@ -129,12 +155,16 @@ async def test_report_list_and_detail(client: AsyncClient):
     assert detail.status_code == 200
     body = detail.json()
     assert body["execution"]["status"] == "passed"
+    assert body["execution"]["parameters"] == {"variables": {"account": "admin"}}
     assert body["report"]["passed"] == 1
     assert body["cases"][0]["case_name"] == "报告用例"
     assert [s["action"] for s in body["cases"][0]["steps"]] == ["input", "click"]
+    assert body["cases"][0]["steps"][0]["parameters"]["value"] == "admin"
+    assert body["cases"][0]["steps"][0]["parameters"]["clear_first"] is True
     assert body["cases"][0]["steps"][0]["actual_value"] == "admin"
     assert body["cases"][0]["assertions"][0]["assertion_type"] == "text_equals"
     assert body["cases"][0]["assertions"][0]["status"] == "pass"
+    assert body["logs"][0]["message"] == "步骤 1 input 执行通过"
 
     _cleanup(execution_id)
 
@@ -148,6 +178,8 @@ async def test_report_download_generates_and_caches(client: AsyncClient):
     assert resp1.status_code == 200
     assert "text/html" in resp1.headers.get("content-type", "")
     assert "执行报告" in resp1.text
+    assert "执行参数" in resp1.text
+    assert "account" in resp1.text
 
     html_path = reports_dir() / f"execution_{execution_id}" / "report.html"
     assert html_path.exists()

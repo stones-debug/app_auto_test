@@ -6,10 +6,12 @@ import { executionStatusMeta } from '@/api/executions'
 import { downloadReport, getReportDetail, reportFileUrl, type ReportDetail } from '@/api/reports'
 import AuthenticatedImage from '@/components/AuthenticatedImage.vue'
 import DevicePicker from '@/components/DevicePicker.vue'
+import ExecutionParameters from '@/components/ExecutionParameters.vue'
 import { useExecutionRetry } from '@/composables/useExecutionRetry'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { applyOnlyFailed } from '@/utils/reportFilter'
 import { formatDateTime } from '@/utils/format'
+import { formatParameters } from '@/utils/parameters'
 
 const route = useRoute()
 const router = useRouter()
@@ -137,6 +139,10 @@ function viewExecution() {
           <div class="meta"><span class="label">结束</span>{{ formatDateTime(detail.execution.finished_at) }}</div>
           <div class="meta"><span class="label">耗时</span>{{ durationText(detail.execution.duration) }}</div>
         </div>
+        <div class="execution-parameters">
+          <div class="parameter-title">执行参数</div>
+          <ExecutionParameters :parameters="detail.execution.parameters" />
+        </div>
       </div>
 
       <div class="card">
@@ -171,6 +177,9 @@ function viewExecution() {
             <el-table v-if="c.steps.length" :data="c.steps" size="small">
               <el-table-column prop="step_order" label="#" width="50" />
               <el-table-column prop="action" label="动作" width="120" />
+              <el-table-column label="参数" min-width="180" show-overflow-tooltip>
+                <template #default="{ row }">{{ formatParameters(row.parameters) || '-' }}</template>
+              </el-table-column>
               <el-table-column label="状态" width="90">
                 <template #default="{ row }">
                   <el-tag :type="row.status === 'passed' ? 'success' : 'danger'" size="small">{{ row.status }}</el-tag>
@@ -266,6 +275,14 @@ function viewExecution() {
   color: #909399;
   font-size: 12px;
   margin-right: 8px;
+}
+.execution-parameters {
+  margin-top: 14px;
+}
+.parameter-title {
+  margin-bottom: 6px;
+  color: #909399;
+  font-size: 12px;
 }
 .stats {
   display: flex;
