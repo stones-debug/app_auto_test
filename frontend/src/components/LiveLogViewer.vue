@@ -2,6 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 
 import { formatDateTime } from '@/utils/format'
+import { executionConnectionState } from '@/utils/executionRealtime'
 
 // V2 §5.14：实时日志查看器——增量日志、级别过滤、自动滚动、连接状态。
 export interface LogEntry {
@@ -17,8 +18,9 @@ const props = withDefaults(
     logs: LogEntry[]
     connected?: boolean
     connecting?: boolean
+    terminal?: boolean
   }>(),
-  { connected: true, connecting: false },
+  { connected: true, connecting: false, terminal: false },
 )
 
 const LEVELS = ['ALL', 'DEBUG', 'INFO', 'WARN', 'ERROR']
@@ -32,6 +34,10 @@ const filtered = computed(() => {
   if (levelFilter.value === 'ALL') return props.logs
   return props.logs.filter((l) => l.level === levelFilter.value)
 })
+
+const connectionState = computed(() => (
+  executionConnectionState(props.terminal, props.connected, props.connecting)
+))
 
 const LEVEL_COLOR: Record<string, string> = {
   DEBUG: 'var(--text-2)',
@@ -75,8 +81,8 @@ function scrollToBottom() {
   <div class="live-log">
     <div class="log-toolbar">
       <span class="conn-state">
-        <span class="dot" :class="connected ? 'ok' : connecting ? 'pending' : 'down'" />
-        {{ connected ? '已连接' : connecting ? '连接中…' : '已断开' }}
+        <span class="dot" :class="connectionState.kind" />
+        {{ connectionState.label }}
       </span>
       <el-select v-model="levelFilter" size="small" class="level-filter">
         <el-option v-for="l in LEVELS" :key="l" :label="l" :value="l" />
@@ -130,6 +136,9 @@ function scrollToBottom() {
 }
 .dot.down {
   background: #ef4444;
+}
+.dot.done {
+  background: #64748b;
 }
 .level-filter {
   width: 110px;

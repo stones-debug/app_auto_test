@@ -35,6 +35,35 @@ def _step_snapshot(execution_case: ExecutionCase, step_order: int) -> dict:
     return {}
 
 
+async def _settle_execution_cases(
+    db: AsyncSession,
+    execution_id: int,
+    execution_status: str,
+    now: datetime,
+) -> None:
+    """Agent 终态提交时立即收敛用例状态，避免等待 Worker 汇总期间仍显示 running。"""
+    cases = (
+        await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == execution_id))
+    ).scalars().all()
+    for case in cases:
+        if case.status not in {"pending", "running"}:
+            continue
+        had_started = case.status == "running"
+        if execution_status == "passed":
+            case.status = "passed"
+        elif not had_started:
+            case.status = "skipped"
+        elif execution_status == "failed":
+            case.status = "failed"
+        elif execution_status in {"stopped", "cancelled"}:
+            case.status = "stopped"
+        else:
+            case.status = "error"
+        case.finished_at = now
+        if case.started_at is not None:
+            case.duration = int((now - case.started_at).total_seconds() * 1000)
+
+
 async def _bound_execution(
     db: AsyncSession,
     agent_id: int,
@@ -268,10 +297,13 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
         step.screenshot_path = screenshot_path
     await db.flush()
 
-    if execution_case.status == "pending":
-        execution_case.status = "running"
+    if execution_case.started_at is None:
+        execution_case.started_at = now
     if step.status == "failed":
         execution_case.status = "failed"
+        execution_case.finished_at = now
+    elif execution_case.status != "failed":
+        execution_case.status = "running"
 
     for assertion in payload.get("assertions") or []:
         db.add(
@@ -294,6 +326,7 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
             "case_id": case_id,
             "step_order": step_order,
             "status": step.status,
+            "case_status": execution_case.status,
             "duration": step.duration,
             "screenshot_url": step.screenshot_path,
             "artifact_id": step.id if step.screenshot_path else None,
@@ -350,6 +383,16 @@ async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict
                 error_message=assertion.get("error_message"),
             )
         )
+    assertion_failed = any(
+        (item.get("status") or "fail") in {"fail", "failed"}
+        for item in payload.get("assertions") or []
+    )
+    if execution_case.status != "failed":
+        execution_case.status = "failed" if assertion_failed else "passed"
+    now = datetime.now(UTC)
+    execution_case.finished_at = now
+    if execution_case.started_at is not None:
+        execution_case.duration = int((now - execution_case.started_at).total_seconds() * 1000)
     await db.commit()
     # V2 §8.2：assertion 广播（前端按 execution_id+case_id+step_order+type 幂等合并）
     await execution_manager.broadcast(
@@ -360,7 +403,8 @@ async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict
             "case_id": case_id,
             "step_order": last_step.step_order,
             "assertions": payload.get("assertions") or [],
-            "timestamp": datetime.now(UTC).isoformat(),
+            "case_status": execution_case.status,
+            "timestamp": now.isoformat(),
         },
     )
 
@@ -378,6 +422,7 @@ async def handle_execution_result(db: AsyncSession, agent_id: int, payload: dict
     execution.finished_at = now
     if execution.started_at is not None:
         execution.duration = int((now - execution.started_at).total_seconds() * 1000)
+    await _settle_execution_cases(db, execution.id, status, now)
     error_message = payload.get("error_message")
     if error_message:
         db.add(

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import {
@@ -21,6 +21,7 @@ import { useExecutionSocket } from '@/composables/useExecutionSocket'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { getToken } from '@/utils/request'
 import { liveLogKey, mergeExecutionLogs, type LogLike } from '@/utils/executionLogs'
+import { applyAssertionResult, applyStepResult, settleExecutionCases } from '@/utils/executionRealtime'
 import { formatDateTime } from '@/utils/format'
 
 const route = useRoute()
@@ -41,7 +42,7 @@ let liveIdCounter = 0
 let logKeys = new Set<string>()
 let completedPulled = false
 
-let socket: ReturnType<typeof useExecutionSocket> | null = null
+const socket = shallowRef<ReturnType<typeof useExecutionSocket> | null>(null)
 let staleId = 0 // loadAll 的异步完成检查：只允许当前路由的请求生效
 
 const timelineCases = computed<TimelineCase[]>(() => {
@@ -75,6 +76,13 @@ const logEntries = computed<LogEntry[]>(() => {
   return mergeExecutionLogs(logs.value, live) as LogEntry[]
 })
 
+const logTerminal = computed(() => isTerminal(detail.value?.status ?? ''))
+const logConnected = computed(() => socket.value?.connected.value ?? false)
+const logConnecting = computed(() => {
+  if (logTerminal.value) return false
+  return socket.value?.connecting.value ?? loading.value
+})
+
 function isTerminal(status: string) {
   return ['passed', 'failed', 'error', 'stopped', 'cancelled'].includes(status)
 }
@@ -102,7 +110,8 @@ async function loadAll(id: number) {
     reportId.value = null
     completedPulled = false
     if (isTerminal(data.status)) {
-      socket?.close()
+      socket.value?.close()
+      socket.value = null
       const rid = await findReportByExecution(id)
       if (staleId === myStale) reportId.value = rid
       return
@@ -116,7 +125,7 @@ async function loadAll(id: number) {
 function subscribe(id: number) {
   const token = getToken() ?? ''
   // Step 7：subscribe 前强制关闭旧 socket（防止新老执行串流）
-  socket?.close()
+  socket.value?.close()
   const ws = useExecutionSocket(id, token, (msg) => {
     const type = msg.type as string
     if (type === 'status') {
@@ -133,22 +142,22 @@ function subscribe(id: number) {
         created_at: (msg.timestamp as string) ?? new Date().toISOString(),
       })
     } else if (type === 'step_result') {
-      updateCaseStatus(Number(msg.case_id), (msg.status as string) ?? 'running')
+      if (detail.value) applyStepResult(detail.value.cases, msg)
+    } else if (type === 'assertion_result') {
+      if (detail.value) applyAssertionResult(detail.value.cases, msg)
     } else if (type === 'completed') {
       // Step 7：completed 只触发一次 REST 补拉并关闭 socket
       if (completedPulled) return
       completedPulled = true
-      if (detail.value) detail.value.status = (msg.status as ExecutionStatus) ?? detail.value.status
+      if (detail.value) {
+        detail.value.status = (msg.status as ExecutionStatus) ?? detail.value.status
+        settleExecutionCases(detail.value.cases, detail.value.status)
+      }
       ws.close()
       void loadAll(id)
     }
   })
-  socket = ws
-}
-
-function updateCaseStatus(caseId: number, status: string) {
-  const ec = detail.value?.cases.find((c) => c.case_id === caseId)
-  if (ec) ec.status = status
+  socket.value = ws
 }
 
 const { picker, retry: retryEntry, running: retrying } = useExecutionRetry()
@@ -183,8 +192,8 @@ watch(
   executionId,
   (id, oldId) => {
     if (id === oldId) return
-    socket?.close()
-    socket = null
+    socket.value?.close()
+    socket.value = null
     detail.value = null
     logs.value = []
     liveLogs.value = []
@@ -195,7 +204,7 @@ watch(
   { immediate: true },
 )
 
-onBeforeUnmount(() => socket?.close())
+onBeforeUnmount(() => socket.value?.close())
 </script>
 
 <template>
@@ -238,7 +247,7 @@ onBeforeUnmount(() => socket?.close())
       </div>
       <div class="content-card log-card">
         <div class="v2-card-title">实时日志</div>
-        <LiveLogViewer :logs="logEntries" :connected="socket?.connected.value ?? false" :connecting="socket?.connecting.value ?? true" />
+        <LiveLogViewer :logs="logEntries" :connected="logConnected" :connecting="logConnecting" :terminal="logTerminal" />
       </div>
     </div>
 

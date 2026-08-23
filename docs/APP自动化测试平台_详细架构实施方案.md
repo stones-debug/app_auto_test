@@ -1027,6 +1027,7 @@ Response:
   "case_id": 500,
   "step_order": 2,
   "status": "passed",
+  "case_status": "running",
   "duration": 1500,
   "screenshot_url": "/api/reports/.../step_002.png",
   "timestamp": "2026-08-20T10:00:05Z"
@@ -1041,6 +1042,8 @@ Response:
   "timestamp": "2026-08-20T10:05:00Z"
 }
 ```
+
+`step_result.status` 仅表示步骤状态；FastAPI 必须独立广播 `case_status`。收到 Agent `execution_result` 时，FastAPI 在广播 `completed` 前立即将仍为 `pending/running` 的用例收敛为对应终态，Worker 后续继续负责报告汇总和设备释放。
 
 **前端重连策略**：
 ```javascript

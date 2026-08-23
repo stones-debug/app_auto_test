@@ -247,6 +247,14 @@ async def test_handle_log_step_result_execution_result(client: AsyncClient):
     # B5：step_result 带 artifact_id（有截图时为 step.id）
     step_msg = next(m for m in front.sent if m["type"] == "step_result")
     assert "artifact_id" in step_msg
+    assert step_msg["case_status"] == "running"
+    async with SessionLocal() as db:
+        settled_case = (
+            await db.execute(
+                select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+            )
+        ).scalar_one()
+        assert settled_case.status == "passed"
     await execution_manager.disconnect(execution_id, front)
 
 
@@ -485,12 +493,14 @@ async def test_handle_assertion_result(client: AsyncClient):
         assert len(rows) == 1
         assert rows[0].assertion_type == "text_equals"
         assert rows[0].status == "pass"
+        assert ec.status == "passed"
 
     # B5：assertion_result 广播（V2 §8.2）
     assertion_msgs = [m for m in front.sent if m["type"] == "assertion_result"]
     assert len(assertion_msgs) == 1
     assert assertion_msgs[0]["case_id"] == case_id
     assert assertion_msgs[0]["assertions"][0]["status"] == "pass"
+    assert assertion_msgs[0]["case_status"] == "passed"
     await execution_manager.disconnect(execution_id, front)
 
 

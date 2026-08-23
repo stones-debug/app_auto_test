@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
 import { liveLogKey, mergeExecutionLogs } from '@/utils/executionLogs'
+import {
+  applyAssertionResult,
+  applyStepResult,
+  executionConnectionState,
+  settleExecutionCases,
+} from '@/utils/executionRealtime'
 import { applyOnlyFailed } from '@/utils/reportFilter'
 import { executionWsUrl } from '@/composables/useExecutionSocket'
 import { formatParameters, hasParameters } from '@/utils/parameters'
@@ -9,6 +15,60 @@ import { formatParameters, hasParameters } from '@/utils/parameters'
 ;(globalThis as Record<string, unknown>).location = { protocol: 'http:', host: 'test.local' }
 
 describe('Step 7 执行详情：日志去重与 WS 状态', () => {
+  it('步骤结果分别更新步骤状态与服务端 case_status', () => {
+    const cases = [{
+      id: 1,
+      case_id: 10,
+      case_name: '登录',
+      module_name: null,
+      status: 'pending',
+      started_at: null,
+      finished_at: null,
+      duration: null,
+      error_message: null,
+      steps: [{
+        id: 2,
+        step_order: 1,
+        action: 'click',
+        parameters: {},
+        status: 'pending',
+        duration: null,
+        actual_value: null,
+        error_message: null,
+      }],
+      assertions: [],
+    }]
+
+    applyStepResult(cases, {
+      case_id: 10,
+      step_order: 1,
+      status: 'passed',
+      case_status: 'running',
+      duration: 120,
+    })
+
+    expect(cases[0].steps[0].status).toBe('passed')
+    expect(cases[0].status).toBe('running')
+    applyAssertionResult(cases, { case_id: 10, case_status: 'passed' })
+    expect(cases[0].status).toBe('passed')
+  })
+
+  it('completed 立即收敛仍为 pending/running 的用例', () => {
+    const cases = [
+      { case_id: 1, status: 'running' },
+      { case_id: 2, status: 'pending' },
+    ]
+    settleExecutionCases(cases, 'failed')
+    expect(cases.map((item) => item.status)).toEqual(['failed', 'skipped'])
+  })
+
+  it('执行终态优先显示已结束，不再显示连接中', () => {
+    expect(executionConnectionState(true, false, true)).toEqual({
+      kind: 'done',
+      label: '执行已结束',
+    })
+  })
+
   it('执行参数和步骤参数可格式化展示', () => {
     const parameters = { variables: { account: 'admin' }, retry: false }
     expect(hasParameters(parameters)).toBe(true)
