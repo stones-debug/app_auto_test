@@ -84,7 +84,9 @@ const routes: RouteRecordRaw[] = [
           },
           {
             path: 'elements',
-            redirect: (to) => ({ name: 'Elements', query: { project: to.params.projectId } }),
+            name: 'ProjectElements',
+            component: () => import('@/views/Element.vue'),
+            meta: { title: '元素库', workspace: 'project', sidebarKey: 'elements' },
           },
           {
             path: 'variables',

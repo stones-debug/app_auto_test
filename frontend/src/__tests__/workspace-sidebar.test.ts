@@ -15,8 +15,8 @@ describe('AppShell 工作区侧栏契约', () => {
       'overview', 'cases', 'suites', 'elements', 'variables', 'executions', 'reports', 'settings',
     ])
     expect(menus.find((item) => item.key === 'elements')?.to).toEqual({
-      name: 'Elements',
-      query: { project: 12 },
+      name: 'ProjectElements',
+      params: { projectId: 12 },
     })
     expect(menus.find((item) => item.key === 'executions')?.to).toEqual({
       name: 'ProjectExecutions',

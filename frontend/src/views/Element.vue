@@ -24,6 +24,8 @@ import {
 const auth = useAuthStore()
 const route = useRoute()
 
+const isProjectMode = computed(() => route.params.projectId != null)
+
 const loading = ref(false)
 const items = ref<TestElement[]>([])
 const total = ref(0)
@@ -92,6 +94,13 @@ async function loadPages() {
 async function loadProjects() {
   const data = await listProjects({ page: 1, page_size: 100 })
   projects.value = data.items
+  if (isProjectMode.value) {
+    // 项目内元素库：固定当前项目上下文
+    projectFilter.value = Number(route.params.projectId)
+    page.value = 1
+    await load()
+    return
+  }
   // 从全局元素页跳入时可带 project 筛选（如项目概览跳转）
   const q = Number(route.query.project)
   if (q) {
@@ -255,7 +264,7 @@ onMounted(() => {
     <div class="elements-main">
       <div class="toolbar-card">
         <el-input v-model="keyword" placeholder="按名称搜索" clearable class="search" @keyup.enter="page = 1; load()" />
-        <el-select v-model="projectFilter" placeholder="全部项目" clearable class="platform" @change="page = 1; load()">
+        <el-select v-model="projectFilter" placeholder="全部项目" clearable :disabled="isProjectMode" class="platform" @change="page = 1; load()">
           <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
         </el-select>
         <el-select v-model="platform" placeholder="平台" clearable class="platform" @change="page = 1; load()">
@@ -313,7 +322,7 @@ onMounted(() => {
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑元素' : '新建元素'" width="560px">
       <el-form label-width="90px">
         <el-form-item label="项目" required>
-          <el-select v-model="form.project_id" class="full" :disabled="!!editingId">
+          <el-select v-model="form.project_id" class="full" :disabled="!!editingId || isProjectMode">
             <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
           </el-select>
         </el-form-item>
