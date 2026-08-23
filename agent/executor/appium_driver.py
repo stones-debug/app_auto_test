@@ -1,5 +1,4 @@
 import logging
-import re
 from typing import TYPE_CHECKING
 
 from .driver import BaseDriver, DriverError
@@ -8,36 +7,6 @@ if TYPE_CHECKING:
     from appium.webdriver.webdriver import WebDriver
 
 logger = logging.getLogger("agent.appium")
-
-_BARE_RESOURCE_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
-_STANDARD_ANDROID_ID_RE = re.compile(
-    r"^(?:[A-Za-z][A-Za-z0-9_.]*:id/)?[a-z][a-z0-9_]*$"
-)
-
-
-def _xpath_literal(value: str) -> str:
-    """将任意字符串安全编码为 XPath 字符串字面量。"""
-    if '"' not in value:
-        return f'"{value}"'
-    if "'" not in value:
-        return f"'{value}'"
-    parts = value.split('"')
-    arguments: list[str] = []
-    for index, part in enumerate(parts):
-        if part:
-            arguments.append(f'"{part}"')
-        if index < len(parts) - 1:
-            arguments.append("'\"'")
-    return f"concat({', '.join(arguments)})"
-
-
-def _resource_id_xpath(value: str) -> str:
-    return f"//*[@resource-id={_xpath_literal(value)}]"
-
-
-def _requires_exact_resource_id_lookup(value: str) -> bool:
-    """判断 ID 是否不符合 Android 的包名:id/资源名约定。"""
-    return _STANDARD_ANDROID_ID_RE.fullmatch(value) is None
 
 
 class AppiumDriver(BaseDriver):
@@ -206,94 +175,40 @@ class AppiumDriver(BaseDriver):
         normalized_type = str(locator_type or "").strip().lower()
         normalized_value = str(locator_value or "").strip()
         by = getattr(AppiumBy, normalized_type.upper(), None) or By.XPATH
-        resolved_value = normalized_value
-        compatibility_mode: str | None = None
-
-        # UiAutomator2 默认会把裸 ID 自动补为 <appPackage>:id/<value>。uni-app 的
-        # WebView 可访问性节点可能直接使用带连字符的 resource-id；当前驱动即使关闭
-        # ID 自动补全也无法命中该类节点，因此直接使用已验证可用的精确 XPath。
-        is_android = (self.device.get("platform") or "").lower() == "android"
-        if (
-            normalized_type == "id"
-            and is_android
-            and _requires_exact_resource_id_lookup(normalized_value)
-        ):
-            by = AppiumBy.XPATH
-            resolved_value = _resource_id_xpath(normalized_value)
-            compatibility_mode = "精确 resource-id XPath"
-        elif (
-            normalized_type == "xpath"
-            and is_android
-            and _BARE_RESOURCE_ID_RE.fullmatch(normalized_value)
-        ):
-            # 兼容历史数据：定位方式选择了 XPath，但保存的是裸 resource-id。
-            by = AppiumBy.XPATH
-            resolved_value = _resource_id_xpath(normalized_value)
-            compatibility_mode = "精确 resource-id XPath"
-
-        def log_compatibility() -> None:
-            if compatibility_mode:
-                logger.warning(
-                    "元素 %s=%s 已通过%s兼容定位；"
-                    "该 resource-id 不符合 Android 标准包名前缀格式",
-                    normalized_type,
-                    normalized_value,
-                    compatibility_mode,
-                )
 
         timeout = wait_timeout if wait_timeout is not None else 10
         if timeout <= 0:
-            element = driver.find_element(by, resolved_value)
-            log_compatibility()
-            return element
+            return driver.find_element(by, normalized_value)
         try:
-            element = WebDriverWait(driver, timeout).until(
-                EC.presence_of_element_located((by, resolved_value))
+            return WebDriverWait(driver, timeout).until(
+                EC.presence_of_element_located((by, normalized_value))
             )
         except TimeoutException:
             raise ElementNotFound(
                 f"元素等待超时: {normalized_type}={normalized_value} ({timeout}s)"
             ) from None
-        log_compatibility()
-        return element
 
     def click(self, element) -> None:
         self._ensure()
         element.click()
 
-    def _resolve_editable_element(self, element):
-        """将 uni-app 等框架带 resource-id 的外层节点解析为实际 EditText。"""
-        if (self.device.get("platform") or "").lower() != "android":
-            return element
-
-        from appium.webdriver.common.appiumby import AppiumBy
-        from selenium.common.exceptions import InvalidSelectorException, NoSuchElementException
-
-        try:
-            editable = element.find_element(AppiumBy.CLASS_NAME, "android.widget.EditText")
-        except (AttributeError, InvalidSelectorException, NoSuchElementException):
-            return element
-        logger.info("输入元素已从外层节点解析为 android.widget.EditText 子控件")
-        return editable
-
     def input(self, element, value: str, clear_first: bool = True) -> None:
         self._ensure()
         from selenium.common.exceptions import InvalidElementStateException
 
-        target = self._resolve_editable_element(element)
         try:
             if clear_first:
-                target.clear()
-            target.send_keys(value)
+                element.clear()
+            element.send_keys(value)
         except InvalidElementStateException as exc:
             raise DriverError(
-                "输入失败：定位到的控件不可编辑。请确认元素指向输入框或包含 "
-                "android.widget.EditText 的外层容器，并确认控件处于启用状态"
+                "输入失败：定位到的控件不可编辑。请确认元素定位值直接指向可编辑控件，"
+                "并确认控件处于启用状态"
             ) from exc
 
     def clear(self, element) -> None:
         self._ensure()
-        self._resolve_editable_element(element).clear()
+        element.clear()
 
     def get_text(self, element) -> str:
         self._ensure()

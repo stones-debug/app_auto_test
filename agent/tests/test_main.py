@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from main import AgentApp, http_origin, should_run_desktop
+from main import AgentApp, build_agent_app, http_origin, should_run_desktop
 
 
 class FakeClient:
@@ -24,6 +24,23 @@ class FakeClient:
 )
 def test_desktop_mode_selection(explicit_desktop: bool, frozen: bool, expected: bool):
     assert should_run_desktop(explicit_desktop, frozen=frozen) is expected
+
+
+def test_build_agent_app_uses_install_identity_and_machine_psk():
+    class Bindings:
+        def machine_psk(self):
+            return "sk-machine"
+
+    app, client = build_agent_app(
+        {"server": "ws://127.0.0.1:8001/ws/agent", "driver": "mock"},
+        "agent-install-id",
+        Bindings(),
+    )
+
+    assert client.agent_id == "agent-install-id"
+    assert client._resolve_key() == "sk-machine"
+    assert app.uploader.agent_id == "agent-install-id"
+    assert app.uploader._resolve_key() == "sk-machine"
 
 
 def _sleep_case(duration: float = 5) -> list[dict]:

@@ -252,34 +252,6 @@ async def test_appium_find_element_wait_success(monkeypatch):
     assert found == "element:soon"
 
 
-async def test_appium_nonstandard_id_uses_exact_resource_id_xpath_directly():
-    from appium.webdriver.common.appiumby import AppiumBy
-    from selenium.common.exceptions import NoSuchElementException
-
-    from executor.appium_driver import AppiumDriver
-
-    calls: list[tuple[str, str]] = []
-
-    class UniAppSession:
-        def find_element(self, by, value):
-            calls.append((by, value))
-            if by == AppiumBy.XPATH and value == (
-                '//*[@resource-id="src-components-l-popup-input-port"]'
-            ):
-                return "port-input"
-            raise NoSuchElementException(value)
-
-    driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
-    driver.driver = UniAppSession()
-
-    found = driver.find_element("id", "src-components-l-popup-input-port", wait_timeout=1)
-
-    assert found == "port-input"
-    assert calls == [
-        (AppiumBy.XPATH, '//*[@resource-id="src-components-l-popup-input-port"]'),
-    ]
-
-
 async def test_appium_standard_android_id_keeps_native_id_strategy():
     from appium.webdriver.common.appiumby import AppiumBy
 
@@ -301,34 +273,6 @@ async def test_appium_standard_android_id_keeps_native_id_strategy():
     assert calls == [(AppiumBy.ID, "login_btn")]
 
 
-async def test_appium_bare_xpath_is_normalized_to_resource_id_xpath():
-    from appium.webdriver.common.appiumby import AppiumBy
-    from selenium.common.exceptions import NoSuchElementException
-
-    from executor.appium_driver import AppiumDriver
-
-    calls: list[tuple[str, str]] = []
-
-    class UniAppSession:
-        def find_element(self, by, value):
-            calls.append((by, value))
-            if by == AppiumBy.XPATH and value == (
-                '//*[@resource-id="src-views-login-btn-setServerIp"]'
-            ):
-                return "server-button"
-            raise NoSuchElementException(value)
-
-    driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
-    driver.driver = UniAppSession()
-
-    found = driver.find_element("xpath", "src-views-login-btn-setServerIp", wait_timeout=1)
-
-    assert found == "server-button"
-    assert calls == [
-        (AppiumBy.XPATH, '//*[@resource-id="src-views-login-btn-setServerIp"]'),
-    ]
-
-
 async def test_appium_explicit_xpath_is_not_rewritten():
     from appium.webdriver.common.appiumby import AppiumBy
 
@@ -347,50 +291,13 @@ async def test_appium_explicit_xpath_is_not_rewritten():
     assert driver.find_element("xpath", xpath, wait_timeout=1) == "server-button"
 
 
-async def test_appium_input_uses_editable_descendant_of_uniapp_wrapper():
-    from appium.webdriver.common.appiumby import AppiumBy
-
+async def test_appium_input_uses_selected_editable_element_directly():
     from executor.appium_driver import AppiumDriver
 
     class Editable:
         def __init__(self) -> None:
             self.cleared = False
             self.value = ""
-
-        def clear(self):
-            self.cleared = True
-
-        def send_keys(self, value):
-            self.value = value
-
-    editable = Editable()
-
-    class Wrapper:
-        def find_element(self, by, value):
-            assert (by, value) == (AppiumBy.CLASS_NAME, "android.widget.EditText")
-            return editable
-
-    driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
-    driver.driver = object()
-
-    driver.input(Wrapper(), "116.247.83.156")
-
-    assert editable.cleared is True
-    assert editable.value == "116.247.83.156"
-
-
-async def test_appium_input_keeps_direct_editable_element_when_no_child():
-    from selenium.common.exceptions import NoSuchElementException
-
-    from executor.appium_driver import AppiumDriver
-
-    class Editable:
-        def __init__(self) -> None:
-            self.cleared = False
-            self.value = ""
-
-        def find_element(self, by, value):
-            raise NoSuchElementException(f"{by}={value}")
 
         def clear(self):
             self.cleared = True
@@ -409,15 +316,12 @@ async def test_appium_input_keeps_direct_editable_element_when_no_child():
 
 
 async def test_appium_input_reports_actionable_error_for_non_editable_element():
-    from selenium.common.exceptions import InvalidElementStateException, NoSuchElementException
+    from selenium.common.exceptions import InvalidElementStateException
 
     from executor.appium_driver import AppiumDriver
     from executor.driver import DriverError
 
     class DisabledElement:
-        def find_element(self, by, value):
-            raise NoSuchElementException(f"{by}={value}")
-
         def clear(self):
             raise InvalidElementStateException("not editable")
 
@@ -431,7 +335,7 @@ async def test_appium_input_reports_actionable_error_for_non_editable_element():
         driver.input(DisabledElement(), "value")
 
 
-async def test_appium_clear_uses_editable_descendant():
+async def test_appium_clear_uses_selected_element_directly():
     from executor.appium_driver import AppiumDriver
 
     class Editable:
@@ -441,15 +345,10 @@ async def test_appium_clear_uses_editable_descendant():
             self.cleared = True
 
     editable = Editable()
-
-    class Wrapper:
-        def find_element(self, by, value):
-            return editable
-
     driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
     driver.driver = object()
 
-    driver.clear(Wrapper())
+    driver.clear(editable)
 
     assert editable.cleared is True
 

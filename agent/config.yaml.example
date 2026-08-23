@@ -1,9 +1,6 @@
 # 服务器连接
 server: "ws://127.0.0.1:8001/ws/agent"
-# agent_key: 绑定模式无需配置（--bind 后自动使用机器 PSK）；旧版管理端创建的 Agent 填这里
-# agent_key: "sk-agent-change-me"
-# agent_id: 绑定模式自动使用 install_id（agent-<hex>）；旧版手动配置时填这里
-# agent_id: "agent-001"
+# 身份由本机 install_id 与 --bind 生成的机器 PSK 管理，无需在配置文件中填写凭据。
 
 # 可选配置
 heartbeat_interval: 30

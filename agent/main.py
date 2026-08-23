@@ -323,21 +323,23 @@ async def run_bind(bindings: BindingManager, user_key: str) -> None:
     _out(json.dumps({"status": "ok", "agent_id": result.get("agent_id"), "user_id": result.get("user_id")}, ensure_ascii=False))
 
 
-def build_agent_app(config: dict, install_id: str, creds: CredentialStore, bindings: BindingManager) -> tuple[AgentApp, AgentWSClient]:
-    """构造 AgentApp + WS 客户端（Windows 方案 §3.2：机器 PSK 优先，兼容旧配置 agent_key）。
+def build_agent_app(
+    config: dict, install_id: str, bindings: BindingManager
+) -> tuple[AgentApp, AgentWSClient]:
+    """使用安装 ID 与绑定生成的机器 PSK 构造 AgentApp + WS 客户端。
 
-    agent_key 以回调形式传入：绑定 Key 后无需重启，重连即用新机器 PSK。
+    机器 PSK 以回调形式传入：绑定 Key 后无需重启，重连即使用新凭据。
     """
     app = AgentApp(config, bindings=bindings)
 
     def key_provider() -> str:
-        return config.get("agent_key") or bindings.machine_psk() or ""
+        return bindings.machine_psk() or ""
 
     base_url = http_origin(config["server"])
     client = AgentWSClient(
         url=config["server"],
         agent_key=key_provider,
-        agent_id=config.get("agent_id") or install_id,
+        agent_id=install_id,
         version=__version__,
         heartbeat_interval=config.get("heartbeat_interval", 30),
     )
@@ -345,12 +347,12 @@ def build_agent_app(config: dict, install_id: str, creds: CredentialStore, bindi
     app.uploader = Uploader(
         base_url=base_url,
         agent_key=key_provider,
-        agent_id=config.get("agent_id") or install_id,
+        agent_id=install_id,
     )
     client.on_message = app.on_message
     client.on_registered = app.start_device_reporting
     if not key_provider():
-        logger.error("未配置 agent_key 且本机无机器 PSK，无法注册；请先执行 --bind <用户Key> 或配置 agent_key")
+        logger.error("本机无机器 PSK，无法注册；请先执行 --bind <用户Key>")
     return app, client
 
 
@@ -482,7 +484,7 @@ async def main() -> None:
         await run_bind(bindings, args.bind)
         return
 
-    app, client = build_agent_app(config, install_id, creds, bindings)
+    app, client = build_agent_app(config, install_id, bindings)
     if should_run_desktop(args.desktop):
         run_desktop(app, client, state or state_dir(state), config["server"])
         return
