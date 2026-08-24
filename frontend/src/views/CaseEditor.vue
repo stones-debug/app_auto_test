@@ -22,6 +22,7 @@ import { listModules } from '@/api/elements'
 import CaseStepEditor from '@/components/CaseStepEditor.vue'
 import ElementSelector from '@/components/ElementSelector.vue'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
+import { buildCaseEditorSummary, caseEditorSummaryText } from '@/utils/caseEditorSummary'
 
 const route = useRoute()
 const router = useRouter()
@@ -78,6 +79,38 @@ function phaseSteps(phase: StepPhase) {
 const setupSteps = phaseSteps('setup')
 const mainSteps = phaseSteps('main')
 const teardownSteps = phaseSteps('teardown')
+
+// 收起/展开：编辑完成后可折叠为一行简略信息，点击展开
+const collapsed = ref(false)
+
+const moduleName = computed(() => {
+  if (form.module_id == null) return '未分组'
+  return modules.value.find((m) => m.id === form.module_id)?.name ?? '未分组'
+})
+
+const summaryMeta = computed(() => {
+  return buildCaseEditorSummary(
+    (form.steps as Step[]) ?? [],
+    (form.assertions as Assertion[]) ?? [],
+    variableEntries.value,
+  )
+})
+
+const summaryText = computed(() => caseEditorSummaryText(moduleName.value, summaryMeta.value))
+
+function statusLabel(s: string | undefined) {
+  return CASE_STATUS.find((x) => x.value === s)?.label ?? s
+}
+
+function statusType(s: string | undefined): 'info' | 'success' | 'danger' {
+  if (s === 'active') return 'success'
+  if (s === 'disabled') return 'danger'
+  return 'info'
+}
+
+function toggleCollapsed() {
+  collapsed.value = !collapsed.value
+}
 
 function addAssertion() {
   const assertions = form.assertions as Assertion[]
@@ -174,27 +207,47 @@ onMounted(async () => {
 
 <template>
   <div v-loading="loading">
-    <div class="content-card mb16">
-      <div class="section-title">基本信息</div>
-      <el-form label-width="80px" class="basic-form">
-        <el-form-item label="名称" required>
-          <el-input v-model="form.name" />
-        </el-form-item>
-        <el-form-item label="模块">
-          <el-select v-model="form.module_id" clearable placeholder="选择模块" class="w-200">
-            <el-option v-for="m in modules" :key="m.id" :label="m.name" :value="m.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="状态">
-          <el-radio-group v-model="form.status">
-            <el-radio v-for="s in CASE_STATUS" :key="s.value" :value="s.value">{{ s.label }}</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item label="描述">
-          <el-input v-model="form.description" type="textarea" :rows="2" />
-        </el-form-item>
-      </el-form>
+    <!-- 收起/展开摘要条：折叠后仅显示一行用例简略信息 -->
+    <div
+      class="editor-summary"
+      :class="{ collapsed }"
+      role="button"
+      tabindex="0"
+      :aria-expanded="!collapsed"
+      aria-controls="case-editor-body"
+      @click="toggleCollapsed"
+      @keydown.enter.prevent="toggleCollapsed"
+      @keydown.space.prevent="toggleCollapsed"
+    >
+      <span class="sum-icon">{{ collapsed ? '▸' : '▾' }}</span>
+      <span class="sum-name">{{ form.name || '未命名用例' }}</span>
+      <el-tag :type="statusType(form.status)" size="small">{{ statusLabel(form.status) }}</el-tag>
+      <span class="sum-meta" :title="summaryText">{{ summaryText }}</span>
+      <span class="sum-hint">{{ collapsed ? '点击展开' : '点击收起' }}</span>
     </div>
+
+    <div id="case-editor-body" v-show="!collapsed" class="editor-body">
+      <div class="content-card mb16">
+        <div class="section-title">基本信息</div>
+        <el-form label-width="80px" class="basic-form">
+          <el-form-item label="名称" required>
+            <el-input v-model="form.name" />
+          </el-form-item>
+          <el-form-item label="模块">
+            <el-select v-model="form.module_id" clearable placeholder="选择模块" class="w-200">
+              <el-option v-for="m in modules" :key="m.id" :label="m.name" :value="m.id" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="状态">
+            <el-radio-group v-model="form.status">
+              <el-radio v-for="s in CASE_STATUS" :key="s.value" :value="s.value">{{ s.label }}</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item label="描述">
+            <el-input v-model="form.description" type="textarea" :rows="2" />
+          </el-form-item>
+        </el-form>
+      </div>
 
     <CaseStepEditor
       v-model="setupSteps"
@@ -295,12 +348,82 @@ onMounted(async () => {
       <el-button @click="router.push(`/projects/${projectId}/cases`)">返回</el-button>
       <el-button type="primary" @click="save">保存</el-button>
     </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .mb16 {
   margin-bottom: 16px;
+}
+.editor-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.editor-summary:hover {
+  border-color: var(--primary);
+  box-shadow: 0 2px 8px rgba(79, 70, 229, 0.1);
+}
+.editor-summary:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.editor-summary.collapsed {
+  margin-bottom: 0;
+}
+.sum-icon {
+  color: var(--primary);
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.sum-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.sum-meta {
+  color: var(--text-2);
+  font-size: 13px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sum-hint {
+  margin-left: auto;
+  color: var(--primary);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.editor-body {
+  display: flex;
+  flex-direction: column;
+}
+@media (max-width: 768px) {
+  .editor-summary {
+    gap: 8px;
+    padding: 10px 12px;
+  }
+  .sum-name {
+    max-width: 34%;
+  }
+  .sum-hint {
+    display: none;
+  }
 }
 .content-card {
   background: #fff;
