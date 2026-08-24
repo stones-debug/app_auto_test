@@ -3,15 +3,15 @@ import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { executionStatusMeta } from '@/api/executions'
-import { downloadReport, getReportDetail, reportFileUrl, type ReportDetail } from '@/api/reports'
-import AuthenticatedImage from '@/components/AuthenticatedImage.vue'
+import { downloadReport, getReportDetail, type ReportDetail, type ReportStep } from '@/api/reports'
 import DevicePicker from '@/components/DevicePicker.vue'
 import ExecutionParameters from '@/components/ExecutionParameters.vue'
+import ReportStepTable from '@/components/ReportStepTable.vue'
 import { useExecutionRetry } from '@/composables/useExecutionRetry'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { applyOnlyFailed } from '@/utils/reportFilter'
+import { splitExecutionSteps } from '@/utils/executionOrder'
 import { formatDateTime } from '@/utils/format'
-import { formatParameters } from '@/utils/parameters'
 
 const route = useRoute()
 const router = useRouter()
@@ -113,6 +113,14 @@ function viewExecution() {
   const execId = Number(detail.value?.execution.id)
   if (execId) void router.push(navigation.executionDetail(execId))
 }
+
+function stepsBeforeAssertions(steps: ReportStep[]) {
+  return splitExecutionSteps(steps).beforeAssertions
+}
+
+function stepsAfterAssertions(steps: ReportStep[]) {
+  return splitExecutionSteps(steps).afterAssertions
+}
 </script>
 
 <template>
@@ -174,36 +182,12 @@ function viewExecution() {
             </template>
             <div v-if="c.error_message" class="error-text">{{ c.error_message }}</div>
 
-            <el-table v-if="c.steps.length" :data="c.steps" size="small">
-              <el-table-column prop="step_order" label="#" width="50" />
-              <el-table-column label="阶段" width="70">
-                <template #default="{ row }">{{ row.phase === 'setup' ? '前置' : row.phase === 'teardown' ? '后置' : '主体' }}</template>
-              </el-table-column>
-              <el-table-column prop="action" label="动作" width="120" />
-              <el-table-column label="参数" min-width="180" show-overflow-tooltip>
-                <template #default="{ row }">{{ formatParameters(row.parameters) || '-' }}</template>
-              </el-table-column>
-              <el-table-column label="状态" width="90">
-                <template #default="{ row }">
-                  <el-tag :type="row.status === 'passed' ? 'success' : 'danger'" size="small">{{ row.status }}</el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column label="耗时" width="90">
-                <template #default="{ row }">{{ durationText(row.duration) }}</template>
-              </el-table-column>
-              <el-table-column prop="actual_value" label="实际值" min-width="120" show-overflow-tooltip />
-              <el-table-column prop="error_message" label="错误" min-width="160" show-overflow-tooltip />
-              <el-table-column label="截图" width="130">
-                <template #default="{ row }">
-                  <AuthenticatedImage
-                    v-if="row.screenshot"
-                    :src="reportFileUrl(reportId, row.screenshot)"
-                    class="thumb"
-                  />
-                </template>
-              </el-table-column>
-            </el-table>
-            <el-empty v-else description="无步骤" :image-size="60" />
+            <ReportStepTable
+              v-if="stepsBeforeAssertions(c.steps).length"
+              :steps="stepsBeforeAssertions(c.steps)"
+              :report-id="reportId"
+            />
+            <el-empty v-else-if="!c.assertions.length && !stepsAfterAssertions(c.steps).length" description="无步骤" :image-size="60" />
 
             <el-table v-if="c.assertions.length" :data="c.assertions" size="small" class="mt8">
               <el-table-column prop="assertion_type" label="断言" width="150" />
@@ -216,6 +200,12 @@ function viewExecution() {
               </el-table-column>
               <el-table-column prop="error_message" label="错误" min-width="140" show-overflow-tooltip />
             </el-table>
+            <ReportStepTable
+              v-if="stepsAfterAssertions(c.steps).length"
+              :steps="stepsAfterAssertions(c.steps)"
+              :report-id="reportId"
+              class="mt8"
+            />
           </el-collapse-item>
         </el-collapse>
       </div>
@@ -342,12 +332,6 @@ function viewExecution() {
 .truncate-note {
   color: #e6a23c;
   margin-bottom: 8px;
-}
-.thumb {
-  width: 60px;
-  height: 80px;
-  border-radius: 4px;
-  border: 1px solid #eee;
 }
 .mt8 {
   margin-top: 8px;

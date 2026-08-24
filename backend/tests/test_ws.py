@@ -504,6 +504,88 @@ async def test_handle_assertion_result(client: AsyncClient):
     await execution_manager.disconnect(execution_id, front)
 
 
+async def test_assertion_failure_survives_teardown_and_overrides_agent_passed(
+    client: AsyncClient,
+):
+    """回归：后置步骤成功不能覆盖断言失败，执行终态也不能被 Agent passed 覆盖。"""
+    _token, case_id, execution_id = await _setup_case_execution(client)
+    async with SessionLocal() as db:
+        agent_id = await _create_agent()
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        await _bind_execution_to_agent(db, execution_id, agent_id)
+
+    async with SessionLocal() as db:
+        await handlers.handle_step_result(
+            db,
+            agent_id,
+            {
+                "execution_id": execution_id,
+                "session_token": "sess-token",
+                "case_id": case_id,
+                "step_order": 1,
+                "action": "input",
+                "status": "passed",
+            },
+        )
+        await handlers.handle_assertion_result(
+            db,
+            agent_id,
+            {
+                "execution_id": execution_id,
+                "session_token": "sess-token",
+                "case_id": case_id,
+                "assertions": [
+                    {
+                        "type": "text_equals",
+                        "expected": "wrong",
+                        "actual": "admin",
+                        "status": "failed",
+                    }
+                ],
+            },
+        )
+        await handlers.handle_step_result(
+            db,
+            agent_id,
+            {
+                "execution_id": execution_id,
+                "session_token": "sess-token",
+                "case_id": case_id,
+                "step_order": 2,
+                "action": "clear",
+                "status": "passed",
+            },
+        )
+        await handlers.handle_execution_result(
+            db,
+            agent_id,
+            {
+                "execution_id": execution_id,
+                "session_token": "sess-token",
+                "status": "passed",
+            },
+        )
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        execution_case = (
+            await db.execute(
+                select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+            )
+        ).scalar_one()
+        assertion = (
+            await db.execute(
+                select(ExecutionAssertion)
+                .join(ExecutionStep)
+                .where(ExecutionStep.execution_case_id == execution_case.id)
+            )
+        ).scalar_one()
+        assert assertion.status == "fail"
+        assert execution_case.status == "failed"
+        assert execution.status == "failed"
+
+
 # ---------- CR-16：Agent 重连身份 / CR-24：广播空组清理 ----------
 
 

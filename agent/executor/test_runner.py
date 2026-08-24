@@ -253,7 +253,9 @@ class TestRunner:
                     "expected": str(res.get("expected") or ""),
                     "actual": str(res.get("actual") or ""),
                     "status": str(res.get("status") or "failed"),
-                    "error_message": str(res.get("error_message") or None),
+                    "error_message": (
+                        str(res["error_message"]) if res.get("error_message") else None
+                    ),
                 }
             )
             if res.get("status") != "passed":

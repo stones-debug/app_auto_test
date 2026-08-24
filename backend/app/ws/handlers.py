@@ -373,21 +373,26 @@ async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict
         )
         await db.commit()
         return
+    normalized_assertions: list[dict] = []
     for assertion in payload.get("assertions") or []:
+        raw_status = str(assertion.get("status") or "fail").lower()
+        normalized = {
+            **assertion,
+            # DB/前端协议统一使用 pass/fail；兼容旧 Agent 的 passed/failed。
+            "status": "pass" if raw_status in {"pass", "passed"} else "fail",
+        }
+        normalized_assertions.append(normalized)
         db.add(
             ExecutionAssertion(
                 execution_step_id=last_step.id,
-                assertion_type=assertion.get("type") or "",
-                expected_value=str(assertion.get("expected") or ""),
-                actual_value=str(assertion.get("actual") or ""),
-                status=assertion.get("status") or "fail",
-                error_message=assertion.get("error_message"),
+                assertion_type=normalized.get("type") or "",
+                expected_value=str(normalized.get("expected") or ""),
+                actual_value=str(normalized.get("actual") or ""),
+                status=normalized["status"],
+                error_message=normalized.get("error_message"),
             )
         )
-    assertion_failed = any(
-        (item.get("status") or "fail") in {"fail", "failed"}
-        for item in payload.get("assertions") or []
-    )
+    assertion_failed = any(item["status"] == "fail" for item in normalized_assertions)
     if execution_case.status != "failed":
         execution_case.status = "failed" if assertion_failed else "passed"
     now = datetime.now(UTC)
@@ -403,7 +408,7 @@ async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict
             "execution_id": execution_id,
             "case_id": case_id,
             "step_order": last_step.step_order,
-            "assertions": payload.get("assertions") or [],
+            "assertions": normalized_assertions,
             "case_status": execution_case.status,
             "timestamp": now.isoformat(),
         },
@@ -418,6 +423,27 @@ async def handle_execution_result(db: AsyncSession, agent_id: int, payload: dict
     status = (payload.get("status") or "error").lower()
     if status not in TERMINAL_STATES:
         status = "error"
+    # 服务端以已落库的用例结果为准，不能让迟到、旧版本或异常 Agent 的 passed
+    # 覆盖断言/步骤已经判定的失败状态。
+    if status == "passed":
+        failed_case_id = await db.scalar(
+            select(ExecutionCase.id)
+            .where(
+                ExecutionCase.execution_id == execution.id,
+                ExecutionCase.status == "failed",
+            )
+            .limit(1)
+        )
+        if failed_case_id is not None:
+            status = "failed"
+            db.add(
+                ExecutionLog(
+                    execution_id=execution_id,
+                    level="WARN",
+                    message="Agent 上报执行通过，但服务端已记录失败用例，终态已修正为 failed",
+                    source="worker",
+                )
+            )
     now = datetime.now(UTC)
     execution.status = status
     execution.finished_at = now

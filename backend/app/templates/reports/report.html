@@ -39,6 +39,33 @@
 </style>
 </head>
 <body>
+{% macro render_steps(steps, margin_top=false) -%}
+<table{% if margin_top %} style="margin-top:8px"{% endif %}>
+  <thead><tr><th>#</th><th>阶段</th><th>动作</th><th>参数</th><th>状态</th><th>结果/错误</th><th>截图</th></tr></thead>
+  <tbody>
+  {% for step in steps %}
+    <tr>
+      <td>{{ step.step_order }}</td>
+      <td>{{ '前置' if step.phase == 'setup' else ('后置' if step.phase == 'teardown' else '主体') }}</td>
+      <td>{{ step.action }}</td>
+      <td style="word-break:break-all">{{ step.parameters }}</td>
+      <td class="{{ 'step-ok' if step.status == 'passed' else 'step-fail' }}">{{ step.status }}</td>
+      <td style="word-break:break-all">
+        {%- if step.status == 'passed' and step.actual_value %}{{ step.actual_value }}{% endif -%}
+        {%- if step.error_message %}{{ step.error_message }}{% endif -%}
+      </td>
+      <td>
+        {%- if step.screenshot_base64 -%}
+        <img class="step-screenshot" src="data:image/png;base64,{{ step.screenshot_base64 }}" alt="截图">
+        {%- elif step.screenshot -%}
+        <span style="color:var(--muted)">{{ step.screenshot }}</span>
+        {%- endif -%}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{%- endmacro %}
 <div class="container">
   <h1>执行报告 #{{ execution.id }}</h1>
   <div class="meta">
@@ -69,33 +96,10 @@
     </div>
     <div class="case-body">
       {% if case.error_message %}<div class="error-box">{{ case.error_message }}</div>{% endif %}
-      {% if case.steps %}
-      <table>
-        <thead><tr><th>#</th><th>阶段</th><th>动作</th><th>参数</th><th>状态</th><th>结果/错误</th><th>截图</th></tr></thead>
-        <tbody>
-        {% for step in case.steps %}
-          <tr>
-            <td>{{ step.step_order }}</td>
-            <td>{{ '前置' if step.phase == 'setup' else ('后置' if step.phase == 'teardown' else '主体') }}</td>
-            <td>{{ step.action }}</td>
-            <td style="word-break:break-all">{{ step.parameters }}</td>
-            <td class="{{ 'step-ok' if step.status == 'passed' else 'step-fail' }}">{{ step.status }}</td>
-            <td style="word-break:break-all">
-              {%- if step.status == 'passed' and step.actual_value %}{{ step.actual_value }}{% endif -%}
-              {%- if step.error_message %}{{ step.error_message }}{% endif -%}
-            </td>
-            <td>
-              {%- if step.screenshot_base64 -%}
-              <img class="step-screenshot" src="data:image/png;base64,{{ step.screenshot_base64 }}" alt="截图">
-              {%- elif step.screenshot -%}
-              <span style="color:var(--muted)">{{ step.screenshot }}</span>
-              {%- endif -%}
-            </td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-      {% else %}<div class="empty">无步骤</div>{% endif %}
+      {% set before_assertions = case.steps | rejectattr('phase', 'equalto', 'teardown') | list %}
+      {% set after_assertions = case.steps | selectattr('phase', 'equalto', 'teardown') | list %}
+      {% if before_assertions %}{{ render_steps(before_assertions) }}{% endif %}
+      {% if not before_assertions and not case.assertions and not after_assertions %}<div class="empty">无步骤</div>{% endif %}
 
       {% if case.assertions %}
       <table style="margin-top:8px">
@@ -107,12 +111,13 @@
             <td>{{ a.assertion_type }}</td>
             <td style="word-break:break-all">{{ a.expected_value }}</td>
             <td style="word-break:break-all">{{ a.actual_value }}</td>
-            <td class="{{ 'step-ok' if a.status == 'passed' else 'step-fail' }}">{{ a.status }}</td>
+            <td class="{{ 'step-ok' if a.status in ['pass', 'passed'] else 'step-fail' }}">{{ a.status }}</td>
           </tr>
         {% endfor %}
         </tbody>
       </table>
       {% endif %}
+      {% if after_assertions %}{{ render_steps(after_assertions, true) }}{% endif %}
     </div>
   </div>
   {% endfor %}

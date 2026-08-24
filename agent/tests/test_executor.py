@@ -252,6 +252,51 @@ async def test_runner_setup_failure_skips_main_but_still_runs_teardown():
     assert [message["step_order"] for message in step_msgs] == [1, 3]
 
 
+async def test_runner_runs_assertions_before_teardown_and_keeps_assertion_failure():
+    """回归：执行顺序固定为主体 → 断言 → 后置，后置成功不得覆盖断言失败。"""
+    driver = MockDriver()
+    case = _make_case(
+        steps=[
+            {
+                "order": 1,
+                "phase": "main",
+                "action": "input",
+                "element_id": 1,
+                "params": {"value": "admin"},
+            },
+            {
+                "order": 2,
+                "phase": "teardown",
+                "action": "input",
+                "element_id": 1,
+                "params": {"value": "cleaned"},
+            },
+        ],
+        assertions=[
+            {
+                "order": 1,
+                "type": "text_equals",
+                "element_id": 1,
+                "params": {"expected": "wrong"},
+            },
+        ],
+    )
+
+    status, sent = await _run_and_capture(case, driver=driver)
+
+    result_messages = [
+        message for message in sent if message["type"] in {"step_result", "assertion_result"}
+    ]
+    assert [message["type"] for message in result_messages] == [
+        "step_result",
+        "assertion_result",
+        "step_result",
+    ]
+    assert result_messages[1]["assertions"][0]["status"] == "failed"
+    assert driver.state["username"] == "cleaned"
+    assert status == "failed"
+
+
 async def test_runner_current_screen_mode_skips_launch_app_action():
     driver = MockDriver()
     driver.attach_to_current_app()

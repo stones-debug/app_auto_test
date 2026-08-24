@@ -6,6 +6,7 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 
 import AuthenticatedImage from '@/components/AuthenticatedImage.vue'
+import { assertionPassed, orderExecutionItems } from '@/utils/executionOrder'
 import { formatParameters } from '@/utils/parameters'
 
 export interface TimelineStep {
@@ -44,6 +45,10 @@ const executionId = computed(() => Number(route.params.executionId))
 function artifactUrl(artifactId: number): string {
   return `/api/executions/${executionId.value}/artifacts/${artifactId}`
 }
+
+function executionItems(c: TimelineCase) {
+  return orderExecutionItems(c.steps, c.assertions)
+}
 </script>
 
 <template>
@@ -53,36 +58,38 @@ function artifactUrl(artifactId: number): string {
         <span class="case-name v2-card-title">{{ c.case_name }}</span>
         <StatusBadge :status="c.status" />
       </div>
-      <div v-for="s in c.steps" :key="`${c.case_id}-${s.step_order}`" class="step-row">
-        <span class="step-icon" :class="s.status">{{ s.status === 'passed' ? '✓' : s.status === 'failed' ? '✕' : '○' }}</span>
-        <span class="step-order">#{{ s.step_order }}</span>
-        <el-tag v-if="s.phase && s.phase !== 'main'" size="small" :type="s.phase === 'setup' ? 'warning' : 'success'">
-          {{ s.phase === 'setup' ? '前置' : '后置' }}
-        </el-tag>
-        <span class="step-action">{{ s.action }}</span>
-        <span
-          v-if="formatParameters(s.parameters)"
-          class="step-parameters v2-aux"
-          :title="formatParameters(s.parameters, true)"
-        >参数：{{ formatParameters(s.parameters) }}</span>
-        <span v-if="s.status === 'passed' && s.duration != null" class="step-duration v2-aux">
-          {{ s.duration >= 1000 ? `${(s.duration / 1000).toFixed(1)}s` : `${s.duration}ms` }}
-        </span>
-        <el-popover v-if="s.artifact_id" placement="left" :width="260" trigger="click">
-          <template #reference>
-            <el-button size="small" text type="primary" class="shot-btn">截图</el-button>
-          </template>
-          <AuthenticatedImage :src="artifactUrl(s.artifact_id)" alt="步骤截图" />
-        </el-popover>
-        <span v-if="s.error_message" class="step-error v2-aux" :title="s.error_message">{{ s.error_message }}</span>
-      </div>
-      <div v-for="(a, i) in c.assertions" :key="`${c.case_id}-a${i}`" class="assertion-row">
-        <span class="step-icon" :class="a.status === 'pass' ? 'passed' : 'failed'">
-          {{ a.status === 'pass' ? '✓' : '✕' }}
-        </span>
-        <span class="step-action">{{ a.assertion_type }}</span>
-        <span v-if="a.actual_value != null" class="v2-aux">= {{ a.actual_value }}</span>
-      </div>
+      <template v-for="item in executionItems(c)" :key="`${c.case_id}-${item.kind}-${item.index}`">
+        <div v-if="item.kind === 'step'" class="step-row">
+          <span class="step-icon" :class="item.value.status">{{ item.value.status === 'passed' ? '✓' : item.value.status === 'failed' ? '✕' : '○' }}</span>
+          <span class="step-order">#{{ item.value.step_order }}</span>
+          <el-tag v-if="item.value.phase && item.value.phase !== 'main'" size="small" :type="item.value.phase === 'setup' ? 'warning' : 'success'">
+            {{ item.value.phase === 'setup' ? '前置' : '后置' }}
+          </el-tag>
+          <span class="step-action">{{ item.value.action }}</span>
+          <span
+            v-if="formatParameters(item.value.parameters)"
+            class="step-parameters v2-aux"
+            :title="formatParameters(item.value.parameters, true)"
+          >参数：{{ formatParameters(item.value.parameters) }}</span>
+          <span v-if="item.value.status === 'passed' && item.value.duration != null" class="step-duration v2-aux">
+            {{ item.value.duration >= 1000 ? `${(item.value.duration / 1000).toFixed(1)}s` : `${item.value.duration}ms` }}
+          </span>
+          <el-popover v-if="item.value.artifact_id" placement="left" :width="260" trigger="click">
+            <template #reference>
+              <el-button size="small" text type="primary" class="shot-btn">截图</el-button>
+            </template>
+            <AuthenticatedImage :src="artifactUrl(item.value.artifact_id)" alt="步骤截图" />
+          </el-popover>
+          <span v-if="item.value.error_message" class="step-error v2-aux" :title="item.value.error_message">{{ item.value.error_message }}</span>
+        </div>
+        <div v-else class="assertion-row">
+          <span class="step-icon" :class="assertionPassed(item.value.status) ? 'passed' : 'failed'">
+            {{ assertionPassed(item.value.status) ? '✓' : '✕' }}
+          </span>
+          <span class="step-action">{{ item.value.assertion_type }}</span>
+          <span v-if="item.value.actual_value != null" class="v2-aux">= {{ item.value.actual_value }}</span>
+        </div>
+      </template>
     </div>
   </div>
 </template>

@@ -8,6 +8,7 @@ import {
   settleExecutionCases,
 } from '@/utils/executionRealtime'
 import { applyOnlyFailed } from '@/utils/reportFilter'
+import { assertionPassed, orderExecutionItems } from '@/utils/executionOrder'
 import { executionWsUrl } from '@/composables/useExecutionSocket'
 import { formatParameters, hasParameters } from '@/utils/parameters'
 
@@ -51,6 +52,49 @@ describe('Step 7 执行详情：日志去重与 WS 状态', () => {
     expect(cases[0].status).toBe('running')
     applyAssertionResult(cases, { case_id: 10, case_status: 'passed' })
     expect(cases[0].status).toBe('passed')
+  })
+
+  it('实时合并断言结果，并兼容 pass/passed 状态口径', () => {
+    const cases = [{ case_id: 10, status: 'running', steps: [], assertions: [] }]
+    applyAssertionResult(cases, {
+      case_id: 10,
+      case_status: 'failed',
+      assertions: [{
+        type: 'text_equals',
+        expected: 'wrong',
+        actual: 'admin',
+        status: 'fail',
+      }],
+    })
+
+    expect(cases[0].assertions).toEqual([{
+      assertion_type: 'text_equals',
+      expected_value: 'wrong',
+      actual_value: 'admin',
+      status: 'fail',
+      error_message: null,
+    }])
+    expect(cases[0].status).toBe('failed')
+    expect(assertionPassed('pass')).toBe(true)
+    expect(assertionPassed('passed')).toBe(true)
+    expect(assertionPassed('failed')).toBe(false)
+  })
+
+  it('时间线按前置/主体 → 断言 → 后置的真实顺序展示', () => {
+    const items = orderExecutionItems(
+      [
+        { phase: 'setup', name: 'setup' },
+        { phase: 'main', name: 'main' },
+        { phase: 'teardown', name: 'teardown' },
+      ],
+      [{ name: 'assertion' }],
+    )
+    expect(items.map((item) => item.value.name)).toEqual([
+      'setup',
+      'main',
+      'assertion',
+      'teardown',
+    ])
   })
 
   it('completed 立即收敛仍为 pending/running 的用例', () => {
