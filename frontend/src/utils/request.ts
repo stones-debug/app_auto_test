@@ -64,19 +64,31 @@ export async function refreshToken(): Promise<boolean> {
     } catch {
       clearTokens()
       return false
-    } finally {
-      refreshPromise = null
     }
   })()
+  // 仅在仍指向同一实例时清空，避免异步 IIFE 在赋值前同步完成后被覆盖残留
+  const p = refreshPromise
+  p.finally(() => {
+    if (refreshPromise === p) refreshPromise = null
+  })
   return refreshPromise
+}
+
+// 登录/注册/刷新/登出端点不应触发会话恢复或跳转登录（避免循环和登录失败误跳转）。
+// /auth/me 属于受保护端点：过期时尝试刷新，刷新失败则清空令牌并回到登录页。
+const AUTH_NO_SESSION_URLS = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout']
+
+function isAuthNoSession(url: string): boolean {
+  return AUTH_NO_SESSION_URLS.some((p) => url.includes(p))
 }
 
 instance.interceptors.response.use(
   (response) => response.data,
   async (error: AxiosError) => {
     const config = error.config as (InternalAxiosRequestConfig & { _retried?: boolean }) | undefined
-    const isAuthUrl = config?.url?.includes('/auth/') ?? false
-    if (error.response?.status === 401 && config && !isAuthUrl && !config._retried) {
+    const url = config?.url ?? ''
+    const noSession = isAuthNoSession(url)
+    if (error.response?.status === 401 && config && !noSession && !config._retried) {
       config._retried = true
       const ok = await refreshToken()
       if (ok) {
@@ -85,9 +97,13 @@ instance.interceptors.response.use(
         return instance.request(config)
       }
     }
-    if (error.response?.status === 401 && !isAuthUrl) {
+    if (error.response?.status === 401 && !noSession) {
       clearTokens()
-      window.location.href = '/login'
+      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+        const path = window.location.pathname + window.location.search
+        window.location.href =
+          path && path !== '/' ? `/login?redirect=${encodeURIComponent(path)}` : '/login'
+      }
     }
     return Promise.reject(error)
   },

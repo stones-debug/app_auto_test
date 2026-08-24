@@ -31,6 +31,14 @@ import { clearTokens, getToken, refreshToken, setTokens } from '@/utils/request'
 
 const mockedAxios = vi.mocked(axios, true)
 
+// 模块加载时 axios.create 已调用一次；此处捕获实例与 401 处理器（beforeEach 的 clearAllMocks 会清空 mock.results）
+const axInstance = mockedAxios.create.mock.results[0].value
+const responseErrorHandler = axInstance.interceptors.response.use.mock.calls.at(-1)[1]
+
+function authError(url: string) {
+  return { config: { url, headers: {} }, response: { status: 401 } }
+}
+
 describe('CR-14 会话刷新闭环', () => {
   beforeEach(() => {
     localStorage.clear()
@@ -80,5 +88,46 @@ describe('CR-14 会话刷新闭环', () => {
     const ok = await refreshToken()
     expect(ok).toBe(false)
     expect(mockedAxios.post).not.toHaveBeenCalled()
+  })
+
+  it('/auth/me 401 → 尝试刷新；刷新成功则重放原请求（会话恢复）', async () => {
+    setTokens('a1', 'r1')
+    const handler = responseErrorHandler
+    mockedAxios.post.mockResolvedValueOnce({ data: { access_token: 'a2', refresh_token: 'r2' } })
+    axInstance.request.mockResolvedValueOnce({ data: { id: 1, username: 'u' } })
+
+    const result = await handler(authError('/auth/me'))
+    expect(mockedAxios.post).toHaveBeenCalledWith('/api/auth/refresh', { refresh_token: 'r1' })
+    expect(axInstance.request).toHaveBeenCalled()
+    expect(result).toEqual({ data: { id: 1, username: 'u' } })
+  })
+
+  it('/auth/me 401 → 刷新失败 → 清空令牌并跳转登录页', async () => {
+    setTokens('a1', 'r1')
+    const handler = responseErrorHandler
+    mockedAxios.post.mockRejectedValueOnce(new Error('401'))
+
+    const fakeWindow = {
+      location: { pathname: '/projects/7', search: '', href: '' },
+    }
+    const originalWindow = globalThis.window
+    Object.defineProperty(globalThis, 'window', { value: fakeWindow, configurable: true })
+
+    try {
+      await expect(handler(authError('/auth/me'))).rejects.toBeTruthy()
+    } finally {
+      Object.defineProperty(globalThis, 'window', { value: originalWindow, configurable: true })
+    }
+    expect(getToken()).toBeNull()
+    expect(fakeWindow.location.href).toBe('/login?redirect=%2Fprojects%2F7')
+  })
+
+  it('/auth/login 401 → 不触发刷新也不跳转（登录失败由页面处理）', async () => {
+    setTokens('a1', 'r1')
+    const handler = responseErrorHandler
+
+    await expect(handler(authError('/auth/login'))).rejects.toBeTruthy()
+    expect(mockedAxios.post).not.toHaveBeenCalled()
+    expect(axInstance.request).not.toHaveBeenCalled()
   })
 })
