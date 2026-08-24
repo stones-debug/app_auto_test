@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { ref, toRaw } from 'vue'
+
 import Draggable from 'vuedraggable'
 
 import {
@@ -9,6 +11,7 @@ import {
   type StepPhase,
 } from '@/api/cases'
 import ElementSelector from '@/components/ElementSelector.vue'
+import { stepActionLabel, stepSummaryText } from '@/utils/stepEditorSummary'
 
 const props = defineProps<{
   modelValue: Step[]
@@ -19,10 +22,49 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ 'update:modelValue': [steps: Step[]] }>()
 
+// 步骤没有数据库行 ID；使用 WeakMap 保存纯 UI 标识，避免折叠状态进入接口 payload。
+const stepUiIds = new WeakMap<object, number>()
+const collapsedStepIds = ref(new Set<number>())
+let nextStepUiId = 0
+
+function stepUiId(step: Step): number {
+  const rawStep = toRaw(step)
+  const existing = stepUiIds.get(rawStep)
+  if (existing != null) return existing
+  const created = ++nextStepUiId
+  stepUiIds.set(rawStep, created)
+  return created
+}
+
+function isStepCollapsed(step: Step): boolean {
+  return collapsedStepIds.value.has(stepUiId(step))
+}
+
+function toggleStep(step: Step) {
+  const id = stepUiId(step)
+  if (collapsedStepIds.value.has(id)) collapsedStepIds.value.delete(id)
+  else collapsedStepIds.value.add(id)
+}
+
+function expandStep(step: Step) {
+  if (isStepCollapsed(step)) toggleStep(step)
+}
+
+function onCollapsedStepKeydown(event: KeyboardEvent, step: Step) {
+  if (!isStepCollapsed(step) || !['Enter', ' '].includes(event.key)) return
+  event.preventDefault()
+  toggleStep(step)
+}
+
 function update(steps: Step[]) {
+  const normalized = steps.map((step, index) => {
+    const nextStep = { ...step, phase: props.phase, order: index + 1 }
+    stepUiIds.set(nextStep, stepUiId(step))
+    return nextStep
+  })
   emit(
     'update:modelValue',
-    steps.map((step, index) => ({ ...step, phase: props.phase, order: index + 1 })),
+    normalized,
   )
 }
 
@@ -42,6 +84,7 @@ function addStep() {
 }
 
 function removeStep(index: number) {
+  collapsedStepIds.value.delete(stepUiId(props.modelValue[index]))
   update(props.modelValue.filter((_, current) => current !== index))
 }
 
@@ -66,25 +109,42 @@ function onDragEnd() {
     </div>
     <Draggable
       :model-value="modelValue"
-      item-key="order"
+      :item-key="stepUiId"
       handle=".drag-handle"
       class="step-list"
       @update:model-value="update"
       @end="onDragEnd"
     >
       <template #item="{ element, index }">
-        <el-card class="step-card" shadow="never">
-          <div class="step-head">
-            <span class="drag-handle">⠿</span>
+        <el-card class="step-card" :class="{ collapsed: isStepCollapsed(element) }" shadow="never">
+          <div
+            class="step-head"
+            :class="{ collapsed: isStepCollapsed(element) }"
+            :role="isStepCollapsed(element) ? 'button' : undefined"
+            :tabindex="isStepCollapsed(element) ? 0 : undefined"
+            :aria-expanded="!isStepCollapsed(element)"
+            @click="expandStep(element)"
+            @keydown="onCollapsedStepKeydown($event, element)"
+          >
+            <span class="drag-handle" @click.stop>⠿</span>
             <span class="step-badge">{{ index + 1 }}</span>
-            <el-select v-model="element.action" class="action-select" @change="onActionChange(element)">
+            <div v-if="isStepCollapsed(element)" class="step-summary" :title="stepSummaryText(element)">
+              <span class="step-action-label">{{ stepActionLabel(element) }}</span>
+              <span class="step-summary-text">{{ stepSummaryText(element) }}</span>
+            </div>
+            <el-select v-else v-model="element.action" class="action-select" @change="onActionChange(element)">
               <el-option v-for="action in ACTIONS" :key="action.value" :label="action.label" :value="action.value" />
             </el-select>
-            <span class="continue-label">失败后继续</span>
-            <el-switch v-model="element.continue_on_failure" size="small" @change="update([...modelValue])" />
-            <el-button type="danger" text size="small" @click="removeStep(index)">删除</el-button>
+            <template v-if="!isStepCollapsed(element)">
+              <span class="continue-label">失败后继续</span>
+              <el-switch v-model="element.continue_on_failure" size="small" @change="update([...modelValue])" />
+            </template>
+            <el-button text size="small" @click.stop="toggleStep(element)">
+              {{ isStepCollapsed(element) ? '展开' : '收起' }}
+            </el-button>
+            <el-button type="danger" text size="small" @click.stop="removeStep(index)">删除</el-button>
           </div>
-          <div class="step-body">
+          <div v-show="!isStepCollapsed(element)" class="step-body">
             <div v-if="actionMeta(element.action).needsElement" class="step-row">
               <span class="field-label">元素</span>
               <ElementSelector v-model="element.element_id" />
@@ -140,7 +200,10 @@ function onDragEnd() {
 .section-description { margin-top: 4px; color: var(--text-2); font-size: 12px; }
 .step-list { display: flex; flex-direction: column; gap: 8px; }
 .step-card { border-radius: 8px; }
+.step-card.collapsed :deep(.el-card__body) { padding-top: 10px; padding-bottom: 10px; }
 .step-head { display: flex; align-items: center; gap: 12px; }
+.step-head.collapsed { cursor: pointer; }
+.step-head.collapsed:focus-visible { outline: 2px solid var(--primary); outline-offset: 4px; border-radius: 4px; }
 .drag-handle { cursor: move; color: #999; }
 .drag-handle:hover { color: var(--primary); }
 .step-badge {
@@ -149,6 +212,15 @@ function onDragEnd() {
   background: var(--primary-light); color: var(--primary);
 }
 .action-select { flex: 1; max-width: 220px; }
+.step-summary { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
+.step-action-label { color: var(--text); font-weight: 600; flex-shrink: 0; }
+.step-summary-text {
+  color: var(--text-2);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .continue-label { color: #888; font-size: 13px; flex-shrink: 0; }
 .step-body { margin-top: 8px; }
 .step-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
@@ -156,4 +228,8 @@ function onDragEnd() {
 .w-200 { width: 200px; }
 .add-more { margin-top: 10px; }
 .add-more .w-full { width: 100%; border-style: dashed; }
+@media (max-width: 768px) {
+  .step-head { gap: 8px; }
+  .step-summary { gap: 8px; }
+}
 </style>

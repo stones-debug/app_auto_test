@@ -71,7 +71,13 @@ function phaseSteps(phase: StepPhase) {
     get: () => (form.steps as Step[]).filter((step) => (step.phase ?? 'main') === phase),
     set: (steps) => {
       const other = (form.steps as Step[]).filter((step) => (step.phase ?? 'main') !== phase)
-      form.steps = [...other, ...steps.map((step, index) => ({ ...step, phase, order: index + 1 }))]
+      // 保留步骤对象身份，使 CaseStepEditor 的纯 UI 折叠状态在编辑/拖拽后仍对应原步骤。
+      const normalized = steps.map((step, index) => {
+        step.phase = phase
+        step.order = index + 1
+        return step
+      })
+      form.steps = [...other, ...normalized]
     },
   })
 }
