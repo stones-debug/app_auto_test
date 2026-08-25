@@ -203,9 +203,9 @@ class AppProfileVariableOverride(Base, TimestampMixin, SoftDeleteMixin):
 
     __tablename__ = "app_profile_variable_overrides"
     __table_args__ = (
-        CheckConstraint(
-            "name ~ '^[A-Za-z_][A-Za-z0-9_]{0,99}$'", name="ck_profile_variable_name"
-        ),
+        # 变量名需与 variables 表及用例引用 ${...} 保持一致：允许中文/任意非空字符，
+        # 仅禁止空串（此前误限定 ASCII，导致覆盖中文变量“我的设备ID”等报错）。
+        CheckConstraint("name <> ''", name="ck_profile_variable_name"),
         Index(
             "uq_profile_variable_override_active",
             "profile_id",
