@@ -24,6 +24,7 @@ import CaseStepEditor from '@/components/CaseStepEditor.vue'
 import ElementSelector from '@/components/ElementSelector.vue'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 import { buildCaseEditorSummary, caseEditorSummaryText } from '@/utils/caseEditorSummary'
+import { mergePhaseSteps } from '@/utils/mergePhaseSteps'
 
 const route = useRoute()
 const router = useRouter()
@@ -71,14 +72,8 @@ function phaseSteps(phase: StepPhase) {
   return computed<Step[]>({
     get: () => (form.steps as Step[]).filter((step) => (step.phase ?? 'main') === phase),
     set: (steps) => {
-      const other = (form.steps as Step[]).filter((step) => (step.phase ?? 'main') !== phase)
       // 保留步骤对象身份，使 CaseStepEditor 的纯 UI 折叠状态在编辑/拖拽后仍对应原步骤。
-      const normalized = steps.map((step, index) => {
-        step.phase = phase
-        step.order = index + 1
-        return step
-      })
-      form.steps = [...other, ...normalized]
+      form.steps = mergePhaseSteps(form.steps as Step[], phase, steps)
     },
   })
 }

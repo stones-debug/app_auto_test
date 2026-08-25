@@ -112,6 +112,7 @@ function onDragEnd() {
       :item-key="stepUiId"
       handle=".drag-handle"
       class="step-list"
+      group="case-steps"
       @update:model-value="update"
       @end="onDragEnd"
     >
