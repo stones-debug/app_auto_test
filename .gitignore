@@ -44,3 +44,6 @@ data/
 # 系统
 Thumbs.db
 .DS_Store
+
+frontend/src/auto-imports.d.ts
+frontend/src/components.d.ts
