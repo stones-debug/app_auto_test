@@ -1,10 +1,15 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
 
-import { createAppProfile, type AppProfileSummary } from '@/api/appProfiles'
+import {
+  createAppProfile,
+  deleteAppProfile,
+  updateAppProfile,
+  type AppProfileSummary,
+} from '@/api/appProfiles'
 import { usePermission } from '@/composables/usePermission'
 import { useAppProfileStore } from '@/stores/appProfile'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 const props = defineProps<{ projectId: number }>()
 const store = useAppProfileStore()
@@ -46,6 +51,39 @@ function skipLabel(p: AppProfileSummary): string {
   return `${c.case} 用例 / ${c.step} 步骤`
 }
 
+async function onEdit(p: AppProfileSummary) {
+  const { value: name } = await ElMessageBox.prompt('请输入档案名称', '编辑档案', {
+    inputValue: p.name,
+    inputValidator: (v) => (v && v.trim() ? true : '名称不能为空'),
+  })
+  try {
+    await updateAppProfile(p.id, { expected_revision: p.revision, name: name.trim() })
+    ElMessage.success('已保存')
+    await load()
+  } catch (e) {
+    ElMessage.error(`保存失败：${(e as Error).message}`)
+  }
+}
+
+async function onDelete(p: AppProfileSummary) {
+  try {
+    await ElMessageBox.confirm(
+      `删除档案「${p.name}」？其跳过/覆盖配置与发布版本将一并失效，不可恢复。`,
+      '删除档案',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await deleteAppProfile(p.id, { expected_revision: p.revision })
+    ElMessage.success('已删除')
+    if (store.selectedProfileId === p.id) store.selectedProfileId = null
+    await load()
+  } catch (e) {
+    ElMessage.error(`删除失败：${(e as Error).message}`)
+  }
+}
 </script>
 
 <template>
@@ -70,6 +108,10 @@ function skipLabel(p: AppProfileSummary): string {
       <div class="tree-meta">
         <span>rev {{ p.revision }}</span>
         <span class="diff">{{ skipLabel(p) }}</span>
+      </div>
+      <div v-if="canEditProject" class="tree-actions" @click.stop>
+        <el-button size="small" text type="primary" @click="onEdit(p)">编辑</el-button>
+        <el-button size="small" text type="danger" @click="onDelete(p)">删除</el-button>
       </div>
     </div>
     <el-empty v-if="store.profiles.length === 0" description="暂无档案" :image-size="60" />
@@ -119,5 +161,13 @@ function skipLabel(p: AppProfileSummary): string {
 }
 .diff {
   color: var(--el-color-danger);
+}
+.tree-actions {
+  display: none;
+  margin-top: 4px;
+  gap: 4px;
+}
+.tree-item:hover .tree-actions {
+  display: flex;
 }
 </style>

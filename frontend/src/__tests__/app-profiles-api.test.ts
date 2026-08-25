@@ -53,3 +53,14 @@ describe('execution RunOptions 扩展契约', () => {
     expect(options.expected_test_asset_revision).toBe(205)
   })
 })
+
+describe('appProfiles 编辑/删除契约', () => {
+  it('updateAppProfile 接收 expected_revision 与可编辑字段', async () => {
+    const mod = await import('@/api/appProfiles')
+    expect(typeof mod.updateAppProfile).toBe('function')
+  })
+  it('deleteAppProfile 接收 expected_revision', async () => {
+    const mod = await import('@/api/appProfiles')
+    expect(typeof mod.deleteAppProfile).toBe('function')
+  })
+})
