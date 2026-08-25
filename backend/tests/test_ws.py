@@ -170,7 +170,24 @@ async def test_handle_register_heartbeat_device_list():
     await agent_manager.disconnect(agent_id)
 
 
-async def test_handle_register_wrong_key_closes():
+async def test_agent_devices_includes_agent_name(client: AsyncClient):
+    """Agent 上报的设备通过 GET /agents/{id}/devices 获取时应填充所属 Agent 标识。"""
+    await client.post("/api/auth/register", json=REG)
+    login = await client.post(
+        "/api/auth/login", json={"username": REG["username"], "password": REG["password"]}
+    )
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    agent_id, device_id = await create_bound_agent_device(REG["username"])
+
+    resp = await client.get(f"/api/agents/{agent_id}/devices", headers=headers)
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+    item = resp.json()[0]
+    assert item["id"] == device_id
+    assert item["agent_id"] == agent_id
+    # 修复：原实现漏填充 agent_name，设备中心页面该列一直为 null
+    assert item["agent_name"] is not None
     agent_id = await _create_agent("sk-ws-test")
     fake = FakeWebSocket()
     async with SessionLocal() as db:

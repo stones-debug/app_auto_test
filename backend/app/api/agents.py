@@ -187,7 +187,9 @@ async def agent_devices(
     devices = (
         await db.execute(select(Device).where(Device.agent_id == agent_id).order_by(Device.id))
     ).scalars().all()
-    return [DeviceOut.model_validate(d) for d in devices]
+    items = [DeviceOut.model_validate(d) for d in devices]
+    await _fill_agent_names(items, db)
+    return items
 
 
 async def _fill_agent_names(items: list[DeviceOut], db: AsyncSession) -> None:
@@ -252,6 +254,7 @@ async def get_default_device(
         return DefaultDeviceOut(device_id=None, reason="默认设备已不存在")
 
     out = DeviceOut.model_validate(device)
+    await _fill_agent_names([out], db)
     if not (user.is_admin or await _user_bound_to_agent(db, device.agent_id, user.id)):
         return DefaultDeviceOut(device_id=device.id, device=out, available=False, reason="无权限")
     agent = await db.get(Agent, device.agent_id)
@@ -284,7 +287,9 @@ async def set_default_device(
     else:
         pref.device_id = device.id
     await db.commit()
-    return DefaultDeviceOut(device_id=device.id, device=DeviceOut.model_validate(device), reason="已设置默认设备")
+    out = DeviceOut.model_validate(device)
+    await _fill_agent_names([out], db)
+    return DefaultDeviceOut(device_id=device.id, device=out, reason="已设置默认设备")
 
 
 @router.get("/devices/{device_id}", response_model=DeviceOut)
@@ -294,7 +299,9 @@ async def get_device(
     db: AsyncSession = Depends(get_db),
 ):
     device = await require_device_access(device_id, user, db)
-    return DeviceOut.model_validate(device)
+    out = DeviceOut.model_validate(device)
+    await _fill_agent_names([out], db)
+    return out
 
 
 async def _user_bound_to_agent(db: AsyncSession, agent_id: int, user_id: int) -> bool:
@@ -333,7 +340,9 @@ async def release_device(
         device.updated_at = now
         await db.commit()
         await db.refresh(device)
-        return DeviceReleaseResponse(action="released", device=DeviceOut.model_validate(device))
+        out = DeviceOut.model_validate(device)
+        await _fill_agent_names([out], db)
+        return DeviceReleaseResponse(action="released", device=out)
 
     if execution is None:
         # 孤儿锁/已删除执行：记录审计日志后清陈旧锁
@@ -375,9 +384,11 @@ async def release_device(
         # 请求停止，保持 Device busy/locked，返回 stop_requested
         await execution_service.stop_execution(db, current or execution)
         await db.refresh(device)
+        out = DeviceOut.model_validate(device)
+        await _fill_agent_names([out], db)
         return DeviceReleaseResponse(
             action="stop_requested",
-            device=DeviceOut.model_validate(device),
+            device=out,
             execution_id=execution.id,
             execution_status="stopping",
         )
@@ -385,9 +396,11 @@ async def release_device(
     if status_ == "stopping":
         # 不重复写状态，保持锁
         await db.refresh(device)
+        out = DeviceOut.model_validate(device)
+        await _fill_agent_names([out], db)
         return DeviceReleaseResponse(
             action="stop_requested",
-            device=DeviceOut.model_validate(device),
+            device=out,
             execution_id=execution.id,
             execution_status="stopping",
         )
@@ -395,9 +408,11 @@ async def release_device(
     if execution.finalized_at is None:
         # 已终态但 Worker 尚未汇总：保持锁，等待恢复扫描
         await db.refresh(device)
+        out = DeviceOut.model_validate(device)
+        await _fill_agent_names([out], db)
         return DeviceReleaseResponse(
             action="finalization_pending",
-            device=DeviceOut.model_validate(device),
+            device=out,
             execution_id=execution.id,
             execution_status=status_,
         )
