@@ -22,6 +22,8 @@ export {
 export type StepPhase = 'setup' | 'main' | 'teardown'
 
 export interface Step {
+  // 方案 §2.8：稳定标识 UUID；新建前端生成，缺失由 normalizeStep 兜底
+  key?: string
   order: number
   action: string
   phase?: StepPhase
@@ -33,6 +35,7 @@ export interface Step {
 }
 
 export interface Assertion {
+  key?: string
   order: number
   type: string
   element_id?: number | null
@@ -87,15 +90,26 @@ export function defaultParams(fields: ParamField[]): Record<string, unknown> {
 
 // Step 4：continue_on_failure 是 Step 顶层字段；加载旧数据/历史 params 时归一化，
 // 并把历史遗留塞入 params 的同名字段剔除
+// 方案 §2.8：步骤稳定 key 缺失/非法时兜底生成 UUID（后端同样兜底，读写一致）
 export function normalizeStep(step: Step): Step {
   const { continue_on_failure: legacy, ...params } = (step.params ?? {}) as Record<string, unknown>
   void legacy
   return {
     ...step,
+    key: normalizeNodeKey(step.key),
     phase: step.phase ?? 'main',
     params,
     continue_on_failure: step.continue_on_failure ?? false,
   }
+}
+
+function normalizeNodeKey(raw: string | undefined): string {
+  if (raw) return raw
+  return crypto.randomUUID()
+}
+
+export function normalizeAssertion(assertion: Assertion): Assertion {
+  return { ...assertion, key: normalizeNodeKey(assertion.key) }
 }
 
 export function listCases(

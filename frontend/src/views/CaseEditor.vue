@@ -11,6 +11,7 @@ import {
   createCase,
   defaultParams,
   getCase,
+  normalizeAssertion,
   normalizeStep,
   updateCase,
   type Assertion,
@@ -121,6 +122,7 @@ function toggleCollapsed() {
 function addAssertion() {
   const assertions = form.assertions as Assertion[]
   assertions.push({
+    key: crypto.randomUUID(),
     order: assertions.length + 1,
     type: 'element_exists',
     params: defaultParams(assertionMeta('element_exists').fields),
@@ -171,7 +173,7 @@ async function save() {
       description: form.description,
       status: form.status,
       steps: (form.steps as Step[]).map(normalizeStep),
-      assertions: form.assertions as Assertion[],
+      assertions: (form.assertions as Assertion[]).map(normalizeAssertion),
       variables: collectVariables(),
     }
     if (isEdit.value) {
@@ -200,7 +202,7 @@ onMounted(async () => {
     form.status = data.status
     // Step 4：加载旧数据时归一化 continue_on_failure，且清理历史留在 params 里的字段
     form.steps = data.steps.map(normalizeStep)
-    form.assertions = data.assertions.map((a) => ({ ...a, params: a.params ?? {} }))
+    form.assertions = data.assertions.map(normalizeAssertion)
     form.variables = data.variables
     variableEntries.value = Object.entries(data.variables).map(([key, value]) => ({
       key,
