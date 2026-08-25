@@ -2,20 +2,33 @@
 import { ref } from 'vue'
 
 import type { Execution, ExecutionRunSettings } from '@/api/executions'
-import { buildRunParameters, useDeviceSelect, type RunTarget } from '@/composables/useDeviceSelect'
+import { buildRunParameters, useDeviceSelect, type ProfileRunContext, type RunTarget } from '@/composables/useDeviceSelect'
+import { listReleases, previewExecution, type ExecutionPreview } from '@/api/appProfiles'
+import { useAppProfileStore } from '@/stores/appProfile'
+import { ElMessage } from 'element-plus'
 
 // V2 §5.12：统一设备选择器（所有运行入口复用，含重试入口）。
-// 通过 ref.open(target, options) 触发；始终弹出设备选择弹窗并预选当前用户默认设备；
-// open 的 Promise 保持 pending 直到弹窗流程结束
-// （运行成功 resolve 执行对象 / 取消 resolve null），父级 await 后统一跳转/提示。
+// 方案 §4.8/§5.7：公共库运行必须选档案+版本；档案视图带入则只读显示。选择后调用预检展示摘要。
 const emit = defineEmits<{ created: [execution: Execution] }>()
+
+const props = defineProps<{ projectId?: number }>()
 
 const timeout = ref(1800)
 const usePreSteps = ref(false)
 const usePostSteps = ref(false)
 const attachToCurrentApp = ref(false)
+const store = useAppProfileStore()
 const { dialogVisible, devices, selectedId, setAsDefault, running, reason, targetKind, open, confirmRun, close } =
   useDeviceSelect()
+
+const profileId = ref<number | null>(null)
+const releaseId = ref<number | null>(null)
+const releases = ref<{ id: number; version: string }[]>([])
+const preview = ref<ExecutionPreview | null>(null)
+const previewLoading = ref(false)
+const profileReadonly = ref(false)
+
+let targetIdTracker = 0
 
 /** 弹窗路径的 open() 挂起解析器（成功/取消时唤醒父级 await）。 */
 let openResolve: ((exec: Execution | null) => void) | null = null
@@ -31,10 +44,58 @@ async function run() {
     use_post_steps: usePostSteps.value,
     attach_to_current_app: attachToCurrentApp.value,
   })
-  const exec = await confirmRun({ timeout_seconds: timeout.value, parameters })
+  // 方案 §4.8：合并档案上下文
+  const profile: ProfileRunContext | undefined = profileId.value
+    ? {
+        app_profile_id: profileId.value,
+        app_release_id: releaseId.value,
+        expected_profile_revision: profileRevisionNow(),
+        expected_test_asset_revision: store.testAssetRevision ?? 1,
+      }
+    : undefined
+  const exec = await confirmRun({ timeout_seconds: timeout.value, parameters, profile })
   if (exec) {
     settleOpen(exec)
     emit('created', exec)
+  }
+}
+
+function profileRevisionNow(): number {
+  return preview.value?.profile_revision ?? store.profileRevision ?? 1
+}
+
+async function onProfileChange(id: number) {
+  profileId.value = id
+  releaseId.value = null
+  releases.value = []
+  preview.value = null
+  const page = await listReleases(id, { status: 'active', page_size: 100 })
+  releases.value = page.items.map((r) => ({ id: r.id, version: r.version }))
+  if (releases.value.length > 0) releaseId.value = releases.value[0].id
+  await doPreview()
+}
+
+async function onReleaseChange() {
+  await doPreview()
+}
+
+async function doPreview() {
+  if (profileId.value == null) return
+  if (targetKind.value === 'retry') return
+  previewLoading.value = true
+  try {
+    preview.value = await previewExecution({
+      project_id: props.projectId ?? 0,
+      target: { type: targetKind.value === 'suite' ? 'suite' : 'case', ids: [targetIdTracker] },
+      app_profile_id: profileId.value,
+      app_release_id: releaseId.value,
+      device_id: selectedId.value,
+    })
+  } catch (e) {
+    preview.value = null
+    ElMessage.warning((e as Error).message)
+  } finally {
+    previewLoading.value = false
   }
 }
 
@@ -53,24 +114,37 @@ defineExpose({
   /**
    * 始终弹出设备选择弹窗（预选用户默认设备）；
    * 运行成功 resolve Execution、取消 resolve null。
+   * options.profile：档案视图带入（只读）；未提供则在弹窗内选择档案+版本。
    */
-  open: (
+  open: async (
     target: RunTarget,
-    options: { timeout_seconds?: number; settings?: Partial<ExecutionRunSettings> } = {},
+    options: { timeout_seconds?: number; settings?: Partial<ExecutionRunSettings>; profile?: ProfileRunContext; targetId?: number } = {},
   ): Promise<Execution | null> => {
     if (options.timeout_seconds) timeout.value = options.timeout_seconds
     usePreSteps.value = options.settings?.use_pre_steps ?? false
     usePostSteps.value = options.settings?.use_post_steps ?? false
     attachToCurrentApp.value = options.settings?.attach_to_current_app ?? false
+    // 档案视图带入 → 只读；否则弹出选择
+    if (options.profile) {
+      profileId.value = options.profile.app_profile_id
+      releaseId.value = options.profile.app_release_id
+      profileReadonly.value = true
+    } else {
+      profileReadonly.value = false
+    }
+    if (options.targetId) targetIdTracker = options.targetId
+    else if (target.kind === 'case' || target.kind === 'suite') targetIdTracker = target.id
+    store.projectId = props.projectId ?? store.projectId
+    if (!profileReadonly.value && store.profiles.length < 1) {
+      await store.loadProfiles()
+    }
     return new Promise((resolve) => {
       openResolve = resolve
-      open(target, { timeout_seconds: options.timeout_seconds }).then((exec) => {
+      open(target).then((exec) => {
         if (exec !== null) {
-          // 保留兜底：composable 直跑成功时直接返回
           openResolve = null
           resolve(exec)
         }
-        // exec === null → 弹窗已打开，等待 run()/cancel()/@closed 收敛
       })
     })
   },
@@ -82,12 +156,30 @@ defineExpose({
   <el-dialog
     v-model="dialogVisible"
     title="选择设备运行"
-    width="440px"
+    width="460px"
     :close-on-click-modal="false"
     append-to-body
     @closed="onClosed"
   >
     <el-form label-width="80px">
+      <el-form-item label="APP 档案">
+        <template v-if="profileReadonly && profileId">
+          <el-tag size="small">{{ store.currentProfile?.name ?? `#${profileId}` }}</el-tag>
+        </template>
+        <template v-else>
+          <el-select v-model="profileId" class="w-full" placeholder="选择 APP 档案" @change="onProfileChange">
+            <el-option v-for="p in store.profiles" :key="p.id" :label="p.name" :value="p.id" />
+          </el-select>
+        </template>
+      </el-form-item>
+      <el-form-item label="发布版本">
+        <el-select v-model="releaseId" class="w-full" placeholder="选择版本" :disabled="!profileId" @change="onReleaseChange">
+          <el-option v-for="r in releases" :key="r.id" :label="r.version" :value="r.id" />
+        </el-select>
+      </el-form-item>
+      <el-form-item v-if="preview" label="预检">
+        <div class="preview-block">{{ preview.counts.executable_cases }} 用例 / {{ preview.counts.executable_steps }} 步 · N/A {{ preview.counts.na_cases }}</div>
+      </el-form-item>
       <el-form-item label="设备">
         <el-select v-model="selectedId" placeholder="选择设备" class="w-full">
           <el-option v-for="d in devices" :key="d.id" :label="`${d.name} (${d.platform})`" :value="d.id" />
@@ -128,6 +220,11 @@ defineExpose({
 <style scoped>
 .w-full {
   width: 100%;
+}
+.preview-block {
+  font-size: 12px;
+  color: #409eff;
+  line-height: 1.6;
 }
 .tip {
   color: #909399;

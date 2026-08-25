@@ -18,6 +18,14 @@ export type RunTarget =
 
 export type RetryTarget = Extract<RunTarget, { kind: 'retry' }>
 
+/** 方案 §4.8：运行创建的档案/版本/双 revision 上下文。 */
+export interface ProfileRunContext {
+  app_profile_id: number
+  app_release_id: number | null
+  expected_profile_revision: number
+  expected_test_asset_revision: number
+}
+
 /** 从 axios 错误中提取后端业务码（detail.code，如 DEVICE_REQUIRED / DEVICE_BUSY / AGENT_OFFLINE）。 */
 export function apiErrorCode(error: unknown): string | null {
   const detail = (error as { response?: { data?: { detail?: { code?: string } } } })?.response?.data?.detail
@@ -43,6 +51,7 @@ export function buildRunParameters(
  * Windows 方案 §4.2：运行入口选机，供「普通运行 / 重试」三类入口统一复用。
  * V2：始终弹出设备选择弹窗并预选当前用户默认设备（可用）；未设默认或默认不可用则回退首个空闲设备。
  * 弹窗内可临时切换设备、勾选"设为默认"；并发占用提示并刷新，不自动换设备。
+ * 方案 §4.8：创建需携带档案/版本/双 revision（ProfileRunContext）。
  */
 export function useDeviceSelect() {
   const dialogVisible = ref(false)
@@ -54,6 +63,7 @@ export function useDeviceSelect() {
   const targetKind = ref<RunTarget['kind'] | null>(null)
   let target: RunTarget | null = null
   let defaultDeviceId: number | null = null
+  let profileCtx: ProfileRunContext | null = null
 
   function loadDevices() {
     return listDevices({ page_size: 200 }).then((data) => {
@@ -70,9 +80,16 @@ export function useDeviceSelect() {
   async function doRun(deviceId: number, options: RunOptions): Promise<Execution> {
     if (!target) throw new Error('未设置运行目标')
     const opts: RunOptions = { ...options, device_id: deviceId }
+    // 方案 §4.8：合并档案/版本/双 revision
+    if (profileCtx) {
+      opts.app_profile_id = profileCtx.app_profile_id
+      opts.app_release_id = profileCtx.app_release_id
+      opts.expected_profile_revision = profileCtx.expected_profile_revision
+      opts.expected_test_asset_revision = profileCtx.expected_test_asset_revision
+    }
     if (target.kind === 'case') return createCaseExecution(target.id, opts)
     if (target.kind === 'suite') return createSuiteExecution(target.id, opts)
-    // retry：后端仅接受 {device_id, timeout_seconds?}，不携带 parameters
+    // retry：后端仅接受 {device_id, timeout_seconds?}，档案由服务端按原执行读取
     return retryExecution(target.executionId, {
       device_id: deviceId,
       timeout_seconds: options.timeout_seconds,
@@ -80,8 +97,9 @@ export function useDeviceSelect() {
   }
 
   /** 入口：始终打开设备选择弹窗，并预选用户默认设备；直接创建返回 null（弹窗流程收敛）。 */
-  async function open(t: RunTarget, _options?: RunOptions): Promise<Execution | null> {
-    void _options // 保留签名兼容调用方；弹窗内确认运行时才应用超时等选项
+  async function open(t: RunTarget, options: { timeout_seconds?: number; profile?: ProfileRunContext } = {}): Promise<Execution | null> {
+    void options.timeout_seconds // 保留签名兼容调用方；弹窗内确认运行时才应用超时等选项
+    profileCtx = options.profile ?? null
     target = t
     targetKind.value = t.kind
     reason.value = ''
@@ -99,7 +117,8 @@ export function useDeviceSelect() {
   }
 
   /** 弹窗内确认运行。并发占用时刷新列表并提示，返回创建的 Execution 或 null。 */
-  async function confirmRun(options: RunOptions): Promise<Execution | null> {
+  async function confirmRun(options: RunOptions & { profile?: ProfileRunContext } = {}): Promise<Execution | null> {
+    if (options.profile) profileCtx = options.profile
     if (selectedId.value == null) return null
     running.value = true
     try {

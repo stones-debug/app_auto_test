@@ -194,3 +194,45 @@ describe('运行阶段参数', () => {
     expect(buildRunParameters('retry', settings)).toEqual({})
   })
 })
+
+describe('方案 §4.8 档案上下文（ProfileRunContext）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mListDevices.mockResolvedValue({ total: 1, page: 1, page_size: 200, items: [IDLE] } as never)
+    mGetDefault.mockResolvedValue({ device_id: null, device: null, available: false, reason: '' } as never)
+    mCreateCase.mockResolvedValue({ id: 100, status: 'queued' } as never)
+  })
+
+  it('open 传入 profile → 确认运行时合并 app_profile_id/双 revision 到创建参数', async () => {
+    const select = useDeviceSelect()
+    await select.open(
+      { kind: 'case', id: 1, name: '用例' },
+      {
+        profile: {
+          app_profile_id: 12,
+          app_release_id: 33,
+          expected_profile_revision: 22,
+          expected_test_asset_revision: 205,
+        },
+      },
+    )
+    select.selectedId.value = 11
+    await select.confirmRun({ timeout_seconds: 600 })
+    expect(mCreateCase).toHaveBeenCalledWith(1, {
+      timeout_seconds: 600,
+      device_id: 11,
+      app_profile_id: 12,
+      app_release_id: 33,
+      expected_profile_revision: 22,
+      expected_test_asset_revision: 205,
+    })
+  })
+
+  it('无 profile 上下文时不注入档案字段', async () => {
+    const select = useDeviceSelect()
+    await select.open({ kind: 'case', id: 1, name: '用例' })
+    select.selectedId.value = 11
+    await select.confirmRun({ timeout_seconds: 600 })
+    expect(mCreateCase).toHaveBeenCalledWith(1, { timeout_seconds: 600, device_id: 11 })
+  })
+})
