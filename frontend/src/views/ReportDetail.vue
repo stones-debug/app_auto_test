@@ -34,6 +34,24 @@ const displayCases = computed(() => {
   return detail.value.cases.filter((c) => ['failed', 'error'].includes(c.status))
 })
 
+// 方案 §7.2：不适用内容清单（exclusions 扁平展开）
+const activeExclusions = ref<string[]>([])
+const allExclusionsExpanded = ref(false)
+const exclusionRows = computed(() => {
+  const ex = detail.value?.exclusions ?? []
+  return ex.map((e, i) => ({
+    key: `${e.target_type}-${i}`,
+    target_type: e.target_type,
+    path: e.path,
+    reason_code: e.reason_code,
+    reason_note: e.reason_note,
+    source_type: e.source_type,
+  }))
+})
+function onExclusionVisibilityChange() {
+  allExclusionsExpanded.value = activeExclusions.value.length === exclusionRows.value.length
+}
+
 function typeLabel(t: unknown) {
   return { case: '用例', suite: '套件', batch: '批量' }[t as string] ?? '-'
 }
@@ -161,7 +179,31 @@ function stepsAfterAssertions(steps: ReportStep[]) {
           <div class="stat"><div class="num orange">{{ detail.report.error_count }}</div><div class="label">异常</div></div>
           <div class="stat"><div class="num gray">{{ detail.report.skipped }}</div><div class="label">跳过</div></div>
           <div class="stat"><div class="num blue">{{ detail.report.success_rate }}%</div><div class="label">成功率</div></div>
+          <div class="stat"><div class="num gray">{{ detail.report.not_applicable ?? 0 }}</div><div class="label">不适用</div></div>
         </div>
+      </div>
+
+      <div v-if="exclusionRows.length" class="card">
+        <div class="case-toolbar">
+          <h2>不适用内容</h2>
+          <div class="case-actions">
+            <el-button size="small" @click="allExclusionsExpanded = true">全部展开</el-button>
+            <el-button size="small" @click="allExclusionsExpanded = false">全部折叠</el-button>
+          </div>
+        </div>
+        <el-collapse v-model="activeExclusions" class="exclusion-collapse" @change="onExclusionVisibilityChange">
+          <el-collapse-item v-for="row in exclusionRows" :key="row.key" :name="row.key">
+            <template #title>
+              <el-tag size="small" type="danger" class="mr8">{{ row.target_type }}</el-tag>
+              <span class="exclusion-path">{{ row.path }}</span>
+            </template>
+            <div class="exclusion-detail">
+              <span>差异：{{ row.reason_code }}</span>
+              <span v-if="row.reason_note">备注：{{ row.reason_note }}</span>
+              <span>来源：{{ row.source_type }}</span>
+            </div>
+          </el-collapse-item>
+        </el-collapse>
       </div>
 
       <div class="card">
@@ -335,5 +377,20 @@ function stepsAfterAssertions(steps: ReportStep[]) {
 }
 .mt8 {
   margin-top: 8px;
+}
+.mr8 {
+  margin-right: 8px;
+}
+.exclusion-collapse {
+  margin-top: 4px;
+}
+.exclusion-path {
+  font-size: 13px;
+}
+.exclusion-detail {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 </style>

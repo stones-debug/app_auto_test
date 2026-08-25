@@ -22,6 +22,10 @@ export interface ReportListItem {
   case_name: string | null
   suite_name: string | null
   finished_at?: string | null
+  // 方案 §7：档案/版本 + N/A 数量
+  app_profile_name?: string | null
+  app_release_version?: string | null
+  not_applicable?: number
 }
 
 export interface ReportExecution {
@@ -92,6 +96,18 @@ export interface ReportSummary {
   error_count: number
   skipped: number
   success_rate: number
+  // 方案 §7：不适用（N/A）计数与排除摘要
+  not_applicable?: number
+  exclusion_summary?: Record<string, number>
+}
+
+export interface ReportExclusion {
+  target_type: string
+  path: string
+  reason_code: string
+  reason_note: string | null
+  source_type: string | null
+  node_key?: string | null
 }
 
 export interface ReportDetail {
@@ -99,6 +115,8 @@ export interface ReportDetail {
   report: ReportSummary
   cases: ReportCase[]
   logs: ReportLog[]
+  // 方案 §7.2：不适用内容清单
+  exclusions?: ReportExclusion[]
   // Step 8：日志截断元数据
   logs_total?: number
   logs_truncated?: boolean

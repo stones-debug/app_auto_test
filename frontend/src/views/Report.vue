@@ -135,6 +135,12 @@ watch(
       <el-table-column label="成功率" width="90">
         <template #default="{ row }">{{ row.success_rate }}%</template>
       </el-table-column>
+      <el-table-column label="不适用" width="80">
+        <template #default="{ row }">
+          <span v-if="row.not_applicable">{{ row.not_applicable }}</span>
+          <span v-else>-</span>
+        </template>
+      </el-table-column>
       <el-table-column label="耗时" width="90">
         <template #default="{ row }">{{ durationText(row.duration) }}</template>
       </el-table-column>
