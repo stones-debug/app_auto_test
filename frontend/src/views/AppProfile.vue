@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { onMounted, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import AppProfileTree from '@/components/AppProfileTree.vue'
 import ProfileStatusTag from '@/components/ProfileStatusTag.vue'
+import ProfileReleaseManager from '@/components/ProfileReleaseManager.vue'
+import ProfileDifferenceView from '@/components/ProfileDifferenceView.vue'
+import ProfileOverrideDrawer from '@/components/ProfileOverrideDrawer.vue'
 import { skipRulesBatch, getAppProfile, type SkipTarget } from '@/api/appProfiles'
 import { useAppProfileStore } from '@/stores/appProfile'
 import { ElMessage } from 'element-plus'
@@ -11,6 +14,10 @@ import { ElMessage } from 'element-plus'
 const route = useRoute()
 const projectId = Number(route.params.projectId)
 const store = useAppProfileStore()
+
+const releaseMgr = ref(false)
+const diffView = ref(false)
+const overrideDrawer = ref(false)
 
 const skipDialog = {
   visible: false,
@@ -90,6 +97,9 @@ onMounted(load)
           <el-button size="small" text @click="refreshProfile">刷新</el-button>
         </div>
         <div class="head-right">
+          <el-button size="small" @click="releaseMgr = true">发布版本</el-button>
+          <el-button size="small" @click="diffView = true">差异清单</el-button>
+          <el-button size="small" @click="overrideDrawer = true">覆盖配置</el-button>
           <el-input
             v-model="store.filters.keyword"
             size="small"
@@ -166,6 +176,22 @@ onMounted(load)
           <el-button type="primary" @click="confirmSkip">确认跳过</el-button>
         </template>
       </el-dialog>
+
+      <template v-if="store.selectedProfileId">
+        <ProfileReleaseManager
+          v-if="releaseMgr"
+          v-model="releaseMgr"
+          :profile-id="store.selectedProfileId"
+          :revision="store.profileRevision ?? 1"
+        />
+        <ProfileDifferenceView v-model="diffView" :profile-id="store.selectedProfileId" />
+        <ProfileOverrideDrawer
+          v-model="overrideDrawer"
+          :profile-id="store.selectedProfileId"
+          :project-id="projectId"
+          :revision="store.profileRevision ?? 1"
+        />
+      </template>
     </section>
   </div>
 </template>
