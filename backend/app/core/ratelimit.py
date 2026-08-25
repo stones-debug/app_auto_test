@@ -18,6 +18,7 @@ _BUCKET_LIMITS: dict[str, tuple[str, int]] = {
     "upload": ("rate_limit_upload_per_minute", 60),
     "execution": ("rate_limit_execution_per_minute", 60),
     "bind": ("rate_limit_bind_per_minute", 60),
+    "preview": ("rate_limit_preview_per_minute", 60),
 }
 
 

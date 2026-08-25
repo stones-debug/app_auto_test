@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     max_execution_timeout: int = 7200
     # CR-06：停止宽限期（stopping 超过该期限强制终态并释放设备）
     execution_stop_grace_seconds: int = 60
+    # 方案 §3.6/§7.4：执行快照序列化上限（默认 20 MB）
+    max_execution_snapshot_bytes: int = 20971520
 
     # Agent
     agent_heartbeat_interval: int = 30
@@ -66,6 +68,8 @@ class Settings(BaseSettings):
     rate_limit_execution_per_minute: int = 60
     # Windows 方案 §3.2：Agent 绑定/解绑接口限流
     rate_limit_bind_per_minute: int = 20
+    # 方案 §10.3：预检按 user+project 限流
+    rate_limit_preview_per_minute: int = 30
 
     # 存储
     reports_base_path: str = "./data/reports"

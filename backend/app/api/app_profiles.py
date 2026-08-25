@@ -546,6 +546,11 @@ async def skip_rules_batch(
     profile = await _get_profile_or_404(profile_id, db)
     _project, role = modal_perm
     before = profile.revision
+    if len(body.targets) > 500:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": "PROFILE_RULE_INVALID", "message": "单次批量跳过目标上限 500"},
+        )
     if body.request_id:
         replay = await find_idempotent_replay(db, profile_id, body.request_id)
         if replay is not None:

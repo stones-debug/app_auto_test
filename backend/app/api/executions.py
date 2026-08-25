@@ -11,6 +11,7 @@ from app.api.deps import (
     require_device_access,
     require_project_write,
 )
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.errors import api_error
 from app.core.ratelimit import rate_limit
@@ -67,6 +68,10 @@ async def preview_execution(
     project, role = await get_project_permission(body.project_id, user, db)
     if role not in ("owner", "admin", "member"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权执行")
+    # 方案 §10.3：预检按 user+project 限流
+    from app.core.ratelimit import rate_limit_check
+
+    rate_limit_check("preview", f"u{user.id}:p{body.project_id}", settings.rate_limit_preview_per_minute)
     # 读取当前档案/项目 revision 作为 expected（预检返回给前端，供提交时二次校验）
     profile = await db.get(AppProfile, body.app_profile_id)
     if profile is None or profile.deleted_at is not None or profile.project_id != body.project_id:

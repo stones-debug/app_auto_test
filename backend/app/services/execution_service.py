@@ -81,20 +81,44 @@ async def _create_execution_with_profile(
     try:
         result = await get_resolver().preview(request, db)
     except ProfileRevisionConflict as err:
+        from app.services.metrics import inc_conflict
+
+        type_ = "profile" if "PROFILE_REVISION" in err.code else "asset"
+        inc_conflict(type_)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": err.code, "current": err.current, "expected": err.expected},
         ) from None
     except ProfileEmpty:
+        from app.services.metrics import inc_resolve
+
+        inc_resolve("empty")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"code": "PROFILE_EMPTY"},
         ) from None
     except ProfileRuleError as err:
+        from app.services.metrics import inc_resolve
+
+        inc_resolve("invalid")
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"code": err.code, "message": err.message},
         ) from None
+
+    from app.services.metrics import inc_resolve, observe_snapshot
+
+    inc_resolve("success")
+
+    # 方案 §3.6/§6.2：快照上限（SNAPSHOT_TOO_LARGE）
+    import json as _json
+
+    snapshot_bytes = len(_json.dumps([c.__dict__ for c in result.cases], default=str).encode("utf-8"))
+    if snapshot_bytes > settings.max_execution_snapshot_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail={"code": "SNAPSHOT_TOO_LARGE", "message": f"快照超过上限 {settings.max_execution_snapshot_bytes // (1024 * 1024)} MB"},
+        )
 
     execution = Execution(
         project_id=project_id,
@@ -119,9 +143,15 @@ async def _create_execution_with_profile(
     await db.flush()
 
     # 同事务固化：执行用例快照 + 排除项 + 队列
+    import time as _time
+
     from app.services.execution_snapshot import materialize_snapshot
 
+    _t0 = _time.monotonic()
     await materialize_snapshot(db, execution, result)
+    _t1 = _time.monotonic()
+
+    observe_snapshot(snapshot_bytes, (_t1 - _t0) * 1000.0)
     for ex in result.exclusions:
         db.add(
             ExecutionExclusion(

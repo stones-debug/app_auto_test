@@ -91,6 +91,16 @@ app.include_router(releases_router, prefix="/api")
 app.include_router(reports_router, prefix="/api")
 app.include_router(internal_router)
 app.include_router(ws_router)
+
+
+@app.get("/metrics")
+async def metrics():
+    """方案 §10.5：轻量指标暴露（内网；生产应受网络策略保护）。"""
+    from fastapi.responses import PlainTextResponse
+
+    from app.services.metrics import render_metrics
+
+    return PlainTextResponse(render_metrics(), media_type="text/plain; version=0.0.4")
 @app.get("/api/health")
 async def health() -> dict:
     return {"status": "ok", "version": "0.1.0"}
