@@ -668,6 +668,15 @@ def _select_steps_for_run(nodes: list[dict], run_options: dict[str, bool]) -> li
         for node in (nodes or [])
         if isinstance(node, dict) and str(node.get("phase") or "main") in enabled_phases
     ]
+    # 兜底：用例步骤全为非 main 阶段（如纯 setup）时，关闭 pre/post 会把步骤过滤成空集，
+    # 从而被误判为 PROFILE_EMPTY。此处回退纳入全部阶段，保证有步骤的用例始终可执行。
+    if not selected and any(isinstance(node, dict) for node in (nodes or [])):
+        enabled_phases = {"setup", "main", "teardown"}
+        selected = [
+            node
+            for node in (nodes or [])
+            if isinstance(node, dict) and str(node.get("phase") or "main") in enabled_phases
+        ]
     return sorted(
         selected,
         key=lambda node: (

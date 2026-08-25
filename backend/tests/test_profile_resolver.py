@@ -28,6 +28,7 @@ from app.services.profile_resolver import (
     ProfileRevisionConflict,
     ProfileRuleError,
     ResolutionRequest,
+    _select_steps_for_run,
 )
 
 OWNER = {"username": "pytest_resolver", "email": "resolver@tl-tek.com", "password": "test123"}
@@ -309,3 +310,34 @@ from app.services import profile_resolver as _pr  # noqa: E402
 
 async def resolve_compat(request: ResolutionRequest, db):
     return await _pr.resolve(request, db, _pr.get_resolver().cache)
+
+
+# ---- Step B13：阶段过滤兜底（纯 setup 用例关闭 pre/post 不应被判空） ----
+
+
+def _mk(order: int, phase: str, action: str = "sleep") -> dict:
+    return {"key": f"k{order}", "order": order, "phase": phase, "action": action, "params": {}}
+
+
+def test_select_steps_all_setup_closed_runtime_falls_back_to_all():
+    nodes = [_mk(1, "setup"), _mk(2, "setup"), _mk(3, "setup")]
+    # 关闭 pre/post（默认只跑 main）时，纯 setup 用例应兜底纳入全部阶段
+    selected = _select_steps_for_run(nodes, {"use_pre_steps": False, "use_post_steps": False})
+    assert len(selected) == 3
+    assert [s["order"] for s in selected] == [1, 2, 3]
+
+
+def test_select_steps_main_only_stays_main():
+    nodes = [_mk(1, "setup"), _mk(2, "main"), _mk(3, "teardown")]
+    selected = _select_steps_for_run(nodes, {"use_pre_steps": False, "use_post_steps": False})
+    assert [s["order"] for s in selected] == [2]
+
+
+def test_select_steps_pre_enabled_includes_setup_sort():
+    nodes = [_mk(1, "main"), _mk(2, "setup"), _mk(3, "teardown")]
+    selected = _select_steps_for_run(nodes, {"use_pre_steps": True, "use_post_steps": False})
+    assert [s["phase"] for s in selected] == ["setup", "main"]
+
+
+def test_select_steps_empty_nodes_is_empty():
+    assert _select_steps_for_run([], {"use_pre_steps": False, "use_post_steps": False}) == []
