@@ -80,7 +80,10 @@ async function onReleaseChange() {
 }
 
 async function doPreview() {
-  if (profileId.value == null) return
+  if (profileId.value == null || releaseId.value == null) {
+    preview.value = null
+    return
+  }
   if (targetKind.value === 'retry') return
   previewLoading.value = true
   try {

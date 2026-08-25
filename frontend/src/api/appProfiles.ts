@@ -115,9 +115,16 @@ export interface SkipBatchResponse {
 
 export interface ProfileRunParams {
   app_profile_id: number
-  app_release_id: number | null
+  app_release_id: number
   expected_profile_revision: number
   expected_test_asset_revision: number
+}
+
+export interface ProfileOverrides {
+  revision: number
+  elements: { element_id: number; locator_type: string; locator_value: string }[]
+  variables: { name: string; value: string; description: string | null }[]
+  nodes: { case_id: number; node_type: 'step' | 'assertion'; node_key: string; patch: Record<string, unknown> }[]
 }
 
 // ---------- 档案 ----------
@@ -168,6 +175,10 @@ export function skipRulesBatch(profileId: number, data: { request_id?: string; e
 
 // ---------- 覆盖 ----------
 
+export function listProfileOverrides(profileId: number) {
+  return request.get<ProfileOverrides>(`/app-profiles/${profileId}/overrides`)
+}
+
 export function upsertElementOverride(profileId: number, elementId: number, data: { request_id?: string; expected_revision: number; locator_type: string; locator_value: string }) {
   return request.put<{ revision: number }>(`/app-profiles/${profileId}/element-overrides/${elementId}`, data)
 }
@@ -198,7 +209,7 @@ export function workspace(profileId: number, params?: { page?: number; page_size
   return request.get<WorkspacePage>(`/app-profiles/${profileId}/workspace`, { params })
 }
 
-export function workspaceNodes(profileId: number, params: { parent_type: 'suite' | 'case'; parent_id: number; page?: number; page_size?: number; include?: string }) {
+export function workspaceNodes(profileId: number, params: { parent_type: 'suite' | 'case'; parent_id: number; ancestor_suite_id?: number; page?: number; page_size?: number; include?: string }) {
   return request.get<PageData<ProfileNode>>(`/app-profiles/${profileId}/workspace/nodes`, { params })
 }
 
@@ -212,7 +223,7 @@ export function previewExecution(data: {
   project_id: number
   target: { type: 'case' | 'suite' | 'batch'; ids: number[] }
   app_profile_id: number
-  app_release_id?: number | null
+  app_release_id: number
   device_id?: number | null
   parameters?: Record<string, unknown>
 }) {

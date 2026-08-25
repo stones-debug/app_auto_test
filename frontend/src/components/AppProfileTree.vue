@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 
 import { createAppProfile, type AppProfileSummary } from '@/api/appProfiles'
+import { usePermission } from '@/composables/usePermission'
 import { useAppProfileStore } from '@/stores/appProfile'
 import { ElMessage } from 'element-plus'
 
 const props = defineProps<{ projectId: number }>()
 const store = useAppProfileStore()
+const router = useRouter()
+const { canEditProject } = usePermission()
 
 async function load() {
   store.projectId = props.projectId
@@ -24,11 +27,10 @@ async function onCreate() {
   })
   const code = promptCode(value)
   try {
-    await createAppProfile(props.projectId, { name: value.trim(), code })
+    const created = await createAppProfile(props.projectId, { name: value.trim(), code })
     ElMessage.success('已创建')
     await load()
-    const created = store.profiles[store.profiles.length - 1]
-    if (created) store.selectProfile(created.id)
+    await store.selectProfile(created.id)
   } catch (e) {
     ElMessage.error(`创建失败：${(e as Error).message}`)
   }
@@ -44,16 +46,19 @@ function skipLabel(p: AppProfileSummary): string {
   return `${c.case} 用例 / ${c.step} 步骤`
 }
 
-onMounted(load)
 </script>
 
 <template>
   <div class="profile-tree">
     <div class="tree-head">
       <div class="tree-title">APP 配置档案</div>
-      <el-button size="small" type="primary" text @click="onCreate">+ 新建</el-button>
+      <el-button v-if="canEditProject" size="small" type="primary" text @click="onCreate">+ 新建</el-button>
     </div>
     <el-tag v-if="store.stale" type="warning" size="small" class="stale-tag">配置已更新，请刷新</el-tag>
+    <div class="tree-item public-item" @click="router.push({ name: 'Suites', params: { projectId } })">
+      <div class="tree-name">全部 / 公共套件库</div>
+      <div class="tree-meta">维护所有 APP 共用的测试资产</div>
+    </div>
     <div
       class="tree-item"
       :class="{ active: store.selectedProfileId === p.id }"

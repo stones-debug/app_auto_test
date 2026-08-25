@@ -21,6 +21,7 @@ export interface WorkspaceFilters {
 // 方案 §5.3：档案工作台状态——切换档案隔离缓存、URL 同步、stale 标记。
 export const useAppProfileStore = defineStore('appProfile', () => {
   const projectId = ref<number | null>(null)
+  const loadedProjectId = ref<number | null>(null)
   const profiles = ref<AppProfileSummary[]>([])
   const selectedProfileId = ref<number | null>(null)
   const profileRevision = ref<number | null>(null)
@@ -45,9 +46,20 @@ export const useAppProfileStore = defineStore('appProfile', () => {
 
   async function loadProfiles() {
     if (projectId.value == null) return
+    if (loadedProjectId.value !== projectId.value) {
+      selectedProfileId.value = null
+      suitePage.value = null
+      childrenByParent.value = {}
+      expandedKeys.value = new Set()
+      selectedKeys.value = new Set()
+      profileRevision.value = null
+      testAssetRevision.value = null
+      stale.value = false
+      loadedProjectId.value = projectId.value
+    }
     profiles.value = await listAppProfiles(projectId.value, { include_disabled: false })
-    if (selectedProfileId.value == null && profiles.value.length > 0) {
-      selectedProfileId.value = profiles.value[0].id
+    if (!profiles.value.some((profile) => profile.id === selectedProfileId.value)) {
+      selectedProfileId.value = profiles.value[0]?.id ?? null
     }
   }
 
@@ -85,13 +97,37 @@ export const useAppProfileStore = defineStore('appProfile', () => {
     }
   }
 
-  async function loadChildren(parentType: 'suite' | 'case', parentId: number): Promise<ProfileNode[]> {
+  async function loadChildren(
+    parentType: 'suite' | 'case',
+    parentId: number,
+    ancestorSuiteId?: number,
+    force = false,
+  ): Promise<ProfileNode[]> {
     if (projectId.value == null || selectedProfileId.value == null) return []
-    const key = `${parentType}:${parentId}`
-    if (childrenByParent.value[key]) return childrenByParent.value[key]
-    const page = await workspaceNodes(selectedProfileId.value, { parent_type: parentType, parent_id: parentId, page_size: 200 })
+    const key = parentType === 'case' ? `case:${ancestorSuiteId ?? 0}:${parentId}` : `suite:${parentId}`
+    if (!force && childrenByParent.value[key]) return childrenByParent.value[key]
+    const page = await workspaceNodes(selectedProfileId.value, {
+      parent_type: parentType,
+      parent_id: parentId,
+      ancestor_suite_id: parentType === 'case' ? ancestorSuiteId : undefined,
+      page_size: 200,
+    })
     childrenByParent.value = { ...childrenByParent.value, [key]: page.items }
     return page.items
+  }
+
+  async function refreshVisibleWorkspace() {
+    const expanded = [...expandedKeys.value]
+    childrenByParent.value = {}
+    await loadWorkspace()
+    for (const key of expanded) {
+      const parts = key.split(':')
+      if (parts[0] === 'suite') {
+        await loadChildren('suite', Number(parts[1]))
+      } else if (parts[0] === 'case') {
+        await loadChildren('case', Number(parts[2]), Number(parts[1]))
+      }
+    }
   }
 
   function toggleExpand(key: string) {
@@ -113,6 +149,7 @@ export const useAppProfileStore = defineStore('appProfile', () => {
 
   function reset() {
     projectId.value = null
+    loadedProjectId.value = null
     profiles.value = []
     selectedProfileId.value = null
     suitePage.value = null
@@ -140,6 +177,7 @@ export const useAppProfileStore = defineStore('appProfile', () => {
     selectProfile,
     loadWorkspace,
     loadChildren,
+    refreshVisibleWorkspace,
     toggleExpand,
     setStale,
     markRevision,

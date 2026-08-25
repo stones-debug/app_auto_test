@@ -50,6 +50,36 @@ describe('useAppProfileStore 档案工作台状态', () => {
     expect(store.profileRevision).toBe(2)
   })
 
+  it('切换项目时不会保留上一个项目的档案选择', async () => {
+    mocks.listAppProfiles
+      .mockResolvedValueOnce([{ id: 1, name: '项目 A 档案' }])
+      .mockResolvedValueOnce([{ id: 8, name: '项目 B 档案' }])
+    const store = useAppProfileStore()
+    store.projectId = 7
+    await store.loadProfiles()
+    expect(store.selectedProfileId).toBe(1)
+
+    store.projectId = 9
+    await store.loadProfiles()
+    expect(store.selectedProfileId).toBe(8)
+    expect(store.currentProfile?.name).toBe('项目 B 档案')
+  })
+
+  it('用例子节点缓存包含所属套件并传递祖先套件', async () => {
+    mocks.workspaceNodes.mockResolvedValue({ total: 1, page: 1, page_size: 200, items: [{ node_type: 'step', node_key: 'step-1' }] })
+    const store = useAppProfileStore()
+    store.projectId = 7
+    store.selectedProfileId = 2
+    await store.loadChildren('case', 15, 3)
+
+    expect(mocks.workspaceNodes).toHaveBeenCalledWith(2, expect.objectContaining({
+      parent_type: 'case',
+      parent_id: 15,
+      ancestor_suite_id: 3,
+    }))
+    expect(store.childrenByParent['case:3:15']).toHaveLength(1)
+  })
+
   it('markRevision 更新 revision 且清除 stale', () => {
     const store = useAppProfileStore()
     store.stale = true
