@@ -122,3 +122,31 @@ async def test_resolver_preview_matches(client: AsyncClient):
         result = await resolve(request, db)
     assert result.summary["executable_cases"] == 1
     assert result.summary["executable_steps"] == 1
+
+
+async def test_retry_reuses_profile(client: AsyncClient):
+    """重试复用原执行档案并按当前 revision 固化，retry_of 指向原执行。"""
+    base = await _base(client)
+    profile_id = await _make_profile(client, base)
+    case_id = await _make_case(client, base)
+    created = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers=base["headers"],
+        json={"app_profile_id": profile_id, "expected_profile_revision": 1, "expected_test_asset_revision": 1, "device_id": base["device_id"]},
+    )
+    assert created.status_code == 201
+    original_id = created.json()["id"]
+
+    retried = await client.post(
+        f"/api/executions/{original_id}/retry",
+        headers=base["headers"],
+        json={"device_id": base["device_id"]},
+    )
+    assert retried.status_code == 201, retried.text
+    data = retried.json()
+    assert data["retry_of"] == original_id
+    assert data["app_profile_id"] == profile_id
+    async with SessionLocal() as db:
+        exec2 = await db.get(Execution, data["id"])
+        assert exec2.app_profile_id == profile_id
+        assert (await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == data["id"]))).scalars().first() is not None

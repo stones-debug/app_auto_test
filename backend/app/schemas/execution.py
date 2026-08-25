@@ -134,6 +134,13 @@ class ExecutionOut(BaseModel):
     created_by: int | None
     retry_of: int | None
     created_at: datetime
+    # 方案 §4.8/§6：档案与快照来源快照
+    app_profile_id: int | None = None
+    app_profile_name_snapshot: str | None = None
+    app_release_id: int | None = None
+    app_release_version_snapshot: str | None = None
+    profile_revision: int | None = None
+    test_asset_revision: int | None = None
 
     model_config = {"from_attributes": True}
 

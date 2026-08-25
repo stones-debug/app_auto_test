@@ -284,7 +284,36 @@ async def retry_execution(
     device_id: int,
     timeout_seconds: int | None = None,
 ) -> Execution:
-    return await _create_and_enqueue(
+    """方案 §6.5：重试复用原执行目标/档案/版本/运行选项，按当前档案 revision 创建新执行。"""
+    if execution.app_profile_id is None:
+        return await _create_and_enqueue(
+            db,
+            project_id=execution.project_id,
+            type_=execution.type,
+            user=user,
+            device_id=device_id,
+            parameters=execution.parameters or {},
+            timeout_seconds=timeout_seconds or execution.timeout_seconds,
+            suite_id=execution.suite_id,
+            case_id=execution.case_id,
+            retry_of=execution.id,
+        )
+    from types import SimpleNamespace
+
+    from app.models import AppProfile, Project
+
+    profile = await db.get(AppProfile, execution.app_profile_id)
+    if profile is None or profile.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="APP 档案不存在")
+    project = await db.get(Project, execution.project_id)
+    body = SimpleNamespace(
+        app_profile_id=execution.app_profile_id,
+        app_release_id=execution.app_release_id,
+        expected_profile_revision=profile.revision,
+        expected_test_asset_revision=project.test_asset_revision,
+        parameters=execution.parameters or {},
+    )
+    return await _create_execution_with_profile(
         db,
         project_id=execution.project_id,
         type_=execution.type,
@@ -292,6 +321,7 @@ async def retry_execution(
         device_id=device_id,
         parameters=execution.parameters or {},
         timeout_seconds=timeout_seconds or execution.timeout_seconds,
+        body=body,
         suite_id=execution.suite_id,
         case_id=execution.case_id,
         retry_of=execution.id,
