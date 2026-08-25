@@ -12,6 +12,7 @@ from app.models import Execution, Project, Report, TestCase, TestSuite, User
 from app.schemas.report import (
     ReportCaseOut,
     ReportDetailOut,
+    ReportExclusionOut,
     ReportListItem,
     ReportLogOut,
     ReportPage,
@@ -128,6 +129,10 @@ async def list_reports(
             item.case_name = case_names.get(execution.case_id) if execution.case_id else None
             item.suite_name = suite_names.get(execution.suite_id) if execution.suite_id else None
             item.finished_at = execution.finished_at
+            # 方案 §7.3：档案/版本快照 + N/A 数量
+            item.app_profile_name = execution.app_profile_name_snapshot
+            item.app_release_version = execution.app_release_version_snapshot
+            item.not_applicable = row.not_applicable or 0
         item.has_report = bool(row.report_path)
         items.append(item)
     return {"total": total or 0, "page": pagination.page, "page_size": pagination.page_size, "items": items}
@@ -145,11 +150,32 @@ async def get_report(
 
 
 async def _build_detail(db: AsyncSession, execution_id: int) -> ReportDetailOut:
+    from sqlalchemy import select
+
+    from app.models import ExecutionExclusion
+
     detail = await report_service.get_report_detail(db, execution_id)
+    # 方案 §7.2：不适用内容清单
+    exclusions = (
+        await db.execute(
+            select(ExecutionExclusion).where(ExecutionExclusion.execution_id == execution_id)
+        )
+    ).scalars().all()
     return ReportDetailOut(
         execution=detail["execution"],
         report=ReportSummaryOut(**detail["report"]),
         cases=[ReportCaseOut(**c) for c in detail["cases"]],
+        exclusions=[
+            ReportExclusionOut(
+                target_type=ex.target_type,
+                path=(ex.suite_name_snapshot or "") + "/" + (ex.case_name_snapshot or ""),
+                reason_code=ex.reason_code,
+                reason_note=ex.reason_note,
+                source_type=ex.source_type,
+                node_key=str(ex.node_key) if ex.node_key else None,
+            )
+            for ex in exclusions
+        ],
         logs=[ReportLogOut(**log_item) for log_item in detail["logs"]],
         logs_total=detail["logs_total"],
         logs_truncated=detail["logs_truncated"],

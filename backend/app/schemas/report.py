@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ReportListItem(BaseModel):
@@ -25,6 +25,10 @@ class ReportListItem(BaseModel):
     case_name: str | None = None
     suite_name: str | None = None
     finished_at: datetime | None = None
+    # 方案 §7.3：档案/版本 + N/A 数量
+    app_profile_name: str | None = None
+    app_release_version: str | None = None
+    not_applicable: int = 0
 
     model_config = {"from_attributes": True}
 
@@ -87,6 +91,17 @@ class ReportSummaryOut(BaseModel):
     error_count: int
     skipped: int
     success_rate: float
+    not_applicable: int = 0
+    exclusion_summary: dict[str, int] = Field(default_factory=dict)
+
+
+class ReportExclusionOut(BaseModel):
+    target_type: str
+    path: str
+    reason_code: str
+    reason_note: str | None
+    source_type: str
+    node_key: str | None = None
 
 
 class ReportDetailOut(BaseModel):
@@ -94,6 +109,8 @@ class ReportDetailOut(BaseModel):
     report: ReportSummaryOut
     cases: list[ReportCaseOut]
     logs: list[ReportLogOut]
+    # 方案 §7.2：不适用内容清单
+    exclusions: list[ReportExclusionOut] = Field(default_factory=list)
     # Step 8：日志截断元数据（logs_truncated=true 时前端/HTML 展示“仅展示最后 N/M 条”）
     logs_total: int = 0
     logs_truncated: bool = False

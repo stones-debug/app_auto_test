@@ -122,6 +122,8 @@ async def get_report_detail(db: AsyncSession, execution_id: int) -> dict:
             "error_count": report.error_count if report else 0,
             "skipped": report.skipped if report else 0,
             "success_rate": report.success_rate if report else 0,
+            "not_applicable": report.not_applicable if report else 0,
+            "exclusion_summary": report.exclusion_summary if report else {},
         },
         "cases": cases,
         "logs": [

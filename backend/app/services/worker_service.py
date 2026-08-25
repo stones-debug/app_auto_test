@@ -21,6 +21,7 @@ from app.models import (
     Execution,
     ExecutionAssertion,
     ExecutionCase,
+    ExecutionExclusion,
     ExecutionLog,
     ExecutionQueue,
     ExecutionStep,
@@ -410,8 +411,21 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
     failed = sum(1 for c in cases if c.status == "failed")
     error_count = sum(1 for c in cases if c.status == "error")
     skipped = sum(1 for c in cases if c.status == "skipped")
-    # CR-10：DECIMAL(5,2)（如 66.67）；0/0 → 0
-    rate = Decimal(str(round(passed / total * 100, 2))) if total else Decimal("0")
+    # 方案 §7.1：成功率仅按 passed/(passed+failed+error_count)，N/A 与停止 skipped 不入分母；分母 0 → 0
+    rate_base = passed + failed + error_count
+    rate = Decimal(str(round(passed / rate_base * 100, 2))) if rate_base else Decimal("0")
+    # 方案 §7.1：N/A 相关统计（执行创建时固化的排除项）
+    na_cases = 0
+    exclusion_summary: dict[str, int] = {"na_suites": 0, "na_cases": 0, "na_steps": 0, "na_assertions": 0}
+    exclusions = (
+        await db.execute(select(ExecutionExclusion).where(ExecutionExclusion.execution_id == execution.id))
+    ).scalars().all()
+    for ex in exclusions:
+        if ex.target_type == "case":
+            na_cases += 1
+        key = f"na_{ex.target_type}s"
+        if key in exclusion_summary:
+            exclusion_summary[key] += 1
     await db.execute(
         pg_insert(Report)
         .values(
@@ -423,6 +437,8 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
             skipped=skipped,
             success_rate=rate,
             duration=execution.duration,
+            not_applicable=na_cases,
+            exclusion_summary=exclusion_summary,
         )
         .on_conflict_do_nothing(constraint="uq_reports_execution_id")
     )
