@@ -76,3 +76,36 @@ class ExecutionConnectionManager:
 
 
 execution_manager = ExecutionConnectionManager()
+
+
+class ProfileConfigConnectionManager:
+    """前端按 project_id 分组的档案配置变更广播（方案 §4.9）。"""
+
+    def __init__(self) -> None:
+        self._groups: dict[int, set[WebSocket]] = {}
+
+    async def connect(self, project_id: int, ws: WebSocket) -> None:
+        self._groups.setdefault(project_id, set()).add(ws)
+
+    async def disconnect(self, project_id: int, ws: WebSocket) -> None:
+        group = self._groups.get(project_id)
+        if group is None:
+            return
+        group.discard(ws)
+        if not group:
+            self._groups.pop(project_id, None)
+
+    async def broadcast(self, project_id: int, message: dict) -> None:
+        group = self._groups.get(project_id)
+        if not group:
+            return
+        for ws in list(group):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                group.discard(ws)
+        if not group:
+            self._groups.pop(project_id, None)
+
+
+profile_config_manager = ProfileConfigConnectionManager()

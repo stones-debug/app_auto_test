@@ -18,7 +18,7 @@ from app.ws.handlers import (
     handle_step_result,
     mark_agent_offline,
 )
-from app.ws.managers import agent_manager, execution_manager
+from app.ws.managers import agent_manager, execution_manager, profile_config_manager
 
 router = APIRouter(tags=["WebSocket"])
 
@@ -87,6 +87,60 @@ async def execution_ws(
         pass
     finally:
         await execution_manager.disconnect(execution_id, websocket)
+
+
+@router.websocket("/ws/projects/{project_id}/config")
+async def config_ws(
+    websocket: WebSocket,
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """方案 §4.9：档案配置变更通知——只提示刷新，不携带配置正文，非一致性来源。"""
+    token = websocket.query_params.get("token")
+    payload = decode_token(token) if token else None
+    if payload is None or payload.get("type") != "access":
+        await websocket.close(code=1008, reason="认证失败")
+        return
+    user = await db.get(User, int(payload["sub"]))
+    if user is None or user.status != "active":
+        await websocket.close(code=1008, reason="用户不存在或已禁用")
+        return
+    if not await _can_access_project(db, user, project_id):
+        await websocket.close(code=1008, reason="无权访问该项目")
+        return
+
+    await websocket.accept()
+    await profile_config_manager.connect(project_id, websocket)
+    try:
+        while True:
+            data = await websocket.receive_json()
+            if data.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
+            elif data.get("type") == "close":
+                break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await profile_config_manager.disconnect(project_id, websocket)
+
+
+async def _can_access_project(db: AsyncSession, user: User, project_id: int) -> bool:
+    project = await db.get(Project, project_id)
+    if project is None:
+        return False
+    if project.owner_id == user.id:
+        return True
+    member = (
+        await db.execute(
+            select(ProjectMember).where(
+                ProjectMember.project_id == project_id,
+                ProjectMember.user_id == user.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if member is not None:
+        return True
+    return project.visibility == "public"
 
 
 @router.websocket("/ws/agent")

@@ -42,8 +42,24 @@ from app.schemas.app_profile import (
 )
 from app.services.profile_audit import find_idempotent_replay, write_audit
 from app.services.profile_revision import RevisionConflictError, bump_profile_revision
+from app.ws.managers import profile_config_manager
 
 router = APIRouter(tags=["APP 档案"])
+
+
+async def _broadcast_config(profile: AppProfile, user_id: int | None = None) -> None:
+    """方案 §4.9：广播档案配置变更（提示刷新，非一致性来源）。"""
+    await profile_config_manager.broadcast(
+        profile.project_id,
+        {
+            "type": "profile_revision_changed",
+            "project_id": profile.project_id,
+            "profile_id": profile.id,
+            "profile_revision": profile.revision,
+            "changed_by": user_id,
+            "changed_at": datetime.now(UTC).isoformat(),
+        },
+    )
 
 
 def require_profile_manager():
@@ -296,6 +312,7 @@ async def update_app_profile(
     )
     await db.commit()
     await db.refresh(profile)
+    await _broadcast_config(profile, user.id)
     return {**await _profile_out(profile, db), "request_id": body.request_id}
 
 
@@ -341,6 +358,7 @@ async def delete_app_profile(
         request_id=body.request_id,
     )
     await db.commit()
+    await _broadcast_config(profile, user.id)
 
 
 # ---------- 发布版本 ----------
@@ -626,6 +644,7 @@ async def skip_rules_batch(
         response_data={"changed": changed, "unchanged": unchanged, "revision": new_revision},
     )
     await db.commit()
+    await _broadcast_config(profile, user.id)
     return {
         "request_id": body.request_id,
         "revision_before": before,
