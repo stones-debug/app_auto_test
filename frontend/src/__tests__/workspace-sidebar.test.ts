@@ -12,8 +12,12 @@ describe('AppShell 工作区侧栏契约', () => {
   it('项目侧栏替换全局菜单，并包含项目执行和报告', () => {
     const menus = projectWorkspaceMenus(12)
     expect(menus.map((item) => item.key)).toEqual([
-      'overview', 'cases', 'suites', 'elements', 'variables', 'executions', 'reports', 'settings',
+      'overview', 'cases', 'suites', 'profiles', 'elements', 'variables', 'executions', 'reports', 'settings',
     ])
+    expect(menus.find((item) => item.key === 'profiles')?.to).toEqual({
+      name: 'ProjectProfiles',
+      params: { projectId: 12 },
+    })
     expect(menus.find((item) => item.key === 'elements')?.to).toEqual({
       name: 'ProjectElements',
       params: { projectId: 12 },

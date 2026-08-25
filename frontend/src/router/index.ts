@@ -83,6 +83,12 @@ const routes: RouteRecordRaw[] = [
             meta: { title: '测试套件', workspace: 'project', sidebarKey: 'suites' },
           },
           {
+            path: 'profiles',
+            name: 'ProjectProfiles',
+            component: () => import('@/views/AppProfile.vue'),
+            meta: { title: 'APP 档案', workspace: 'project', sidebarKey: 'profiles' },
+          },
+          {
             path: 'elements',
             name: 'ProjectElements',
             component: () => import('@/views/Element.vue'),
