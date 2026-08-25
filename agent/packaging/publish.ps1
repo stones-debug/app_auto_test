@@ -15,6 +15,13 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
 
+# per-step elapsed timings (ASCII only; PowerShell 5.1 parses .ps1 as GBK without BOM)
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+function Write-Step([string]$Name) {
+    $s = $sw.Elapsed
+    Write-Host ("== {0} [{1}] ==" -f $Name, $s.ToString("mm\:ss\.fff"))
+}
+
 if (-not $ReleaseDir) {
     $ReleaseDir = Join-Path $PSScriptRoot "..\..\backend\data\agent-releases"
 }
@@ -33,6 +40,7 @@ $installer = Join-Path $distDir "app-auto-test-agent-$Version-windows-x64-setup.
 
 # 0) self-check
 Write-Host "== 0) Agent self-check (config: $configFile) =="
+Write-Step "0-selfcheck"
 uv run python main.py --config $configFile --self-check
 if ($LASTEXITCODE -ne 0) { throw "self-check failed" }
 
@@ -41,8 +49,10 @@ if (-not $SkipBuild) {
     Write-Host "== 1) PyInstaller =="
     # `uv run` re-syncs the env WITHOUT extras by default, which drops pystray/PIL
     # (desktop tray). Sync with extras first so the bundle contains them.
-    uv sync --all-extras
+    Write-Step "1a-uv-sync"
+    uv sync --all-extras --frozen
     if ($LASTEXITCODE -ne 0) { throw "uv sync --all-extras failed" }
+    Write-Step "1b-pyinstaller"
     uv run --with pyinstaller pyinstaller packaging\pyinstaller.spec --noconfirm `
         --distpath $distDir --workpath $workDir
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
@@ -52,6 +62,7 @@ if (-not $SkipBuild) {
 $vendor = "vendor"
 if (Test-Path "$vendor\platform-tools\adb.exe") {
     Write-Host "== 2) copy platform-tools =="
+    Write-Step "2-platform-tools"
     $ptTarget = Join-Path $bundledApp "platform-tools"
     if (Test-Path $ptTarget) { Remove-Item -Recurse -Force $ptTarget }
     Copy-Item -Recurse -Force "$vendor\platform-tools" $ptTarget
@@ -96,6 +107,7 @@ if (-not $appiumReady) {
 }
 if (Test-Path "$appiumVendor\node\node.exe") {
     Write-Host "== 2.5) copy portable Node + Appium =="
+    Write-Step "2.5-appium-copy"
     $appiumTarget = Join-Path $bundledApp "appium"
     if (Test-Path $appiumTarget) { Remove-Item -Recurse -Force $appiumTarget }
     Copy-Item -Recurse -Force $appiumVendor $appiumTarget
@@ -108,6 +120,7 @@ if (Test-Path "$appiumVendor\node\node.exe") {
 }
 
 # 2.6) bundle Python dist-info metadata (appium/selenium read own version via importlib.metadata)
+Write-Step "2.6-copy-distinfo"
 $metaTarget = Join-Path $bundledApp "_internal"
 foreach ($pat in @("appium_python_client-*.dist-info", "selenium-*.dist-info")) {
     Get-ChildItem ".venv\Lib\site-packages" -Directory -Filter $pat -ErrorAction SilentlyContinue | ForEach-Object {
@@ -152,11 +165,13 @@ $iscc = Find-Iscc
 if (-not $iscc) { throw "iscc (Inno Setup 6) not found; install Inno Setup 6 first" }
 Write-Host "using iscc: $iscc"
 
+Write-Step "3-innosetup"
 & $iscc "packaging\setup.iss" "/DAppVersion=$Version" "/DOutputDir=$distDir"
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup compile failed" }
 
 # 4) SHA-256 + manifest (ASCII manifest: backend reads it with json.loads, no BOM allowed)
 Write-Host "== 4) manifest =="
+Write-Step "4-manifest"
 if (-not (Test-Path $installer)) { throw "installer not found: $installer" }
 $hash = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
 $size = (Get-Item $installer).Length
@@ -175,6 +190,8 @@ Move-Item -Force $tmpManifest (Join-Path $ReleaseDir "latest.json")
 
 # 5) copy installer
 Copy-Item -Force $installer $ReleaseDir
+Write-Step "5-done"
+Write-Host ("== total {0} ==" -f $sw.Elapsed.ToString("mm\:ss\.fff"))
 Write-Host "== done =="
 Write-Host "installer: $ReleaseDir\$(Split-Path $installer -Leaf)"
 Write-Host "SHA-256: $hash"
