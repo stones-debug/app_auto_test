@@ -70,3 +70,37 @@ async def bump_project_asset_revision(
             raise RevisionConflictError("PROJECT_NOT_FOUND", 0, expected_revision)
         raise RevisionConflictError(ASSET_REVISION_CONFLICT, existing.test_asset_revision, expected_revision)
     return new_revision
+
+
+async def touch_project_asset_revision(db: AsyncSession, project_id: int) -> int:
+    """公共测试资产写入时原子递增项目资产修订号。
+
+    资产管理接口本身没有 ``expected_revision`` 参数，因此不能复用档案配置
+    工作台的乐观锁语义；但每个成功的资产写事务都必须至少推进一次修订号，
+    使预检/执行提交能够发现两次操作之间发生的公共资产变化。
+    """
+    result = await db.execute(
+        update(Project)
+        .where(Project.id == project_id, Project.deleted_at.is_(None))
+        .values(
+            test_asset_revision=Project.test_asset_revision + 1,
+            updated_at=func.now(),
+        )
+        .returning(Project.test_asset_revision)
+    )
+    new_revision = result.scalar_one_or_none()
+    if new_revision is None:
+        raise RevisionConflictError("PROJECT_NOT_FOUND", 0, 0)
+    return new_revision
+
+
+async def touch_all_project_asset_revisions(db: AsyncSession) -> None:
+    """全局变量变化时使所有有效项目的资产快照失效。"""
+    await db.execute(
+        update(Project)
+        .where(Project.deleted_at.is_(None))
+        .values(
+            test_asset_revision=Project.test_asset_revision + 1,
+            updated_at=func.now(),
+        )
+    )

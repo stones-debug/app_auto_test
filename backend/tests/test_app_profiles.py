@@ -233,6 +233,68 @@ async def test_workspace_and_nodes(client: AsyncClient):
     assert diff.json()["items"][0]["target_type"] == "case"
 
 
+async def test_workspace_nodes_enforce_project_and_inherit_parent_skip(client: AsyncClient):
+    """子节点必须属于档案项目，并展示套件/用例级继承跳过状态。"""
+    token = await _register(client, OWNER)
+    h = {"Authorization": f"Bearer {token}"}
+    pid = (await client.post("/api/projects", json={"name": "层级项目"}, headers=h)).json()["id"]
+    other_pid = (await client.post("/api/projects", json={"name": "其他项目"}, headers=h)).json()["id"]
+    profile_id = (
+        await client.post(
+            f"/api/projects/{pid}/app-profiles",
+            json={"name": "层级档案", "code": f"tree{uuid.uuid4().hex[:6]}"},
+            headers=h,
+        )
+    ).json()["id"]
+    suite_id = (await client.post(f"/api/projects/{pid}/suites", json={"name": "层级套件"}, headers=h)).json()["id"]
+    node_key = str(uuid.uuid4())
+    case_id = (
+        await client.post(
+            f"/api/projects/{pid}/cases",
+            json={"name": "层级用例", "steps": [{"order": 1, "key": node_key, "action": "sleep", "params": {"duration": 1}}]},
+            headers=h,
+        )
+    ).json()["id"]
+    await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)
+
+    other_case_id = (
+        await client.post(
+            f"/api/projects/{other_pid}/cases",
+            json={"name": "不可读取", "steps": [{"order": 1, "action": "sleep", "params": {"duration": 1}}]},
+            headers=h,
+        )
+    ).json()["id"]
+    leaked = await client.get(
+        f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=case&parent_id={other_case_id}",
+        headers=h,
+    )
+    assert leaked.status_code == 404
+
+    skipped = await client.post(
+        f"/api/app-profiles/{profile_id}/skip-rules/batch",
+        json={
+            "expected_revision": 1,
+            "operation": "skip",
+            "reason": {"code": "unsupported", "note": "整套不支持"},
+            "targets": [{"type": "suite", "suite_id": suite_id}],
+        },
+        headers=h,
+    )
+    assert skipped.status_code == 200
+    cases = await client.get(
+        f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=suite&parent_id={suite_id}",
+        headers=h,
+    )
+    assert cases.json()["items"][0]["effective_status"] == "skipped"
+    assert cases.json()["items"][0]["status_source"] == "inherited"
+    nodes = await client.get(
+        f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=case&parent_id={case_id}&ancestor_suite_id={suite_id}",
+        headers=h,
+    )
+    assert nodes.json()["items"][0]["effective_status"] == "skipped"
+    assert nodes.json()["items"][0]["status_source"] == "inherited"
+
+
 async def test_execution_preview(client: AsyncClient):
     """执行预检：返回双 revision + 计数 + 排除项；空档案返回 PROFILE_EMPTY。"""
     token = await _register(client, OWNER)
@@ -251,7 +313,7 @@ async def test_execution_preview(client: AsyncClient):
     assert resp.status_code == 200
     data = resp.json()
     assert data["profile_revision"] == 1
-    assert data["test_asset_revision"] == 1
+    assert data["test_asset_revision"] >= 4
     assert data["counts"]["executable_cases"] == 1
     assert data["counts"]["executable_steps"] == 1
 

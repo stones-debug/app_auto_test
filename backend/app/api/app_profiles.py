@@ -5,7 +5,7 @@
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -367,7 +367,7 @@ async def delete_app_profile(
 @router.get("/app-profiles/{profile_id}/releases")
 async def list_releases(
     profile_id: int,
-    status_: str = "active",
+    status_: str = Query(default="active", alias="status"),
     page: int = 1,
     page_size: int = 50,
     user: User = Depends(get_current_user),
@@ -1000,6 +1000,7 @@ async def workspace_nodes(
     profile_id: int,
     parent_type: str,
     parent_id: int,
+    ancestor_suite_id: int | None = None,
     page: int = 1,
     page_size: int = 100,
     include: str = "",
@@ -1010,38 +1011,65 @@ async def workspace_nodes(
     await get_project_permission(profile.project_id, user, db)
     skip = await _load_skip_index(db, profile_id)
     if parent_type == "suite":
+        suite = await db.get(TestSuite, parent_id)
+        if suite is None or suite.deleted_at is not None or suite.project_id != profile.project_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="套件不存在")
         rows = await _suite_cases(db, parent_id)
+        suite_rule = skip["suite"].get(parent_id)
         items = []
         for case in rows:
-            rule = skip["case"].get(case.id)
+            direct_rule = skip["case"].get(case.id)
+            rule = suite_rule or direct_rule
             effective = "skipped" if rule else "enabled"
-            source = "direct" if rule else "case"
+            source = "inherited" if suite_rule else ("direct" if direct_rule else "none")
             reason = None
             if rule:
                 reason = {"code": rule.reason_code, "note": rule.reason_note or ""}
             items.append(
                 {"node_type": "case", "id": case.id, "name": case.name, "effective_status": effective, "status_source": source, "reason": reason, "has_children": True, "override_count": 0}
             )
-        return {"total": len(items), "page": page, "page_size": page_size, "items": items}
+        start = (page - 1) * page_size
+        return {"total": len(items), "page": page, "page_size": page_size, "items": items[start : start + page_size]}
     if parent_type == "case":
         case = await db.get(TestCase, parent_id)
+        if case is None or case.deleted_at is not None or case.project_id != profile.project_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用例不存在")
+        suite_rule = None
+        if ancestor_suite_id is not None:
+            suite = await db.get(TestSuite, ancestor_suite_id)
+            membership = await db.scalar(
+                select(TestSuiteCase.id).where(
+                    TestSuiteCase.suite_id == ancestor_suite_id,
+                    TestSuiteCase.case_id == case.id,
+                )
+            )
+            if (
+                suite is None
+                or suite.deleted_at is not None
+                or suite.project_id != profile.project_id
+                or membership is None
+            ):
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="套件用例关系不存在")
+            suite_rule = skip["suite"].get(ancestor_suite_id)
+        case_rule = suite_rule or skip["case"].get(case.id)
         items = []
         for node in (case.steps or []):
             node_key = str(node.get("key") or "")
             rule = skip["step"].get(case.id, {}).get(node_key)
-            items.append(_node_item("step", case.id, node_key, node, rule))
+            items.append(_node_item("step", case.id, node_key, node, rule, case_rule))
         for node in (case.assertions or []):
             node_key = str(node.get("key") or "")
             rule = skip["assertion"].get(case.id, {}).get(node_key)
-            items.append(_node_item("assertion", case.id, node_key, node, rule))
-        return {"total": len(items), "page": page, "page_size": page_size, "items": items}
+            items.append(_node_item("assertion", case.id, node_key, node, rule, case_rule))
+        start = (page - 1) * page_size
+        return {"total": len(items), "page": page, "page_size": page_size, "items": items[start : start + page_size]}
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="parent_type 必须是 suite 或 case")
 
 
 @router.get("/app-profiles/{profile_id}/differences")
 async def differences(
     profile_id: int,
-    type_: str = "all",
+    type_: str = Query(default="all", alias="type"),
     target_type: str = "",
     reason_code: str = "",
     keyword: str = "",
@@ -1204,12 +1232,13 @@ async def _suite_cases(db: AsyncSession, suite_id: int) -> list[TestCase]:
     return list(rows)
 
 
-def _node_item(node_type: str, case_id: int, node_key: str, node: dict, rule) -> dict:
-    effective = "skipped" if rule else "enabled"
-    source = "direct" if rule else "none"
+def _node_item(node_type: str, case_id: int, node_key: str, node: dict, rule, inherited_rule=None) -> dict:
+    effective_rule = inherited_rule or rule
+    effective = "skipped" if effective_rule else "enabled"
+    source = "inherited" if inherited_rule else ("direct" if rule else "none")
     reason = None
-    if rule:
-        reason = {"code": rule.reason_code, "note": rule.reason_note or ""}
+    if effective_rule:
+        reason = {"code": effective_rule.reason_code, "note": effective_rule.reason_note or ""}
     name = node.get("description") or node.get("action") or node.get("type") or ""
     return {
         "node_type": node_type,

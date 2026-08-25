@@ -7,6 +7,7 @@ import uuid
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from app.core.database import SessionLocal
 from app.main import app
@@ -17,7 +18,11 @@ from app.models import (
     AppProfileRelease,
     AppProfileSkipRule,
     AppProfileVariableOverride,
+    Project,
+    Variable,
 )
+from app.models import TestSuite as SuiteModel
+from app.models import TestSuiteCase as SuiteCaseModel
 from app.services.profile_resolver import (
     ProfileEmpty,
     ProfileRevisionConflict,
@@ -80,20 +85,29 @@ async def _make_profile(db, base: dict) -> int:
     return profile.id
 
 
-async def test_no_rules_keeps_semantics(client):
-    """无规则时快照语义保持：全部节点进入，key/order 连续。"""
+async def _asset_revision(db, project_id: int) -> int:
+    return int(await db.scalar(select(Project.test_asset_revision).where(Project.id == project_id)))
+
+
+async def test_run_options_select_and_order_phases(client):
+    """默认只执行 main；勾选前置后按 setup → main 连续编号。"""
     base = await _base(client)
     case_id = await _setup_case_with_steps(client, base, "无规则用例")
     async with SessionLocal() as db:
         profile_id = await _make_profile(db, base)
-        request = ResolutionRequest(
+        asset_revision = await _asset_revision(db, base["project_id"])
+        default_result = await resolve_compat(ResolutionRequest(
             project_id=base["project_id"], profile_id=profile_id, release_id=None,
             target_type="case", target_ids=[case_id],
-            expected_profile_revision=1, expected_test_asset_revision=1,
-        )
-        from app.services.profile_resolver import resolve
-        result = await resolve(request, db)
-    assert len(result.cases) == 1
+            expected_profile_revision=1, expected_test_asset_revision=asset_revision,
+        ), db)
+        result = await resolve_compat(ResolutionRequest(
+            project_id=base["project_id"], profile_id=profile_id, release_id=None,
+            target_type="case", target_ids=[case_id],
+            expected_profile_revision=1, expected_test_asset_revision=asset_revision,
+            run_options={"use_pre_steps": True},
+        ), db)
+    assert [s["source_key"] for s in default_result.cases[0].steps_snapshot] == [K2]
     c = result.cases[0]
     assert len(c.steps_snapshot) == 2
     assert len(c.assertions_snapshot) == 1
@@ -114,7 +128,7 @@ async def test_case_skip_excluded(client):
         request = ResolutionRequest(
             project_id=base["project_id"], profile_id=profile_id, release_id=None,
             target_type="case", target_ids=[case_id],
-            expected_profile_revision=1, expected_test_asset_revision=1,
+            expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
         )
         with pytest.raises(ProfileEmpty):
             await resolve_compat(request, db)
@@ -134,7 +148,8 @@ async def test_step_skip_and_override(client):
             ResolutionRequest(
                 project_id=base["project_id"], profile_id=profile_id, release_id=None,
                 target_type="case", target_ids=[case_id],
-                expected_profile_revision=1, expected_test_asset_revision=1,
+                expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
+                run_options={"use_pre_steps": True},
             ),
             db,
         )
@@ -157,13 +172,55 @@ async def test_variable_override_priority(client):
             ResolutionRequest(
                 project_id=base["project_id"], profile_id=profile_id, release_id=None,
                 target_type="case", target_ids=[case_id],
-                expected_profile_revision=1, expected_test_asset_revision=1,
+                expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
+                run_options={"use_pre_steps": True},
                 execution_variables={"pkg": "from_exec"},
             ),
             db,
         )
     step0 = result.cases[0].steps_snapshot[0]
     assert step0["params"]["package"] == "from_exec"
+
+
+async def test_suite_variable_overrides_case_and_suite_order_is_preserved(client):
+    """套件变量覆盖用例变量，解析结果严格遵守套件成员 sort_order。"""
+    base = await _base(client)
+    case_a = await _setup_case_with_steps(client, base, "顺序A")
+    case_b = await _setup_case_with_steps(client, base, "顺序B")
+    async with SessionLocal() as db:
+        profile_id = await _make_profile(db, base)
+        suite = SuiteModel(project_id=base["project_id"], name="有序套件")
+        db.add(suite)
+        await db.flush()
+        db.add_all(
+            [
+                SuiteCaseModel(suite_id=suite.id, case_id=case_b, sort_order=1),
+                SuiteCaseModel(suite_id=suite.id, case_id=case_a, sort_order=2),
+                Variable(
+                    scope="suite",
+                    project_id=base["project_id"],
+                    suite_id=suite.id,
+                    name="pkg",
+                    value="from_suite",
+                ),
+            ]
+        )
+        await db.commit()
+        result = await resolve_compat(
+            ResolutionRequest(
+                project_id=base["project_id"],
+                profile_id=profile_id,
+                release_id=None,
+                target_type="suite",
+                target_ids=[suite.id],
+                expected_profile_revision=1,
+                expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
+                run_options={"use_pre_steps": True},
+            ),
+            db,
+        )
+    assert [case.case_id for case in result.cases] == [case_b, case_a]
+    assert result.cases[0].steps_snapshot[0]["params"]["package"] == "from_suite"
 
 
 async def test_undefined_variable_rejected(client):
@@ -183,7 +240,7 @@ async def test_undefined_variable_rejected(client):
                 ResolutionRequest(
                     project_id=base["project_id"], profile_id=profile_id, release_id=None,
                     target_type="case", target_ids=[case_id],
-                    expected_profile_revision=1, expected_test_asset_revision=1,
+                    expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
                 ),
                 db,
             )
@@ -199,7 +256,7 @@ async def test_revision_conflict(client):
         request = ResolutionRequest(
             project_id=base["project_id"], profile_id=profile_id, release_id=None,
             target_type="case", target_ids=[case_id],
-            expected_profile_revision=99, expected_test_asset_revision=1,
+            expected_profile_revision=99, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
         )
         with pytest.raises(ProfileRevisionConflict):
             await resolve_compat(request, db)
@@ -228,7 +285,7 @@ async def test_element_override(client):
             ResolutionRequest(
                 project_id=base["project_id"], profile_id=profile_id, release_id=None,
                 target_type="case", target_ids=[case_id],
-                expected_profile_revision=1, expected_test_asset_revision=1,
+                expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
             ),
             db,
         )

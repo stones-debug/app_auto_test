@@ -9,6 +9,7 @@ from app.api.deps import get_current_user, get_editable_project, get_project_per
 from app.core.database import get_db
 from app.models import Execution, Project, TestCase, TestElement, TestModule, User
 from app.schemas.case import CaseCreate, CaseListItem, CaseOut, CasePage, CaseUpdate
+from app.services.profile_revision import touch_project_asset_revision
 from app.utils.pagination import get_pagination
 
 router = APIRouter(tags=["用例管理"])
@@ -186,6 +187,7 @@ async def create_case(
         updated_by=user.id,
     )
     db.add(case)
+    await touch_project_asset_revision(db, project_id)
     await db.commit()
     await db.refresh(case)
     return case
@@ -223,6 +225,7 @@ async def update_case(
         if field in body.model_fields_set:
             setattr(case, field, getattr(body, field))
     case.updated_by = user.id
+    await touch_project_asset_revision(db, case.project_id)
     await db.commit()
     await db.refresh(case)
     return case
@@ -239,6 +242,7 @@ async def delete_case(
     if role not in ("owner", "admin", "member"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
     case.deleted_at = datetime.now(UTC)
+    await touch_project_asset_revision(db, case.project_id)
     await db.commit()
 
 
@@ -267,6 +271,7 @@ async def clone_case(
         updated_by=user.id,
     )
     db.add(new_case)
+    await touch_project_asset_revision(db, case.project_id)
     await db.commit()
     await db.refresh(new_case)
     return new_case

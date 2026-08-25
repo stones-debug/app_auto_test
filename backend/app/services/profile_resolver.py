@@ -27,6 +27,7 @@ from app.models import (
     Project,
     TestCase,
     TestElement,
+    TestModule,
     TestSuiteCase,
     Variable,
 )
@@ -290,37 +291,42 @@ async def _load_targets(db: AsyncSession, request: ResolutionRequest) -> dict:
 
 async def _collect_cases(db: AsyncSession, target: dict, suite_skip: dict) -> tuple[dict[int, int], list[TestCase], list[ExclusionItem]]:
     """解析目标 → 去重用例列表 + case→suite 映射 + 套件级排除项。"""
-    case_ids: list[int] = target["case_ids"]
-    if target["suite_ids"]:
-        for sid in target["suite_ids"]:
-            if sid in suite_skip:
-                continue
-            rows = (
-                await db.execute(
-                    select(TestSuiteCase.case_id).where(TestSuiteCase.suite_id == sid).order_by(TestSuiteCase.sort_order)
+    case_ids: list[int] = list(target["case_ids"])
+    case_to_suite: dict[int, int] = {}
+    suite_ids = list(target["suite_ids"])
+    if suite_ids:
+        memberships = (
+            await db.execute(
+                select(
+                    TestSuiteCase.suite_id,
+                    TestSuiteCase.case_id,
+                    TestSuiteCase.sort_order,
                 )
-            ).scalars().all()
-            case_ids.extend(rows)
+                .where(TestSuiteCase.suite_id.in_(suite_ids))
+                .order_by(TestSuiteCase.suite_id, TestSuiteCase.sort_order, TestSuiteCase.id)
+            )
+        ).all()
+        by_suite: dict[int, list[int]] = {sid: [] for sid in suite_ids}
+        for suite_id, case_id, _sort_order in memberships:
+            by_suite.setdefault(suite_id, []).append(case_id)
+        # 严格保留请求中的套件顺序以及套件内部 sort_order。
+        for suite_id in suite_ids:
+            if suite_id in suite_skip:
+                continue
+            for case_id in by_suite.get(suite_id, []):
+                case_ids.append(case_id)
+                case_to_suite.setdefault(case_id, suite_id)
+
     case_ids = list(dict.fromkeys(case_ids))
     if not case_ids:
         return {}, [], []
-    cases = (
+    case_rows = (
         await db.execute(
             select(TestCase).where(TestCase.id.in_(case_ids), TestCase.deleted_at.is_(None))
         )
     ).scalars().all()
-    case_to_suite: dict[int, int] = {}
-    for cid in case_ids:
-        for sid in target["suite_ids"]:
-            rows = (
-                await db.execute(
-                    select(TestSuiteCase.suite_id)
-                    .where(TestSuiteCase.suite_id == sid, TestSuiteCase.case_id == cid)
-                )
-            ).scalars().all()
-            if rows:
-                case_to_suite.setdefault(cid, sid)
-                break
+    cases_by_id = {case.id: case for case in case_rows}
+    cases = [cases_by_id[case_id] for case_id in case_ids if case_id in cases_by_id]
     return case_to_suite, cases, []
 
 
@@ -475,6 +481,13 @@ async def resolve(request: ResolutionRequest, db: AsyncSession, cache: _LRUCache
             )
 
     resolved_cases: list[ResolvedCase] = []
+    module_ids = {case.module_id for case in cases if case.module_id is not None}
+    module_names: dict[int, str] = {}
+    if module_ids:
+        module_rows = (
+            await db.execute(select(TestModule).where(TestModule.id.in_(module_ids)))
+        ).scalars().all()
+        module_names = {module.id: module.name for module in module_rows}
     for case in cases:
         case_rule = config["skip_case"].get(case.id)
         if case_rule:
@@ -495,8 +508,9 @@ async def resolve(request: ResolutionRequest, db: AsyncSession, cache: _LRUCache
         suite_id = case_to_suite.get(case.id)
         variables = await _merge_variables(db, request.project_id, suite_id, case, config, request.execution_variables)
 
+        selected_steps = _select_steps_for_run(case.steps or [], request.run_options)
         kept_steps, step_ex = _filter_and_patch(
-            case.steps or [], config["step_rules"].get(case.id, {}),
+            selected_steps, config["step_rules"].get(case.id, {}),
             config["step_overrides"].get(case.id, {}), "step", case.id,
         )
         exclusions.extend(step_ex)
@@ -513,7 +527,7 @@ async def resolve(request: ResolutionRequest, db: AsyncSession, cache: _LRUCache
             for n in kept_assertions
         ]
 
-        # 重新生成执行级连续 order，保留 source_order/source_key，并按 phase 排序（setup→main→teardown）
+        # 重新生成执行级连续 order，保留 source_order/source_key。
         steps = _assign_order(steps, order_offset=0)
         assertions = _assign_order(assertions, order_offset=len(steps))
 
@@ -539,7 +553,7 @@ async def resolve(request: ResolutionRequest, db: AsyncSession, cache: _LRUCache
             ResolvedCase(
                 case_id=case.id,
                 case_name=case.name,
-                module_name=None,
+                module_name=module_names.get(case.module_id) if case.module_id is not None else None,
                 steps_snapshot=[finalize_snapshot_node(s) for s in steps],
                 assertions_snapshot=[finalize_snapshot_node(a) for a in assertions],
                 elements_snapshot=elements,
@@ -583,6 +597,28 @@ def _assign_order(nodes: list[dict], order_offset: int) -> list[dict]:
     return nodes
 
 
+def _select_steps_for_run(nodes: list[dict], run_options: dict[str, bool]) -> list[dict]:
+    """按执行选项选择阶段，并稳定排序为 setup → main → teardown。"""
+    enabled_phases = {"main"}
+    if run_options.get("use_pre_steps", False):
+        enabled_phases.add("setup")
+    if run_options.get("use_post_steps", False):
+        enabled_phases.add("teardown")
+    phase_rank = {"setup": 0, "main": 1, "teardown": 2}
+    selected = [
+        node
+        for node in (nodes or [])
+        if isinstance(node, dict) and str(node.get("phase") or "main") in enabled_phases
+    ]
+    return sorted(
+        selected,
+        key=lambda node: (
+            phase_rank.get(str(node.get("phase") or "main"), 1),
+            int(node.get("order") or 0),
+        ),
+    )
+
+
 async def _merge_variables(
     db: AsyncSession,
     project_id: int,
@@ -591,7 +627,7 @@ async def _merge_variables(
     config: dict,
     execution_variables: dict,
 ) -> dict:
-    """变量按 全局 → 项目 → 套件 → 用例 → APP档案 → 执行参数 合并（方案 §3.3）。"""
+    """变量按 全局 → 项目 → 用例 → 套件 → APP档案 → 执行参数 合并。"""
     merged: dict = {}
     for v in (await db.execute(select(Variable).where(Variable.scope == "global"))).scalars().all():
         merged[v.name] = v.value
@@ -599,13 +635,13 @@ async def _merge_variables(
         await db.execute(select(Variable).where(Variable.scope == "project", Variable.project_id == project_id))
     ).scalars().all():
         merged[v.name] = v.value
+    if case is not None and case.variables:
+        merged.update(case.variables)
     if suite_id is not None:
         for v in (
             await db.execute(select(Variable).where(Variable.scope == "suite", Variable.suite_id == suite_id))
         ).scalars().all():
             merged[v.name] = v.value
-    if case is not None and case.variables:
-        merged.update(case.variables)
     merged.update(config["variable_overrides"])
     merged.update(execution_variables)
     return merged

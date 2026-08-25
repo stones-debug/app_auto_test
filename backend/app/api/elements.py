@@ -20,6 +20,7 @@ from app.schemas.element import (
     ModuleOut,
     ModuleUpdate,
 )
+from app.services.profile_revision import touch_project_asset_revision
 from app.utils.pagination import get_pagination
 
 router = APIRouter(tags=["模块与元素"])
@@ -93,6 +94,7 @@ async def create_module(
         sort_order=body.sort_order,
     )
     db.add(module)
+    await touch_project_asset_revision(db, project_id)
     await db.commit()
     await db.refresh(module)
     return module
@@ -119,6 +121,7 @@ async def update_module(
         module.parent_id = new_parent
     if "sort_order" in body.model_fields_set:
         module.sort_order = body.sort_order
+    await touch_project_asset_revision(db, module.project_id)
     await db.commit()
     await db.refresh(module)
     return module
@@ -135,6 +138,7 @@ async def delete_module(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="模块不存在")
     await _check_editable(module.project_id, user, db)
     module.deleted_at = datetime.now(UTC)
+    await touch_project_asset_revision(db, module.project_id)
     await db.commit()
 
 
@@ -245,6 +249,7 @@ async def create_element(
         updated_by=user.id,
     )
     db.add(element)
+    await touch_project_asset_revision(db, body.project_id)
     await db.commit()
     await db.refresh(element)
     project = await db.get(Project, element.project_id)
@@ -338,6 +343,7 @@ async def update_element(
 ):
     element = await _load_element_or_404(element_id, db)
     await _require_creator(element, user)
+    original_project_id = element.project_id
     # V3：编辑时可迁移元素所属项目（仅创建者；需目标项目写权限）
     if body.project_id is not None and body.project_id != element.project_id:
         _target, role = await get_project_permission(body.project_id, user, db)
@@ -352,6 +358,9 @@ async def update_element(
         if value is not None:
             setattr(element, field, value)
     element.updated_by = user.id
+    await touch_project_asset_revision(db, original_project_id)
+    if element.project_id != original_project_id:
+        await touch_project_asset_revision(db, element.project_id)
     await db.commit()
     await db.refresh(element)
     project = await db.get(Project, element.project_id)
@@ -368,6 +377,7 @@ async def delete_element(
     element = await _load_element_or_404(element_id, db)
     await _require_creator(element, user)
     element.deleted_at = datetime.now(UTC)
+    await touch_project_asset_revision(db, element.project_id)
     await db.commit()
 
 
@@ -391,6 +401,7 @@ async def copy_element(
         updated_by=user.id,
     )
     db.add(element)
+    await touch_project_asset_revision(db, source.project_id)
     await db.commit()
     await db.refresh(element)
     project = await db.get(Project, element.project_id)
@@ -498,6 +509,7 @@ async def create_element_legacy(
         updated_by=user.id,
     )
     db.add(element)
+    await touch_project_asset_revision(db, project_id)
     await db.commit()
     await db.refresh(element)
     return _element_out(element, project, user)

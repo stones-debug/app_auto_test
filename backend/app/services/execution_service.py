@@ -6,10 +6,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models import (
+    AppProfile,
     Execution,
     ExecutionExclusion,
     ExecutionLog,
     ExecutionQueue,
+    Project,
     TestCase,
     TestSuite,
     User,
@@ -25,6 +27,44 @@ from app.services.profile_resolver import (
 
 class _ProfileRequired(Exception):
     pass
+
+
+async def _lock_and_verify_resolution_revisions(
+    db: AsyncSession,
+    request: ResolutionRequest,
+    *,
+    resolved_profile_revision: int,
+    resolved_asset_revision: int,
+) -> None:
+    """提交执行前锁定双 revision，封闭预检解析与快照落库之间的竞态。"""
+    asset_revision = await db.scalar(
+        select(Project.test_asset_revision)
+        .where(Project.id == request.project_id, Project.deleted_at.is_(None))
+        .with_for_update()
+    )
+    if asset_revision != resolved_asset_revision:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "TEST_ASSET_REVISION_CONFLICT",
+                "current": asset_revision or 0,
+                "expected": resolved_asset_revision,
+            },
+        )
+    profile_revision = await db.scalar(
+        select(AppProfile.revision)
+        .where(AppProfile.id == request.profile_id, AppProfile.deleted_at.is_(None))
+        .with_for_update()
+    )
+    if profile_revision != resolved_profile_revision:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "PROFILE_REVISION_CONFLICT",
+                "current": profile_revision or 0,
+                "expected": resolved_profile_revision,
+            },
+        )
 
 
 async def _build_resolution_request(
@@ -109,6 +149,13 @@ async def _create_execution_with_profile(
     from app.services.metrics import inc_resolve, observe_snapshot
 
     inc_resolve("success")
+
+    await _lock_and_verify_resolution_revisions(
+        db,
+        request,
+        resolved_profile_revision=result.profile_revision,
+        resolved_asset_revision=result.test_asset_revision,
+    )
 
     # 方案 §3.6/§6.2：快照上限（SNAPSHOT_TOO_LARGE）
     import json as _json

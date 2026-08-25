@@ -16,6 +16,7 @@ from app.schemas.suite import (
     SuiteReorderRequest,
     SuiteUpdate,
 )
+from app.services.profile_revision import touch_project_asset_revision
 from app.utils.pagination import get_pagination
 
 router = APIRouter(tags=["套件管理"])
@@ -90,6 +91,7 @@ async def create_suite(
         created_by=user.id,
     )
     db.add(suite)
+    await touch_project_asset_revision(db, project_id)
     await db.commit()
     await db.refresh(suite)
     return suite
@@ -126,6 +128,7 @@ async def update_suite(
     for field in ("name", "description", "status"):
         if field in body.model_fields_set:
             setattr(suite, field, getattr(body, field))
+    await touch_project_asset_revision(db, suite.project_id)
     await db.commit()
     await db.refresh(suite)
     return suite
@@ -142,6 +145,7 @@ async def delete_suite(
     if role not in ("owner", "admin", "member"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
     suite.deleted_at = datetime.now(UTC)
+    await touch_project_asset_revision(db, suite.project_id)
     await db.commit()
 
 
@@ -237,6 +241,7 @@ async def add_suite_case(
         )
         db.add(sc)
         created.append((sc, cases_by_id[case_id]))
+    await touch_project_asset_revision(db, suite.project_id)
     await db.commit()
     result: list[SuiteCaseOut] = []
     for sc, case in created:
@@ -275,6 +280,7 @@ async def reorder_suite_cases(
         sc = by_case.get(case_id)
         if sc is not None:
             sc.sort_order = order
+    await touch_project_asset_revision(db, suite.project_id)
     await db.commit()
 
 
@@ -298,4 +304,5 @@ async def remove_suite_case(
     sc = sc.scalar_one_or_none()
     if sc is not None:
         await db.delete(sc)
+        await touch_project_asset_revision(db, suite.project_id)
         await db.commit()

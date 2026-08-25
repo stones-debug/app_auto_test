@@ -12,8 +12,19 @@ from app.api.deps import (
 from app.core.database import get_db
 from app.models import TestCase, TestSuite, User, Variable
 from app.schemas.suite import VariableCreate, VariableOut, VariableUpdate
+from app.services.profile_revision import (
+    touch_all_project_asset_revisions,
+    touch_project_asset_revision,
+)
 
 router = APIRouter(prefix="/variables", tags=["变量管理"])
+
+
+async def _touch_variable_scope(db: AsyncSession, project_id: int | None) -> None:
+    if project_id is None:
+        await touch_all_project_asset_revisions(db)
+    else:
+        await touch_project_asset_revision(db, project_id)
 
 
 def _scope_filter(scope: str, project_id: int | None, suite_id: int | None, case_id: int | None):
@@ -128,6 +139,7 @@ async def create_variable(
     )
     db.add(var)
     try:
+        await _touch_variable_scope(db, project_id)
         await db.commit()
     except IntegrityError:
         # CR-02：DB 唯一约束兜底并发冲突
@@ -155,6 +167,7 @@ async def update_variable(
         var.value = body.value
     if "description" in body.model_fields_set:
         var.description = body.description
+    await _touch_variable_scope(db, var.project_id)
     await db.commit()
     await db.refresh(var)
     return var
@@ -174,4 +187,5 @@ async def delete_variable(
     else:
         await require_project_write(var.project_id, user, db)
     await db.delete(var)
+    await _touch_variable_scope(db, var.project_id)
     await db.commit()
