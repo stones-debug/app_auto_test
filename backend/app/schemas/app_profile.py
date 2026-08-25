@@ -204,6 +204,51 @@ class NodeOverrideDelete(BaseModel):
     expected_revision: int = Field(ge=1)
 
 
+# ---------- 工作台（方案 §4.4） ----------
+
+
+class WorkspaceNode(BaseModel):
+    node_type: str
+    id: int | None = None
+    node_key: str | None = None
+    name: str
+    phase: str | None = None
+    order: int | None = None
+    effective_status: str
+    status_source: str
+    reason: dict[str, str] | None = None
+    override_count: int = 0
+    child_count: int = 0
+    difference_count: int = 0
+    has_children: bool = False
+    updated_at: datetime | None = None
+
+
+class WorkspacePage(BaseModel):
+    profile_revision: int
+    test_asset_revision: int
+    total: int
+    page: int
+    page_size: int
+    items: list[WorkspaceNode]
+
+
+class DifferenceRow(BaseModel):
+    target_type: str
+    path: str
+    reason_code: str | None = None
+    reason_note: str | None = None
+    source_type: str | None = None
+    override: bool = False
+
+
+class DifferencePage(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[DifferenceRow]
+
+
 # ---------- 幂等响应 ----------
 
 

@@ -200,6 +200,39 @@ async def test_overrides(client: AsyncClient):
     assert got.json()["revision"] == 5
 
 
+async def test_workspace_and_nodes(client: AsyncClient):
+    """工作台套件分页 + 用例懒加载 + 差异扁平列表。"""
+    token = await _register(client, OWNER)
+    h = {"Authorization": f"Bearer {token}"}
+    pid = (await client.post("/api/projects", json={"name": "工作台项目"}, headers=h)).json()["id"]
+    code = f"w{uuid.uuid4().hex[:6]}"
+    profile_id = (await client.post(f"/api/projects/{pid}/app-profiles", json={"name": "W", "code": code}, headers=h)).json()["id"]
+    suite_id = (await client.post(f"/api/projects/{pid}/suites", json={"name": "套件W"}, headers=h)).json()["id"]
+    case_id = (await client.post(f"/api/projects/{pid}/cases", json={"name": "用W", "steps": [{"order": 1, "key": str(uuid.uuid4()), "action": "click", "params": {}}], "assertions": []}, headers=h)).json()["id"]
+    await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)
+
+    ws = await client.get(f"/api/app-profiles/{profile_id}/workspace", headers=h)
+    assert ws.status_code == 200
+    assert ws.json()["total"] == 1
+    assert ws.json()["items"][0]["node_type"] == "suite"
+
+    nodes = await client.get(f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=suite&parent_id={suite_id}", headers=h)
+    assert nodes.status_code == 200
+    assert nodes.json()["items"][0]["node_type"] == "case"
+
+    # 跳过一个用例后差异列表出现
+    case_node = (await client.post(
+        f"/api/app-profiles/{profile_id}/skip-rules/batch",
+        json={"expected_revision": 1, "operation": "skip", "reason": {"code": "unsupported"}, "targets": [{"type": "case", "case_id": case_id}]},
+        headers=h,
+    )).json()
+    assert case_node["changed"] == 1
+    diff = await client.get(f"/api/app-profiles/{profile_id}/differences?type=skipped", headers=h)
+    assert diff.status_code == 200
+    assert diff.json()["total"] >= 1
+    assert diff.json()["items"][0]["target_type"] == "case"
+
+
 async def test_member_cannot_manage_profile(client: AsyncClient):
     """Member 不能创建/修改档案（Owner/Admin only），但可读取。"""
     token = await _register(client, OWNER)
