@@ -1,6 +1,36 @@
 import asyncio
+import logging
 
-from .driver import ElementNotFound, StopRequested
+from .driver import DriverError, ElementNotFound, StopRequested
+
+logger = logging.getLogger("agent.executor.actions")
+
+_STALE_EXCEPTION_NAMES = frozenset(
+    {
+        "StaleElementReferenceException",
+        "StaleObjectException",
+    }
+)
+_STALE_MESSAGE_MARKERS = (
+    "stale element reference",
+    "staleelementreferenceexception",
+    "staleobjectexception",
+)
+
+
+def _is_stale_element_error(error: BaseException) -> bool:
+    """识别 Selenium/Appium 直接抛出或包装后的元素失效异常。"""
+    current: BaseException | None = error
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        if current.__class__.__name__ in _STALE_EXCEPTION_NAMES:
+            return True
+        message = str(current).lower()
+        if any(marker in message for marker in _STALE_MESSAGE_MARKERS):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 class BaseAction:
@@ -39,11 +69,49 @@ class CloseAppAction(BaseAction):
 
 @register_action("click")
 class ClickAction(BaseAction):
+    # UIAutomator2 页面重绘时，元素可能在“定位成功”与“点击”之间失效。
+    # 重试必须回到元素快照重新定位，不能复用已经 stale 的 WebElement。
+    _STALE_RETRY_DELAYS = (0.2, 0.5)
+
+    @staticmethod
+    def _raise_if_stopped(context) -> None:
+        stop = getattr(context, "should_stop", None)
+        if stop is not None and stop():
+            raise StopRequested("执行被用户停止")
+
     async def execute(self, driver, context, params: dict) -> dict:
         wait_timeout = params.get("wait_timeout")
-        element = context.find_element(params.get("element_id"), wait_timeout=wait_timeout)
-        driver.click(element)
-        return {"status": "passed"}
+        element_id = params.get("element_id")
+        for attempt in range(len(self._STALE_RETRY_DELAYS) + 1):
+            self._raise_if_stopped(context)
+            try:
+                element = context.find_element(element_id, wait_timeout=wait_timeout)
+                driver.click(element)
+                return {"status": "passed"}
+            except Exception as exc:
+                if not _is_stale_element_error(exc):
+                    raise
+                if attempt >= len(self._STALE_RETRY_DELAYS):
+                    logger.error(
+                        "click 元素连续失效，重新定位重试仍失败: element_id=%s",
+                        element_id,
+                        exc_info=True,
+                    )
+                    raise DriverError(
+                        "点击失败：页面持续刷新导致元素失效，重新定位并重试 2 次后仍未成功"
+                    ) from exc
+                delay = self._STALE_RETRY_DELAYS[attempt]
+                logger.warning(
+                    "click 遇到失效元素，将在 %.1fs 后重新定位（第 %s/%s 次重试）: element_id=%s",
+                    delay,
+                    attempt + 1,
+                    len(self._STALE_RETRY_DELAYS),
+                    element_id,
+                )
+                await asyncio.sleep(delay)
+                self._raise_if_stopped(context)
+
+        raise AssertionError("click stale 重试状态异常")
 
 
 @register_action("input")

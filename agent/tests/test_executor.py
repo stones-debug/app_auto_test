@@ -357,6 +357,120 @@ async def test_click_default_wait_timeout_none_means_default():
     assert driver.wait_timeouts == [None]  # None → AppiumDriver 侧用默认 10
 
 
+class StaleClickDriver(RecordingDriver):
+    """模拟 UI 重绘：旧元素 click stale，重新定位后的新元素可点击。"""
+
+    def __init__(self, stale_failures: int, error: Exception) -> None:
+        super().__init__()
+        self.stale_failures = stale_failures
+        self.error = error
+        self.find_count = 0
+        self.click_count = 0
+        self.clicked_elements = []
+
+    def find_element(self, locator_type: str, locator_value: str, wait_timeout: int | None = None):
+        self.wait_timeouts.append(wait_timeout)
+        self.find_count += 1
+        return {"generation": self.find_count, "locator": locator_value}
+
+    def click(self, element) -> None:
+        self.click_count += 1
+        self.clicked_elements.append(element)
+        if self.click_count <= self.stale_failures:
+            raise self.error
+
+
+async def test_click_refinds_element_after_uiautomator_stale_object(monkeypatch):
+    from selenium.common.exceptions import WebDriverException
+
+    from executor.actions import ClickAction
+
+    driver = StaleClickDriver(
+        stale_failures=1,
+        error=WebDriverException(
+            "androidx.test.uiautomator.StaleObjectException; "
+            "io.appium.uiautomator2.common.exceptions.StaleElementReferenceException"
+        ),
+    )
+    context = ExecutionContext(driver, _make_case([]))
+    monkeypatch.setattr(ClickAction, "_STALE_RETRY_DELAYS", (0, 0))
+
+    result = await ClickAction().execute(
+        driver,
+        context,
+        {"element_id": 2, "wait_timeout": 3},
+    )
+
+    assert result["status"] == "passed"
+    assert driver.find_count == 2
+    assert driver.click_count == 2
+    assert driver.clicked_elements == [
+        {"generation": 1, "locator": "login_btn"},
+        {"generation": 2, "locator": "login_btn"},
+    ]
+    assert driver.wait_timeouts == [3, 3]
+
+
+async def test_click_does_not_retry_non_stale_error(monkeypatch):
+    from executor.actions import ClickAction
+
+    driver = StaleClickDriver(stale_failures=1, error=RuntimeError("设备连接已断开"))
+    context = ExecutionContext(driver, _make_case([]))
+    monkeypatch.setattr(ClickAction, "_STALE_RETRY_DELAYS", (0, 0))
+
+    with pytest.raises(RuntimeError, match="设备连接已断开"):
+        await ClickAction().execute(driver, context, {"element_id": 2})
+
+    assert driver.find_count == 1
+    assert driver.click_count == 1
+
+
+async def test_click_reports_clear_error_after_stale_retries_exhausted(monkeypatch):
+    from selenium.common.exceptions import StaleElementReferenceException
+
+    from executor.actions import ClickAction
+    from executor.driver import DriverError
+
+    driver = StaleClickDriver(
+        stale_failures=3,
+        error=StaleElementReferenceException("stale element reference"),
+    )
+    context = ExecutionContext(driver, _make_case([]))
+    monkeypatch.setattr(ClickAction, "_STALE_RETRY_DELAYS", (0, 0))
+
+    with pytest.raises(DriverError, match="重新定位并重试 2 次"):
+        await ClickAction().execute(driver, context, {"element_id": 2})
+
+    assert driver.find_count == 3
+    assert driver.click_count == 3
+
+
+async def test_click_stale_retry_honors_stop_request(monkeypatch):
+    from selenium.common.exceptions import StaleElementReferenceException
+
+    from executor.actions import ClickAction
+
+    stop_checks = 0
+
+    def should_stop() -> bool:
+        nonlocal stop_checks
+        stop_checks += 1
+        return stop_checks >= 2
+
+    driver = StaleClickDriver(
+        stale_failures=1,
+        error=StaleElementReferenceException("stale element reference"),
+    )
+    context = ExecutionContext(driver, _make_case([]), should_stop=should_stop)
+    monkeypatch.setattr(ClickAction, "_STALE_RETRY_DELAYS", (0, 0))
+
+    with pytest.raises(StopRequested):
+        await ClickAction().execute(driver, context, {"element_id": 2})
+
+    assert driver.find_count == 1
+    assert driver.click_count == 1
+
+
 async def test_appium_find_element_timeout_raises_element_not_found(monkeypatch):
     from selenium.common.exceptions import TimeoutException
 
