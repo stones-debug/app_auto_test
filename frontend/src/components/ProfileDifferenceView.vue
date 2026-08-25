@@ -45,8 +45,17 @@ function reasonText(r: any): string {
   return note || r.reason_code || '-'
 }
 
-watch(() => props.profileId, load)
+watch(() => props.profileId, () => {
+  pager.value.page = 1
+  load()
+})
 onMounted(load)
+watch(() => visible.value, (open) => {
+  if (open) {
+    pager.value.page = 1
+    load()
+  }
+})
 </script>
 
 <template>
