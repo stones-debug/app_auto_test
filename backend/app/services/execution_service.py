@@ -7,12 +7,140 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models import (
     Execution,
+    ExecutionExclusion,
     ExecutionLog,
     ExecutionQueue,
     TestCase,
     TestSuite,
     User,
 )
+from app.services.profile_resolver import (
+    ProfileEmpty,
+    ProfileRevisionConflict,
+    ProfileRuleError,
+    ResolutionRequest,
+    get_resolver,
+)
+
+
+class _ProfileRequired(Exception):
+    pass
+
+
+async def _build_resolution_request(
+    db: AsyncSession,
+    *,
+    project_id: int,
+    type_: str,
+    suite_id: int | None,
+    case_id: int | None,
+    body,
+) -> ResolutionRequest:
+    """从创建请求构造解析请求；缺档案/版本时抛 APP_PROFILE_REQUIRED。"""
+    if body.app_profile_id is None:
+        raise _ProfileRequired()
+    target_type = "case" if type_ == "case" else ("suite" if type_ == "suite" else "batch")
+    target_ids = [case_id] if case_id is not None else ([suite_id] if suite_id is not None else [])
+    if type_ == "batch":
+        target_ids = list((body.parameters or {}).get("suite_ids") or [])
+    return ResolutionRequest(
+        project_id=project_id,
+        profile_id=body.app_profile_id,
+        release_id=body.app_release_id,
+        target_type=target_type,
+        target_ids=target_ids,
+        expected_profile_revision=body.expected_profile_revision or 1,
+        expected_test_asset_revision=body.expected_test_asset_revision or 1,
+        run_options=body.parameters or {},
+        execution_variables=(body.parameters or {}).get("variables") or {},
+    )
+
+
+async def _create_execution_with_profile(
+    db: AsyncSession,
+    *,
+    project_id: int,
+    type_: str,
+    user: User,
+    device_id: int | None,
+    parameters: dict,
+    timeout_seconds: int | None,
+    body,
+    suite_id: int | None = None,
+    case_id: int | None = None,
+    retry_of: int | None = None,
+) -> Execution:
+    """方案 §6.1：创建执行并在同一事务固化快照/排除项/队列。
+
+    revision 二次检查：resolver 解析前要求 expected 与档案/项目当前 revision 一致，
+    任一变化抛 ProfileRevisionConflict → 409，不创建任何执行。
+    """
+    request = await _build_resolution_request(
+        db, project_id=project_id, type_=type_, suite_id=suite_id, case_id=case_id, body=body,
+    )
+    try:
+        result = await get_resolver().preview(request, db)
+    except ProfileRevisionConflict as err:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": err.code, "current": err.current, "expected": err.expected},
+        ) from None
+    except ProfileEmpty:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "PROFILE_EMPTY"},
+        ) from None
+    except ProfileRuleError as err:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": err.code, "message": err.message},
+        ) from None
+
+    execution = Execution(
+        project_id=project_id,
+        type=type_,
+        suite_id=suite_id,
+        case_id=case_id,
+        device_id=device_id,
+        status="queued",
+        parameters=parameters or {},
+        timeout_seconds=timeout_seconds or settings.default_execution_timeout,
+        created_by=user.id,
+        retry_of=retry_of,
+        app_profile_id=body.app_profile_id,
+        app_profile_name_snapshot=result.profile_name,
+        app_release_id=body.app_release_id,
+        app_release_version_snapshot=result.release_version or "",
+        profile_revision=result.profile_revision,
+        test_asset_revision=result.test_asset_revision,
+        profile_resolution_summary={**result.summary},
+    )
+    db.add(execution)
+    await db.flush()
+
+    # 同事务固化：执行用例快照 + 排除项 + 队列
+    from app.services.execution_snapshot import materialize_snapshot
+
+    await materialize_snapshot(db, execution, result)
+    for ex in result.exclusions:
+        db.add(
+            ExecutionExclusion(
+                execution_id=execution.id,
+                app_profile_id=body.app_profile_id,
+                target_type=ex.target_type,
+                suite_id_snapshot=ex.suite_id,
+                case_id_snapshot=ex.case_id,
+                node_key=ex.node_key,
+                source_type=ex.source_type,
+                reason_code=ex.reason_code,
+                reason_note=ex.reason_note,
+                details=ex.display_snapshot,
+            )
+        )
+    db.add(ExecutionQueue(execution_id=execution.id))
+    await db.commit()
+    await db.refresh(execution)
+    return execution
 
 
 async def _create_and_enqueue(
@@ -55,16 +183,16 @@ async def create_case_execution(
     device_id: int | None,
     parameters: dict,
     timeout_seconds: int | None,
+    body=None,
 ) -> Execution:
-    return await _create_and_enqueue(
-        db,
-        project_id=case.project_id,
-        type_="case",
-        user=user,
-        device_id=device_id,
-        parameters=parameters,
-        timeout_seconds=timeout_seconds,
-        case_id=case.id,
+    if body is None:
+        return await _create_and_enqueue(
+            db, project_id=case.project_id, type_="case", user=user, device_id=device_id,
+            parameters=parameters, timeout_seconds=timeout_seconds, case_id=case.id,
+        )
+    return await _create_execution_with_profile(
+        db, project_id=case.project_id, type_="case", user=user, device_id=device_id,
+        parameters=parameters, timeout_seconds=timeout_seconds, body=body, case_id=case.id,
     )
 
 
@@ -75,16 +203,16 @@ async def create_suite_execution(
     device_id: int | None,
     parameters: dict,
     timeout_seconds: int | None,
+    body=None,
 ) -> Execution:
-    return await _create_and_enqueue(
-        db,
-        project_id=suite.project_id,
-        type_="suite",
-        user=user,
-        device_id=device_id,
-        parameters=parameters,
-        timeout_seconds=timeout_seconds,
-        suite_id=suite.id,
+    if body is None:
+        return await _create_and_enqueue(
+            db, project_id=suite.project_id, type_="suite", user=user, device_id=device_id,
+            parameters=parameters, timeout_seconds=timeout_seconds, suite_id=suite.id,
+        )
+    return await _create_execution_with_profile(
+        db, project_id=suite.project_id, type_="suite", user=user, device_id=device_id,
+        parameters=parameters, timeout_seconds=timeout_seconds, body=body, suite_id=suite.id,
     )
 
 
@@ -95,20 +223,21 @@ async def create_batch_execution(
     device_id: int | None,
     parameters: dict,
     timeout_seconds: int | None,
+    body=None,
 ) -> Execution:
     project_id = suites[0].project_id
     parameters = dict(parameters or {})
     suite_ids = parameters.get("suite_ids") or []
     suite_ids = list(dict.fromkeys([*suite_ids, *[s.id for s in suites]]))
     parameters["suite_ids"] = suite_ids
-    return await _create_and_enqueue(
-        db,
-        project_id=project_id,
-        type_="batch",
-        user=user,
-        device_id=device_id,
-        parameters=parameters,
-        timeout_seconds=timeout_seconds,
+    if body is None:
+        return await _create_and_enqueue(
+            db, project_id=project_id, type_="batch", user=user, device_id=device_id,
+            parameters=parameters, timeout_seconds=timeout_seconds,
+        )
+    return await _create_execution_with_profile(
+        db, project_id=project_id, type_="batch", user=user, device_id=device_id,
+        parameters=parameters, timeout_seconds=timeout_seconds, body=body,
     )
 
 

@@ -17,6 +17,11 @@ class ExecutionCreate(BaseModel):
     device_id: int | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
     timeout_seconds: int | None = Field(default=None, ge=60, le=7200)
+    # 方案 §4.8：执行创建必填档案/版本与双 revision（required 语义）
+    app_profile_id: int | None = None
+    app_release_id: int | None = None
+    expected_profile_revision: int | None = Field(default=None, ge=1)
+    expected_test_asset_revision: int | None = Field(default=None, ge=1)
 
     _run_parameters = field_validator("parameters")(_validate_run_parameters)
 
@@ -26,6 +31,10 @@ class BatchExecutionCreate(BaseModel):
     device_id: int | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
     timeout_seconds: int | None = Field(default=None, ge=60, le=7200)
+    app_profile_id: int | None = None
+    app_release_id: int | None = None
+    expected_profile_revision: int | None = Field(default=None, ge=1)
+    expected_test_asset_revision: int | None = Field(default=None, ge=1)
 
     _run_parameters = field_validator("parameters")(_validate_run_parameters)
 

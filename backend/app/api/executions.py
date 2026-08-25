@@ -202,7 +202,8 @@ async def create_case_execution(
     await require_project_write(case.project_id, user, db)
     await _validate_device_for_execution(body.device_id, user, db)
     return await execution_service.create_case_execution(
-        db, case, user, body.device_id, body.parameters, body.timeout_seconds
+        db, case, user, body.device_id, body.parameters, body.timeout_seconds,
+        body=(body if body.app_profile_id else None),
     )
 
 
@@ -231,7 +232,8 @@ async def create_batch_execution(
         await require_project_write(project_id, user, db)
     await _validate_device_for_execution(body.device_id, user, db)
     return await execution_service.create_batch_execution(
-        db, suites, user, body.device_id, body.parameters, body.timeout_seconds
+        db, suites, user, body.device_id, body.parameters, body.timeout_seconds,
+        body=(body if body.app_profile_id else None),
     )
 
 
@@ -252,7 +254,8 @@ async def create_suite_execution(
     await require_project_write(suite.project_id, user, db)
     await _validate_device_for_execution(body.device_id, user, db)
     return await execution_service.create_suite_execution(
-        db, suite, user, body.device_id, body.parameters, body.timeout_seconds
+        db, suite, user, body.device_id, body.parameters, body.timeout_seconds,
+        body=(body if body.app_profile_id else None),
     )
 
 

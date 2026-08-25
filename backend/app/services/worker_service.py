@@ -199,7 +199,14 @@ async def _resolve_cases(db: AsyncSession, execution: Execution) -> list[TestCas
 
 
 async def create_execution_cases_from_execution(db: AsyncSession, execution: Execution) -> list[ExecutionCase]:
-    # 幂等：先清除该执行已存在的快照（避免重复执行/重试导致重复行），Core delete 按依赖顺序执行
+    # 方案 §6.1：新执行快照已在创建事务固化（app_profile 非空），Worker 直接消费，不重建。
+    if execution.app_profile_id is not None:
+        existing = (
+            await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == execution.id))
+        ).scalars().all()
+        if existing:
+            return list(existing)
+    # 兼容期旧执行（无档案）：清除已存在快照（避免重复执行/重试导致重复行），Core delete 按依赖顺序执行
     existing = (
         await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == execution.id))
     ).scalars().all()
