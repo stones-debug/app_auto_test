@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models import (
     AppProfile,
+    AppProfileRelease,
     Execution,
     ExecutionExclusion,
     ExecutionLog,
@@ -35,6 +36,7 @@ async def _lock_and_verify_resolution_revisions(
     *,
     resolved_profile_revision: int,
     resolved_asset_revision: int,
+    resolved_release_version: str,
 ) -> None:
     """提交执行前锁定双 revision，封闭预检解析与快照落库之间的竞态。"""
     asset_revision = await db.scalar(
@@ -64,6 +66,26 @@ async def _lock_and_verify_resolution_revisions(
                 "current": profile_revision or 0,
                 "expected": resolved_profile_revision,
             },
+        )
+    release_row = (
+        await db.execute(
+            select(AppProfileRelease.status, AppProfileRelease.version)
+            .where(
+                AppProfileRelease.id == request.release_id,
+                AppProfileRelease.profile_id == request.profile_id,
+                AppProfileRelease.deleted_at.is_(None),
+            )
+            .with_for_update()
+        )
+    ).one_or_none()
+    if (
+        release_row is None
+        or release_row.status != "active"
+        or release_row.version != resolved_release_version
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "APP_RELEASE_CHANGED", "message": "发布版本已变化，请重新预检"},
         )
 
 
@@ -155,6 +177,7 @@ async def _create_execution_with_profile(
         request,
         resolved_profile_revision=result.profile_revision,
         resolved_asset_revision=result.test_asset_revision,
+        resolved_release_version=result.release_version,
     )
 
     # 方案 §3.6/§6.2：快照上限（SNAPSHOT_TOO_LARGE）
@@ -200,18 +223,22 @@ async def _create_execution_with_profile(
 
     observe_snapshot(snapshot_bytes, (_t1 - _t0) * 1000.0)
     for ex in result.exclusions:
+        display = ex.display_snapshot or {}
         db.add(
             ExecutionExclusion(
                 execution_id=execution.id,
                 app_profile_id=body.app_profile_id,
                 target_type=ex.target_type,
                 suite_id_snapshot=ex.suite_id,
+                suite_name_snapshot=display.get("suite_name"),
                 case_id_snapshot=ex.case_id,
+                case_name_snapshot=display.get("case_name"),
                 node_key=ex.node_key,
+                node_name_snapshot=display.get("node_name"),
                 source_type=ex.source_type,
                 reason_code=ex.reason_code,
                 reason_note=ex.reason_note,
-                details=ex.display_snapshot,
+                details=display,
             )
         )
     db.add(ExecutionQueue(execution_id=execution.id))

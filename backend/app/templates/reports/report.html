@@ -73,6 +73,7 @@
     开始：{{ execution.started_at or '—' }} ｜ 结束：{{ execution.finished_at or '—' }} ｜
     耗时：{{ execution.duration }}ms ｜ 生成于 {{ generated_at }}
     {% if execution.retry_of %} ｜ 重试自 #{{ execution.retry_of }}{% endif %}
+    {% if execution.app_profile_name %}<br>APP 档案：{{ execution.app_profile_name }} ｜ 发布版本：{{ execution.app_release_version or '—' }} ｜ 档案修订：{{ execution.profile_revision }} ｜ 资产修订：{{ execution.test_asset_revision }}{% endif %}
   </div>
 
   <div class="summary">
@@ -81,6 +82,7 @@
     <div class="stat"><div class="num failed">{{ report.failed }}</div><div class="label">失败</div></div>
     <div class="stat"><div class="num error">{{ report.error_count }}</div><div class="label">异常</div></div>
     <div class="stat"><div class="num">{{ report.success_rate }}%</div><div class="label">成功率</div></div>
+    <div class="stat"><div class="num">{{ report.not_applicable or 0 }}</div><div class="label">不适用</div></div>
   </div>
 
   <div class="execution-parameters">
@@ -121,6 +123,27 @@
     </div>
   </div>
   {% endfor %}
+
+  {% if exclusions %}
+  <div class="case">
+    <div class="case-head"><span class="case-name">不适用内容</span></div>
+    <div class="case-body">
+      <table>
+        <thead><tr><th>类型</th><th>路径</th><th>原因</th><th>来源</th></tr></thead>
+        <tbody>
+        {% for item in exclusions %}
+          <tr>
+            <td>{{ item.target_type }}</td>
+            <td>{{ item.path or '—' }}</td>
+            <td>{{ item.reason_code }}{% if item.reason_note %}：{{ item.reason_note }}{% endif %}</td>
+            <td>{{ item.source_type }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
 
   <div class="logs">
     <div style="font-weight:600;margin-bottom:8px">执行日志{% if logs_truncated and logs_total %}（仅展示最后 {{ logs|length }}/{{ logs_total }} 条）{% endif %}</div>

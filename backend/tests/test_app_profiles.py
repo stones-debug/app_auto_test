@@ -4,8 +4,11 @@ import uuid
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
+from app.core.database import SessionLocal
 from app.main import app
+from app.models import AppProfileAuditLog
 
 OWNER = {"username": "pytest_profiles", "email": "profiles@tl-tek.com", "password": "test123"}
 MEMBER = {"username": "pytest_profiles_member", "email": "profiles_m@tl-tek.com", "password": "test123"}
@@ -29,17 +32,27 @@ async def test_profile_crud(client: AsyncClient):
     pid = (await client.post("/api/projects", json={"name": "档案项目"}, headers=h)).json()["id"]
 
     code = f"dvr{uuid.uuid4().hex[:6]}"
-    created = await client.post(f"/api/projects/{pid}/app-profiles", json={"name": "DVR", "code": code}, headers=h)
+    create_body = {"request_id": str(uuid.uuid4()), "name": "DVR", "code": code}
+    created = await client.post(f"/api/projects/{pid}/app-profiles", json=create_body, headers=h)
     assert created.status_code == 201
     profile = created.json()
     assert profile["name"] == "DVR"
     assert profile["code"] == code
     profile_id = profile["id"]
     assert profile["revision"] == 1
+    replay = await client.post(f"/api/projects/{pid}/app-profiles", json=create_body, headers=h)
+    assert replay.status_code == 201
+    assert replay.json()["id"] == profile_id
 
     # 同名重复 → 409
     dup = await client.post(f"/api/projects/{pid}/app-profiles", json={"name": "DVR", "code": code}, headers=h)
     assert dup.status_code == 409
+    duplicate_code = await client.post(
+        f"/api/projects/{pid}/app-profiles",
+        json={"name": "另一个名称", "code": code},
+        headers=h,
+    )
+    assert duplicate_code.status_code == 409
 
     # 列表含 DVR + 计数
     listed = await client.get(f"/api/projects/{pid}/app-profiles", headers=h)
@@ -68,9 +81,13 @@ async def test_release_crud(client: AsyncClient):
     pid = (await client.post("/api/projects", json={"name": "版本项目"}, headers=h)).json()["id"]
     profile_id = (await client.post(f"/api/projects/{pid}/app-profiles", json={"name": "V", "code": f"v{uuid.uuid4().hex[:6]}"}, headers=h)).json()["id"]
 
-    created = await client.post(f"/api/app-profiles/{profile_id}/releases", json={"version": "1.0"}, headers=h)
+    release_body = {"request_id": str(uuid.uuid4()), "version": "1.0"}
+    created = await client.post(f"/api/app-profiles/{profile_id}/releases", json=release_body, headers=h)
     assert created.status_code == 201
     release_id = created.json()["id"]
+    replay = await client.post(f"/api/app-profiles/{profile_id}/releases", json=release_body, headers=h)
+    assert replay.status_code == 201
+    assert replay.json()["id"] == release_id
 
     listed = await client.get(f"/api/app-profiles/{profile_id}/releases", headers=h)
     assert listed.status_code == 200
@@ -93,9 +110,9 @@ async def test_skip_batch(client: AsyncClient):
     pid2 = (await client.post(f"/api/projects/{pid}/app-profiles", json={"name": "S", "code": code}, headers=h)).json()["id"]
 
     # 建套件 + 用例
-    suite_id = (await client.post(f"/api/projects/{pid}/suites", json={"name": "套件A"}, headers=h)).json()["id"]
-    case_id = (await client.post(f"/api/projects/{pid}/cases", json={"name": "用A", "steps": [], "assertions": []}, headers=h)).json()["id"]
     node_key = str(uuid.uuid4())
+    suite_id = (await client.post(f"/api/projects/{pid}/suites", json={"name": "套件A"}, headers=h)).json()["id"]
+    case_id = (await client.post(f"/api/projects/{pid}/cases", json={"name": "用A", "steps": [{"key": node_key, "order": 1, "action": "sleep", "params": {"duration": 1}}], "assertions": []}, headers=h)).json()["id"]
     await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)
 
     resp = await client.post(
@@ -177,9 +194,26 @@ async def test_overrides(client: AsyncClient):
     await client.put(f"/api/cases/{case_id}", json={"steps": [{"order": 1, "key": node_key, "action": "click", "element_id": el_id, "params": {}}]}, headers=h)
 
     # 元素覆盖
-    r = await client.put(f"/api/app-profiles/{profile_id}/element-overrides/{el_id}", json={"expected_revision": 1, "locator_type": "resource_id", "locator_value": "dvr_id"}, headers=h)
+    request_id = str(uuid.uuid4())
+    element_body = {"request_id": request_id, "expected_revision": 1, "locator_type": "resource_id", "locator_value": "dvr_id"}
+    r = await client.put(f"/api/app-profiles/{profile_id}/element-overrides/{el_id}", json=element_body, headers=h)
     assert r.status_code == 200
     assert r.json()["revision"] == 2
+    replay = await client.put(f"/api/app-profiles/{profile_id}/element-overrides/{el_id}", json=element_body, headers=h)
+    assert replay.status_code == 200
+    assert replay.json() == r.json()
+    async with SessionLocal() as db:
+        audit_rows = (
+            await db.execute(
+                select(AppProfileAuditLog).where(
+                    AppProfileAuditLog.profile_id == profile_id,
+                    AppProfileAuditLog.request_id == request_id,
+                )
+            )
+        ).scalars().all()
+    assert len(audit_rows) == 1
+    assert audit_rows[0].client_ip
+    assert "httpx" in (audit_rows[0].user_agent or "")
     # 变量覆盖
     r = await client.put(f"/api/app-profiles/{profile_id}/variable-overrides/PKG", json={"expected_revision": 2, "value": "com.dvr"}, headers=h)
     assert r.status_code == 200
@@ -188,15 +222,35 @@ async def test_overrides(client: AsyncClient):
     r = await client.put(f"/api/app-profiles/{profile_id}/node-overrides/{case_id}/step/{node_key}", json={"expected_revision": 3, "patch": {"params": {"wait_timeout": 20}}}, headers=h)
     assert r.status_code == 200
     assert r.json()["revision"] == 4
+    listed = await client.get(f"/api/app-profiles/{profile_id}/overrides", headers=h)
+    assert listed.status_code == 200
+    assert listed.json()["elements"][0]["locator_value"] == "dvr_id"
+    assert listed.json()["variables"][0]["name"] == "PKG"
+    assert listed.json()["nodes"][0]["node_key"] == node_key
     # 非法 patch（改 order）→ 422
     bad = await client.put(f"/api/app-profiles/{profile_id}/node-overrides/{case_id}/step/{node_key}", json={"expected_revision": 4, "patch": {"order": 5}}, headers=h)
     assert bad.status_code == 422
+    missing = await client.put(
+        f"/api/app-profiles/{profile_id}/node-overrides/{case_id}/step/{uuid.uuid4()}",
+        json={"expected_revision": 4, "patch": {"params": {"wait_timeout": 10}}},
+        headers=h,
+    )
+    assert missing.status_code == 422
 
     # restore 元素覆盖（当前 revision=4，非法 patch 已回滚未递增）
     r = await client.request("DELETE", f"/api/app-profiles/{profile_id}/element-overrides/{el_id}", json={"expected_revision": 4}, headers=h)
     assert r.status_code == 204
     got = await client.get(f"/api/app-profiles/{profile_id}", headers=h)
     assert got.status_code == 200
+    assert got.json()["revision"] == 5
+    repeated_restore = await client.request(
+        "DELETE",
+        f"/api/app-profiles/{profile_id}/element-overrides/{el_id}",
+        json={"expected_revision": 5},
+        headers=h,
+    )
+    assert repeated_restore.status_code == 204
+    got = await client.get(f"/api/app-profiles/{profile_id}", headers=h)
     assert got.json()["revision"] == 5
 
 
@@ -301,13 +355,20 @@ async def test_execution_preview(client: AsyncClient):
     h = {"Authorization": f"Bearer {token}"}
     pid = (await client.post("/api/projects", json={"name": "预检项目"}, headers=h)).json()["id"]
     profile_id = (await client.post(f"/api/projects/{pid}/app-profiles", json={"name": "PV", "code": f"pv{uuid.uuid4().hex[:6]}"}, headers=h)).json()["id"]
+    release_id = (
+        await client.post(
+            f"/api/app-profiles/{profile_id}/releases",
+            json={"version": "1.0"},
+            headers=h,
+        )
+    ).json()["id"]
     case_id = (await client.post(f"/api/projects/{pid}/cases", json={"name": "预检用例", "steps": [{"order": 1, "key": str(uuid.uuid4()), "action": "sleep", "params": {"duration": 1}}], "assertions": []}, headers=h)).json()["id"]
     suite_id = (await client.post(f"/api/projects/{pid}/suites", json={"name": "预检套件"}, headers=h)).json()["id"]
     await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)
 
     resp = await client.post(
         "/api/executions/preview",
-        json={"project_id": pid, "target": {"type": "suite", "ids": [suite_id]}, "app_profile_id": profile_id, "device_id": None},
+        json={"project_id": pid, "target": {"type": "suite", "ids": [suite_id]}, "app_profile_id": profile_id, "app_release_id": release_id, "device_id": None},
         headers=h,
     )
     assert resp.status_code == 200
@@ -325,7 +386,7 @@ async def test_execution_preview(client: AsyncClient):
     )
     empty = await client.post(
         "/api/executions/preview",
-        json={"project_id": pid, "target": {"type": "suite", "ids": [suite_id]}, "app_profile_id": profile_id},
+        json={"project_id": pid, "target": {"type": "suite", "ids": [suite_id]}, "app_profile_id": profile_id, "app_release_id": release_id},
         headers=h,
     )
     assert empty.status_code == 400

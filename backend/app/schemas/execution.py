@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 RUN_OPTION_KEYS = ("use_pre_steps", "use_post_steps", "attach_to_current_app")
 
@@ -25,6 +25,20 @@ class ExecutionCreate(BaseModel):
 
     _run_parameters = field_validator("parameters")(_validate_run_parameters)
 
+    @model_validator(mode="after")
+    def _complete_profile_context(self):
+        values = (
+            self.app_release_id,
+            self.expected_profile_revision,
+            self.expected_test_asset_revision,
+        )
+        if self.app_profile_id is None:
+            if any(value is not None for value in values):
+                raise ValueError("未指定 app_profile_id 时不能提交档案上下文字段")
+        elif any(value is None for value in values):
+            raise ValueError("指定 APP 档案时，发布版本与双 revision 均必填")
+        return self
+
 
 class BatchExecutionCreate(BaseModel):
     suite_ids: list[int] = Field(min_length=1)
@@ -37,6 +51,20 @@ class BatchExecutionCreate(BaseModel):
     expected_test_asset_revision: int | None = Field(default=None, ge=1)
 
     _run_parameters = field_validator("parameters")(_validate_run_parameters)
+
+    @model_validator(mode="after")
+    def _complete_profile_context(self):
+        values = (
+            self.app_release_id,
+            self.expected_profile_revision,
+            self.expected_test_asset_revision,
+        )
+        if self.app_profile_id is None:
+            if any(value is not None for value in values):
+                raise ValueError("未指定 app_profile_id 时不能提交档案上下文字段")
+        elif any(value is None for value in values):
+            raise ValueError("指定 APP 档案时，发布版本与双 revision 均必填")
+        return self
 
 
 class ExecutionRetryRequest(BaseModel):
@@ -56,7 +84,7 @@ class ExecutionPreviewRequest(BaseModel):
     project_id: int
     target: ExecutionPreviewTarget
     app_profile_id: int
-    app_release_id: int | None = None
+    app_release_id: int
     device_id: int | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
     timeout_seconds: int | None = Field(default=None, ge=60, le=7200)

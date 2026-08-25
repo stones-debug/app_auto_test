@@ -44,6 +44,8 @@ async def list_reports(
     execution_id: int | None = None,
     status: str = "",
     type: str = "",
+    app_profile_id: int | None = None,
+    app_release_id: int | None = None,
     keyword: str = "",
     created_from: datetime | None = None,
     created_to: datetime | None = None,
@@ -71,6 +73,10 @@ async def list_reports(
         query = query.where(Execution.status == status)
     if type:
         query = query.where(Execution.type == type)
+    if app_profile_id is not None:
+        query = query.where(Execution.app_profile_id == app_profile_id)
+    if app_release_id is not None:
+        query = query.where(Execution.app_release_id == app_release_id)
     if created_from is not None:
         query = query.where(Report.created_at >= created_from)
     if created_to is not None:
@@ -150,32 +156,12 @@ async def get_report(
 
 
 async def _build_detail(db: AsyncSession, execution_id: int) -> ReportDetailOut:
-    from sqlalchemy import select
-
-    from app.models import ExecutionExclusion
-
     detail = await report_service.get_report_detail(db, execution_id)
-    # 方案 §7.2：不适用内容清单
-    exclusions = (
-        await db.execute(
-            select(ExecutionExclusion).where(ExecutionExclusion.execution_id == execution_id)
-        )
-    ).scalars().all()
     return ReportDetailOut(
         execution=detail["execution"],
         report=ReportSummaryOut(**detail["report"]),
         cases=[ReportCaseOut(**c) for c in detail["cases"]],
-        exclusions=[
-            ReportExclusionOut(
-                target_type=ex.target_type,
-                path=(ex.suite_name_snapshot or "") + "/" + (ex.case_name_snapshot or ""),
-                reason_code=ex.reason_code,
-                reason_note=ex.reason_note,
-                source_type=ex.source_type,
-                node_key=str(ex.node_key) if ex.node_key else None,
-            )
-            for ex in exclusions
-        ],
+        exclusions=[ReportExclusionOut(**item) for item in detail["exclusions"]],
         logs=[ReportLogOut(**log_item) for log_item in detail["logs"]],
         logs_total=detail["logs_total"],
         logs_truncated=detail["logs_truncated"],

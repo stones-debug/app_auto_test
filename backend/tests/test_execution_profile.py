@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.core.database import SessionLocal
 from app.main import app
-from app.models import Execution, ExecutionCase, ExecutionStep, Project
+from app.models import Execution, ExecutionCase, ExecutionExclusion, ExecutionStep, Project
 from app.services.profile_resolver import ResolutionRequest, resolve
 from tests.helpers import create_bound_agent_device
 
@@ -32,9 +32,17 @@ async def _base(client: AsyncClient) -> dict:
     return {"headers": headers, "project_id": project_id, "device_id": device_id}
 
 
-async def _make_profile(client: AsyncClient, base: dict) -> int:
+async def _make_profile(client: AsyncClient, base: dict) -> tuple[int, int]:
     code = f"p{uuid.uuid4().hex[:6]}"
-    return (await client.post(f"/api/projects/{base['project_id']}/app-profiles", json={"name": "PE", "code": code}, headers=base["headers"])).json()["id"]
+    profile_id = (await client.post(f"/api/projects/{base['project_id']}/app-profiles", json={"name": "PE", "code": code}, headers=base["headers"])).json()["id"]
+    release_id = (
+        await client.post(
+            f"/api/app-profiles/{profile_id}/releases",
+            json={"version": "1.0"},
+            headers=base["headers"],
+        )
+    ).json()["id"]
+    return profile_id, release_id
 
 
 async def _make_case(client: AsyncClient, base: dict) -> int:
@@ -54,13 +62,14 @@ async def _asset_revision(project_id: int) -> int:
 async def test_case_execution_materializes_snapshot(client: AsyncClient):
     """带档案创建用例执行 → 同事务固化 ExecutionCase/ExecutionStep/ExecutionQueue。"""
     base = await _base(client)
-    profile_id = await _make_profile(client, base)
+    profile_id, release_id = await _make_profile(client, base)
     case_id = await _make_case(client, base)
     resp = await client.post(
         f"/api/executions/cases/{case_id}",
         headers=base["headers"],
         json={
             "app_profile_id": profile_id,
+            "app_release_id": release_id,
             "expected_profile_revision": 1,
             "expected_test_asset_revision": await _asset_revision(base["project_id"]),
             "device_id": base["device_id"],
@@ -81,21 +90,56 @@ async def test_case_execution_materializes_snapshot(client: AsyncClient):
 async def test_case_execution_revision_conflict(client: AsyncClient):
     """expected revision 不匹配 → 409，不创建执行。"""
     base = await _base(client)
-    profile_id = await _make_profile(client, base)
+    profile_id, release_id = await _make_profile(client, base)
     case_id = await _make_case(client, base)
     resp = await client.post(
         f"/api/executions/cases/{case_id}",
         headers=base["headers"],
-        json={"app_profile_id": profile_id, "expected_profile_revision": 99, "expected_test_asset_revision": await _asset_revision(base["project_id"]), "device_id": base["device_id"]},
+        json={"app_profile_id": profile_id, "app_release_id": release_id, "expected_profile_revision": 99, "expected_test_asset_revision": await _asset_revision(base["project_id"]), "device_id": base["device_id"]},
     )
     assert resp.status_code == 409
     assert resp.json()["detail"]["code"] == "PROFILE_REVISION_CONFLICT"
 
 
+async def test_profile_execution_requires_active_release(client: AsyncClient):
+    base = await _base(client)
+    profile_id, release_id = await _make_profile(client, base)
+    case_id = await _make_case(client, base)
+    missing = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers=base["headers"],
+        json={
+            "app_profile_id": profile_id,
+            "expected_profile_revision": 1,
+            "expected_test_asset_revision": await _asset_revision(base["project_id"]),
+            "device_id": base["device_id"],
+        },
+    )
+    assert missing.status_code == 422
+    disabled = await client.patch(
+        f"/api/app-profile-releases/{release_id}",
+        headers=base["headers"],
+        json={"status": "disabled"},
+    )
+    assert disabled.status_code == 200
+    preview = await client.post(
+        "/api/executions/preview",
+        headers=base["headers"],
+        json={
+            "project_id": base["project_id"],
+            "target": {"type": "case", "ids": [case_id]},
+            "app_profile_id": profile_id,
+            "app_release_id": release_id,
+        },
+    )
+    assert preview.status_code == 422
+    assert preview.json()["detail"]["code"] == "APP_RELEASE_NOT_FOUND"
+
+
 async def test_public_asset_change_invalidates_execution_revision(client: AsyncClient):
     """公共用例修改必须推进资产 revision，并拒绝旧预检结果提交。"""
     base = await _base(client)
-    profile_id = await _make_profile(client, base)
+    profile_id, release_id = await _make_profile(client, base)
     case_id = await _make_case(client, base)
     old_revision = await _asset_revision(base["project_id"])
     updated = await client.put(
@@ -110,6 +154,7 @@ async def test_public_asset_change_invalidates_execution_revision(client: AsyncC
         headers=base["headers"],
         json={
             "app_profile_id": profile_id,
+            "app_release_id": release_id,
             "expected_profile_revision": 1,
             "expected_test_asset_revision": old_revision,
             "device_id": base["device_id"],
@@ -122,7 +167,7 @@ async def test_public_asset_change_invalidates_execution_revision(client: AsyncC
 async def test_empty_target_not_created(client: AsyncClient):
     """目标整体 N/A（所有用例跳过）→ 400 PROFILE_EMPTY，不创建执行/不入队。"""
     base = await _base(client)
-    profile_id = await _make_profile(client, base)
+    profile_id, release_id = await _make_profile(client, base)
     case_id = await _make_case(client, base)
     await client.post(
         f"/api/app-profiles/{profile_id}/skip-rules/batch",
@@ -132,7 +177,7 @@ async def test_empty_target_not_created(client: AsyncClient):
     resp = await client.post(
         f"/api/executions/cases/{case_id}",
         headers=base["headers"],
-        json={"app_profile_id": profile_id, "expected_profile_revision": 2, "expected_test_asset_revision": await _asset_revision(base["project_id"]), "device_id": base["device_id"]},
+        json={"app_profile_id": profile_id, "app_release_id": release_id, "expected_profile_revision": 2, "expected_test_asset_revision": await _asset_revision(base["project_id"]), "device_id": base["device_id"]},
     )
     assert resp.status_code == 400
     assert resp.json()["detail"]["code"] == "PROFILE_EMPTY"
@@ -143,11 +188,11 @@ async def test_empty_target_not_created(client: AsyncClient):
 async def test_resolver_preview_matches(client: AsyncClient):
     """预检与提交走同一解析器：预检计数与固化快照一致。"""
     base = await _base(client)
-    profile_id = await _make_profile(client, base)
+    profile_id, release_id = await _make_profile(client, base)
     case_id = await _make_case(client, base)
     async with SessionLocal() as db:
         request = ResolutionRequest(
-            project_id=base["project_id"], profile_id=profile_id, release_id=None,
+            project_id=base["project_id"], profile_id=profile_id, release_id=release_id,
             target_type="case", target_ids=[case_id],
             expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(base["project_id"]),
         )
@@ -156,15 +201,80 @@ async def test_resolver_preview_matches(client: AsyncClient):
     assert result.summary["executable_steps"] == 1
 
 
+async def test_execution_exclusion_persists_display_names(client: AsyncClient):
+    """执行排除项固化套件、用例和节点名称，历史报告无需回查公共资产。"""
+    base = await _base(client)
+    profile_id, release_id = await _make_profile(client, base)
+    skipped_key = str(uuid.uuid4())
+    kept_key = str(uuid.uuid4())
+    case = await client.post(
+        f"/api/projects/{base['project_id']}/cases",
+        headers=base["headers"],
+        json={
+            "name": "排除项用例",
+            "steps": [
+                {"key": skipped_key, "order": 1, "action": "sleep", "description": "不支持步骤", "params": {"duration": 1}},
+                {"key": kept_key, "order": 2, "action": "sleep", "description": "保留步骤", "params": {"duration": 1}},
+            ],
+        },
+    )
+    case_id = case.json()["id"]
+    suite = await client.post(
+        f"/api/projects/{base['project_id']}/suites",
+        headers=base["headers"],
+        json={"name": "排除项套件"},
+    )
+    suite_id = suite.json()["id"]
+    await client.post(
+        f"/api/suites/{suite_id}/cases",
+        headers=base["headers"],
+        json={"case_id": case_id},
+    )
+    skipped = await client.post(
+        f"/api/app-profiles/{profile_id}/skip-rules/batch",
+        headers=base["headers"],
+        json={
+            "expected_revision": 1,
+            "operation": "skip",
+            "reason": {"code": "unsupported"},
+            "targets": [{"type": "step", "case_id": case_id, "node_key": skipped_key}],
+        },
+    )
+    assert skipped.status_code == 200
+    created = await client.post(
+        f"/api/executions/suites/{suite_id}",
+        headers=base["headers"],
+        json={
+            "app_profile_id": profile_id,
+            "app_release_id": release_id,
+            "expected_profile_revision": 2,
+            "expected_test_asset_revision": await _asset_revision(base["project_id"]),
+            "device_id": base["device_id"],
+        },
+    )
+    assert created.status_code == 201, created.text
+    async with SessionLocal() as db:
+        exclusion = (
+            await db.execute(
+                select(ExecutionExclusion).where(
+                    ExecutionExclusion.execution_id == created.json()["id"]
+                )
+            )
+        ).scalar_one()
+    assert exclusion.suite_name_snapshot == "排除项套件"
+    assert exclusion.case_name_snapshot == "排除项用例"
+    assert exclusion.node_name_snapshot == "不支持步骤"
+
+
 async def test_retry_reuses_profile(client: AsyncClient):
     """重试复用原执行档案并按当前 revision 固化，retry_of 指向原执行。"""
     base = await _base(client)
-    profile_id = await _make_profile(client, base)
+    profile_id, release_id = await _make_profile(client, base)
     case_id = await _make_case(client, base)
     created = await client.post(
         f"/api/executions/cases/{case_id}",
         headers=base["headers"],
-        json={"app_profile_id": profile_id, "expected_profile_revision": 1, "expected_test_asset_revision": await _asset_revision(base["project_id"]), "device_id": base["device_id"]},
+        json={"app_profile_id": profile_id, "app_release_id": release_id, "expected_profile_revision": 1, "expected_test_asset_revision": await _asset_revision(base["project_id"]), "device_id": base["device_id"]},
     )
     assert created.status_code == 201
     original_id = created.json()["id"]

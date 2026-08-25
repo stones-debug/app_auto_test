@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import reports_dir, settings
 from app.models import (
     Execution,
+    ExecutionExclusion,
     ExecutionLog,
     Report,
 )
@@ -17,7 +18,7 @@ from app.services.screenshot_store import resolve_screenshot_path, validate_obje
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates" / "reports"
 # Step 8：HTML 缓存版本标记——修改模板/数据规则后旧缓存不再复用
-_REPORT_HTML_VERSION = "assertion-before-teardown-v4"
+_REPORT_HTML_VERSION = "app-profile-exclusions-v5"
 
 
 def _execution_dict(execution: Execution) -> dict:
@@ -35,6 +36,13 @@ def _execution_dict(execution: Execution) -> dict:
         "finished_at": execution.finished_at.isoformat() if execution.finished_at else None,
         "duration": execution.duration,
         "retry_of": execution.retry_of,
+        "app_profile_id": execution.app_profile_id,
+        "app_profile_name": execution.app_profile_name_snapshot,
+        "app_release_id": execution.app_release_id,
+        "app_release_version": execution.app_release_version_snapshot,
+        "profile_revision": execution.profile_revision,
+        "test_asset_revision": execution.test_asset_revision,
+        "profile_resolution_summary": execution.profile_resolution_summary or {},
         "created_at": execution.created_at.isoformat() if execution.created_at else None,
     }
 
@@ -111,6 +119,13 @@ async def get_report_detail(db: AsyncSession, execution_id: int) -> dict:
     report = (
         await db.execute(select(Report).where(Report.execution_id == execution_id))
     ).scalar_one_or_none()
+    exclusion_rows = (
+        await db.execute(
+            select(ExecutionExclusion)
+            .where(ExecutionExclusion.execution_id == execution_id)
+            .order_by(ExecutionExclusion.id)
+        )
+    ).scalars().all()
 
     return {
         "execution": _execution_dict(execution),
@@ -126,6 +141,25 @@ async def get_report_detail(db: AsyncSession, execution_id: int) -> dict:
             "exclusion_summary": report.exclusion_summary if report else {},
         },
         "cases": cases,
+        "exclusions": [
+            {
+                "target_type": row.target_type,
+                "path": "/".join(
+                    part
+                    for part in (
+                        row.suite_name_snapshot,
+                        row.case_name_snapshot,
+                        row.node_name_snapshot,
+                    )
+                    if part
+                ),
+                "reason_code": row.reason_code,
+                "reason_note": row.reason_note,
+                "source_type": row.source_type,
+                "node_key": str(row.node_key) if row.node_key else None,
+            }
+            for row in exclusion_rows
+        ],
         "logs": [
             {
                 "id": log.id,
@@ -196,6 +230,7 @@ async def render_report_html(db: AsyncSession, execution_id: int) -> Path:
         report=detail["report"],
         cases=detail["cases"],
         logs=detail["logs"],
+        exclusions=detail["exclusions"],
         logs_total=detail["logs_total"],
         logs_truncated=detail["logs_truncated"],
         generated_at=datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),

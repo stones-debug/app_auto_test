@@ -28,6 +28,7 @@ from app.models import (
     TestCase,
     TestElement,
     TestModule,
+    TestSuite,
     TestSuiteCase,
     Variable,
 )
@@ -339,6 +340,10 @@ def _filter_and_patch(
     overrides: dict[str, dict[str, Any]],
     target_type: str,
     case_id: int,
+    *,
+    case_name: str,
+    suite_id: int | None,
+    suite_name: str | None,
 ) -> tuple[list[dict], list[ExclusionItem]]:
     """过滤被跳过节点并应用白名单覆盖，保留 _source_key/_source_order。"""
     kept: list[dict] = []
@@ -352,7 +357,7 @@ def _filter_and_patch(
             exclusions.append(
                 ExclusionItem(
                     target_type=target_type,
-                    suite_id=None,
+                    suite_id=suite_id,
                     case_id=case_id,
                     node_key=UUID(node_key) if _is_uuid(node_key) else None,
                     source_type="direct",
@@ -361,6 +366,9 @@ def _filter_and_patch(
                     display_snapshot={
                         "name": node.get("description") or node.get("action") or node.get("type") or "",
                         "key": node_key,
+                        "suite_name": suite_name,
+                        "case_name": case_name,
+                        "node_name": node.get("description") or node.get("action") or node.get("type") or "",
                     },
                 )
             )
@@ -415,6 +423,21 @@ def _registry_validate_assertion(assertion: dict) -> dict:
     return assertion
 
 
+def validate_node_patch(node_type: str, source_node: dict, patch: dict[str, Any]) -> dict:
+    """保存覆盖前，以公共节点合并补丁并执行与解析阶段相同的 Registry 校验。"""
+    patched = _apply_whitelist_patch(deepcopy(source_node), patch)
+    try:
+        if node_type == "step":
+            return _registry_validate_step(patched)
+        if node_type == "assertion":
+            return _registry_validate_assertion(patched)
+    except Exception as exc:
+        if isinstance(exc, ProfileRuleError):
+            raise
+        raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", str(exc)) from None
+    raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", f"未知节点类型: {node_type}")
+
+
 def finalize_snapshot_node(node: dict, phase: str = "main", order_offset: int = 0) -> dict:
     """将内部节点转为执行快照节点：丢弃 _source 内部字段，写入 source_key/source_order。"""
     out = {k: v for k, v in node.items() if not k.startswith("_")}
@@ -446,12 +469,17 @@ async def resolve(request: ResolutionRequest, db: AsyncSession, cache: _LRUCache
             "TEST_ASSET_REVISION_CONFLICT", project.test_asset_revision, request.expected_test_asset_revision
         )
 
-    release_version = ""
-    if request.release_id is not None:
-        release = await db.get(AppProfileRelease, request.release_id)
-        if release is None or release.deleted_at is not None or release.profile_id != request.profile_id:
-            raise ProfileRuleError("APP_RELEASE_NOT_FOUND", "发布版本不存在或不属于该档案")
-        release_version = release.version
+    if request.release_id is None:
+        raise ProfileRuleError("APP_RELEASE_REQUIRED", "执行必须指定发布版本")
+    release = await db.get(AppProfileRelease, request.release_id)
+    if (
+        release is None
+        or release.deleted_at is not None
+        or release.profile_id != request.profile_id
+        or release.status != "active"
+    ):
+        raise ProfileRuleError("APP_RELEASE_NOT_FOUND", "发布版本不存在、已停用或不属于该档案")
+    release_version = release.version
 
     cache_key = (request.project_id, project.test_asset_revision, request.profile_id, profile.revision)
     config = cache.get(cache_key)
@@ -461,6 +489,10 @@ async def resolve(request: ResolutionRequest, db: AsyncSession, cache: _LRUCache
 
     target = await _load_targets(db, request)
     case_to_suite, cases, suite_exclusions = await _collect_cases(db, target, config["skip_suite"])
+    suite_rows = (
+        await db.execute(select(TestSuite).where(TestSuite.id.in_(target["suite_ids"])))
+    ).scalars().all() if target["suite_ids"] else []
+    suite_names = {suite.id: suite.name for suite in suite_rows}
 
     # 套件整体跳过：以排除项记录（不展开子节点）
     exclusions: list[ExclusionItem] = [*suite_exclusions]
@@ -476,11 +508,16 @@ async def resolve(request: ResolutionRequest, db: AsyncSession, cache: _LRUCache
                     source_type="direct",
                     reason_code=rule.reason_code,
                     reason_note=rule.reason_note,
-                    display_snapshot={"name": f"suite:{sid}", "key": str(sid)},
+                    display_snapshot={
+                        "name": suite_names.get(sid, f"suite:{sid}"),
+                        "key": str(sid),
+                        "suite_name": suite_names.get(sid),
+                    },
                 )
             )
 
     resolved_cases: list[ResolvedCase] = []
+    applied_override_count = 0
     module_ids = {case.module_id for case in cases if case.module_id is not None}
     module_names: dict[int, str] = {}
     if module_ids:
@@ -494,29 +531,45 @@ async def resolve(request: ResolutionRequest, db: AsyncSession, cache: _LRUCache
             exclusions.append(
                 ExclusionItem(
                     target_type="case",
-                    suite_id=None,
+                    suite_id=case_to_suite.get(case.id),
                     case_id=case.id,
                     node_key=None,
                     source_type="direct",
                     reason_code=case_rule.reason_code,
                     reason_note=case_rule.reason_note,
-                    display_snapshot={"name": case.name, "key": str(case.id)},
+                    display_snapshot={
+                        "name": case.name,
+                        "key": str(case.id),
+                        "suite_name": suite_names.get(case_to_suite.get(case.id)),
+                        "case_name": case.name,
+                    },
                 )
             )
             continue
 
         suite_id = case_to_suite.get(case.id)
+        suite_name = suite_names.get(suite_id) if suite_id is not None else None
         variables = await _merge_variables(db, request.project_id, suite_id, case, config, request.execution_variables)
 
         selected_steps = _select_steps_for_run(case.steps or [], request.run_options)
+        applied_override_count += len(
+            {str(node.get("key") or "") for node in selected_steps}
+            & set(config["step_overrides"].get(case.id, {}))
+        )
+        applied_override_count += len(
+            {str(node.get("key") or "") for node in (case.assertions or []) if isinstance(node, dict)}
+            & set(config["assertion_overrides"].get(case.id, {}))
+        )
         kept_steps, step_ex = _filter_and_patch(
             selected_steps, config["step_rules"].get(case.id, {}),
             config["step_overrides"].get(case.id, {}), "step", case.id,
+            case_name=case.name, suite_id=suite_id, suite_name=suite_name,
         )
         exclusions.extend(step_ex)
         kept_assertions, assert_ex = _filter_and_patch(
             case.assertions or [], config["assertion_rules"].get(case.id, {}),
             config["assertion_overrides"].get(case.id, {}), "assertion", case.id,
+            case_name=case.name, suite_id=suite_id, suite_name=suite_name,
         )
         exclusions.extend(assert_ex)
 
@@ -535,19 +588,27 @@ async def resolve(request: ResolutionRequest, db: AsyncSession, cache: _LRUCache
             exclusions.append(
                 ExclusionItem(
                     target_type="case",
-                    suite_id=None,
+                    suite_id=suite_id,
                     case_id=case.id,
                     node_key=None,
                     source_type="empty_after_filter",
                     reason_code="other",
                     reason_note="过滤后无可执行内容",
-                    display_snapshot={"name": case.name, "key": str(case.id)},
+                    display_snapshot={
+                        "name": case.name,
+                        "key": str(case.id),
+                        "suite_name": suite_name,
+                        "case_name": case.name,
+                    },
                 )
             )
             continue
 
         elements = await _resolve_element_snapshots(
             db, steps, assertions, config["element_overrides"], variables
+        )
+        applied_override_count += sum(
+            1 for element_id in elements if int(element_id) in config["element_overrides"]
         )
         resolved_cases.append(
             ResolvedCase(
@@ -573,10 +634,7 @@ async def resolve(request: ResolutionRequest, db: AsyncSession, cache: _LRUCache
         "na_cases": sum(1 for e in exclusions if e.target_type == "case"),
         "na_steps": sum(1 for e in exclusions if e.target_type == "step"),
         "na_assertions": sum(1 for e in exclusions if e.target_type == "assertion"),
-        "overrides": sum(1 for c in resolved_cases if c.elements_snapshot)
-        + sum(len(v) for v in config["step_overrides"].values())
-        + sum(len(v) for v in config["assertion_overrides"].values())
-        + len(config["variable_overrides"]),
+        "overrides": applied_override_count + len(config["variable_overrides"]),
     }
 
     return ResolutionResult(

@@ -48,6 +48,28 @@ async def find_idempotent_replay(
     return row.response_data if row is not None else None
 
 
+async def find_project_idempotent_replay(
+    db: AsyncSession,
+    project_id: int,
+    request_id: str,
+    *,
+    action: str,
+) -> dict | None:
+    """创建档案前尚无 profile_id，按项目、动作和 request_id 查找重放。"""
+    if not request_id:
+        return None
+    row = (
+        await db.execute(
+            select(AppProfileAuditLog).where(
+                AppProfileAuditLog.project_id == project_id,
+                AppProfileAuditLog.request_id == request_id,
+                AppProfileAuditLog.action == action,
+            )
+        )
+    ).scalar_one_or_none()
+    return row.response_data if row is not None else None
+
+
 async def write_audit(
     db: AsyncSession,
     *,

@@ -89,6 +89,14 @@ async def _asset_revision(db, project_id: int) -> int:
     return int(await db.scalar(select(Project.test_asset_revision).where(Project.id == project_id)))
 
 
+async def _release_id(db, profile_id: int) -> int:
+    return int(
+        await db.scalar(
+            select(AppProfileRelease.id).where(AppProfileRelease.profile_id == profile_id)
+        )
+    )
+
+
 async def test_run_options_select_and_order_phases(client):
     """默认只执行 main；勾选前置后按 setup → main 连续编号。"""
     base = await _base(client)
@@ -97,12 +105,12 @@ async def test_run_options_select_and_order_phases(client):
         profile_id = await _make_profile(db, base)
         asset_revision = await _asset_revision(db, base["project_id"])
         default_result = await resolve_compat(ResolutionRequest(
-            project_id=base["project_id"], profile_id=profile_id, release_id=None,
+            project_id=base["project_id"], profile_id=profile_id, release_id=await _release_id(db, profile_id),
             target_type="case", target_ids=[case_id],
             expected_profile_revision=1, expected_test_asset_revision=asset_revision,
         ), db)
         result = await resolve_compat(ResolutionRequest(
-            project_id=base["project_id"], profile_id=profile_id, release_id=None,
+            project_id=base["project_id"], profile_id=profile_id, release_id=await _release_id(db, profile_id),
             target_type="case", target_ids=[case_id],
             expected_profile_revision=1, expected_test_asset_revision=asset_revision,
             run_options={"use_pre_steps": True},
@@ -126,7 +134,7 @@ async def test_case_skip_excluded(client):
         db.add(AppProfileSkipRule(profile_id=profile_id, target_type="case", case_id=case_id, reason_code="unsupported"))
         await db.commit()
         request = ResolutionRequest(
-            project_id=base["project_id"], profile_id=profile_id, release_id=None,
+            project_id=base["project_id"], profile_id=profile_id, release_id=await _release_id(db, profile_id),
             target_type="case", target_ids=[case_id],
             expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
         )
@@ -146,7 +154,7 @@ async def test_step_skip_and_override(client):
         await db.commit()
         result = await resolve_compat(
             ResolutionRequest(
-                project_id=base["project_id"], profile_id=profile_id, release_id=None,
+                project_id=base["project_id"], profile_id=profile_id, release_id=await _release_id(db, profile_id),
                 target_type="case", target_ids=[case_id],
                 expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
                 run_options={"use_pre_steps": True},
@@ -170,7 +178,7 @@ async def test_variable_override_priority(client):
         await db.commit()
         result = await resolve_compat(
             ResolutionRequest(
-                project_id=base["project_id"], profile_id=profile_id, release_id=None,
+                project_id=base["project_id"], profile_id=profile_id, release_id=await _release_id(db, profile_id),
                 target_type="case", target_ids=[case_id],
                 expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
                 run_options={"use_pre_steps": True},
@@ -210,7 +218,7 @@ async def test_suite_variable_overrides_case_and_suite_order_is_preserved(client
             ResolutionRequest(
                 project_id=base["project_id"],
                 profile_id=profile_id,
-                release_id=None,
+                release_id=await _release_id(db, profile_id),
                 target_type="suite",
                 target_ids=[suite.id],
                 expected_profile_revision=1,
@@ -238,7 +246,7 @@ async def test_undefined_variable_rejected(client):
         with pytest.raises(ProfileRuleError) as exc:
             await resolve_compat(
                 ResolutionRequest(
-                    project_id=base["project_id"], profile_id=profile_id, release_id=None,
+                    project_id=base["project_id"], profile_id=profile_id, release_id=await _release_id(db, profile_id),
                     target_type="case", target_ids=[case_id],
                     expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
                 ),
@@ -254,7 +262,7 @@ async def test_revision_conflict(client):
     async with SessionLocal() as db:
         profile_id = await _make_profile(db, base)
         request = ResolutionRequest(
-            project_id=base["project_id"], profile_id=profile_id, release_id=None,
+            project_id=base["project_id"], profile_id=profile_id, release_id=await _release_id(db, profile_id),
             target_type="case", target_ids=[case_id],
             expected_profile_revision=99, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
         )
@@ -283,7 +291,7 @@ async def test_element_override(client):
         await db.commit()
         result = await resolve_compat(
             ResolutionRequest(
-                project_id=base["project_id"], profile_id=profile_id, release_id=None,
+                project_id=base["project_id"], profile_id=profile_id, release_id=await _release_id(db, profile_id),
                 target_type="case", target_ids=[case_id],
                 expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
             ),

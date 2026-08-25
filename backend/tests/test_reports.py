@@ -9,7 +9,7 @@ from sqlalchemy import select as sa_select
 from app.core.config import reports_dir
 from app.core.database import SessionLocal
 from app.main import app
-from app.models import Device, Execution, ExecutionCase, ExecutionStep, Report
+from app.models import Device, Execution, ExecutionCase, ExecutionExclusion, ExecutionStep, Report
 from app.services import report_service, worker_service
 from app.services.screenshot_store import resolve_screenshot_path, validate_object_key
 from app.ws import handlers
@@ -33,6 +33,20 @@ async def _setup(client: AsyncClient) -> tuple[str, int]:
     headers = {"Authorization": f"Bearer {token}"}
     project = await client.post("/api/projects", headers=headers, json={"name": "报告测试项目", "visibility": "private"})
     project_id = project.json()["id"]
+    profile_id = (
+        await client.post(
+            f"/api/projects/{project_id}/app-profiles",
+            headers=headers,
+            json={"name": "报告档案", "code": f"report-{uuid.uuid4().hex[:6]}"},
+        )
+    ).json()["id"]
+    release_id = (
+        await client.post(
+            f"/api/app-profiles/{profile_id}/releases",
+            headers=headers,
+            json={"version": "1.0"},
+        )
+    ).json()["id"]
     element = await client.post(
         f"/api/projects/{project_id}/elements",
         headers=headers,
@@ -71,6 +85,24 @@ async def _setup(client: AsyncClient) -> tuple[str, int]:
         db.add(device)
         await db.flush()
         execution.device_id = device.id
+        execution.app_profile_id = profile_id
+        execution.app_profile_name_snapshot = "报告档案"
+        execution.app_release_id = release_id
+        execution.app_release_version_snapshot = "1.0"
+        execution.profile_revision = 1
+        execution.test_asset_revision = 3
+        db.add(
+            ExecutionExclusion(
+                execution_id=execution_id,
+                app_profile_id=profile_id,
+                target_type="step",
+                case_id_snapshot=case_id,
+                case_name_snapshot="报告用例",
+                node_name_snapshot="不支持步骤",
+                source_type="direct",
+                reason_code="unsupported",
+            )
+        )
         execution.status = "running"
         execution.session_token = "rp-token"
         execution.started_at = datetime.now(UTC)
@@ -150,11 +182,20 @@ async def test_report_list_and_detail(client: AsyncClient):
     assert item["case_name"] == "报告用例"
     assert item["passed"] == 1
     assert item["total"] == 1
+    async with SessionLocal() as db:
+        profile_id = (await db.get(Execution, execution_id)).app_profile_id
+    filtered = await client.get(f"/api/reports?app_profile_id={profile_id}", headers=headers)
+    assert filtered.status_code == 200
+    assert any(row["id"] == report_id for row in filtered.json()["items"])
+    empty = await client.get("/api/reports?app_profile_id=2147483647", headers=headers)
+    assert empty.json()["total"] == 0
 
     detail = await client.get(f"/api/reports/{report_id}/detail", headers=headers)
     assert detail.status_code == 200
     body = detail.json()
     assert body["execution"]["status"] == "passed"
+    assert body["execution"]["app_profile_name"] == "报告档案"
+    assert body["execution"]["app_release_version"] == "1.0"
     assert body["execution"]["parameters"] == {"variables": {"account": "admin"}}
     assert body["report"]["passed"] == 1
     assert body["cases"][0]["case_name"] == "报告用例"
@@ -164,6 +205,7 @@ async def test_report_list_and_detail(client: AsyncClient):
     assert body["cases"][0]["steps"][0]["actual_value"] == "admin"
     assert body["cases"][0]["assertions"][0]["assertion_type"] == "text_equals"
     assert body["cases"][0]["assertions"][0]["status"] == "pass"
+    assert body["exclusions"][0]["path"] == "报告用例/不支持步骤"
     assert body["logs"][0]["message"] == "步骤 1 input 执行通过"
 
     _cleanup(execution_id)
@@ -180,6 +222,8 @@ async def test_report_download_generates_and_caches(client: AsyncClient):
     assert "执行报告" in resp1.text
     assert "执行参数" in resp1.text
     assert "account" in resp1.text
+    assert "报告档案" in resp1.text
+    assert "报告用例/不支持步骤" in resp1.text
 
     html_path = reports_dir() / f"execution_{execution_id}" / "report.html"
     assert html_path.exists()

@@ -4,9 +4,12 @@
 """
 
 from datetime import UTC, datetime
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_project_permission
@@ -40,11 +43,22 @@ from app.schemas.app_profile import (
     VariableOverrideDelete,
     VariableOverrideUpsert,
 )
-from app.services.profile_audit import find_idempotent_replay, write_audit
+from app.services.profile_audit import (
+    find_idempotent_replay,
+    find_project_idempotent_replay,
+    write_audit,
+)
 from app.services.profile_revision import RevisionConflictError, bump_profile_revision
 from app.ws.managers import profile_config_manager
 
 router = APIRouter(tags=["APP 档案"])
+
+
+def _audit_client(request: Request) -> dict[str, str | None]:
+    return {
+        "client_ip": request.client.host if request.client else None,
+        "user_agent": request.headers.get("user-agent"),
+    }
 
 
 async def _broadcast_config(profile: AppProfile, user_id: int | None = None) -> None:
@@ -123,57 +137,81 @@ async def _get_profile_or_404(profile_id: int, db: AsyncSession) -> AppProfile:
 
 
 async def _profile_out(profile: AppProfile, db: AsyncSession) -> dict:
-    release_count = await db.scalar(
-        select(func.count())
-        .select_from(AppProfileRelease)
-        .where(AppProfileRelease.profile_id == profile.id, AppProfileRelease.deleted_at.is_(None))
+    return (await _profiles_out([profile], db))[0]
+
+
+async def _profiles_out(profiles: list[AppProfile], db: AsyncSession) -> list[dict]:
+    """固定查询数批量聚合列表计数，避免每个档案执行五次统计查询。"""
+    if not profiles:
+        return []
+    profile_ids = [profile.id for profile in profiles]
+    release_counts = dict(
+        (
+            await db.execute(
+                select(AppProfileRelease.profile_id, func.count())
+                .where(
+                    AppProfileRelease.profile_id.in_(profile_ids),
+                    AppProfileRelease.deleted_at.is_(None),
+                )
+                .group_by(AppProfileRelease.profile_id)
+            )
+        ).all()
     )
     skip_rows = (
         await db.execute(
-            select(AppProfileSkipRule.target_type, func.count())
-            .where(AppProfileSkipRule.profile_id == profile.id, AppProfileSkipRule.deleted_at.is_(None))
-            .group_by(AppProfileSkipRule.target_type)
+            select(AppProfileSkipRule.profile_id, AppProfileSkipRule.target_type, func.count())
+            .where(
+                AppProfileSkipRule.profile_id.in_(profile_ids),
+                AppProfileSkipRule.deleted_at.is_(None),
+            )
+            .group_by(AppProfileSkipRule.profile_id, AppProfileSkipRule.target_type)
         )
     ).all()
-    skip_counts = {"suite": 0, "case": 0, "step": 0, "assertion": 0}
-    for target_type, cnt in skip_rows:
-        skip_counts[target_type] = cnt
-    element_cnt = await db.scalar(
-        select(func.count()).select_from(AppProfileElementOverride).where(
-            AppProfileElementOverride.profile_id == profile.id, AppProfileElementOverride.deleted_at.is_(None)
-        )
-    )
-    variable_cnt = await db.scalar(
-        select(func.count()).select_from(AppProfileVariableOverride).where(
-            AppProfileVariableOverride.profile_id == profile.id, AppProfileVariableOverride.deleted_at.is_(None)
-        )
-    )
-    node_cnt = await db.scalar(
-        select(func.count()).select_from(AppProfileNodeOverride).where(
-            AppProfileNodeOverride.profile_id == profile.id, AppProfileNodeOverride.deleted_at.is_(None)
-        )
-    )
-    return {
-        "id": profile.id,
-        "project_id": profile.project_id,
-        "name": profile.name,
-        "code": profile.code,
-        "description": profile.description,
-        "status": profile.status,
-        "inherit_all": profile.inherit_all,
-        "revision": profile.revision,
-        "release_count": release_count or 0,
-        "skip_counts": skip_counts,
-        "override_counts": {
-            "element": element_cnt or 0,
-            "variable": variable_cnt or 0,
-            "node": node_cnt or 0,
-        },
-        "created_by": profile.created_by,
-        "updated_by": profile.updated_by,
-        "created_at": profile.created_at,
-        "updated_at": profile.updated_at,
+    skip_by_profile: dict[int, dict[str, int]] = {
+        profile_id: {"suite": 0, "case": 0, "step": 0, "assertion": 0}
+        for profile_id in profile_ids
     }
+    for profile_id, target_type, count in skip_rows:
+        skip_by_profile[profile_id][target_type] = count
+
+    async def grouped_count(model) -> dict[int, int]:
+        return dict(
+            (
+                await db.execute(
+                    select(model.profile_id, func.count())
+                    .where(model.profile_id.in_(profile_ids), model.deleted_at.is_(None))
+                    .group_by(model.profile_id)
+                )
+            ).all()
+        )
+
+    element_counts = await grouped_count(AppProfileElementOverride)
+    variable_counts = await grouped_count(AppProfileVariableOverride)
+    node_counts = await grouped_count(AppProfileNodeOverride)
+    return [
+        {
+            "id": profile.id,
+            "project_id": profile.project_id,
+            "name": profile.name,
+            "code": profile.code,
+            "description": profile.description,
+            "status": profile.status,
+            "inherit_all": profile.inherit_all,
+            "revision": profile.revision,
+            "release_count": release_counts.get(profile.id, 0),
+            "skip_counts": skip_by_profile[profile.id],
+            "override_counts": {
+                "element": element_counts.get(profile.id, 0),
+                "variable": variable_counts.get(profile.id, 0),
+                "node": node_counts.get(profile.id, 0),
+            },
+            "created_by": profile.created_by,
+            "updated_by": profile.updated_by,
+            "created_at": profile.created_at,
+            "updated_at": profile.updated_at,
+        }
+        for profile in profiles
+    ]
 
 
 def _release_out(release: AppProfileRelease) -> dict:
@@ -211,18 +249,25 @@ async def list_app_profiles(
             func.lower(AppProfile.name).like(f"%{lower}%") | func.lower(AppProfile.code).like(f"%{lower}%")
         )
     rows = (await db.execute(query.order_by(AppProfile.updated_at.desc()))).scalars().all()
-    return [await _profile_out(r, db) for r in rows]
+    return await _profiles_out(list(rows), db)
 
 
 @router.post("/projects/{project_id}/app-profiles", status_code=status.HTTP_201_CREATED)
 async def create_app_profile(
     project_id: int,
     body: AppProfileCreate,
+    request: Request,
     modal_perm: tuple[Project, str | None] = Depends(require_profile_manager()),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     _project, role = modal_perm
+    if body.request_id:
+        replay = await find_project_idempotent_replay(
+            db, project_id, body.request_id, action="profile_create"
+        )
+        if replay is not None:
+            return replay
     existing = (
         await db.execute(
             select(AppProfile).where(
@@ -234,6 +279,15 @@ async def create_app_profile(
     ).scalar_one_or_none()
     if existing is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="同名 APP 档案已存在")
+    duplicate_code = await db.scalar(
+        select(AppProfile.id).where(
+            AppProfile.project_id == project_id,
+            AppProfile.code == body.code,
+            AppProfile.deleted_at.is_(None),
+        )
+    )
+    if duplicate_code is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="同编码 APP 档案已存在")
     profile = AppProfile(
         project_id=project_id,
         name=body.name,
@@ -245,7 +299,12 @@ async def create_app_profile(
         revision=1,
     )
     db.add(profile)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="APP 档案名称或编码已存在") from None
+    response = {**await _profile_out(profile, db), "request_id": body.request_id}
     await write_audit(
         db,
         profile_id=profile.id,
@@ -256,10 +315,12 @@ async def create_app_profile(
         revision_before=0,
         revision_after=1,
         request_id=body.request_id,
+        response_data=jsonable_encoder(response),
+        **_audit_client(request),
     )
     await db.commit()
     await db.refresh(profile)
-    return {**await _profile_out(profile, db), "request_id": body.request_id}
+    return response
 
 
 @router.get("/app-profiles/{profile_id}")
@@ -277,6 +338,7 @@ async def get_app_profile(
 async def update_app_profile(
     profile_id: int,
     body: AppProfileUpdate,
+    request: Request,
     modal_perm: tuple[Project, str | None] = Depends(require_profile_manager_by_profile()),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -299,6 +361,9 @@ async def update_app_profile(
         if field in body.model_fields_set and getattr(body, field) is not None:
             setattr(profile, field, getattr(body, field))
     profile.updated_by = user.id
+    await db.flush()
+    await db.refresh(profile)
+    response = {**await _profile_out(profile, db), "request_id": body.request_id}
     await write_audit(
         db,
         profile_id=profile_id,
@@ -309,23 +374,30 @@ async def update_app_profile(
         revision_before=before,
         revision_after=new_revision,
         request_id=body.request_id,
+        response_data=jsonable_encoder(response),
+        **_audit_client(request),
     )
     await db.commit()
     await db.refresh(profile)
     await _broadcast_config(profile, user.id)
-    return {**await _profile_out(profile, db), "request_id": body.request_id}
+    return response
 
 
 @router.delete("/app-profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_app_profile(
     profile_id: int,
     body: AppProfileDelete,
+    request: Request,
     modal_perm: tuple[Project, str | None] = Depends(require_profile_manager_by_profile()),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     profile = await _get_profile_or_404(profile_id, db)
     _project, role = modal_perm
+    if body.request_id:
+        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        if replay is not None:
+            return
     profile_id_ = profile.id
     active = await db.scalar(
         select(func.count()).select_from(Execution).where(
@@ -356,6 +428,7 @@ async def delete_app_profile(
         revision_before=before,
         revision_after=new_revision,
         request_id=body.request_id,
+        **_audit_client(request),
     )
     await db.commit()
     await _broadcast_config(profile, user.id)
@@ -368,8 +441,8 @@ async def delete_app_profile(
 async def list_releases(
     profile_id: int,
     status_: str = Query(default="active", alias="status"),
-    page: int = 1,
-    page_size: int = 50,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -399,12 +472,17 @@ async def list_releases(
 async def create_release(
     profile_id: int,
     body: ReleaseCreate,
+    request: Request,
     modal_perm: tuple[Project, str | None] = Depends(require_profile_manager_by_profile()),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     profile = await _get_profile_or_404(profile_id, db)
     _project, role = modal_perm
+    if body.request_id:
+        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        if replay is not None:
+            return replay
     existing = (
         await db.execute(
             select(AppProfileRelease).where(
@@ -426,6 +504,7 @@ async def create_release(
     )
     db.add(release)
     await db.flush()
+    response = {**_release_out(release), "request_id": body.request_id}
     await write_audit(
         db,
         profile_id=profile_id,
@@ -436,16 +515,19 @@ async def create_release(
         revision_before=profile.revision,
         revision_after=profile.revision,
         request_id=body.request_id,
+        response_data=jsonable_encoder(response),
+        **_audit_client(request),
     )
     await db.commit()
     await db.refresh(release)
-    return {**_release_out(release), "request_id": body.request_id}
+    return response
 
 
 @router.patch("/app-profile-releases/{release_id}")
 async def update_release(
     release_id: int,
     body: ReleaseUpdate,
+    request: Request,
     modal_perm: tuple[Project, str | None] = Depends(require_release_manager()),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -455,10 +537,21 @@ async def update_release(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="发布版本不存在")
     profile = await _get_profile_or_404(release.profile_id, db)
     _project, role = modal_perm
+    if body.request_id:
+        replay = await find_idempotent_replay(db, profile.id, body.request_id)
+        if replay is not None:
+            return replay
     for field in ("version", "build_number", "description", "status"):
         if field in body.model_fields_set and getattr(body, field) is not None:
             setattr(release, field, getattr(body, field))
     release.updated_by = user.id
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="同版本号发布版本已存在") from None
+    await db.refresh(release)
+    response = {**_release_out(release), "request_id": body.request_id}
     await write_audit(
         db,
         profile_id=profile.id,
@@ -469,16 +562,19 @@ async def update_release(
         revision_before=profile.revision,
         revision_after=profile.revision,
         request_id=body.request_id,
+        response_data=jsonable_encoder(response),
+        **_audit_client(request),
     )
     await db.commit()
     await db.refresh(release)
-    return {**_release_out(release), "request_id": body.request_id}
+    return response
 
 
 @router.delete("/app-profile-releases/{release_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_release(
     release_id: int,
     body: ReleaseDelete,
+    request: Request,
     modal_perm: tuple[Project, str | None] = Depends(require_release_manager()),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -488,6 +584,10 @@ async def delete_release(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="发布版本不存在")
     profile = await _get_profile_or_404(release.profile_id, db)
     _project, role = modal_perm
+    if body.request_id:
+        replay = await find_idempotent_replay(db, profile.id, body.request_id)
+        if replay is not None:
+            return
     release.deleted_at = datetime.now(UTC)
     release.status = "disabled"
     release.updated_by = user.id
@@ -501,11 +601,24 @@ async def delete_release(
         revision_before=profile.revision,
         revision_after=profile.revision,
         request_id=body.request_id,
+        **_audit_client(request),
     )
     await db.commit()
 
 
 # ---------- 批量跳过/恢复（方案 §4.5） ----------
+
+
+def _find_case_node(case: TestCase, node_type: str, node_key: str) -> tuple[str, dict] | None:
+    try:
+        normalized_key = str(UUID(str(node_key)))
+    except ValueError:
+        return None
+    collection = case.steps if node_type == "step" else case.assertions
+    for node in collection or []:
+        if isinstance(node, dict) and str(node.get("key") or "") == normalized_key:
+            return normalized_key, node
+    return None
 
 
 async def _validate_skip_target(db: AsyncSession, project_id: int, target, reason) -> tuple[dict, str | None]:
@@ -532,13 +645,18 @@ async def _validate_skip_target(db: AsyncSession, project_id: int, target, reaso
     c = await db.get(TestCase, target.case_id)
     if c is None or c.deleted_at is not None or c.project_id != project_id:
         return {}, "用例不存在或跨项目"
-    return {"target_type": target.type, "case_id": target.case_id, "node_key": target.node_key}, None
+    found = _find_case_node(c, target.type, target.node_key)
+    if found is None:
+        return {}, f"{target.type} 节点不存在或 node_key 非法"
+    normalized_key, _node = found
+    return {"target_type": target.type, "case_id": target.case_id, "node_key": normalized_key}, None
 
 
 @router.post("/app-profiles/{profile_id}/skip-rules/batch", response_model=dict)
 async def skip_rules_batch(
     profile_id: int,
     body: SkipBatchRequest,
+    request: Request,
     modal_perm: tuple[Project, str | None] = Depends(require_profile_manager_by_profile()),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -647,6 +765,7 @@ async def skip_rules_batch(
         request_id=body.request_id,
         changes=results,
         response_data={"changed": changed, "unchanged": unchanged, "revision": new_revision},
+        **_audit_client(request),
     )
     await db.commit()
     await _broadcast_config(profile, user.id)
@@ -663,8 +782,67 @@ async def skip_rules_batch(
 # ---------- 覆盖（方案 §4.6） ----------
 
 
+@router.get("/app-profiles/{profile_id}/overrides", response_model=dict)
+async def list_profile_overrides(
+    profile_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """返回当前有效覆盖值，供工作台编辑器回显。"""
+    profile = await _get_profile_or_404(profile_id, db)
+    await get_project_permission(profile.project_id, user, db)
+    element_rows = (
+        await db.execute(
+            select(AppProfileElementOverride).where(
+                AppProfileElementOverride.profile_id == profile_id,
+                AppProfileElementOverride.deleted_at.is_(None),
+            )
+        )
+    ).scalars().all()
+    variable_rows = (
+        await db.execute(
+            select(AppProfileVariableOverride).where(
+                AppProfileVariableOverride.profile_id == profile_id,
+                AppProfileVariableOverride.deleted_at.is_(None),
+            )
+        )
+    ).scalars().all()
+    node_rows = (
+        await db.execute(
+            select(AppProfileNodeOverride).where(
+                AppProfileNodeOverride.profile_id == profile_id,
+                AppProfileNodeOverride.deleted_at.is_(None),
+            )
+        )
+    ).scalars().all()
+    return {
+        "revision": profile.revision,
+        "elements": [
+            {
+                "element_id": row.element_id,
+                "locator_type": row.locator_type,
+                "locator_value": row.locator_value,
+            }
+            for row in element_rows
+        ],
+        "variables": [
+            {"name": row.name, "value": row.value, "description": row.description}
+            for row in variable_rows
+        ],
+        "nodes": [
+            {
+                "case_id": row.case_id,
+                "node_type": row.target_type,
+                "node_key": str(row.node_key),
+                "patch": row.patch,
+            }
+            for row in node_rows
+        ],
+    }
+
+
 async def _bump_and_audit(
-    db, profile, body, action, user, role, changes=None, response_data=None
+    db, profile, body, action, user, role, request, changes=None, response_data=None
 ) -> dict:
     """递增 revision + 写审计，返回 (revision_after, 新值)。公共提取。"""
     before = profile.revision
@@ -675,6 +853,7 @@ async def _bump_and_audit(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": err.code, "current": err.current, "expected": err.expected},
         ) from None
+    audit_response = {"revision": new_revision, **(response_data or {})}
     await write_audit(
         db,
         profile_id=profile.id,
@@ -686,7 +865,8 @@ async def _bump_and_audit(
         revision_after=new_revision,
         request_id=body.request_id,
         changes=changes or [],
-        response_data=response_data or {},
+        response_data=jsonable_encoder(audit_response),
+        **_audit_client(request),
     )
     profile.updated_by = user.id
     return new_revision
@@ -698,12 +878,17 @@ async def upsert_element_override(
     profile_id: int,
     element_id: int,
     body: ElementOverrideUpsert,
+    request: Request,
     modal_perm: tuple[Project, str | None] = Depends(require_profile_manager_by_profile()),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     profile = await _get_profile_or_404(profile_id, db)
     _project, role = modal_perm
+    if body.request_id:
+        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        if replay is not None:
+            return replay
     from app.models import TestElement
 
     el = await db.get(TestElement, element_id)
@@ -734,9 +919,16 @@ async def upsert_element_override(
         existing.locator_type = body.locator_type
         existing.locator_value = body.locator_value
         existing.updated_by = user.id
-    new_revision = await _bump_and_audit(db, profile, body, "element_override_upsert", user, role)
+    response_data = {
+        "element_id": element_id,
+        "locator_type": body.locator_type,
+        "locator_value": body.locator_value,
+    }
+    new_revision = await _bump_and_audit(
+        db, profile, body, "element_override_upsert", user, role, request, response_data=response_data
+    )
     await db.commit()
-    return {"revision": new_revision, "element_id": element_id, "locator_type": body.locator_type, "locator_value": body.locator_value}
+    return {"revision": new_revision, **response_data}
 
 
 @router.delete("/app-profiles/{profile_id}/element-overrides/{element_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -744,12 +936,17 @@ async def restore_element_override(
     profile_id: int,
     element_id: int,
     body: ElementOverrideDelete,
+    request: Request,
     modal_perm: tuple[Project, str | None] = Depends(require_profile_manager_by_profile()),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     profile = await _get_profile_or_404(profile_id, db)
     _project, role = modal_perm
+    if body.request_id:
+        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        if replay is not None:
+            return
     existing = (
         await db.execute(
             select(AppProfileElementOverride).where(
@@ -759,10 +956,11 @@ async def restore_element_override(
             )
         )
     ).scalar_one_or_none()
-    if existing is not None:
-        existing.deleted_at = datetime.now(UTC)
-        existing.updated_by = user.id
-    await _bump_and_audit(db, profile, body, "element_override_restore", user, role)
+    if existing is None:
+        return
+    existing.deleted_at = datetime.now(UTC)
+    existing.updated_by = user.id
+    await _bump_and_audit(db, profile, body, "element_override_restore", user, role, request)
     await db.commit()
 
 
@@ -772,12 +970,17 @@ async def upsert_variable_override(
     profile_id: int,
     name: str,
     body: VariableOverrideUpsert,
+    request: Request,
     modal_perm: tuple[Project, str | None] = Depends(require_profile_manager_by_profile()),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     profile = await _get_profile_or_404(profile_id, db)
     _project, role = modal_perm
+    if body.request_id:
+        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        if replay is not None:
+            return replay
     existing = (
         await db.execute(
             select(AppProfileVariableOverride).where(
@@ -798,9 +1001,12 @@ async def upsert_variable_override(
     existing.value = body.value
     existing.description = body.description
     existing.updated_by = user.id
-    new_revision = await _bump_and_audit(db, profile, body, "variable_override_upsert", user, role)
+    response_data = {"name": name, "value": body.value, "description": body.description}
+    new_revision = await _bump_and_audit(
+        db, profile, body, "variable_override_upsert", user, role, request, response_data=response_data
+    )
     await db.commit()
-    return {"revision": new_revision, "name": name, "value": body.value}
+    return {"revision": new_revision, **response_data}
 
 
 @router.delete("/app-profiles/{profile_id}/variable-overrides/{name}", status_code=status.HTTP_204_NO_CONTENT)
@@ -808,12 +1014,17 @@ async def restore_variable_override(
     profile_id: int,
     name: str,
     body: VariableOverrideDelete,
+    request: Request,
     modal_perm: tuple[Project, str | None] = Depends(require_profile_manager_by_profile()),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     profile = await _get_profile_or_404(profile_id, db)
     _project, role = modal_perm
+    if body.request_id:
+        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        if replay is not None:
+            return
     existing = (
         await db.execute(
             select(AppProfileVariableOverride).where(
@@ -823,10 +1034,11 @@ async def restore_variable_override(
             )
         )
     ).scalar_one_or_none()
-    if existing is not None:
-        existing.deleted_at = datetime.now(UTC)
-        existing.updated_by = user.id
-    await _bump_and_audit(db, profile, body, "variable_override_restore", user, role)
+    if existing is None:
+        return
+    existing.deleted_at = datetime.now(UTC)
+    existing.updated_by = user.id
+    await _bump_and_audit(db, profile, body, "variable_override_restore", user, role, request)
     await db.commit()
 
 
@@ -838,12 +1050,17 @@ async def upsert_node_override(
     node_type: str,
     node_key: str,
     body: NodeOverridePatch,
+    request: Request,
     modal_perm: tuple[Project, str | None] = Depends(require_profile_manager_by_profile()),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     profile = await _get_profile_or_404(profile_id, db)
     _project, role = modal_perm
+    if body.request_id:
+        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        if replay is not None:
+            return replay
     if node_type not in ("step", "assertion"):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="node_type 只允许 step|assertion")
     from app.models import TestCase
@@ -851,21 +1068,40 @@ async def upsert_node_override(
     case = await db.get(TestCase, case_id)
     if case is None or case.deleted_at is not None or case.project_id != profile.project_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用例不存在或跨项目")
+    found = _find_case_node(case, node_type, node_key)
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": "PROFILE_TARGET_NOT_FOUND", "message": "节点不存在或 node_key 非法"},
+        )
+    normalized_key, source_node = found
     # 白名单合并校验（禁止改身份/顺序）
-    from app.services.profile_resolver import NODE_IDENTITY_FIELDS, NODE_PATCH_ALLOWED
+    from app.services.profile_resolver import (
+        NODE_IDENTITY_FIELDS,
+        NODE_PATCH_ALLOWED,
+        ProfileRuleError,
+        validate_node_patch,
+    )
 
     for key in body.patch:
         if key in NODE_IDENTITY_FIELDS:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"禁止修改节点字段: {key}")
         if key not in NODE_PATCH_ALLOWED:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"不允许覆盖字段: {key}")
+    try:
+        validate_node_patch(node_type, source_node, body.patch)
+    except ProfileRuleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": exc.code, "message": exc.message},
+        ) from None
     existing = (
         await db.execute(
             select(AppProfileNodeOverride).where(
                 AppProfileNodeOverride.profile_id == profile_id,
                 AppProfileNodeOverride.target_type == node_type,
                 AppProfileNodeOverride.case_id == case_id,
-                AppProfileNodeOverride.node_key == node_key,
+                AppProfileNodeOverride.node_key == normalized_key,
                 AppProfileNodeOverride.deleted_at.is_(None),
             )
         )
@@ -875,7 +1111,7 @@ async def upsert_node_override(
             profile_id=profile_id,
             target_type=node_type,
             case_id=case_id,
-            node_key=node_key,
+            node_key=normalized_key,
             patch=body.patch,
             created_by=user.id,
             updated_by=user.id,
@@ -886,9 +1122,17 @@ async def upsert_node_override(
         existing.deleted_at = None
         existing.patch = body.patch
         existing.updated_by = user.id
-    new_revision = await _bump_and_audit(db, profile, body, "node_override_upsert", user, role)
+    response_data = {
+        "case_id": case_id,
+        "node_type": node_type,
+        "node_key": normalized_key,
+        "patch": body.patch,
+    }
+    new_revision = await _bump_and_audit(
+        db, profile, body, "node_override_upsert", user, role, request, response_data=response_data
+    )
     await db.commit()
-    return {"revision": new_revision, "case_id": case_id, "node_key": node_key, "patch": body.patch}
+    return {"revision": new_revision, **response_data}
 
 
 @router.delete("/app-profiles/{profile_id}/node-overrides/{case_id}/{node_type}/{node_key}", status_code=status.HTTP_204_NO_CONTENT)
@@ -898,27 +1142,37 @@ async def restore_node_override(
     node_type: str,
     node_key: str,
     body: NodeOverrideDelete,
+    request: Request,
     modal_perm: tuple[Project, str | None] = Depends(require_profile_manager_by_profile()),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     profile = await _get_profile_or_404(profile_id, db)
     _project, role = modal_perm
+    if body.request_id:
+        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        if replay is not None:
+            return
+    try:
+        normalized_key = str(UUID(node_key))
+    except ValueError:
+        return
     existing = (
         await db.execute(
             select(AppProfileNodeOverride).where(
                 AppProfileNodeOverride.profile_id == profile_id,
                 AppProfileNodeOverride.target_type == node_type,
                 AppProfileNodeOverride.case_id == case_id,
-                AppProfileNodeOverride.node_key == node_key,
+                AppProfileNodeOverride.node_key == normalized_key,
                 AppProfileNodeOverride.deleted_at.is_(None),
             )
         )
     ).scalar_one_or_none()
-    if existing is not None:
-        existing.deleted_at = datetime.now(UTC)
-        existing.updated_by = user.id
-    await _bump_and_audit(db, profile, body, "node_override_restore", user, role)
+    if existing is None:
+        return
+    existing.deleted_at = datetime.now(UTC)
+    existing.updated_by = user.id
+    await _bump_and_audit(db, profile, body, "node_override_restore", user, role, request)
     await db.commit()
 
 
@@ -928,8 +1182,8 @@ async def restore_node_override(
 @router.get("/app-profiles/{profile_id}/workspace")
 async def workspace(
     profile_id: int,
-    page: int = 1,
-    page_size: int = 30,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=30, ge=1, le=200),
     keyword: str = "",
     effective_status: str = "all",
     reason_code: str = "",
@@ -952,12 +1206,14 @@ async def workspace(
     skip = await _load_skip_index(db, profile_id)
     case_counts = await _case_counts(db, profile.project_id)
     diff_counts = await _diff_counts(db, profile.project_id, profile_id)
+    override_counts = await _override_counts(db, profile.project_id, profile_id)
 
     items: list[dict] = []
     for s in suites:
         rule = skip["suite"].get(s.id)
-        effective = "skipped" if rule else "enabled"
-        status_source = "direct" if rule else "none"
+        override_count = override_counts.get(s.id, 0)
+        effective = "skipped" if rule else ("overridden" if override_count else "enabled")
+        status_source = "direct" if rule else ("override" if override_count else "none")
         reason = None
         if rule:
             reason = {"code": rule.reason_code, "note": rule.reason_note or ""}
@@ -975,9 +1231,9 @@ async def workspace(
                 "effective_status": effective,
                 "status_source": status_source,
                 "reason": reason,
-                "override_count": diff_counts.get(s.id, 0),
+                "override_count": override_count,
                 "child_count": case_counts.get(s.id, 0),
-                "difference_count": diff_counts.get(s.id, 0),
+                "difference_count": diff_counts.get(s.id, 0) + override_count,
                 "has_children": case_counts.get(s.id, 0) > 0,
                 "updated_at": s.updated_at,
             }
@@ -1001,8 +1257,8 @@ async def workspace_nodes(
     parent_type: str,
     parent_id: int,
     ancestor_suite_id: int | None = None,
-    page: int = 1,
-    page_size: int = 100,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=500),
     include: str = "",
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -1010,6 +1266,7 @@ async def workspace_nodes(
     profile = await _get_profile_or_404(profile_id, db)
     await get_project_permission(profile.project_id, user, db)
     skip = await _load_skip_index(db, profile_id)
+    overrides = await _load_override_index(db, profile_id)
     if parent_type == "suite":
         suite = await db.get(TestSuite, parent_id)
         if suite is None or suite.deleted_at is not None or suite.project_id != profile.project_id:
@@ -1020,13 +1277,14 @@ async def workspace_nodes(
         for case in rows:
             direct_rule = skip["case"].get(case.id)
             rule = suite_rule or direct_rule
-            effective = "skipped" if rule else "enabled"
-            source = "inherited" if suite_rule else ("direct" if direct_rule else "none")
+            override_count = len(overrides["node"].get(case.id, {}))
+            effective = "skipped" if rule else ("overridden" if override_count else "enabled")
+            source = "inherited" if suite_rule else ("direct" if direct_rule else ("override" if override_count else "none"))
             reason = None
             if rule:
                 reason = {"code": rule.reason_code, "note": rule.reason_note or ""}
             items.append(
-                {"node_type": "case", "id": case.id, "name": case.name, "effective_status": effective, "status_source": source, "reason": reason, "has_children": True, "override_count": 0}
+                {"node_type": "case", "id": case.id, "name": case.name, "effective_status": effective, "status_source": source, "reason": reason, "has_children": True, "override_count": override_count}
             )
         start = (page - 1) * page_size
         return {"total": len(items), "page": page, "page_size": page_size, "items": items[start : start + page_size]}
@@ -1056,11 +1314,13 @@ async def workspace_nodes(
         for node in (case.steps or []):
             node_key = str(node.get("key") or "")
             rule = skip["step"].get(case.id, {}).get(node_key)
-            items.append(_node_item("step", case.id, node_key, node, rule, case_rule))
+            overridden = overrides["node"].get(case.id, {}).get(node_key) == "step"
+            items.append(_node_item("step", case.id, node_key, node, rule, case_rule, overridden))
         for node in (case.assertions or []):
             node_key = str(node.get("key") or "")
             rule = skip["assertion"].get(case.id, {}).get(node_key)
-            items.append(_node_item("assertion", case.id, node_key, node, rule, case_rule))
+            overridden = overrides["node"].get(case.id, {}).get(node_key) == "assertion"
+            items.append(_node_item("assertion", case.id, node_key, node, rule, case_rule, overridden))
         start = (page - 1) * page_size
         return {"total": len(items), "page": page, "page_size": page_size, "items": items[start : start + page_size]}
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="parent_type 必须是 suite 或 case")
@@ -1073,8 +1333,8 @@ async def differences(
     target_type: str = "",
     reason_code: str = "",
     keyword: str = "",
-    page: int = 1,
-    page_size: int = 50,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1214,6 +1474,28 @@ async def _diff_counts(db: AsyncSession, project_id: int, profile_id: int) -> di
     return counts
 
 
+async def _override_counts(db: AsyncSession, project_id: int, profile_id: int) -> dict[int, int]:
+    """按套件聚合节点覆盖数量，供工作台“已覆盖”状态筛选。"""
+    rows = (
+        await db.execute(
+            select(TestSuiteCase.suite_id, func.count(AppProfileNodeOverride.id))
+            .join(TestCase, TestCase.id == TestSuiteCase.case_id)
+            .join(
+                AppProfileNodeOverride,
+                AppProfileNodeOverride.case_id == TestCase.id,
+            )
+            .where(
+                TestCase.project_id == project_id,
+                TestCase.deleted_at.is_(None),
+                AppProfileNodeOverride.profile_id == profile_id,
+                AppProfileNodeOverride.deleted_at.is_(None),
+            )
+            .group_by(TestSuiteCase.suite_id)
+        )
+    ).all()
+    return {suite_id: count for suite_id, count in rows}
+
+
 def _sort_workspace(items: list[dict], sort_by: str, sort_order: str) -> list[dict]:
     key_map = {"name": "name", "updated_at": "updated_at", "case_count": "child_count"}
     key = key_map.get(sort_by, "name")
@@ -1232,10 +1514,18 @@ async def _suite_cases(db: AsyncSession, suite_id: int) -> list[TestCase]:
     return list(rows)
 
 
-def _node_item(node_type: str, case_id: int, node_key: str, node: dict, rule, inherited_rule=None) -> dict:
+def _node_item(
+    node_type: str,
+    case_id: int,
+    node_key: str,
+    node: dict,
+    rule,
+    inherited_rule=None,
+    overridden: bool = False,
+) -> dict:
     effective_rule = inherited_rule or rule
-    effective = "skipped" if effective_rule else "enabled"
-    source = "inherited" if inherited_rule else ("direct" if rule else "none")
+    effective = "skipped" if effective_rule else ("overridden" if overridden else "enabled")
+    source = "inherited" if inherited_rule else ("direct" if rule else ("override" if overridden else "none"))
     reason = None
     if effective_rule:
         reason = {"code": effective_rule.reason_code, "note": effective_rule.reason_note or ""}
@@ -1250,7 +1540,7 @@ def _node_item(node_type: str, case_id: int, node_key: str, node: dict, rule, in
         "effective_status": effective,
         "status_source": source,
         "reason": reason,
-        "override_count": 0,
+        "override_count": 1 if overridden else 0,
         "has_children": False,
         "updated_at": None,
     }
