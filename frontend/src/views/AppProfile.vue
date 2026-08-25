@@ -134,6 +134,8 @@ async function mutateSkip(operation: 'skip' | 'restore', targets: SkipTarget[]) 
     ElMessage.success(operation === 'skip' ? `已跳过 ${res.changed} 项` : `已恢复 ${res.changed} 项`)
     selectedRows.value = []
     await store.refreshVisibleWorkspace()
+    // 左侧树 skip_counts（“X 用例 / Y 步骤”）随跳过/恢复实时变化，需重新拉取档案列表
+    await store.loadProfiles()
   } finally {
     saving.value = false
   }
