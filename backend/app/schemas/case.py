@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Any, Literal
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -12,6 +13,15 @@ from app.schemas.generated_case_params import (  # noqa: F401  (ParamsBase 由�
 )
 
 
+def _ensure_node_key(raw: str | None) -> str:
+    """步骤/断言稳定标识：缺失时兜底生成 UUID；提供但非法（非 UUID 格式）直接拒绝（方案 §2.8）。"""
+    if raw is None:
+        return str(uuid4())
+    if isinstance(raw, UUID):
+        return str(raw)
+    return str(UUID(raw))
+
+
 class StepCreate(BaseModel):
     order: int = Field(ge=1)
     action: str
@@ -19,6 +29,8 @@ class StepCreate(BaseModel):
     element_id: int | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     description: str | None = None
+    # 方案 §2.8：稳定标识，缺失/非法由后端兜底生成并回写响应
+    key: str | None = None
     # Step 4：失败后继续为 Step 顶层字段（manifest controls.step，不进 params）
     continue_on_failure: bool = False
 
@@ -28,6 +40,7 @@ class StepCreate(BaseModel):
             raise ValueError(f"未知动作: {self.action}")
         model = STEP_PARAM_MODELS[self.action]
         self.params = model(**self.params).model_dump(exclude_none=False)
+        self.key = _ensure_node_key(self.key)
         return self
 
 
@@ -37,6 +50,8 @@ class AssertionCreate(BaseModel):
     element_id: int | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     description: str | None = None
+    # 方案 §2.8：稳定标识
+    key: str | None = None
 
     @model_validator(mode="after")
     def _validate_type_params(self):
@@ -44,6 +59,7 @@ class AssertionCreate(BaseModel):
             raise ValueError(f"未知断言: {self.type}")
         model = ASSERTION_PARAM_MODELS[self.type]
         self.params = model(**self.params).model_dump(exclude_none=False)
+        self.key = _ensure_node_key(self.key)
         return self
 
 

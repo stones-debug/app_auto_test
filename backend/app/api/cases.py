@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
@@ -72,6 +73,16 @@ async def _check_orders_unique(steps: list | None, assertions: list | None) -> N
     if len(assertion_orders) != len(set(assertion_orders)):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="断言 order 不得重复"
+        )
+
+
+def _check_keys_unique(steps: list | None, assertions: list | None) -> None:
+    """方案 §2.8：用例内步骤/断言稳定 key 不得重复（NODE_KEY_DUPLICATED）。"""
+    keys = [s.get("key") for s in (steps or []) if isinstance(s, dict) and s.get("key")]
+    keys += [a.get("key") for a in (assertions or []) if isinstance(a, dict) and a.get("key")]
+    if len(keys) != len(set(keys)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="用例内步骤/断言 key 不得重复"
         )
 
 
@@ -161,6 +172,7 @@ async def create_case(
     await _check_module_belongs(project_id, body.module_id, db)
     await _check_elements_belong(project_id, body.steps, body.assertions, db)
     await _check_orders_unique(body.steps, body.assertions)
+    _check_keys_unique(body.steps, body.assertions)
     case = TestCase(
         project_id=project_id,
         module_id=body.module_id,
@@ -205,6 +217,7 @@ async def update_case(
     if body.steps is not None or body.assertions is not None:
         await _check_elements_belong(case.project_id, body.steps, body.assertions, db)
     await _check_orders_unique(body.steps, body.assertions)
+    _check_keys_unique(body.steps, body.assertions)
     for field in ("name", "module_id", "description", "status", "steps", "assertions", "variables"):
         # CR-25：model_fields_set 区分“未提交”与“显式 null”，支持清空可选字段
         if field in body.model_fields_set:
@@ -247,8 +260,8 @@ async def clone_case(
         name=f"{case.name} (副本)",
         description=case.description,
         status="draft",
-        steps=[dict(s) for s in (case.steps or [])],
-        assertions=[dict(a) for a in (case.assertions or [])],
+        steps=[{**dict(s), "key": str(uuid4())} for s in (case.steps or [])],
+        assertions=[{**dict(a), "key": str(uuid4())} for a in (case.assertions or [])],
         variables=dict(case.variables or {}),
         created_by=user.id,
         updated_by=user.id,
