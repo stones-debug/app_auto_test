@@ -23,6 +23,10 @@ async def _no_queue(_db, _worker_id):
     return None
 
 
+async def _noop(_db):
+    return None
+
+
 async def test_runtime_start_stop_are_idempotent(monkeypatch):
     monkeypatch.setattr(worker_runtime, "SessionLocal", FakeSession)
     monkeypatch.setattr(worker_runtime.worker_service, "claim_next_queue", _no_queue)
@@ -113,6 +117,8 @@ async def test_runtime_survives_claim_error(monkeypatch):
 async def test_runtime_starts_and_stops_scheduler(monkeypatch):
     monkeypatch.setattr(worker_runtime, "SessionLocal", FakeSession)
     monkeypatch.setattr(worker_runtime.worker_service, "claim_next_queue", _no_queue)
+    # 启动时立即执行一次心跳扫描（停机恢复），此处替换为 no-op，避免依赖真实 DB 会话
+    monkeypatch.setattr(worker_runtime.worker_service, "agent_heartbeat_scan", _noop)
     runtime = WorkerRuntime("scheduler-test", enable_scans=True, poll_interval=60)
 
     await runtime.start()

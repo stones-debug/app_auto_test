@@ -10,7 +10,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import httpx
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -623,11 +623,13 @@ async def finalize_unfinished_terminal(db: AsyncSession) -> None:
 
 async def agent_heartbeat_scan(db: AsyncSession) -> None:
     threshold = datetime.now(UTC) - timedelta(seconds=settings.agent_heartbeat_timeout)
+    # last_heartbeat IS NULL：从未心跳或数据异常，同样视为失联（NULL < threshold 恒为假）
     stale_agents = (
         await db.execute(
             select(Agent).where(
                 Agent.status == "online",
-                Agent.last_heartbeat < threshold,
+                Agent.deleted_at.is_(None),
+                or_(Agent.last_heartbeat.is_(None), Agent.last_heartbeat < threshold),
             )
         )
     ).scalars().all()

@@ -58,6 +58,9 @@ class WorkerRuntime:
         self._stop_event = asyncio.Event()
         if self.enable_scans:
             self._start_scans()
+            # 后端停机/重启期间 agent 无法心跳，DB 中残留 online 状态。
+            # 立即执行一次心跳扫描，避免重启后等到下一个 60s 周期才置离线。
+            await self._session_job(worker_service.agent_heartbeat_scan)()
         self._consumer_task = asyncio.create_task(
             self._claim_loop(), name=f"worker-consumer-{self.worker_id}"
         )

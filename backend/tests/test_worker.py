@@ -522,6 +522,36 @@ async def test_agent_heartbeat_scan(client: AsyncClient):
         assert device.locked_by_execution is None
 
 
+async def test_agent_heartbeat_scan_null_heartbeat(client: AsyncClient):
+    """last_heartbeat IS NULL 的 online agent 也应被置离线（NULL < threshold 恒为假）。"""
+    await client.post("/api/auth/register", json=REG)
+    agent_id, device_id = await _create_agent_device(agent_status="online")
+    async with SessionLocal() as db:
+        agent = await db.get(Agent, agent_id)
+        agent.last_heartbeat = None
+        await db.commit()
+
+        await worker_service.agent_heartbeat_scan(db)
+
+    async with SessionLocal() as db:
+        agent = await db.get(Agent, agent_id)
+        assert agent.status == "offline"
+
+
+async def test_runtime_start_scans_marks_stale_agents_offline(client: AsyncClient):
+    """后端重启场景：runtime 启动时立即扫描，残留 online 且心跳过期的 agent 被置离线。"""
+    await client.post("/api/auth/register", json=REG)
+    agent_id, _device_id = await _create_agent_device(stale=True)
+    runtime = WorkerRuntime("boot-scan-test", enable_scans=True, poll_interval=60)
+    try:
+        await runtime.start()
+    finally:
+        await runtime.stop()
+    async with SessionLocal() as db:
+        agent = await db.get(Agent, agent_id)
+        assert agent.status == "offline"
+
+
 # ---------- CR-06：stopping 宽限期与失联终结 ----------
 
 
