@@ -36,7 +36,6 @@ const displayCases = computed(() => {
 
 // 方案 §7.2：不适用内容清单（exclusions 扁平展开）
 const activeExclusions = ref<string[]>([])
-const allExclusionsExpanded = ref(false)
 const exclusionRows = computed(() => {
   const ex = detail.value?.exclusions ?? []
   return ex.map((e, i) => ({
@@ -48,8 +47,12 @@ const exclusionRows = computed(() => {
     source_type: e.source_type,
   }))
 })
-function onExclusionVisibilityChange() {
-  allExclusionsExpanded.value = activeExclusions.value.length === exclusionRows.value.length
+function expandAllExclusions() {
+  activeExclusions.value = exclusionRows.value.map((row) => row.key)
+}
+
+function collapseAllExclusions() {
+  activeExclusions.value = []
 }
 
 function typeLabel(t: unknown) {
@@ -104,6 +107,7 @@ async function load() {
     activeCases.value = detail.value.cases
       .map((c) => (['failed', 'error'].includes(c.status) ? c.id : -1))
       .filter((cid) => cid >= 0)
+    activeExclusions.value = []
   } finally {
     loading.value = false
   }
@@ -164,6 +168,13 @@ function stepsAfterAssertions(steps: ReportStep[]) {
           <div class="meta"><span class="label">开始</span>{{ formatDateTime(detail.execution.started_at) }}</div>
           <div class="meta"><span class="label">结束</span>{{ formatDateTime(detail.execution.finished_at) }}</div>
           <div class="meta"><span class="label">耗时</span>{{ durationText(detail.execution.duration) }}</div>
+          <div class="meta">
+            <span class="label">APP 档案</span>
+            {{ detail.execution.app_profile_name ?? '历史兼容执行（未指定档案）' }}
+          </div>
+          <div class="meta"><span class="label">发布版本</span>{{ detail.execution.app_release_version ?? '-' }}</div>
+          <div class="meta"><span class="label">配置修订</span>{{ detail.execution.profile_revision ?? '-' }}</div>
+          <div class="meta"><span class="label">资产修订</span>{{ detail.execution.test_asset_revision ?? '-' }}</div>
         </div>
         <div class="execution-parameters">
           <div class="parameter-title">执行参数</div>
@@ -187,11 +198,11 @@ function stepsAfterAssertions(steps: ReportStep[]) {
         <div class="case-toolbar">
           <h2>不适用内容</h2>
           <div class="case-actions">
-            <el-button size="small" @click="allExclusionsExpanded = true">全部展开</el-button>
-            <el-button size="small" @click="allExclusionsExpanded = false">全部折叠</el-button>
+            <el-button size="small" @click="expandAllExclusions">全部展开</el-button>
+            <el-button size="small" @click="collapseAllExclusions">全部折叠</el-button>
           </div>
         </div>
-        <el-collapse v-model="activeExclusions" class="exclusion-collapse" @change="onExclusionVisibilityChange">
+        <el-collapse v-model="activeExclusions" class="exclusion-collapse">
           <el-collapse-item v-for="row in exclusionRows" :key="row.key" :name="row.key">
             <template #title>
               <el-tag size="small" type="danger" class="mr8">{{ row.target_type }}</el-tag>

@@ -1969,4 +1969,18 @@ RUNNING ←── Worker 认领后经内部接口通知 FastAPI 更新
 
 ---
 
+### 10.12 多 APP 档案与差异化执行（V1.3 增量）
+
+> 依据《多APP形态共用测试资产与差异化执行_详细实施方案.md》固化；本节与前文冲突时以本节为准。
+
+1. **测试资产口径**：测试套件、用例、步骤、断言、元素和变量仍只有一份公共资产；`app_profiles` 只保存差异规则，不复制套件。步骤和断言的 JSON `key` 必须是稳定且唯一的 UUID，排序和改名不得改变 key。
+2. **档案与版本**：每个项目可建多个 `app_profiles`，发布版本由 `app_profile_releases` 管理。迁移为活动项目幂等创建“通用配置（待调整）/未标注历史版本”。`profile.revision` 只在有效规则变化时递增；公共测试资产变化递增 `projects.test_asset_revision`。
+3. **差异规则**：`app_profile_skip_rules` 支持 suite/case/step/assertion 四级跳过，父级规则优先；`app_profile_element_overrides`、`app_profile_variable_overrides`、`app_profile_node_overrides` 分别覆盖定位、变量和 Registry 允许的节点参数。所有写命令携带 `expected_revision` 与 `request_id`，Owner/Admin 可写，项目成员只读。
+4. **执行快照**：公共库运行必须选择档案和活动发布版本并调用 `POST /api/executions/preview`。正式提交携带 `app_profile_id`、`app_release_id`、`expected_profile_revision`、`expected_test_asset_revision`；服务端在同一事务内二次锁定双 revisions、生成完整执行快照、固化 `execution_exclusions` 并入队。Agent 只接收最终快照，不解析档案规则。
+5. **报告口径**：执行记录永久保存档案名、版本、双 revisions 和解析摘要快照；N/A 来自 `execution_exclusions`，不计入成功率分母，运行期 skipped 与 N/A 分开展示。历史 `app_profile_id IS NULL` 的执行显示“历史兼容执行”，不得查询当前配置回填历史结果。
+6. **灰度与回滚**：`APP_PROFILE_FEATURE_MODE=off|compat|required`；`compat` 仅对 `APP_PROFILE_ENABLED_PROJECT_IDS` 中的项目将旧请求注入通用档案，`required` 要求所有新请求显式选择档案/版本，`off` 保持旧执行协议。关闭灰度不删除档案、审计或历史快照。
+7. **核心接口**：档案 `/api/projects/{id}/app-profiles`，版本 `/api/app-profiles/{id}/releases`，规则 `/api/app-profiles/{id}/skip-rules/batch`，覆盖 `/api/app-profiles/{id}/*-overrides`，工作台 `/api/app-profiles/{id}/workspace`，差异清单 `/api/app-profiles/{id}/differences`，预检 `/api/executions/preview`；报告列表支持 `app_profile_id/app_release_id` 筛选。
+
+---
+
 > **文档结束**。本方案基于原始设计进行了系统性修订，重点解决了执行引擎耦合、Agent 落地性、执行可靠性、报告可追溯性等核心问题，并经由 V1.1 评审补齐执行职责划分、Worker↔Agent 通信中转、元素快照、停止机制、设备原子锁、变量系统等缺口，可直接作为项目启动的技术基线。

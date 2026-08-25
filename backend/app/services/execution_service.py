@@ -4,7 +4,8 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
+from app.core.config import app_profile_required_for_project, settings
+from app.core.errors import api_error
 from app.models import (
     AppProfile,
     AppProfileRelease,
@@ -28,6 +29,65 @@ from app.services.profile_resolver import (
 
 class _ProfileRequired(Exception):
     pass
+
+
+async def apply_app_profile_feature_mode(db: AsyncSession, project_id: int, body):
+    """按灰度模式处理旧执行请求。
+
+    compat 灰度项目自动使用迁移创建的通用档案；required 模式要求调用方显式选择，
+    off/非灰度项目保持旧执行协议。显式提交的档案上下文始终按正常规则校验。
+    """
+    if body.app_profile_id is not None or not app_profile_required_for_project(project_id):
+        return body if body.app_profile_id is not None else None
+    if settings.app_profile_feature_mode == "required":
+        raise api_error(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            code="APP_PROFILE_REQUIRED",
+            message="必须选择 APP 档案和发布版本",
+        )
+
+    profile = (
+        await db.execute(
+            select(AppProfile).where(
+                AppProfile.project_id == project_id,
+                AppProfile.name == "通用配置（待调整）",
+                AppProfile.status == "active",
+                AppProfile.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if profile is None:
+        raise api_error(
+            status_code=status.HTTP_409_CONFLICT,
+            code="DEFAULT_APP_PROFILE_MISSING",
+            message="灰度项目缺少通用配置档案，请先运行回填脚本",
+        )
+    release = (
+        await db.execute(
+            select(AppProfileRelease).where(
+                AppProfileRelease.profile_id == profile.id,
+                AppProfileRelease.status == "active",
+                AppProfileRelease.deleted_at.is_(None),
+            ).order_by(
+                (AppProfileRelease.version == "未标注历史版本").desc(),
+                AppProfileRelease.id,
+            )
+        )
+    ).scalars().first()
+    project_revision = await db.scalar(
+        select(Project.test_asset_revision).where(Project.id == project_id)
+    )
+    if release is None or project_revision is None:
+        raise api_error(
+            status_code=status.HTTP_409_CONFLICT,
+            code="DEFAULT_APP_RELEASE_MISSING",
+            message="通用配置档案缺少可用发布版本",
+        )
+    body.app_profile_id = profile.id
+    body.app_release_id = release.id
+    body.expected_profile_revision = profile.revision
+    body.expected_test_asset_revision = project_revision
+    return body
 
 
 async def _lock_and_verify_resolution_revisions(

@@ -43,6 +43,13 @@ export interface ReportExecution {
   duration: number | null
   retry_of: number | null
   created_at: string
+  app_profile_id: number | null
+  app_profile_name: string | null
+  app_release_id: number | null
+  app_release_version: string | null
+  profile_revision: number | null
+  test_asset_revision: number | null
+  profile_resolution_summary: Record<string, number>
 }
 
 export interface ReportStep {
@@ -130,6 +137,8 @@ export function listReports(params?: {
   keyword?: string
   created_from?: string
   created_to?: string
+  app_profile_id?: number
+  app_release_id?: number
   page?: number
   page_size?: number
 }) {

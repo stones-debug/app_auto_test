@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     execution_stop_grace_seconds: int = 60
     # 方案 §3.6/§7.4：执行快照序列化上限（默认 20 MB）
     max_execution_snapshot_bytes: int = 20971520
+    # 多 APP 档案灰度：off=兼容旧流程；compat=仅指定项目自动注入默认档案；required=全量显式必选。
+    app_profile_feature_mode: Literal["off", "compat", "required"] = "off"
+    app_profile_enabled_project_ids: str = ""
 
     # Agent
     agent_heartbeat_interval: int = 30
@@ -91,6 +94,28 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def app_profile_enabled_project_ids() -> set[int]:
+    """解析逗号分隔的灰度项目 ID；非法项在启动/请求前明确拒绝。"""
+    result: set[int] = set()
+    for raw in settings.app_profile_enabled_project_ids.split(","):
+        value = raw.strip()
+        if not value:
+            continue
+        if not value.isdigit() or int(value) < 1:
+            raise RuntimeError(f"APP_PROFILE_ENABLED_PROJECT_IDS 包含非法项目 ID: {value}")
+        result.add(int(value))
+    return result
+
+
+def app_profile_required_for_project(project_id: int) -> bool:
+    if settings.app_profile_feature_mode == "required":
+        return True
+    return (
+        settings.app_profile_feature_mode == "compat"
+        and project_id in app_profile_enabled_project_ids()
+    )
 
 # 默认密钥（生产环境必须覆盖）
 _DEFAULT_SECRETS = (

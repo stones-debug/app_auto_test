@@ -6,6 +6,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.main import app
 from app.models import Execution, ExecutionCase, ExecutionExclusion, ExecutionStep, Project
@@ -99,6 +100,51 @@ async def test_case_execution_revision_conflict(client: AsyncClient):
     )
     assert resp.status_code == 409
     assert resp.json()["detail"]["code"] == "PROFILE_REVISION_CONFLICT"
+
+
+async def test_required_feature_mode_rejects_legacy_execution(client: AsyncClient, monkeypatch):
+    base = await _base(client)
+    case_id = await _make_case(client, base)
+    monkeypatch.setattr(settings, "app_profile_feature_mode", "required")
+
+    response = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers=base["headers"],
+        json={"device_id": base["device_id"]},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "APP_PROFILE_REQUIRED"
+
+
+async def test_compat_feature_mode_injects_default_profile(client: AsyncClient, monkeypatch):
+    base = await _base(client)
+    case_id = await _make_case(client, base)
+    profile_id = (
+        await client.post(
+            f"/api/projects/{base['project_id']}/app-profiles",
+            headers=base["headers"],
+            json={"name": "通用配置（待调整）", "code": f"compat-{uuid.uuid4().hex[:12]}"},
+        )
+    ).json()["id"]
+    await client.post(
+        f"/api/app-profiles/{profile_id}/releases",
+        headers=base["headers"],
+        json={"version": "未标注历史版本"},
+    )
+    monkeypatch.setattr(settings, "app_profile_feature_mode", "compat")
+    monkeypatch.setattr(settings, "app_profile_enabled_project_ids", str(base["project_id"]))
+
+    response = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers=base["headers"],
+        json={"device_id": base["device_id"]},
+    )
+
+    assert response.status_code == 201, response.text
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, response.json()["id"])
+        assert execution.app_profile_id == profile_id
 
 
 async def test_profile_execution_requires_active_release(client: AsyncClient):

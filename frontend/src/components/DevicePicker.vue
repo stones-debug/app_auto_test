@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
-import type { Execution, ExecutionRunSettings } from '@/api/executions'
-import { buildRunParameters, useDeviceSelect, type ProfileRunContext, type RunTarget } from '@/composables/useDeviceSelect'
-import { listReleases, previewExecution, type ExecutionPreview } from '@/api/appProfiles'
+import { getExecution, type Execution, type ExecutionRunSettings } from '@/api/executions'
+import { apiErrorCode, buildRunParameters, useDeviceSelect, type ProfileRunContext, type RunTarget } from '@/composables/useDeviceSelect'
+import { getAppProfile, listReleases, previewExecution, type ExecutionPreview } from '@/api/appProfiles'
 import { useAppProfileStore } from '@/stores/appProfile'
 import { ElMessage } from 'element-plus'
 
@@ -27,6 +27,8 @@ const releases = ref<{ id: number; version: string }[]>([])
 const preview = ref<ExecutionPreview | null>(null)
 const previewLoading = ref(false)
 const profileReadonly = ref(false)
+const retryRevisionNotice = ref('')
+let previewSequence = 0
 
 let targetIdTracker = 0
 
@@ -45,23 +47,28 @@ async function run() {
     attach_to_current_app: attachToCurrentApp.value,
   })
   // 方案 §4.8：合并档案上下文
-  const profile: ProfileRunContext | undefined = profileId.value
+  const profile: ProfileRunContext | undefined = profileId.value != null && releaseId.value != null && preview.value
     ? {
         app_profile_id: profileId.value,
         app_release_id: releaseId.value,
-        expected_profile_revision: profileRevisionNow(),
-        expected_test_asset_revision: store.testAssetRevision ?? 1,
+        expected_profile_revision: preview.value.profile_revision,
+        expected_test_asset_revision: preview.value.test_asset_revision,
       }
     : undefined
-  const exec = await confirmRun({ timeout_seconds: timeout.value, parameters, profile })
-  if (exec) {
-    settleOpen(exec)
-    emit('created', exec)
+  try {
+    const exec = await confirmRun({ timeout_seconds: timeout.value, parameters, profile })
+    if (exec) {
+      settleOpen(exec)
+      emit('created', exec)
+    }
+  } catch (error) {
+    if (['PROFILE_REVISION_CONFLICT', 'TEST_ASSET_REVISION_CONFLICT', 'APP_RELEASE_CHANGED'].includes(apiErrorCode(error) ?? '')) {
+      ElMessage.warning('配置已变化，已重新预检，请确认后再次运行')
+      await doPreview()
+      return
+    }
+    ElMessage.error((error as Error).message || '创建执行失败')
   }
-}
-
-function profileRevisionNow(): number {
-  return preview.value?.profile_revision ?? store.profileRevision ?? 1
 }
 
 async function onProfileChange(id: number) {
@@ -71,12 +78,35 @@ async function onProfileChange(id: number) {
   preview.value = null
   const page = await listReleases(id, { status: 'active', page_size: 100 })
   releases.value = page.items.map((r) => ({ id: r.id, version: r.version }))
-  if (releases.value.length > 0) releaseId.value = releases.value[0].id
+  const remembered = recentRelease(id)
+  if (remembered != null && releases.value.some((release) => release.id === remembered)) releaseId.value = remembered
+  else if (releases.value.length > 0) releaseId.value = releases.value[0].id
   await doPreview()
 }
 
 async function onReleaseChange() {
+  rememberRelease()
   await doPreview()
+}
+
+function recentRelease(id: number): number | null {
+  if (typeof localStorage === 'undefined') return null
+  const value = Number(localStorage.getItem(`app-profile-release:${id}`))
+  return Number.isFinite(value) && value > 0 ? value : null
+}
+
+function rememberRelease() {
+  if (typeof localStorage !== 'undefined' && profileId.value != null && releaseId.value != null) {
+    localStorage.setItem(`app-profile-release:${profileId.value}`, String(releaseId.value))
+  }
+}
+
+function runParameters(): Record<string, unknown> {
+  return buildRunParameters(targetKind.value ?? 'retry', {
+    use_pre_steps: usePreSteps.value,
+    use_post_steps: usePostSteps.value,
+    attach_to_current_app: attachToCurrentApp.value,
+  })
 }
 
 async function doPreview() {
@@ -85,22 +115,46 @@ async function doPreview() {
     return
   }
   if (targetKind.value === 'retry') return
+  const sequence = ++previewSequence
   previewLoading.value = true
   try {
-    preview.value = await previewExecution({
+    const result = await previewExecution({
       project_id: props.projectId ?? 0,
       target: { type: targetKind.value === 'suite' ? 'suite' : 'case', ids: [targetIdTracker] },
       app_profile_id: profileId.value,
       app_release_id: releaseId.value,
       device_id: selectedId.value,
+      parameters: runParameters(),
     })
+    if (sequence === previewSequence) {
+      preview.value = result
+      store.markRevision(result.profile_revision, result.test_asset_revision)
+    }
   } catch (e) {
-    preview.value = null
-    ElMessage.warning((e as Error).message)
+    if (sequence === previewSequence) {
+      preview.value = null
+      ElMessage.warning((e as Error).message)
+    }
   } finally {
-    previewLoading.value = false
+    if (sequence === previewSequence) previewLoading.value = false
   }
 }
+
+const hasBlockingWarning = computed(() => (preview.value?.warnings ?? []).some((warning) => {
+  const item = warning as { blocking?: boolean; severity?: string }
+  return item.blocking === true || item.severity === 'error'
+}))
+
+const runDisabled = computed(() => {
+  if (selectedId.value == null || running.value) return true
+  if (targetKind.value === 'retry') return false
+  return profileId.value == null
+    || releaseId.value == null
+    || previewLoading.value
+    || preview.value == null
+    || preview.value.counts.executable_cases < 1
+    || hasBlockingWarning.value
+})
 
 function cancel() {
   settleOpen(null)
@@ -134,12 +188,33 @@ defineExpose({
       profileReadonly.value = true
     } else {
       profileReadonly.value = false
+      profileId.value = null
+      releaseId.value = null
+      releases.value = []
+    }
+    retryRevisionNotice.value = ''
+    if (target.kind === 'retry') {
+      const original = await getExecution(target.executionId)
+      if (original.app_profile_id != null) {
+        const current = await getAppProfile(original.app_profile_id)
+        retryRevisionNotice.value = [
+          `原执行：${original.app_profile_name_snapshot ?? `档案 #${original.app_profile_id}`} / ${original.app_release_version_snapshot ?? '未标注版本'}`,
+          `配置 revision ${original.profile_revision ?? '-'} → 当前 ${current.revision}`,
+          `资产 revision ${original.test_asset_revision ?? '-'}。重试将按当前配置重新生成快照。`,
+        ].join('；')
+      } else {
+        retryRevisionNotice.value = '这是历史兼容执行，重试将继续使用原始公共测试资产流程。'
+      }
     }
     if (options.targetId) targetIdTracker = options.targetId
     else if (target.kind === 'case' || target.kind === 'suite') targetIdTracker = target.id
     store.projectId = props.projectId ?? store.projectId
-    if (!profileReadonly.value && store.profiles.length < 1) {
+    if (props.projectId != null) {
       await store.loadProfiles()
+    }
+    if (profileReadonly.value && profileId.value != null) {
+      const page = await listReleases(profileId.value, { status: 'active', page_size: 100 })
+      releases.value = page.items.map((release) => ({ id: release.id, version: release.version }))
     }
     return new Promise((resolve) => {
       openResolve = resolve
@@ -148,10 +223,15 @@ defineExpose({
           openResolve = null
           resolve(exec)
         }
+        if (target.kind !== 'retry') void doPreview()
       })
     })
   },
   close,
+})
+
+watch([selectedId, usePreSteps, usePostSteps, attachToCurrentApp], () => {
+  if (dialogVisible.value && targetKind.value !== 'retry') void doPreview()
 })
 </script>
 
@@ -165,7 +245,8 @@ defineExpose({
     @closed="onClosed"
   >
     <el-form label-width="80px">
-      <el-form-item label="APP 档案">
+      <el-alert v-if="targetKind === 'retry' && retryRevisionNotice" type="warning" :closable="false" show-icon :title="retryRevisionNotice" class="retry-notice" />
+      <el-form-item v-if="targetKind !== 'retry'" label="APP 档案">
         <template v-if="profileReadonly && profileId">
           <el-tag size="small">{{ store.currentProfile?.name ?? `#${profileId}` }}</el-tag>
         </template>
@@ -175,13 +256,19 @@ defineExpose({
           </el-select>
         </template>
       </el-form-item>
-      <el-form-item label="发布版本">
-        <el-select v-model="releaseId" class="w-full" placeholder="选择版本" :disabled="!profileId" @change="onReleaseChange">
+      <el-form-item v-if="targetKind !== 'retry'" label="发布版本">
+        <el-select v-model="releaseId" class="w-full" placeholder="选择版本" :disabled="!profileId || profileReadonly" @change="onReleaseChange">
           <el-option v-for="r in releases" :key="r.id" :label="r.version" :value="r.id" />
         </el-select>
       </el-form-item>
-      <el-form-item v-if="preview" label="预检">
-        <div class="preview-block">{{ preview.counts.executable_cases }} 用例 / {{ preview.counts.executable_steps }} 步 · N/A {{ preview.counts.na_cases }}</div>
+      <el-form-item v-if="targetKind !== 'retry'" label="预检">
+        <div v-if="previewLoading" class="preview-block">正在解析最终执行内容…</div>
+        <div v-else-if="preview" class="preview-block">
+          源 {{ preview.counts.source_cases }} 用例 → 实际 {{ preview.counts.executable_cases }} 用例 / {{ preview.counts.executable_steps }} 步
+          · N/A {{ preview.counts.na_cases + preview.counts.na_steps + preview.counts.na_assertions }} · 覆盖 {{ preview.counts.overrides }}
+          <div v-if="hasBlockingWarning" class="tip warn">预检存在阻断项，暂不能运行。</div>
+        </div>
+        <div v-else class="tip warn">请选择档案和发布版本，并等待预检成功。</div>
       </el-form-item>
       <el-form-item label="设备">
         <el-select v-model="selectedId" placeholder="选择设备" class="w-full">
@@ -215,7 +302,7 @@ defineExpose({
     </el-form>
     <template #footer>
       <el-button @click="cancel">取消</el-button>
-      <el-button type="primary" :loading="running" :disabled="!selectedId" @click="run">运行</el-button>
+      <el-button type="primary" :loading="running" :disabled="runDisabled" @click="run">运行</el-button>
     </template>
   </el-dialog>
 </template>
@@ -243,4 +330,5 @@ defineExpose({
   flex-direction: column;
   align-items: flex-start;
 }
+.retry-notice { margin-bottom: 14px; }
 </style>

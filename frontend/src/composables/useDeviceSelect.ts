@@ -21,7 +21,7 @@ export type RetryTarget = Extract<RunTarget, { kind: 'retry' }>
 /** 方案 §4.8：运行创建的档案/版本/双 revision 上下文。 */
 export interface ProfileRunContext {
   app_profile_id: number
-  app_release_id: number | null
+  app_release_id: number
   expected_profile_revision: number
   expected_test_asset_revision: number
 }

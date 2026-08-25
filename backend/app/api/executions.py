@@ -206,9 +206,10 @@ async def create_case_execution(
     case = await _get_case_or_404(case_id, db)
     await require_project_write(case.project_id, user, db)
     await _validate_device_for_execution(body.device_id, user, db)
+    profile_body = await execution_service.apply_app_profile_feature_mode(db, case.project_id, body)
     return await execution_service.create_case_execution(
         db, case, user, body.device_id, body.parameters, body.timeout_seconds,
-        body=(body if body.app_profile_id else None),
+        body=profile_body,
     )
 
 
@@ -236,9 +237,10 @@ async def create_batch_execution(
     if project_id is not None:
         await require_project_write(project_id, user, db)
     await _validate_device_for_execution(body.device_id, user, db)
+    profile_body = await execution_service.apply_app_profile_feature_mode(db, project_id, body)
     return await execution_service.create_batch_execution(
         db, suites, user, body.device_id, body.parameters, body.timeout_seconds,
-        body=(body if body.app_profile_id else None),
+        body=profile_body,
     )
 
 
@@ -258,9 +260,10 @@ async def create_suite_execution(
     suite = await _get_suite_or_404(suite_id, db)
     await require_project_write(suite.project_id, user, db)
     await _validate_device_for_execution(body.device_id, user, db)
+    profile_body = await execution_service.apply_app_profile_feature_mode(db, suite.project_id, body)
     return await execution_service.create_suite_execution(
         db, suite, user, body.device_id, body.parameters, body.timeout_seconds,
-        body=(body if body.app_profile_id else None),
+        body=profile_body,
     )
 
 

@@ -4,7 +4,7 @@ import type { PageData } from './projects'
 
 export interface ProfileRunRef {
   app_profile_id: number
-  app_release_id: number | null
+  app_release_id: number
   expected_profile_revision: number
   expected_test_asset_revision: number
 }
@@ -71,6 +71,12 @@ export interface Execution {
   created_by: number | null
   retry_of: number | null
   created_at: string
+  app_profile_id: number | null
+  app_profile_name_snapshot: string | null
+  app_release_id: number | null
+  app_release_version_snapshot: string | null
+  profile_revision: number | null
+  test_asset_revision: number | null
 }
 
 export interface ExecutionDetail extends Execution {
@@ -116,7 +122,7 @@ export interface RunOptions {
   timeout_seconds?: number
   // 方案 §4.8：执行创建必填档案/版本与 revision（required 语义）
   app_profile_id?: number
-  app_release_id?: number | null
+  app_release_id?: number
   expected_profile_revision?: number
   expected_test_asset_revision?: number
 }

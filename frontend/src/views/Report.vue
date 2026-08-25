@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 
 import { executionStatusMeta } from '@/api/executions'
 import { listReports, type ReportListItem } from '@/api/reports'
+import { listAppProfiles, listReleases, type AppProfileRelease, type AppProfileSummary } from '@/api/appProfiles'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { withProjectScope } from '@/navigation/workspaceScope'
 import { formatDateTime } from '@/utils/format'
@@ -20,6 +21,10 @@ const pageSize = ref(20)
 const statusFilter = ref('')
 const typeFilter = ref('')
 const keyword = ref('')
+const profileFilter = ref<number | null>(null)
+const releaseFilter = ref<number | null>(null)
+const profiles = ref<AppProfileSummary[]>([])
+const releases = ref<AppProfileRelease[]>([])
 const summary = ref({ passed: 0, failed: 0, error: 0, success_rate: 0 })
 
 async function load() {
@@ -31,6 +36,8 @@ async function load() {
       ...(statusFilter.value ? { status: statusFilter.value } : {}),
       ...(typeFilter.value ? { type: typeFilter.value } : {}),
       ...(keyword.value ? { keyword: keyword.value } : {}),
+      ...(profileFilter.value ? { app_profile_id: profileFilter.value } : {}),
+      ...(releaseFilter.value ? { app_release_id: releaseFilter.value } : {}),
     }))
     items.value = data.items
     total.value = data.total
@@ -47,6 +54,27 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+async function loadProfiles() {
+  profileFilter.value = null
+  releaseFilter.value = null
+  profiles.value = []
+  releases.value = []
+  if (projectId.value == null) return
+  profiles.value = await listAppProfiles(projectId.value, { include_disabled: true })
+}
+
+async function onProfileFilterChange() {
+  releaseFilter.value = null
+  releases.value = []
+  if (profileFilter.value == null) {
+    await load()
+    return
+  }
+  const pageData = await listReleases(profileFilter.value, { status: 'all', page_size: 100 })
+  releases.value = pageData.items
+  await load()
 }
 
 function typeLabel(t: string | null) {
@@ -66,6 +94,7 @@ watch(
   projectId,
   () => {
     page.value = 1
+    void loadProfiles()
     void load()
   },
   { immediate: true },
@@ -104,6 +133,12 @@ watch(
         <el-option label="套件" value="suite" />
         <el-option label="批量" value="batch" />
       </el-select>
+      <el-select v-if="isProjectWorkspace" v-model="profileFilter" placeholder="APP 档案" clearable class="profile-filter" @change="page = 1; onProfileFilterChange()">
+        <el-option v-for="profile in profiles" :key="profile.id" :label="profile.name" :value="profile.id" />
+      </el-select>
+      <el-select v-if="isProjectWorkspace" v-model="releaseFilter" placeholder="发布版本" clearable class="profile-filter" :disabled="!profileFilter" @change="page = 1; load()">
+        <el-option v-for="release in releases" :key="release.id" :label="release.version" :value="release.id" />
+      </el-select>
       <el-button type="primary" @click="page = 1; load()">搜索</el-button>
       <el-button @click="load">刷新</el-button>
     </div>
@@ -119,6 +154,12 @@ watch(
       </el-table-column>
       <el-table-column v-if="!isProjectWorkspace" label="项目" width="140" show-overflow-tooltip>
         <template #default="{ row }">{{ row.project_name ?? '-' }}</template>
+      </el-table-column>
+      <el-table-column label="APP 档案 / 版本" min-width="160" show-overflow-tooltip>
+        <template #default="{ row }">
+          <template v-if="row.app_profile_name">{{ row.app_profile_name }} / {{ row.app_release_version ?? '未标注' }}</template>
+          <span v-else class="legacy">历史兼容执行</span>
+        </template>
       </el-table-column>
       <el-table-column label="状态" width="90">
         <template #default="{ row }">
@@ -213,6 +254,8 @@ watch(
 .status {
   width: 130px;
 }
+.profile-filter { width: 160px; }
+.legacy { color: var(--text-3); }
 .pager {
   margin-top: 16px;
   justify-content: flex-end;

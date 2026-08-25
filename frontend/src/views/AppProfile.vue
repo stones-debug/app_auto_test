@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
 import AppProfileTree from '@/components/AppProfileTree.vue'
+import DevicePicker from '@/components/DevicePicker.vue'
 import ProfileStatusTag from '@/components/ProfileStatusTag.vue'
 import ProfileReleaseManager from '@/components/ProfileReleaseManager.vue'
 import ProfileDifferenceView from '@/components/ProfileDifferenceView.vue'
 import ProfileOverrideDrawer from '@/components/ProfileOverrideDrawer.vue'
 import {
   getAppProfile,
+  listReleases,
   listProfileOverrides,
   restoreNodeOverride,
   skipRulesBatch,
@@ -18,6 +20,7 @@ import {
   type SkipTarget,
 } from '@/api/appProfiles'
 import { usePermission } from '@/composables/usePermission'
+import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { useAppProfileStore } from '@/stores/appProfile'
 
 interface DisplayNode extends ProfileNode {
@@ -28,6 +31,8 @@ interface DisplayNode extends ProfileNode {
 }
 
 const route = useRoute()
+const router = useRouter()
+const navigation = useWorkspaceNavigation()
 const store = useAppProfileStore()
 const { canEditProject } = usePermission()
 const projectId = computed(() => Number(route.params.projectId))
@@ -37,6 +42,7 @@ const diffView = ref(false)
 const overrideDrawer = ref(false)
 const selectedRows = ref<DisplayNode[]>([])
 const saving = ref(false)
+const devicePicker = ref<InstanceType<typeof DevicePicker> | null>(null)
 
 const skipDialog = reactive({
   visible: false,
@@ -215,6 +221,30 @@ async function refreshProfile() {
   if (store.selectedProfileId) await store.refreshVisibleWorkspace()
 }
 
+async function runNode(row: DisplayNode) {
+  if (!store.selectedProfileId || store.profileRevision == null || store.testAssetRevision == null || row.id == null) return
+  const page = await listReleases(store.selectedProfileId, { status: 'active', page_size: 100 })
+  const release = page.items[0]
+  if (!release) {
+    ElMessage.warning('当前档案没有可用的发布版本，请先创建发布版本')
+    return
+  }
+  const kind = row.node_type === 'suite' ? 'suite' : 'case'
+  const execution = await devicePicker.value?.open(
+    { kind, id: row.id, name: row.name },
+    {
+      targetId: row.id,
+      profile: {
+        app_profile_id: store.selectedProfileId,
+        app_release_id: release.id,
+        expected_profile_revision: store.profileRevision,
+        expected_test_asset_revision: store.testAssetRevision,
+      },
+    },
+  )
+  if (execution) await router.push(navigation.executionDetail(execution.id))
+}
+
 async function updateRevision(revision: number) {
   store.markRevision(revision, store.testAssetRevision ?? 1)
   await store.refreshVisibleWorkspace()
@@ -270,8 +300,9 @@ onMounted(load)
           <template #default="{ row }"><ProfileStatusTag :effective-status="row.effective_status" :status-source="row.status_source" /></template>
         </el-table-column>
         <el-table-column label="原因" min-width="150"><template #default="{ row }">{{ row.reason?.note || row.reason?.code || '-' }}</template></el-table-column>
-        <el-table-column label="操作" width="170" align="right">
+        <el-table-column label="操作" width="210" align="right">
           <template #default="{ row }">
+            <el-button v-if="row.node_type === 'suite' || row.node_type === 'case'" size="small" text type="primary" @click="runNode(displayNode(row))">运行</el-button>
             <template v-if="canEditProject">
               <el-button v-if="row.node_type === 'step' || row.node_type === 'assertion'" size="small" text @click="openNodeOverride(displayNode(row))">覆盖</el-button>
               <el-button v-if="row.status_source === 'direct'" size="small" text @click="restoreRow(displayNode(row))">恢复</el-button>
@@ -312,6 +343,7 @@ onMounted(load)
         <ProfileDifferenceView v-model="diffView" :profile-id="store.selectedProfileId" />
         <ProfileOverrideDrawer v-model="overrideDrawer" :profile-id="store.selectedProfileId" :project-id="projectId" :revision="store.profileRevision ?? 1" @revision-change="updateRevision" />
       </template>
+      <DevicePicker ref="devicePicker" :project-id="projectId" />
     </section>
   </div>
 </template>
