@@ -1382,27 +1382,63 @@ async def differences(
     overrides = await _load_override_index(db, profile_id)
     rows: list[dict] = []
 
+    # 收集出现的套件/用例 ID，一次性查名称（差异清单展示名称而非 ID）
+    suite_ids: set[int] = set()
+    case_ids: set[int] = set()
+    for sid in skip["suite"]:
+        suite_ids.add(sid)
+    for (sid, cid) in skip["case"]:
+        suite_ids.add(sid)
+        case_ids.add(cid)
+    for (sid, cid) in skip["step"]:
+        suite_ids.add(sid)
+        case_ids.add(cid)
+    for (sid, cid) in skip["assertion"]:
+        suite_ids.add(sid)
+        case_ids.add(cid)
+    for cid in overrides["node"]:
+        case_ids.add(cid)
+    suite_names: dict[int, str] = (
+        {s.id: s.name for s in (await db.execute(select(TestSuite).where(TestSuite.id.in_(suite_ids)))).scalars()} if suite_ids else {}
+    )
+    case_names: dict[int, str] = (
+        {c.id: c.name for c in (await db.execute(select(TestCase).where(TestCase.id.in_(case_ids)))).scalars()} if case_ids else {}
+    )
+
+    def _n(sid: int | None) -> str:
+        return suite_names.get(sid, f"套件 {sid}") if sid is not None else "?"
+
+    def _c(cid: int | None) -> str:
+        return case_names.get(cid, f"用例 {cid}") if cid is not None else "?"
+
     # 跳过项
     for sid, rule in skip["suite"].items():
-        rows.append(_skip_row("suite", f"套件 {sid}", rule, "direct"))
+        rows.append(_skip_row("suite", _n(sid), rule, "direct", suite_id=sid))
     for (sid, cid), rule in skip["case"].items():
-        rows.append(_skip_row("case", f"套件 {sid}/用例 {cid}", rule, "direct"))
+        rows.append(_skip_row("case", f"{_n(sid)} / {_c(cid)}", rule, "direct", suite_id=sid, case_id=cid))
     for (sid, cid), rules in skip["step"].items():
-        for k, rule in rules.items():
-            rows.append(_skip_row("step", f"套件 {sid}/用例 {cid}/步骤 {k[:8]}", rule, "direct"))
+        for rule in rules.values():
+            rows.append(_skip_row("step", f"{_n(sid)} / {_c(cid)} / 步骤", rule, "direct", suite_id=sid, case_id=cid))
     for (sid, cid), rules in skip["assertion"].items():
-        for k, rule in rules.items():
-            rows.append(_skip_row("assertion", f"套件 {sid}/用例 {cid}/断言 {k[:8]}", rule, "direct"))
+        for rule in rules.values():
+            rows.append(_skip_row("assertion", f"{_n(sid)} / {_c(cid)} / 断言", rule, "direct", suite_id=sid, case_id=cid))
 
     # 覆盖项
     if type_ in ("all", "overridden"):
+        for cid, rules in overrides["node"].items():
+            for _k in rules:
+                rows.append(
+                    {
+                        "target_type": "node",
+                        "path": f"{_c(cid)} / 节点",
+                        "override": True,
+                        "case_id": cid,
+                    }
+                )
         for el_id in overrides["element"]:
             rows.append({"target_type": "element", "path": f"元素 {el_id}", "override": True})
         for name in overrides["variable"]:
             rows.append({"target_type": "variable", "path": f"变量 {name}", "override": True})
-        for cid, rules in overrides["node"].items():
-            for k in rules:
-                rows.append({"target_type": "node", "path": f"用例 {cid}/节点 {k[:8]}", "override": True})
 
     if type_ == "skipped":
         rows = [r for r in rows if not r.get("override")]
@@ -1575,8 +1611,8 @@ def _node_item(
     }
 
 
-def _skip_row(target_type: str, path: str, rule, source_type: str) -> dict:
-    return {
+def _skip_row(target_type: str, path: str, rule, source_type: str, suite_id: int | None = None, case_id: int | None = None) -> dict:
+    row = {
         "target_type": target_type,
         "path": path,
         "reason_code": rule.reason_code,
@@ -1584,3 +1620,8 @@ def _skip_row(target_type: str, path: str, rule, source_type: str) -> dict:
         "source_type": source_type,
         "override": False,
     }
+    if suite_id is not None:
+        row["suite_id"] = suite_id
+    if case_id is not None:
+        row["case_id"] = case_id
+    return row
