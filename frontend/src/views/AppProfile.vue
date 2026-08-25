@@ -19,6 +19,7 @@ import {
   type ProfileNode,
   type SkipTarget,
 } from '@/api/appProfiles'
+import { listCases, type TestCase } from '@/api/cases'
 import { usePermission } from '@/composables/usePermission'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { useAppProfileStore } from '@/stores/appProfile'
@@ -34,7 +35,7 @@ const route = useRoute()
 const router = useRouter()
 const navigation = useWorkspaceNavigation()
 const store = useAppProfileStore()
-const { canEditProject } = usePermission()
+const { canEditProject, canExecute } = usePermission()
 const projectId = computed(() => Number(route.params.projectId))
 
 const releaseMgr = ref(false)
@@ -43,6 +44,11 @@ const overrideDrawer = ref(false)
 const selectedRows = ref<DisplayNode[]>([])
 const saving = ref(false)
 const devicePicker = ref<InstanceType<typeof DevicePicker> | null>(null)
+const runCaseDialog = ref(false)
+const runCaseLoading = ref(false)
+const runCaseSubmitting = ref(false)
+const runCaseOptions = ref<TestCase[]>([])
+const selectedRunCaseId = ref<number | null>(null)
 
 const skipDialog = reactive({
   visible: false,
@@ -222,18 +228,22 @@ async function refreshProfile() {
 }
 
 async function runNode(row: DisplayNode) {
-  if (!store.selectedProfileId || store.profileRevision == null || store.testAssetRevision == null || row.id == null) return
+  if (row.id == null || (row.node_type !== 'suite' && row.node_type !== 'case')) return
+  await runTarget(row.node_type, row.id, row.name)
+}
+
+async function runTarget(kind: 'suite' | 'case', id: number, name: string) {
+  if (!store.selectedProfileId || store.profileRevision == null || store.testAssetRevision == null) return
   const page = await listReleases(store.selectedProfileId, { status: 'active', page_size: 100 })
   const release = page.items[0]
   if (!release) {
     ElMessage.warning('当前档案没有可用的发布版本，请先创建发布版本')
     return
   }
-  const kind = row.node_type === 'suite' ? 'suite' : 'case'
   const execution = await devicePicker.value?.open(
-    { kind, id: row.id, name: row.name },
+    { kind, id, name },
     {
-      targetId: row.id,
+      targetId: id,
       profile: {
         app_profile_id: store.selectedProfileId,
         app_release_id: release.id,
@@ -243,6 +253,42 @@ async function runNode(row: DisplayNode) {
     },
   )
   if (execution) await router.push(navigation.executionDetail(execution.id))
+}
+
+async function loadRunCases(keyword = '') {
+  runCaseLoading.value = true
+  try {
+    const page = await listCases(projectId.value, {
+      page: 1,
+      page_size: 200,
+      status: 'active',
+      keyword: keyword || undefined,
+    })
+    runCaseOptions.value = page.items
+  } finally {
+    runCaseLoading.value = false
+  }
+}
+
+async function openRunCaseDialog() {
+  selectedRunCaseId.value = null
+  runCaseDialog.value = true
+  await loadRunCases()
+}
+
+async function confirmRunCase() {
+  const testCase = runCaseOptions.value.find((item) => item.id === selectedRunCaseId.value)
+  if (!testCase) {
+    ElMessage.warning('请先选择需要执行的用例')
+    return
+  }
+  runCaseSubmitting.value = true
+  try {
+    runCaseDialog.value = false
+    await runTarget('case', testCase.id, testCase.name)
+  } finally {
+    runCaseSubmitting.value = false
+  }
 }
 
 async function updateRevision(revision: number) {
@@ -265,6 +311,7 @@ onMounted(load)
           <el-button size="small" text @click="refreshProfile">刷新</el-button>
         </div>
         <div class="head-right">
+          <el-button v-if="canExecute" size="small" type="primary" @click="openRunCaseDialog">运行用例</el-button>
           <el-button v-if="canEditProject" size="small" @click="releaseMgr = true">发布版本</el-button>
           <el-button size="small" @click="diffView = true">差异清单</el-button>
           <el-button v-if="canEditProject" size="small" @click="overrideDrawer = true">覆盖配置</el-button>
@@ -302,7 +349,7 @@ onMounted(load)
         <el-table-column label="原因" min-width="150"><template #default="{ row }">{{ row.reason?.note || row.reason?.code || '-' }}</template></el-table-column>
         <el-table-column label="操作" width="210" align="right">
           <template #default="{ row }">
-            <el-button v-if="row.node_type === 'suite' || row.node_type === 'case'" size="small" text type="primary" @click="runNode(displayNode(row))">运行</el-button>
+            <el-button v-if="canExecute && (row.node_type === 'suite' || row.node_type === 'case')" size="small" text type="primary" @click="runNode(displayNode(row))">运行</el-button>
             <template v-if="canEditProject">
               <el-button v-if="row.node_type === 'step' || row.node_type === 'assertion'" size="small" text @click="openNodeOverride(displayNode(row))">覆盖</el-button>
               <el-button v-if="row.status_source === 'direct'" size="small" text @click="restoreRow(displayNode(row))">恢复</el-button>
@@ -335,6 +382,38 @@ onMounted(load)
         <template #footer>
           <el-button v-if="nodeOverrideDialog.overridden" type="danger" plain @click="restoreNode">恢复公共配置</el-button>
           <el-button @click="nodeOverrideDialog.visible = false">取消</el-button><el-button type="primary" @click="saveNodeOverride">保存覆盖</el-button>
+        </template>
+      </el-dialog>
+
+      <el-dialog v-model="runCaseDialog" title="运行用例" width="520px" :close-on-click-modal="false">
+        <el-form label-width="80px">
+          <el-form-item label="APP 档案">
+            <el-tag>{{ store.currentProfile?.name }}</el-tag>
+          </el-form-item>
+          <el-form-item label="测试用例" required>
+            <el-select
+              v-model="selectedRunCaseId"
+              filterable
+              remote
+              clearable
+              :remote-method="loadRunCases"
+              :loading="runCaseLoading"
+              placeholder="搜索并选择需要执行的用例"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="testCase in runCaseOptions"
+                :key="testCase.id"
+                :label="testCase.module_name ? `${testCase.module_name} / ${testCase.name}` : testCase.name"
+                :value="testCase.id"
+              />
+            </el-select>
+          </el-form-item>
+          <el-alert type="info" :closable="false" show-icon title="下一步将选择发布版本对应的可用设备，并执行档案预检。" />
+        </el-form>
+        <template #footer>
+          <el-button @click="runCaseDialog = false">取消</el-button>
+          <el-button type="primary" :loading="runCaseSubmitting" :disabled="selectedRunCaseId == null" @click="confirmRunCase">选择设备并运行</el-button>
         </template>
       </el-dialog>
 
