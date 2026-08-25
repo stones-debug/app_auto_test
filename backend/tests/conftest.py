@@ -42,11 +42,19 @@ from app.core.ratelimit import reset_rate_limits  # noqa: E402
 from app.models import (  # noqa: E402
     Agent,
     AgentUser,
+    AppProfile,
+    AppProfileAuditLog,
+    AppProfileElementOverride,
+    AppProfileNodeOverride,
+    AppProfileRelease,
+    AppProfileSkipRule,
+    AppProfileVariableOverride,
     Device,
     DevicePreference,
     Execution,
     ExecutionAssertion,
     ExecutionCase,
+    ExecutionExclusion,
     ExecutionLog,
     ExecutionQueue,
     ExecutionStep,
@@ -170,6 +178,48 @@ async def _cleanup_test_data():
                     )
                     await session.execute(delete(Execution).where(Execution.id.in_(exec_ids)))
 
+                # 档案相关表（方案 §2）：子表先于 test_suites/test_cases/test_elements/projects 删除
+                await session.execute(
+                    delete(ExecutionExclusion).where(
+                        ExecutionExclusion.execution_id.in_(
+                            select(Execution.id).where(Execution.project_id.in_(project_ids))
+                        )
+                    )
+                )
+                profile_id_subq = select(AppProfile.id).where(
+                    AppProfile.project_id.in_(project_ids)
+                )
+                await session.execute(
+                    delete(AppProfileAuditLog).where(AppProfileAuditLog.project_id.in_(project_ids))
+                )
+                await session.execute(
+                    delete(AppProfileNodeOverride).where(
+                        AppProfileNodeOverride.profile_id.in_(profile_id_subq)
+                    )
+                )
+                await session.execute(
+                    delete(AppProfileElementOverride).where(
+                        AppProfileElementOverride.profile_id.in_(profile_id_subq)
+                    )
+                )
+                await session.execute(
+                    delete(AppProfileVariableOverride).where(
+                        AppProfileVariableOverride.profile_id.in_(profile_id_subq)
+                    )
+                )
+                await session.execute(
+                    delete(AppProfileSkipRule).where(
+                        AppProfileSkipRule.profile_id.in_(profile_id_subq)
+                    )
+                )
+                await session.execute(
+                    delete(AppProfileRelease).where(
+                        AppProfileRelease.profile_id.in_(profile_id_subq)
+                    )
+                )
+                await session.execute(
+                    delete(AppProfile).where(AppProfile.project_id.in_(project_ids))
+                )
                 # 变量可能引用 suite/case/project，须先于 test_suites/test_cases 删除
                 await session.execute(
                     delete(Variable).where(Variable.project_id.in_(project_ids))
