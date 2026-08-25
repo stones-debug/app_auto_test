@@ -115,8 +115,9 @@ class AppProfileSkipRule(Base, TimestampMixin, SoftDeleteMixin):
         ),
         CheckConstraint(
             "(target_type = 'suite' AND suite_id IS NOT NULL AND case_id IS NULL AND node_key IS NULL)"
-            " OR (target_type = 'case' AND suite_id IS NULL AND case_id IS NOT NULL AND node_key IS NULL)"
-            " OR (target_type IN ('step', 'assertion') AND suite_id IS NULL"
+            " OR (target_type = 'case' AND suite_id IS NOT NULL"
+            " AND case_id IS NOT NULL AND node_key IS NULL)"
+            " OR (target_type IN ('step', 'assertion') AND suite_id IS NOT NULL"
             " AND case_id IS NOT NULL AND node_key IS NOT NULL)",
             name="ck_profile_skip_target_shape",
         ),
@@ -130,6 +131,7 @@ class AppProfileSkipRule(Base, TimestampMixin, SoftDeleteMixin):
         Index(
             "uq_profile_skip_case_active",
             "profile_id",
+            "suite_id",
             "case_id",
             unique=True,
             postgresql_where=text("target_type = 'case' AND deleted_at IS NULL"),
@@ -137,11 +139,14 @@ class AppProfileSkipRule(Base, TimestampMixin, SoftDeleteMixin):
         Index(
             "uq_profile_skip_node_active",
             "profile_id",
+            "suite_id",
             "target_type",
             "case_id",
             "node_key",
             unique=True,
-            postgresql_where=text("target_type IN ('step', 'assertion') AND deleted_at IS NULL"),
+            postgresql_where=text(
+                "target_type IN ('step', 'assertion') AND deleted_at IS NULL"
+            ),
         ),
         Index(
             "idx_profile_skip_profile_type",

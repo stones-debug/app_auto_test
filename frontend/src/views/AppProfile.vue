@@ -23,6 +23,7 @@ import {
 import { usePermission } from '@/composables/usePermission'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { useAppProfileStore } from '@/stores/appProfile'
+import { buildProfileSkipTarget } from '@/utils/appProfileSkip'
 
 interface DisplayNode extends ProfileNode {
   _key: string
@@ -109,12 +110,7 @@ async function toggleNode(row: DisplayNode) {
 }
 
 function targetFor(node: DisplayNode): SkipTarget | null {
-  if (node.node_type === 'suite' && node.id != null) return { type: 'suite', suite_id: node.id }
-  if (node.node_type === 'case' && node.id != null) return { type: 'case', case_id: node.id }
-  if ((node.node_type === 'step' || node.node_type === 'assertion') && node._caseId != null && node.node_key) {
-    return { type: node.node_type, case_id: node._caseId, node_key: node.node_key }
-  }
-  return null
+  return buildProfileSkipTarget(node)
 }
 
 function openSkip(nodes: DisplayNode[]) {

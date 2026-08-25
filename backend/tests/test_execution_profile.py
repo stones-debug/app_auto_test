@@ -215,13 +215,25 @@ async def test_empty_target_not_created(client: AsyncClient):
     base = await _base(client)
     profile_id, release_id = await _make_profile(client, base)
     case_id = await _make_case(client, base)
+    suite_id = (
+        await client.post(
+            f"/api/projects/{base['project_id']}/suites",
+            headers=base["headers"],
+            json={"name": "全部跳过套件"},
+        )
+    ).json()["id"]
+    await client.post(
+        f"/api/suites/{suite_id}/cases",
+        headers=base["headers"],
+        json={"case_id": case_id},
+    )
     await client.post(
         f"/api/app-profiles/{profile_id}/skip-rules/batch",
         headers=base["headers"],
-        json={"expected_revision": 1, "operation": "skip", "reason": {"code": "unsupported"}, "targets": [{"type": "case", "case_id": case_id}]},
+        json={"expected_revision": 1, "operation": "skip", "reason": {"code": "unsupported"}, "targets": [{"type": "case", "suite_id": suite_id, "case_id": case_id}]},
     )
     resp = await client.post(
-        f"/api/executions/cases/{case_id}",
+        f"/api/executions/suites/{suite_id}",
         headers=base["headers"],
         json={"app_profile_id": profile_id, "app_release_id": release_id, "expected_profile_revision": 2, "expected_test_asset_revision": await _asset_revision(base["project_id"]), "device_id": base["device_id"]},
     )
@@ -283,7 +295,14 @@ async def test_execution_exclusion_persists_display_names(client: AsyncClient):
             "expected_revision": 1,
             "operation": "skip",
             "reason": {"code": "unsupported"},
-            "targets": [{"type": "step", "case_id": case_id, "node_key": skipped_key}],
+            "targets": [
+                {
+                    "type": "step",
+                    "suite_id": suite_id,
+                    "case_id": case_id,
+                    "node_key": skipped_key,
+                }
+            ],
         },
     )
     assert skipped.status_code == 200
@@ -377,6 +396,78 @@ async def test_batch_profile_execution_uses_all_suite_ids_and_excludes_skipped_s
     assert execution.parameters["suite_ids"] == suite_ids
     assert [row.case_id for row in rows] == [case_ids[1]]
     assert any(item.suite_id_snapshot == suite_ids[0] for item in exclusions)
+
+
+async def test_batch_shared_case_executes_from_unskipped_suite(client: AsyncClient):
+    """回归：共享用例在套件 A 跳过后，批量执行仍从套件 B 执行一次。"""
+    base = await _base(client)
+    profile_id, release_id = await _make_profile(client, base)
+    case_id = await _make_case(client, base)
+    suite_ids: list[int] = []
+    for index in (1, 2):
+        suite_id = (
+            await client.post(
+                f"/api/projects/{base['project_id']}/suites",
+                headers=base["headers"],
+                json={"name": f"共享套件{index}"},
+            )
+        ).json()["id"]
+        await client.post(
+            f"/api/suites/{suite_id}/cases",
+            headers=base["headers"],
+            json={"case_id": case_id},
+        )
+        suite_ids.append(suite_id)
+
+    skipped = await client.post(
+        f"/api/app-profiles/{profile_id}/skip-rules/batch",
+        headers=base["headers"],
+        json={
+            "expected_revision": 1,
+            "operation": "skip",
+            "reason": {"code": "unsupported"},
+            "targets": [
+                {"type": "case", "suite_id": suite_ids[0], "case_id": case_id}
+            ],
+        },
+    )
+    assert skipped.status_code == 200, skipped.text
+
+    created = await client.post(
+        "/api/executions/suites/batch",
+        headers=base["headers"],
+        json={
+            "suite_ids": suite_ids,
+            "app_profile_id": profile_id,
+            "app_release_id": release_id,
+            "expected_profile_revision": 2,
+            "expected_test_asset_revision": await _asset_revision(base["project_id"]),
+            "device_id": base["device_id"],
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    async with SessionLocal() as db:
+        execution_cases = (
+            await db.execute(
+                select(ExecutionCase).where(
+                    ExecutionCase.execution_id == created.json()["id"]
+                )
+            )
+        ).scalars().all()
+        exclusions = (
+            await db.execute(
+                select(ExecutionExclusion).where(
+                    ExecutionExclusion.execution_id == created.json()["id"]
+                )
+            )
+        ).scalars().all()
+
+    assert [item.case_id for item in execution_cases] == [case_id]
+    assert any(
+        item.target_type == "case" and item.suite_id_snapshot == suite_ids[0]
+        for item in exclusions
+    )
 
 
 async def test_retry_reuses_profile(client: AsyncClient):

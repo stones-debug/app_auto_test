@@ -64,6 +64,11 @@ async def test_profile_tables_cleaned_by_conftest(client: AsyncClient):
         f"/api/projects/{project_id}/suites", json={"name": "s1"}, headers=headers
     )
     suite_id = s.json()["id"]
+    await client.post(
+        f"/api/suites/{suite_id}/cases",
+        json={"case_id": case_id},
+        headers=headers,
+    )
 
     # 直接插入档案相关数据（ORM，接口尚不存在）
     async with SessionLocal() as db:
@@ -80,7 +85,7 @@ async def test_profile_tables_cleaned_by_conftest(client: AsyncClient):
         )
         db.add(
             AppProfileSkipRule(
-                profile_id=profile.id, target_type="case", case_id=case_id,
+                profile_id=profile.id, target_type="case", suite_id=suite_id, case_id=case_id,
                 reason_code="unsupported", reason_note="x", created_by=user.id,
             )
         )

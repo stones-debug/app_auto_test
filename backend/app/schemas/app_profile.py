@@ -130,6 +130,7 @@ class SkipReason(BaseModel):
 
 class SkipTarget(BaseModel):
     type: Literal["suite", "case", "step", "assertion"]
+    # 用例/节点必须携带所属套件，防止共享用例规则串到其他套件。
     suite_id: int | None = None
     case_id: int | None = None
     node_key: str | None = None

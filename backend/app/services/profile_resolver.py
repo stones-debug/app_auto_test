@@ -249,17 +249,26 @@ async def _load_config(db: AsyncSession, profile_id: int) -> dict:
     ).scalars().all()
 
     skip_suite: dict[int, AppProfileSkipRule] = {}
-    skip_case: dict[int, AppProfileSkipRule] = {}
-    step_rules: dict[int, dict[str, AppProfileSkipRule]] = {}
-    assertion_rules: dict[int, dict[str, AppProfileSkipRule]] = {}
+    skip_case: dict[tuple[int, int], AppProfileSkipRule] = {}
+    step_rules: dict[tuple[int, int], dict[str, AppProfileSkipRule]] = {}
+    assertion_rules: dict[tuple[int, int], dict[str, AppProfileSkipRule]] = {}
     for rule in skip_rules:
         if rule.target_type == "suite" and rule.suite_id is not None:
             skip_suite[rule.suite_id] = rule
-        elif rule.target_type == "case" and rule.case_id is not None:
-            skip_case[rule.case_id] = rule
-        elif rule.target_type in ("step", "assertion") and rule.case_id is not None and rule.node_key is not None:
+        elif (
+            rule.target_type == "case"
+            and rule.suite_id is not None
+            and rule.case_id is not None
+        ):
+            skip_case[(rule.suite_id, rule.case_id)] = rule
+        elif (
+            rule.target_type in ("step", "assertion")
+            and rule.suite_id is not None
+            and rule.case_id is not None
+            and rule.node_key is not None
+        ):
             bucket = step_rules if rule.target_type == "step" else assertion_rules
-            bucket.setdefault(rule.case_id, {})[str(rule.node_key)] = rule
+            bucket.setdefault((rule.suite_id, rule.case_id), {})[str(rule.node_key)] = rule
 
     step_overrides: dict[int, dict[str, dict[str, Any]]] = {}
     assertion_overrides: dict[int, dict[str, dict[str, Any]]] = {}
@@ -290,10 +299,16 @@ async def _load_targets(db: AsyncSession, request: ResolutionRequest) -> dict:
     return {"case_ids": [], "suite_ids": suite_ids}
 
 
-async def _collect_cases(db: AsyncSession, target: dict, suite_skip: dict) -> tuple[dict[int, int], list[TestCase], list[ExclusionItem]]:
-    """解析目标 → 去重用例列表 + case→suite 映射 + 套件级排除项。"""
+async def _collect_cases(
+    db: AsyncSession,
+    target: dict,
+    suite_skip: dict,
+) -> tuple[dict[int, list[int | None]], list[TestCase], list[ExclusionItem]]:
+    """解析目标 → 去重用例列表 + case→全部套件上下文 + 套件级排除项。"""
     case_ids: list[int] = list(target["case_ids"])
-    case_to_suite: dict[int, int] = {}
+    case_to_suites: dict[int, list[int | None]] = {
+        case_id: [None] for case_id in target["case_ids"]
+    }
     suite_ids = list(target["suite_ids"])
     if suite_ids:
         memberships = (
@@ -316,7 +331,7 @@ async def _collect_cases(db: AsyncSession, target: dict, suite_skip: dict) -> tu
                 continue
             for case_id in by_suite.get(suite_id, []):
                 case_ids.append(case_id)
-                case_to_suite.setdefault(case_id, suite_id)
+                case_to_suites.setdefault(case_id, []).append(suite_id)
 
     case_ids = list(dict.fromkeys(case_ids))
     if not case_ids:
@@ -328,7 +343,7 @@ async def _collect_cases(db: AsyncSession, target: dict, suite_skip: dict) -> tu
     ).scalars().all()
     cases_by_id = {case.id: case for case in case_rows}
     cases = [cases_by_id[case_id] for case_id in case_ids if case_id in cases_by_id]
-    return case_to_suite, cases, []
+    return case_to_suites, cases, []
 
 
 # ---------- 节点过滤与覆盖 ----------
@@ -488,7 +503,9 @@ async def resolve(request: ResolutionRequest, db: AsyncSession, cache: _LRUCache
         cache.set(cache_key, config)
 
     target = await _load_targets(db, request)
-    case_to_suite, cases, suite_exclusions = await _collect_cases(db, target, config["skip_suite"])
+    case_to_suites, cases, suite_exclusions = await _collect_cases(
+        db, target, config["skip_suite"]
+    )
     suite_rows = (
         await db.execute(select(TestSuite).where(TestSuite.id.in_(target["suite_ids"])))
     ).scalars().all() if target["suite_ids"] else []
@@ -526,12 +543,21 @@ async def resolve(request: ResolutionRequest, db: AsyncSession, cache: _LRUCache
         ).scalars().all()
         module_names = {module.id: module.name for module in module_rows}
     for case in cases:
-        case_rule = config["skip_case"].get(case.id)
-        if case_rule:
+        suite_contexts = case_to_suites.get(case.id, [None])
+        executable_contexts: list[int | None] = []
+        for context_suite_id in suite_contexts:
+            case_rule = (
+                config["skip_case"].get((context_suite_id, case.id))
+                if context_suite_id is not None
+                else None
+            )
+            if case_rule is None:
+                executable_contexts.append(context_suite_id)
+                continue
             exclusions.append(
                 ExclusionItem(
                     target_type="case",
-                    suite_id=case_to_suite.get(case.id),
+                    suite_id=context_suite_id,
                     case_id=case.id,
                     node_key=None,
                     source_type="direct",
@@ -540,14 +566,16 @@ async def resolve(request: ResolutionRequest, db: AsyncSession, cache: _LRUCache
                     display_snapshot={
                         "name": case.name,
                         "key": str(case.id),
-                        "suite_name": suite_names.get(case_to_suite.get(case.id)),
+                        "suite_name": suite_names.get(context_suite_id),
                         "case_name": case.name,
                     },
                 )
             )
+        if not executable_contexts:
             continue
 
-        suite_id = case_to_suite.get(case.id)
+        # 批量执行仍按既有语义对共享用例去重；若第一个套件已跳过，使用首个未跳过套件的上下文。
+        suite_id = executable_contexts[0]
         suite_name = suite_names.get(suite_id) if suite_id is not None else None
         variables = await _merge_variables(db, request.project_id, suite_id, case, config, request.execution_variables)
 
@@ -561,13 +589,13 @@ async def resolve(request: ResolutionRequest, db: AsyncSession, cache: _LRUCache
             & set(config["assertion_overrides"].get(case.id, {}))
         )
         kept_steps, step_ex = _filter_and_patch(
-            selected_steps, config["step_rules"].get(case.id, {}),
+            selected_steps, config["step_rules"].get((suite_id, case.id), {}),
             config["step_overrides"].get(case.id, {}), "step", case.id,
             case_name=case.name, suite_id=suite_id, suite_name=suite_name,
         )
         exclusions.extend(step_ex)
         kept_assertions, assert_ex = _filter_and_patch(
-            case.assertions or [], config["assertion_rules"].get(case.id, {}),
+            case.assertions or [], config["assertion_rules"].get((suite_id, case.id), {}),
             config["assertion_overrides"].get(case.id, {}), "assertion", case.id,
             case_name=case.name, suite_id=suite_id, suite_name=suite_name,
         )

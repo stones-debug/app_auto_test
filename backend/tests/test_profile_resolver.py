@@ -98,6 +98,15 @@ async def _release_id(db, profile_id: int) -> int:
     )
 
 
+async def _attach_case_to_suite(db, project_id: int, case_id: int, name: str) -> int:
+    suite = SuiteModel(project_id=project_id, name=name)
+    db.add(suite)
+    await db.flush()
+    db.add(SuiteCaseModel(suite_id=suite.id, case_id=case_id, sort_order=1))
+    await db.flush()
+    return suite.id
+
+
 async def test_run_options_select_and_order_phases(client):
     """默认只执行 main；勾选前置后按 setup → main 连续编号。"""
     base = await _base(client)
@@ -132,11 +141,14 @@ async def test_case_skip_excluded(client):
     case_id = await _setup_case_with_steps(client, base, "被跳用例")
     async with SessionLocal() as db:
         profile_id = await _make_profile(db, base)
-        db.add(AppProfileSkipRule(profile_id=profile_id, target_type="case", case_id=case_id, reason_code="unsupported"))
+        suite_id = await _attach_case_to_suite(
+            db, base["project_id"], case_id, "被跳套件"
+        )
+        db.add(AppProfileSkipRule(profile_id=profile_id, target_type="case", suite_id=suite_id, case_id=case_id, reason_code="unsupported"))
         await db.commit()
         request = ResolutionRequest(
             project_id=base["project_id"], profile_id=profile_id, release_id=await _release_id(db, profile_id),
-            target_type="case", target_ids=[case_id],
+            target_type="suite", target_ids=[suite_id],
             expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
         )
         with pytest.raises(ProfileEmpty):
@@ -149,14 +161,17 @@ async def test_step_skip_and_override(client):
     case_id = await _setup_case_with_steps(client, base, "步骤跳过用例")
     async with SessionLocal() as db:
         profile_id = await _make_profile(db, base)
-        db.add(AppProfileSkipRule(profile_id=profile_id, target_type="step", case_id=case_id, node_key=K2, reason_code="unsupported", reason_note="n"))
+        suite_id = await _attach_case_to_suite(
+            db, base["project_id"], case_id, "步骤跳过套件"
+        )
+        db.add(AppProfileSkipRule(profile_id=profile_id, target_type="step", suite_id=suite_id, case_id=case_id, node_key=K2, reason_code="unsupported", reason_note="n"))
         # 覆盖 K1(setup launch_app) 的 params.package
         db.add(AppProfileNodeOverride(profile_id=profile_id, target_type="step", case_id=case_id, node_key=K1, patch={"params": {"package": "patched_pkg"}}))
         await db.commit()
         result = await resolve_compat(
             ResolutionRequest(
                 project_id=base["project_id"], profile_id=profile_id, release_id=await _release_id(db, profile_id),
-                target_type="case", target_ids=[case_id],
+                target_type="suite", target_ids=[suite_id],
                 expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
                 run_options={"use_pre_steps": True},
             ),

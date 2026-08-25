@@ -633,23 +633,54 @@ async def _validate_skip_target(db: AsyncSession, project_id: int, target, reaso
             return {}, "套件不存在或跨项目"
         return {"target_type": "suite", "suite_id": target.suite_id}, None
     if target.type == "case":
-        if target.case_id is None:
-            return {}, "用例目标必须提供 case_id"
+        if target.suite_id is None or target.case_id is None:
+            return {}, "用例目标必须提供 suite_id 与 case_id"
+        suite = await db.get(TestSuite, target.suite_id)
+        if suite is None or suite.deleted_at is not None or suite.project_id != project_id:
+            return {}, "套件不存在或跨项目"
         c = await db.get(TestCase, target.case_id)
         if c is None or c.deleted_at is not None or c.project_id != project_id:
             return {}, "用例不存在或跨项目"
-        return {"target_type": "case", "case_id": target.case_id}, None
+        membership = await db.scalar(
+            select(TestSuiteCase.id).where(
+                TestSuiteCase.suite_id == target.suite_id,
+                TestSuiteCase.case_id == target.case_id,
+            )
+        )
+        if membership is None:
+            return {}, "套件用例关系不存在"
+        return {
+            "target_type": "case",
+            "suite_id": target.suite_id,
+            "case_id": target.case_id,
+        }, None
     # step / assertion
-    if target.case_id is None or not target.node_key:
-        return {}, "节点目标必须提供 case_id 与 node_key"
+    if target.suite_id is None or target.case_id is None or not target.node_key:
+        return {}, "节点目标必须提供 suite_id、case_id 与 node_key"
+    suite = await db.get(TestSuite, target.suite_id)
+    if suite is None or suite.deleted_at is not None or suite.project_id != project_id:
+        return {}, "套件不存在或跨项目"
     c = await db.get(TestCase, target.case_id)
     if c is None or c.deleted_at is not None or c.project_id != project_id:
         return {}, "用例不存在或跨项目"
+    membership = await db.scalar(
+        select(TestSuiteCase.id).where(
+            TestSuiteCase.suite_id == target.suite_id,
+            TestSuiteCase.case_id == target.case_id,
+        )
+    )
+    if membership is None:
+        return {}, "套件用例关系不存在"
     found = _find_case_node(c, target.type, target.node_key)
     if found is None:
         return {}, f"{target.type} 节点不存在或 node_key 非法"
     normalized_key, _node = found
-    return {"target_type": target.type, "case_id": target.case_id, "node_key": normalized_key}, None
+    return {
+        "target_type": target.type,
+        "suite_id": target.suite_id,
+        "case_id": target.case_id,
+        "node_key": normalized_key,
+    }, None
 
 
 @router.post("/app-profiles/{profile_id}/skip-rules/batch", response_model=dict)
@@ -715,12 +746,15 @@ async def skip_rules_batch(
         existing_query = existing_query.where(
             AppProfileSkipRule.target_type == fields["target_type"]
         )
-        if fields.get("suite_id") is not None:
-            existing_query = existing_query.where(AppProfileSkipRule.suite_id == fields["suite_id"])
-        if fields.get("case_id") is not None:
-            existing_query = existing_query.where(AppProfileSkipRule.case_id == fields["case_id"])
-        if fields.get("node_key") is not None:
-            existing_query = existing_query.where(AppProfileSkipRule.node_key == fields["node_key"])
+        for field, column in (
+            ("suite_id", AppProfileSkipRule.suite_id),
+            ("case_id", AppProfileSkipRule.case_id),
+            ("node_key", AppProfileSkipRule.node_key),
+        ):
+            value = fields.get(field)
+            existing_query = existing_query.where(
+                column.is_(None) if value is None else column == value
+            )
         existing = (await db.execute(existing_query)).scalar_one_or_none()
         if body.operation == "skip":
             if existing is not None:
@@ -1275,7 +1309,7 @@ async def workspace_nodes(
         suite_rule = skip["suite"].get(parent_id)
         items = []
         for case in rows:
-            direct_rule = skip["case"].get(case.id)
+            direct_rule = skip["case"].get((parent_id, case.id))
             rule = suite_rule or direct_rule
             override_count = len(overrides["node"].get(case.id, {}))
             effective = "skipped" if rule else ("overridden" if override_count else "enabled")
@@ -1309,16 +1343,20 @@ async def workspace_nodes(
             ):
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="套件用例关系不存在")
             suite_rule = skip["suite"].get(ancestor_suite_id)
-        case_rule = suite_rule or skip["case"].get(case.id)
+        case_rule = suite_rule or (
+            skip["case"].get((ancestor_suite_id, case.id))
+            if ancestor_suite_id is not None
+            else None
+        )
         items = []
         for node in (case.steps or []):
             node_key = str(node.get("key") or "")
-            rule = skip["step"].get(case.id, {}).get(node_key)
+            rule = skip["step"].get((ancestor_suite_id, case.id), {}).get(node_key)
             overridden = overrides["node"].get(case.id, {}).get(node_key) == "step"
             items.append(_node_item("step", case.id, node_key, node, rule, case_rule, overridden))
         for node in (case.assertions or []):
             node_key = str(node.get("key") or "")
-            rule = skip["assertion"].get(case.id, {}).get(node_key)
+            rule = skip["assertion"].get((ancestor_suite_id, case.id), {}).get(node_key)
             overridden = overrides["node"].get(case.id, {}).get(node_key) == "assertion"
             items.append(_node_item("assertion", case.id, node_key, node, rule, case_rule, overridden))
         start = (page - 1) * page_size
@@ -1347,14 +1385,14 @@ async def differences(
     # 跳过项
     for sid, rule in skip["suite"].items():
         rows.append(_skip_row("suite", f"套件 {sid}", rule, "direct"))
-    for cid, rule in skip["case"].items():
-        rows.append(_skip_row("case", f"用例 {cid}", rule, "direct"))
-    for cid, rules in skip["step"].items():
+    for (sid, cid), rule in skip["case"].items():
+        rows.append(_skip_row("case", f"套件 {sid}/用例 {cid}", rule, "direct"))
+    for (sid, cid), rules in skip["step"].items():
         for k, rule in rules.items():
-            rows.append(_skip_row("step", f"用例 {cid}/步骤 {k[:8]}", rule, "direct"))
-    for cid, rules in skip["assertion"].items():
+            rows.append(_skip_row("step", f"套件 {sid}/用例 {cid}/步骤 {k[:8]}", rule, "direct"))
+    for (sid, cid), rules in skip["assertion"].items():
         for k, rule in rules.items():
-            rows.append(_skip_row("assertion", f"用例 {cid}/断言 {k[:8]}", rule, "direct"))
+            rows.append(_skip_row("assertion", f"套件 {sid}/用例 {cid}/断言 {k[:8]}", rule, "direct"))
 
     # 覆盖项
     if type_ in ("all", "overridden"):
@@ -1396,10 +1434,17 @@ async def _load_skip_index(db: AsyncSession, profile_id: int) -> dict:
     for rule in rows:
         if rule.target_type == "suite" and rule.suite_id is not None:
             idx["suite"][rule.suite_id] = rule
-        elif rule.target_type == "case" and rule.case_id is not None:
-            idx["case"][rule.case_id] = rule
-        elif rule.target_type in ("step", "assertion") and rule.case_id is not None and rule.node_key is not None:
-            idx[rule.target_type].setdefault(rule.case_id, {})[str(rule.node_key)] = rule
+        elif rule.target_type == "case" and rule.suite_id is not None and rule.case_id is not None:
+            idx["case"][(rule.suite_id, rule.case_id)] = rule
+        elif (
+            rule.target_type in ("step", "assertion")
+            and rule.suite_id is not None
+            and rule.case_id is not None
+            and rule.node_key is not None
+        ):
+            idx[rule.target_type].setdefault(
+                (rule.suite_id, rule.case_id), {}
+            )[str(rule.node_key)] = rule
     return idx
 
 
@@ -1448,29 +1493,13 @@ async def _case_counts(db: AsyncSession, project_id: int) -> dict[int, int]:
 async def _diff_counts(db: AsyncSession, project_id: int, profile_id: int) -> dict[int, int]:
     """按套件聚合差异（跳过用例 + 节点 + 覆盖）数，简化：返回套件维度跳过用例数。"""
     skip = await _load_skip_index(db, profile_id)
-    case_suite: dict[int, int] = {}
-    rows = (
-        await db.execute(
-            select(TestSuiteCase.case_id, TestSuiteCase.suite_id)
-            .join(TestCase, TestCase.id == TestSuiteCase.case_id)
-            .where(TestCase.project_id == project_id, TestCase.deleted_at.is_(None))
-        )
-    ).all()
-    for cid, sid in rows:
-        case_suite.setdefault(cid, sid)
     counts: dict[int, int] = {}
-    for cid in skip["case"]:
-        sid = case_suite.get(cid)
-        if sid is not None:
-            counts[sid] = counts.get(sid, 0) + 1
-    for cid, rules in skip["step"].items():
-        sid = case_suite.get(cid)
-        if sid is not None:
-            counts[sid] = counts.get(sid, 0) + len(rules)
-    for cid, rules in skip["assertion"].items():
-        sid = case_suite.get(cid)
-        if sid is not None:
-            counts[sid] = counts.get(sid, 0) + len(rules)
+    for sid, _cid in skip["case"]:
+        counts[sid] = counts.get(sid, 0) + 1
+    for (sid, _cid), rules in skip["step"].items():
+        counts[sid] = counts.get(sid, 0) + len(rules)
+    for (sid, _cid), rules in skip["assertion"].items():
+        counts[sid] = counts.get(sid, 0) + len(rules)
     return counts
 
 

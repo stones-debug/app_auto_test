@@ -123,8 +123,13 @@ async def test_skip_batch(client: AsyncClient):
             "reason": {"code": "unsupported", "note": "DVR 无此功能"},
             "targets": [
                 {"type": "suite", "suite_id": suite_id},
-                {"type": "case", "case_id": case_id},
-                {"type": "step", "case_id": case_id, "node_key": node_key},
+                {"type": "case", "suite_id": suite_id, "case_id": case_id},
+                {
+                    "type": "step",
+                    "suite_id": suite_id,
+                    "case_id": case_id,
+                    "node_key": node_key,
+                },
             ],
         },
         headers=h,
@@ -277,7 +282,7 @@ async def test_workspace_and_nodes(client: AsyncClient):
     # 跳过一个用例后差异列表出现
     case_node = (await client.post(
         f"/api/app-profiles/{profile_id}/skip-rules/batch",
-        json={"expected_revision": 1, "operation": "skip", "reason": {"code": "unsupported"}, "targets": [{"type": "case", "case_id": case_id}]},
+        json={"expected_revision": 1, "operation": "skip", "reason": {"code": "unsupported"}, "targets": [{"type": "case", "suite_id": suite_id, "case_id": case_id}]},
         headers=h,
     )).json()
     assert case_node["changed"] == 1
@@ -349,6 +354,127 @@ async def test_workspace_nodes_enforce_project_and_inherit_parent_skip(client: A
     assert nodes.json()["items"][0]["status_source"] == "inherited"
 
 
+async def test_shared_case_skip_is_scoped_to_selected_suite(client: AsyncClient):
+    """回归：同一用例属于多个套件时，只跳过工作台中选中的套件节点。"""
+    token = await _register(client, OWNER)
+    headers = {"Authorization": f"Bearer {token}"}
+    project_id = (
+        await client.post("/api/projects", json={"name": "共享用例项目"}, headers=headers)
+    ).json()["id"]
+    profile_id = (
+        await client.post(
+            f"/api/projects/{project_id}/app-profiles",
+            json={"name": "共享档案", "code": f"shared{uuid.uuid4().hex[:6]}"},
+            headers=headers,
+        )
+    ).json()["id"]
+    case_id = (
+        await client.post(
+            f"/api/projects/{project_id}/cases",
+            json={
+                "name": "公共登录用例",
+                "steps": [
+                    {
+                        "order": 1,
+                        "key": str(uuid.uuid4()),
+                        "action": "sleep",
+                        "params": {"duration": 1},
+                    }
+                ],
+            },
+            headers=headers,
+        )
+    ).json()["id"]
+    suite_ids = []
+    for name in ("DVR 套件", "部标机套件"):
+        suite_id = (
+            await client.post(
+                f"/api/projects/{project_id}/suites",
+                json={"name": name},
+                headers=headers,
+            )
+        ).json()["id"]
+        await client.post(
+            f"/api/suites/{suite_id}/cases",
+            json={"case_id": case_id},
+            headers=headers,
+        )
+        suite_ids.append(suite_id)
+
+    skipped = await client.post(
+        f"/api/app-profiles/{profile_id}/skip-rules/batch",
+        json={
+            "expected_revision": 1,
+            "operation": "skip",
+            "reason": {"code": "unsupported"},
+            "targets": [
+                {"type": "case", "suite_id": suite_ids[0], "case_id": case_id}
+            ],
+        },
+        headers=headers,
+    )
+    assert skipped.status_code == 200, skipped.text
+
+    first = await client.get(
+        f"/api/app-profiles/{profile_id}/workspace/nodes"
+        f"?parent_type=suite&parent_id={suite_ids[0]}",
+        headers=headers,
+    )
+    second = await client.get(
+        f"/api/app-profiles/{profile_id}/workspace/nodes"
+        f"?parent_type=suite&parent_id={suite_ids[1]}",
+        headers=headers,
+    )
+    assert first.json()["items"][0]["effective_status"] == "skipped"
+    assert first.json()["items"][0]["status_source"] == "direct"
+    assert second.json()["items"][0]["effective_status"] == "enabled"
+    assert second.json()["items"][0]["status_source"] == "none"
+
+
+async def test_case_skip_rejects_unrelated_suite_context(client: AsyncClient):
+    """套件上下文必须真实包含目标用例，禁止伪造 suite_id。"""
+    token = await _register(client, OWNER)
+    headers = {"Authorization": f"Bearer {token}"}
+    project_id = (
+        await client.post("/api/projects", json={"name": "关系校验项目"}, headers=headers)
+    ).json()["id"]
+    profile_id = (
+        await client.post(
+            f"/api/projects/{project_id}/app-profiles",
+            json={"name": "关系档案", "code": f"relation{uuid.uuid4().hex[:6]}"},
+            headers=headers,
+        )
+    ).json()["id"]
+    case_id = (
+        await client.post(
+            f"/api/projects/{project_id}/cases",
+            json={"name": "未入套件用例", "steps": []},
+            headers=headers,
+        )
+    ).json()["id"]
+    suite_id = (
+        await client.post(
+            f"/api/projects/{project_id}/suites",
+            json={"name": "空套件"},
+            headers=headers,
+        )
+    ).json()["id"]
+
+    response = await client.post(
+        f"/api/app-profiles/{profile_id}/skip-rules/batch",
+        json={
+            "expected_revision": 1,
+            "operation": "skip",
+            "reason": {"code": "unsupported"},
+            "targets": [{"type": "case", "suite_id": suite_id, "case_id": case_id}],
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 422
+    assert "套件用例关系不存在" in response.text
+
+
 async def test_execution_preview(client: AsyncClient):
     """执行预检：返回双 revision + 计数 + 排除项；空档案返回 PROFILE_EMPTY。"""
     token = await _register(client, OWNER)
@@ -381,7 +507,7 @@ async def test_execution_preview(client: AsyncClient):
     # 空档案（所有用例跳过）→ 400 PROFILE_EMPTY
     await client.post(
         f"/api/app-profiles/{profile_id}/skip-rules/batch",
-        json={"expected_revision": 1, "operation": "skip", "reason": {"code": "unsupported"}, "targets": [{"type": "case", "case_id": case_id}]},
+        json={"expected_revision": 1, "operation": "skip", "reason": {"code": "unsupported"}, "targets": [{"type": "case", "suite_id": suite_id, "case_id": case_id}]},
         headers=h,
     )
     empty = await client.post(
