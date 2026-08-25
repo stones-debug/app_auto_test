@@ -1,4 +1,4 @@
-from sqlalchemy import ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -7,6 +7,9 @@ from app.models.base import SoftDeleteMixin, TimestampMixin
 
 class Project(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "projects"
+    __table_args__ = (
+        CheckConstraint("test_asset_revision >= 1", name="ck_projects_test_asset_revision"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -14,6 +17,9 @@ class Project(Base, TimestampMixin, SoftDeleteMixin):
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     visibility: Mapped[str] = mapped_column(String(20), default="private")  # private / public
     status: Mapped[str] = mapped_column(String(20), default="active")
+    test_asset_revision: Mapped[int] = mapped_column(
+        BigInteger, default=1, server_default=text("1"), nullable=False
+    )
 
 
 class ProjectMember(Base, TimestampMixin):

@@ -1,5 +1,15 @@
 from app.core.database import Base
 from app.models.agent import Agent, AgentUser, Device, DevicePreference, UserAgentKey
+from app.models.app_profile import (
+    AppProfile,
+    AppProfileAuditLog,
+    AppProfileElementOverride,
+    AppProfileNodeOverride,
+    AppProfileRelease,
+    AppProfileSkipRule,
+    AppProfileVariableOverride,
+    ExecutionExclusion,
+)
 from app.models.case import TestCase, TestSuite, TestSuiteCase
 from app.models.element import ElementGroup, TestElement, TestModule
 from app.models.execution import (
@@ -22,6 +32,14 @@ __all__ = [
     "Device",
     "DevicePreference",
     "UserAgentKey",
+    "AppProfile",
+    "AppProfileAuditLog",
+    "AppProfileElementOverride",
+    "AppProfileNodeOverride",
+    "AppProfileRelease",
+    "AppProfileSkipRule",
+    "AppProfileVariableOverride",
+    "ExecutionExclusion",
     "TestCase",
     "TestSuite",
     "TestSuiteCase",

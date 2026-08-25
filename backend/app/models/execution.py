@@ -1,8 +1,10 @@
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -14,6 +16,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -26,6 +29,19 @@ class Execution(Base, TimestampMixin):
         Index("idx_executions_status", "status"),
         Index("idx_executions_project", "project_id"),
         Index("idx_executions_retry", "retry_of"),
+        Index("idx_executions_profile_created", "app_profile_id", text("created_at DESC")),
+        Index("idx_executions_release_created", "app_release_id", text("created_at DESC")),
+        CheckConstraint(
+            "profile_revision IS NULL OR profile_revision >= 1", name="ck_executions_profile_revision"
+        ),
+        CheckConstraint(
+            "test_asset_revision IS NULL OR test_asset_revision >= 1",
+            name="ck_executions_asset_revision",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(profile_resolution_summary) = 'object'",
+            name="ck_executions_resolution_summary",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -47,6 +63,16 @@ class Execution(Base, TimestampMixin):
     duration: Mapped[int | None] = mapped_column(Integer)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     retry_of: Mapped[int | None] = mapped_column(ForeignKey("executions.id"))
+    # 方案 §2.7：APP 档案与快照来源
+    app_profile_id: Mapped[int | None] = mapped_column(ForeignKey("app_profiles.id"))
+    app_profile_name_snapshot: Mapped[str | None] = mapped_column(String(100))
+    app_release_id: Mapped[int | None] = mapped_column(ForeignKey("app_profile_releases.id"))
+    app_release_version_snapshot: Mapped[str | None] = mapped_column(String(64))
+    profile_revision: Mapped[int | None] = mapped_column(BigInteger)
+    test_asset_revision: Mapped[int | None] = mapped_column(BigInteger)
+    profile_resolution_summary: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
 
 
 class ExecutionCase(Base, TimestampMixin):
@@ -129,6 +155,8 @@ class Report(Base, TimestampMixin):
             name="ck_reports_counts_nonneg",
         ),
         CheckConstraint("success_rate >= 0 AND success_rate <= 100", name="ck_reports_success_rate_range"),
+        CheckConstraint("not_applicable >= 0", name="ck_reports_not_applicable"),
+        CheckConstraint("jsonb_typeof(exclusion_summary) = 'object'", name="ck_reports_exclusion_summary"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -138,6 +166,10 @@ class Report(Base, TimestampMixin):
     failed: Mapped[int] = mapped_column(Integer, default=0)
     error_count: Mapped[int] = mapped_column(Integer, default=0)
     skipped: Mapped[int] = mapped_column(Integer, default=0)
+    not_applicable: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default=text("0"))
+    exclusion_summary: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
     # CR-10：权威设计为 DECIMAL(5,2)，如 66.67
     success_rate: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("0"))
     duration: Mapped[int | None] = mapped_column(Integer)
