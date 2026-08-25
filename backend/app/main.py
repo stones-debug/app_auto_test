@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.agent import router as agent_router
 from app.api.agents import router as agents_router
+from app.api.app_profiles import router as app_profiles_router
 from app.api.auth import router as auth_router
 from app.api.cases import router as cases_router
 from app.api.dashboard import router as dashboard_router
@@ -76,6 +77,7 @@ app.add_middleware(
 
 app.include_router(auth_router, prefix="/api")
 app.include_router(projects_router, prefix="/api")
+app.include_router(app_profiles_router, prefix="/api")
 app.include_router(elements_router, prefix="/api")
 app.include_router(cases_router, prefix="/api")
 app.include_router(suites_router, prefix="/api")
@@ -89,8 +91,6 @@ app.include_router(releases_router, prefix="/api")
 app.include_router(reports_router, prefix="/api")
 app.include_router(internal_router)
 app.include_router(ws_router)
-
-
 @app.get("/api/health")
 async def health() -> dict:
     return {"status": "ok", "version": "0.1.0"}
