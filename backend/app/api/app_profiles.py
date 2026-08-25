@@ -26,10 +26,16 @@ from app.schemas.app_profile import (
     AppProfileCreate,
     AppProfileDelete,
     AppProfileUpdate,
+    ElementOverrideDelete,
+    ElementOverrideUpsert,
+    NodeOverrideDelete,
+    NodeOverridePatch,
     ReleaseCreate,
     ReleaseDelete,
     ReleaseUpdate,
     SkipBatchRequest,
+    VariableOverrideDelete,
+    VariableOverrideUpsert,
 )
 from app.services.profile_audit import find_idempotent_replay, write_audit
 from app.services.profile_revision import RevisionConflictError, bump_profile_revision
@@ -625,3 +631,265 @@ async def skip_rules_batch(
         "unchanged": unchanged,
         "results": results,
     }
+
+
+# ---------- 覆盖（方案 §4.6） ----------
+
+
+async def _bump_and_audit(
+    db, profile, body, action, user, role, changes=None, response_data=None
+) -> dict:
+    """递增 revision + 写审计，返回 (revision_after, 新值)。公共提取。"""
+    before = profile.revision
+    try:
+        new_revision = await bump_profile_revision(db, profile.id, body.expected_revision, user.id)
+    except RevisionConflictError as err:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": err.code, "current": err.current, "expected": err.expected},
+        ) from None
+    await write_audit(
+        db,
+        profile_id=profile.id,
+        project_id=profile.project_id,
+        action=action,
+        actor_id=user.id,
+        actor_role=role,
+        revision_before=before,
+        revision_after=new_revision,
+        request_id=body.request_id,
+        changes=changes or [],
+        response_data=response_data or {},
+    )
+    profile.updated_by = user.id
+    return new_revision
+
+
+# 元素覆盖
+@router.put("/app-profiles/{profile_id}/element-overrides/{element_id}", response_model=dict)
+async def upsert_element_override(
+    profile_id: int,
+    element_id: int,
+    body: ElementOverrideUpsert,
+    modal_perm: tuple[Project, str | None] = Depends(require_profile_manager_by_profile()),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    profile = await _get_profile_or_404(profile_id, db)
+    _project, role = modal_perm
+    from app.models import TestElement
+
+    el = await db.get(TestElement, element_id)
+    if el is None or el.deleted_at is not None or el.project_id != profile.project_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="元素不存在或跨项目")
+    existing = (
+        await db.execute(
+            select(AppProfileElementOverride).where(
+                AppProfileElementOverride.profile_id == profile_id,
+                AppProfileElementOverride.element_id == element_id,
+                AppProfileElementOverride.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        existing = AppProfileElementOverride(
+            profile_id=profile_id,
+            element_id=element_id,
+            locator_type=body.locator_type,
+            locator_value=body.locator_value,
+            created_by=user.id,
+            updated_by=user.id,
+        )
+        db.add(existing)
+        await db.flush()
+    else:
+        existing.deleted_at = None
+        existing.locator_type = body.locator_type
+        existing.locator_value = body.locator_value
+        existing.updated_by = user.id
+    new_revision = await _bump_and_audit(db, profile, body, "element_override_upsert", user, role)
+    await db.commit()
+    return {"revision": new_revision, "element_id": element_id, "locator_type": body.locator_type, "locator_value": body.locator_value}
+
+
+@router.delete("/app-profiles/{profile_id}/element-overrides/{element_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def restore_element_override(
+    profile_id: int,
+    element_id: int,
+    body: ElementOverrideDelete,
+    modal_perm: tuple[Project, str | None] = Depends(require_profile_manager_by_profile()),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    profile = await _get_profile_or_404(profile_id, db)
+    _project, role = modal_perm
+    existing = (
+        await db.execute(
+            select(AppProfileElementOverride).where(
+                AppProfileElementOverride.profile_id == profile_id,
+                AppProfileElementOverride.element_id == element_id,
+                AppProfileElementOverride.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing.deleted_at = datetime.now(UTC)
+        existing.updated_by = user.id
+    await _bump_and_audit(db, profile, body, "element_override_restore", user, role)
+    await db.commit()
+
+
+# 变量覆盖
+@router.put("/app-profiles/{profile_id}/variable-overrides/{name}", response_model=dict)
+async def upsert_variable_override(
+    profile_id: int,
+    name: str,
+    body: VariableOverrideUpsert,
+    modal_perm: tuple[Project, str | None] = Depends(require_profile_manager_by_profile()),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    profile = await _get_profile_or_404(profile_id, db)
+    _project, role = modal_perm
+    existing = (
+        await db.execute(
+            select(AppProfileVariableOverride).where(
+                AppProfileVariableOverride.profile_id == profile_id,
+                AppProfileVariableOverride.name == name,
+                AppProfileVariableOverride.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        existing = AppProfileVariableOverride(
+            profile_id=profile_id, name=name, created_by=user.id, updated_by=user.id
+        )
+        db.add(existing)
+        await db.flush()
+    else:
+        existing.deleted_at = None
+    existing.value = body.value
+    existing.description = body.description
+    existing.updated_by = user.id
+    new_revision = await _bump_and_audit(db, profile, body, "variable_override_upsert", user, role)
+    await db.commit()
+    return {"revision": new_revision, "name": name, "value": body.value}
+
+
+@router.delete("/app-profiles/{profile_id}/variable-overrides/{name}", status_code=status.HTTP_204_NO_CONTENT)
+async def restore_variable_override(
+    profile_id: int,
+    name: str,
+    body: VariableOverrideDelete,
+    modal_perm: tuple[Project, str | None] = Depends(require_profile_manager_by_profile()),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    profile = await _get_profile_or_404(profile_id, db)
+    _project, role = modal_perm
+    existing = (
+        await db.execute(
+            select(AppProfileVariableOverride).where(
+                AppProfileVariableOverride.profile_id == profile_id,
+                AppProfileVariableOverride.name == name,
+                AppProfileVariableOverride.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing.deleted_at = datetime.now(UTC)
+        existing.updated_by = user.id
+    await _bump_and_audit(db, profile, body, "variable_override_restore", user, role)
+    await db.commit()
+
+
+# 节点参数覆盖
+@router.put("/app-profiles/{profile_id}/node-overrides/{case_id}/{node_type}/{node_key}", response_model=dict)
+async def upsert_node_override(
+    profile_id: int,
+    case_id: int,
+    node_type: str,
+    node_key: str,
+    body: NodeOverridePatch,
+    modal_perm: tuple[Project, str | None] = Depends(require_profile_manager_by_profile()),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    profile = await _get_profile_or_404(profile_id, db)
+    _project, role = modal_perm
+    if node_type not in ("step", "assertion"):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="node_type 只允许 step|assertion")
+    from app.models import TestCase
+
+    case = await db.get(TestCase, case_id)
+    if case is None or case.deleted_at is not None or case.project_id != profile.project_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用例不存在或跨项目")
+    # 白名单合并校验（禁止改身份/顺序）
+    from app.services.profile_resolver import NODE_IDENTITY_FIELDS, NODE_PATCH_ALLOWED
+
+    for key in body.patch:
+        if key in NODE_IDENTITY_FIELDS:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"禁止修改节点字段: {key}")
+        if key not in NODE_PATCH_ALLOWED:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"不允许覆盖字段: {key}")
+    existing = (
+        await db.execute(
+            select(AppProfileNodeOverride).where(
+                AppProfileNodeOverride.profile_id == profile_id,
+                AppProfileNodeOverride.target_type == node_type,
+                AppProfileNodeOverride.case_id == case_id,
+                AppProfileNodeOverride.node_key == node_key,
+                AppProfileNodeOverride.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        existing = AppProfileNodeOverride(
+            profile_id=profile_id,
+            target_type=node_type,
+            case_id=case_id,
+            node_key=node_key,
+            patch=body.patch,
+            created_by=user.id,
+            updated_by=user.id,
+        )
+        db.add(existing)
+        await db.flush()
+    else:
+        existing.deleted_at = None
+        existing.patch = body.patch
+        existing.updated_by = user.id
+    new_revision = await _bump_and_audit(db, profile, body, "node_override_upsert", user, role)
+    await db.commit()
+    return {"revision": new_revision, "case_id": case_id, "node_key": node_key, "patch": body.patch}
+
+
+@router.delete("/app-profiles/{profile_id}/node-overrides/{case_id}/{node_type}/{node_key}", status_code=status.HTTP_204_NO_CONTENT)
+async def restore_node_override(
+    profile_id: int,
+    case_id: int,
+    node_type: str,
+    node_key: str,
+    body: NodeOverrideDelete,
+    modal_perm: tuple[Project, str | None] = Depends(require_profile_manager_by_profile()),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    profile = await _get_profile_or_404(profile_id, db)
+    _project, role = modal_perm
+    existing = (
+        await db.execute(
+            select(AppProfileNodeOverride).where(
+                AppProfileNodeOverride.profile_id == profile_id,
+                AppProfileNodeOverride.target_type == node_type,
+                AppProfileNodeOverride.case_id == case_id,
+                AppProfileNodeOverride.node_key == node_key,
+                AppProfileNodeOverride.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing.deleted_at = datetime.now(UTC)
+        existing.updated_by = user.id
+    await _bump_and_audit(db, profile, body, "node_override_restore", user, role)
+    await db.commit()

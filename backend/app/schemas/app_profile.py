@@ -159,6 +159,51 @@ class SkipBatchResponse(BaseModel):
     results: list[SkipBatchResultItem]
 
 
+# ---------- 覆盖（方案 §4.6） ----------
+
+
+class ElementOverrideUpsert(BaseModel):
+    request_id: str | None = None
+    expected_revision: int = Field(ge=1)
+    locator_type: str = Field(min_length=1, max_length=50)
+    locator_value: str = Field(min_length=1)
+
+
+class ElementOverrideDelete(BaseModel):
+    request_id: str | None = None
+    expected_revision: int = Field(ge=1)
+
+
+class VariableOverrideUpsert(BaseModel):
+    request_id: str | None = None
+    expected_revision: int = Field(ge=1)
+    value: str = Field(default="")
+    description: str | None = Field(default=None, max_length=500)
+
+
+class VariableOverrideDelete(BaseModel):
+    request_id: str | None = None
+    expected_revision: int = Field(ge=1)
+
+
+class NodeOverridePatch(BaseModel):
+    request_id: str | None = None
+    expected_revision: int = Field(ge=1)
+    patch: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("patch")
+    @classmethod
+    def _patch_not_empty(cls, v: dict) -> dict:
+        if not v:
+            raise ValueError("patch 不能为空")
+        return v
+
+
+class NodeOverrideDelete(BaseModel):
+    request_id: str | None = None
+    expected_revision: int = Field(ge=1)
+
+
 # ---------- 幂等响应 ----------
 
 

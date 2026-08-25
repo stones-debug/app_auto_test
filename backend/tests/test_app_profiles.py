@@ -163,6 +163,43 @@ async def test_skip_batch(client: AsyncClient):
     assert bad.status_code == 422
 
 
+async def test_overrides(client: AsyncClient):
+    """元素/变量/节点覆盖 upsert + restore + 非法 patch 拒绝。"""
+    token = await _register(client, OWNER)
+    h = {"Authorization": f"Bearer {token}"}
+    pid = (await client.post("/api/projects", json={"name": "覆盖项目"}, headers=h)).json()["id"]
+    code = f"o{uuid.uuid4().hex[:6]}"
+    profile_id = (await client.post(f"/api/projects/{pid}/app-profiles", json={"name": "O", "code": code}, headers=h)).json()["id"]
+    el_id = (await client.post(f"/api/projects/{pid}/elements", json={"name": "按钮", "locator_type": "id", "locator_value": "common"}, headers=h)).json()["id"]
+    case_id = (await client.post(f"/api/projects/{pid}/cases", json={"name": "用B", "steps": [{"order": 1, "action": "click", "element_id": el_id, "params": {}}], "assertions": []}, headers=h)).json()["id"]
+    node_key = str(uuid.uuid4())
+    # 给用例加一个含该 node_key 的步骤
+    await client.put(f"/api/cases/{case_id}", json={"steps": [{"order": 1, "key": node_key, "action": "click", "element_id": el_id, "params": {}}]}, headers=h)
+
+    # 元素覆盖
+    r = await client.put(f"/api/app-profiles/{profile_id}/element-overrides/{el_id}", json={"expected_revision": 1, "locator_type": "resource_id", "locator_value": "dvr_id"}, headers=h)
+    assert r.status_code == 200
+    assert r.json()["revision"] == 2
+    # 变量覆盖
+    r = await client.put(f"/api/app-profiles/{profile_id}/variable-overrides/PKG", json={"expected_revision": 2, "value": "com.dvr"}, headers=h)
+    assert r.status_code == 200
+    assert r.json()["revision"] == 3
+    # 节点覆盖
+    r = await client.put(f"/api/app-profiles/{profile_id}/node-overrides/{case_id}/step/{node_key}", json={"expected_revision": 3, "patch": {"params": {"wait_timeout": 20}}}, headers=h)
+    assert r.status_code == 200
+    assert r.json()["revision"] == 4
+    # 非法 patch（改 order）→ 422
+    bad = await client.put(f"/api/app-profiles/{profile_id}/node-overrides/{case_id}/step/{node_key}", json={"expected_revision": 4, "patch": {"order": 5}}, headers=h)
+    assert bad.status_code == 422
+
+    # restore 元素覆盖（当前 revision=4，非法 patch 已回滚未递增）
+    r = await client.request("DELETE", f"/api/app-profiles/{profile_id}/element-overrides/{el_id}", json={"expected_revision": 4}, headers=h)
+    assert r.status_code == 204
+    got = await client.get(f"/api/app-profiles/{profile_id}", headers=h)
+    assert got.status_code == 200
+    assert got.json()["revision"] == 5
+
+
 async def test_member_cannot_manage_profile(client: AsyncClient):
     """Member 不能创建/修改档案（Owner/Admin only），但可读取。"""
     token = await _register(client, OWNER)
