@@ -68,7 +68,10 @@ async def write_audit(
     if action not in AUDIT_ACTIONS:
         raise ValueError(f"未知审计动作: {action}")
     if request_id:
-        req_id = str(uuid.UUID(request_id))
+        try:
+            req_id = str(uuid.UUID(request_id))
+        except ValueError:
+            raise ValueError(f"request_id 必须为 UUID: {request_id}") from None
     else:
         req_id = str(uuid.uuid4())
     log = AppProfileAuditLog(

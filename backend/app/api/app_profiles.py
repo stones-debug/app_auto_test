@@ -29,6 +29,7 @@ from app.schemas.app_profile import (
     ReleaseCreate,
     ReleaseDelete,
     ReleaseUpdate,
+    SkipBatchRequest,
 )
 from app.services.profile_audit import find_idempotent_replay, write_audit
 from app.services.profile_revision import RevisionConflictError, bump_profile_revision
@@ -475,3 +476,152 @@ async def delete_release(
         request_id=body.request_id,
     )
     await db.commit()
+
+
+# ---------- 批量跳过/恢复（方案 §4.5） ----------
+
+
+async def _validate_skip_target(db: AsyncSession, project_id: int, target, reason) -> tuple[dict, str | None]:
+    """校验单个跳过目标；返回 (字段dict, 错误信息)。"""
+    from app.models import TestCase, TestSuite
+
+    if target.type == "suite":
+        if target.suite_id is None:
+            return {}, "套件目标必须提供 suite_id"
+        s = await db.get(TestSuite, target.suite_id)
+        if s is None or s.deleted_at is not None or s.project_id != project_id:
+            return {}, "套件不存在或跨项目"
+        return {"target_type": "suite", "suite_id": target.suite_id}, None
+    if target.type == "case":
+        if target.case_id is None:
+            return {}, "用例目标必须提供 case_id"
+        c = await db.get(TestCase, target.case_id)
+        if c is None or c.deleted_at is not None or c.project_id != project_id:
+            return {}, "用例不存在或跨项目"
+        return {"target_type": "case", "case_id": target.case_id}, None
+    # step / assertion
+    if target.case_id is None or not target.node_key:
+        return {}, "节点目标必须提供 case_id 与 node_key"
+    c = await db.get(TestCase, target.case_id)
+    if c is None or c.deleted_at is not None or c.project_id != project_id:
+        return {}, "用例不存在或跨项目"
+    return {"target_type": target.type, "case_id": target.case_id, "node_key": target.node_key}, None
+
+
+@router.post("/app-profiles/{profile_id}/skip-rules/batch", response_model=dict)
+async def skip_rules_batch(
+    profile_id: int,
+    body: SkipBatchRequest,
+    modal_perm: tuple[Project, str | None] = Depends(require_profile_manager_by_profile()),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    profile = await _get_profile_or_404(profile_id, db)
+    _project, role = modal_perm
+    before = profile.revision
+    if body.request_id:
+        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        if replay is not None:
+            return replay
+
+    target_fields: list[dict] = []
+    field_errors: list[dict] = []
+    for idx, target in enumerate(body.targets):
+        fields, err = await _validate_skip_target(db, profile.project_id, target, body.reason)
+        if err:
+            field_errors.append({"index": idx, "error": err})
+            continue
+        target_fields.append((idx, fields))
+    if field_errors:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "PROFILE_RULE_INVALID", "field_errors": field_errors},
+        )
+    if body.operation == "skip" and body.reason is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "PROFILE_RULE_INVALID", "message": "skip 操作必须提供 reason"},
+        )
+
+    from app.models import AppProfileSkipRule
+
+    results: list[dict] = []
+    changed = 0
+    unchanged = 0
+    new_rules: list[AppProfileSkipRule] = []
+    try:
+        new_revision = await bump_profile_revision(db, profile_id, body.expected_revision, user.id)
+    except RevisionConflictError as err:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": err.code, "current": err.current, "expected": err.expected},
+        ) from None
+
+    for idx, fields in target_fields:
+        existing_query = select(AppProfileSkipRule).where(
+            AppProfileSkipRule.profile_id == profile_id,
+            AppProfileSkipRule.deleted_at.is_(None),
+        )
+        existing_query = existing_query.where(
+            AppProfileSkipRule.target_type == fields["target_type"]
+        )
+        if fields.get("suite_id") is not None:
+            existing_query = existing_query.where(AppProfileSkipRule.suite_id == fields["suite_id"])
+        if fields.get("case_id") is not None:
+            existing_query = existing_query.where(AppProfileSkipRule.case_id == fields["case_id"])
+        if fields.get("node_key") is not None:
+            existing_query = existing_query.where(AppProfileSkipRule.node_key == fields["node_key"])
+        existing = (await db.execute(existing_query)).scalar_one_or_none()
+        if body.operation == "skip":
+            if existing is not None:
+                unchanged += 1
+                results.append({"index": idx, "status": "unchanged", "rule_id": existing.id})
+                continue
+            rule = AppProfileSkipRule(
+                profile_id=profile_id,
+                target_type=fields["target_type"],
+                suite_id=fields.get("suite_id"),
+                case_id=fields.get("case_id"),
+                node_key=fields.get("node_key"),
+                reason_code=body.reason.code,
+                reason_note=body.reason.note,
+                created_by=user.id,
+                updated_by=user.id,
+            )
+            db.add(rule)
+            await db.flush()
+            changed += 1
+            results.append({"index": idx, "status": "changed", "rule_id": rule.id})
+            new_rules.append(rule)
+        else:  # restore
+            if existing is None:
+                unchanged += 1
+                results.append({"index": idx, "status": "unchanged", "rule_id": None})
+                continue
+            existing.deleted_at = datetime.now(UTC)
+            changed += 1
+            results.append({"index": idx, "status": "changed", "rule_id": existing.id})
+
+    action = "skip_batch" if body.operation == "skip" else "restore_batch"
+    await write_audit(
+        db,
+        profile_id=profile_id,
+        project_id=profile.project_id,
+        action=action,
+        actor_id=user.id,
+        actor_role=role,
+        revision_before=before,
+        revision_after=new_revision,
+        request_id=body.request_id,
+        changes=results,
+        response_data={"changed": changed, "unchanged": unchanged, "revision": new_revision},
+    )
+    await db.commit()
+    return {
+        "request_id": body.request_id,
+        "revision_before": before,
+        "revision_after": new_revision,
+        "changed": changed,
+        "unchanged": unchanged,
+        "results": results,
+    }

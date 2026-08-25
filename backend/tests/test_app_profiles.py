@@ -84,6 +84,85 @@ async def test_release_crud(client: AsyncClient):
     assert deleted.status_code == 204
 
 
+async def test_skip_batch(client: AsyncClient):
+    """批量跳过：套件/用例/节点跳过、恢复、幂等 unchanged、revision 递增。"""
+    token = await _register(client, OWNER)
+    h = {"Authorization": f"Bearer {token}"}
+    pid = (await client.post("/api/projects", json={"name": "跳过项目"}, headers=h)).json()["id"]
+    code = f"s{uuid.uuid4().hex[:6]}"
+    pid2 = (await client.post(f"/api/projects/{pid}/app-profiles", json={"name": "S", "code": code}, headers=h)).json()["id"]
+
+    # 建套件 + 用例
+    suite_id = (await client.post(f"/api/projects/{pid}/suites", json={"name": "套件A"}, headers=h)).json()["id"]
+    case_id = (await client.post(f"/api/projects/{pid}/cases", json={"name": "用A", "steps": [], "assertions": []}, headers=h)).json()["id"]
+    node_key = str(uuid.uuid4())
+    await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)
+
+    resp = await client.post(
+        f"/api/app-profiles/{pid2}/skip-rules/batch",
+        json={
+            "expected_revision": 1,
+            "operation": "skip",
+            "reason": {"code": "unsupported", "note": "DVR 无此功能"},
+            "targets": [
+                {"type": "suite", "suite_id": suite_id},
+                {"type": "case", "case_id": case_id},
+                {"type": "step", "case_id": case_id, "node_key": node_key},
+            ],
+        },
+        headers=h,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["changed"] == 3
+    assert data["revision_before"] == 1
+    assert data["revision_after"] == 2
+
+    # 幂等：重复提交相同 targets → unchanged
+    idem = await client.post(
+        f"/api/app-profiles/{pid2}/skip-rules/batch",
+        json={
+            "request_id": str(uuid.uuid4()),
+            "expected_revision": 2,
+            "operation": "skip",
+            "reason": {"code": "unsupported"},
+            "targets": [{"type": "suite", "suite_id": suite_id}],
+        },
+        headers=h,
+    )
+    assert idem.status_code == 200
+    assert idem.json()["unchanged"] == 1
+    assert idem.json()["changed"] == 0
+
+    # 恢复套件
+    restore = await client.post(
+        f"/api/app-profiles/{pid2}/skip-rules/batch",
+        json={
+            "expected_revision": 3,
+            "operation": "restore",
+            "targets": [{"type": "suite", "suite_id": suite_id}],
+        },
+        headers=h,
+    )
+    assert restore.status_code == 200
+    assert restore.json()["changed"] == 1
+
+    # 跨项目目标 → 422
+    other_pid = (await client.post("/api/projects", json={"name": "其他项目"}, headers=h)).json()["id"]
+    bad_suite = (await client.post(f"/api/projects/{other_pid}/suites", json={"name": "跨项目套件"}, headers=h)).json()["id"]
+    bad = await client.post(
+        f"/api/app-profiles/{pid2}/skip-rules/batch",
+        json={
+            "expected_revision": 4,
+            "operation": "skip",
+            "reason": {"code": "unsupported"},
+            "targets": [{"type": "suite", "suite_id": bad_suite}],
+        },
+        headers=h,
+    )
+    assert bad.status_code == 422
+
+
 async def test_member_cannot_manage_profile(client: AsyncClient):
     """Member 不能创建/修改档案（Owner/Admin only），但可读取。"""
     token = await _register(client, OWNER)

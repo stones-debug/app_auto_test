@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 _REASON_CODES = {"unsupported", "not_adapted", "deprecated", "environment_limit", "other"}
 
@@ -110,6 +110,53 @@ class ReleasePage(BaseModel):
     page: int
     page_size: int
     items: list[ReleaseOut]
+
+
+# ---------- 批量跳过（方案 §4.5） ----------
+
+
+class SkipReason(BaseModel):
+    code: str = Field(pattern=r"^(unsupported|not_adapted|deprecated|environment_limit|other)$")
+    note: str | None = None
+
+    @field_validator("note")
+    @classmethod
+    def _note_required_for_other(cls, v: str | None, info):
+        code = info.data.get("code")
+        if code == "other" and not (v or "").strip():
+            raise ValueError("reason_code='other' 时必须填写备注")
+        return v
+
+
+class SkipTarget(BaseModel):
+    type: Literal["suite", "case", "step", "assertion"]
+    suite_id: int | None = None
+    case_id: int | None = None
+    node_key: str | None = None
+
+
+class SkipBatchRequest(BaseModel):
+    request_id: str | None = None
+    expected_revision: int = Field(ge=1)
+    operation: Literal["skip", "restore"]
+    reason: SkipReason | None = None
+    targets: list[SkipTarget] = Field(min_length=1)
+
+
+class SkipBatchResultItem(BaseModel):
+    index: int
+    status: Literal["changed", "unchanged", "invalid"]
+    rule_id: int | None = None
+    error: str | None = None
+
+
+class SkipBatchResponse(BaseModel):
+    request_id: str
+    revision_before: int
+    revision_after: int
+    changed: int
+    unchanged: int
+    results: list[SkipBatchResultItem]
 
 
 # ---------- 幂等响应 ----------
