@@ -177,7 +177,6 @@ function onDragEnd() {
         </el-card>
       </template>
     </Draggable>
-    <el-empty v-if="modelValue.length === 0" :description="`暂无${title}`" :image-size="48" />
     <div class="add-more">
       <el-button type="primary" plain class="w-full" @click="addStep">+ 添加操作</el-button>
     </div>
