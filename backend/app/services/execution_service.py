@@ -399,6 +399,8 @@ async def create_batch_execution(
             db, project_id=project_id, type_="batch", user=user, device_id=device_id,
             parameters=parameters, timeout_seconds=timeout_seconds,
         )
+    # 批量解析器从 body.parameters 读取 suite_ids；确保顶层请求字段在预检与正式快照中一致。
+    body.parameters = parameters
     return await _create_execution_with_profile(
         db, project_id=project_id, type_="batch", user=user, device_id=device_id,
         parameters=parameters, timeout_seconds=timeout_seconds, body=body,

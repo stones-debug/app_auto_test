@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 import { getDefaultDevice, listDevices, setDefaultDevice, type Device } from '@/api/agents'
 import {
   createCaseExecution,
+  createBatchExecution,
   createSuiteExecution,
   retryExecution,
   type Execution,
@@ -14,6 +15,7 @@ import {
 export type RunTarget =
   | { kind: 'case'; id: number; name: string }
   | { kind: 'suite'; id: number; name: string }
+  | { kind: 'batch'; suiteIds: number[]; name: string }
   | { kind: 'retry'; executionId: number; name: string }
 
 export type RetryTarget = Extract<RunTarget, { kind: 'retry' }>
@@ -48,7 +50,7 @@ export function buildRunParameters(
 }
 
 /**
- * Windows 方案 §4.2：运行入口选机，供「普通运行 / 重试」三类入口统一复用。
+ * Windows 方案 §4.2：运行入口选机，供单用例、单套件、批量套件和重试统一复用。
  * V2：始终弹出设备选择弹窗并预选当前用户默认设备（可用）；未设默认或默认不可用则回退首个空闲设备。
  * 弹窗内可临时切换设备、勾选"设为默认"；并发占用提示并刷新，不自动换设备。
  * 方案 §4.8：创建需携带档案/版本/双 revision（ProfileRunContext）。
@@ -89,6 +91,7 @@ export function useDeviceSelect() {
     }
     if (target.kind === 'case') return createCaseExecution(target.id, opts)
     if (target.kind === 'suite') return createSuiteExecution(target.id, opts)
+    if (target.kind === 'batch') return createBatchExecution({ ...opts, suite_ids: target.suiteIds })
     // retry：后端仅接受 {device_id, timeout_seconds?}，档案由服务端按原执行读取
     return retryExecution(target.executionId, {
       device_id: deviceId,

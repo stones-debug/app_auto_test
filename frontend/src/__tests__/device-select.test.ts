@@ -9,19 +9,21 @@ vi.mock('@/api/agents', () => ({
   setDefaultDevice: vi.fn(),
 }))
 vi.mock('@/api/executions', () => ({
+  createBatchExecution: vi.fn(),
   createCaseExecution: vi.fn(),
   createSuiteExecution: vi.fn(),
   retryExecution: vi.fn(),
 }))
 
 import { getDefaultDevice, listDevices, setDefaultDevice } from '@/api/agents'
-import { createCaseExecution, createSuiteExecution, retryExecution } from '@/api/executions'
+import { createBatchExecution, createCaseExecution, createSuiteExecution, retryExecution } from '@/api/executions'
 import { apiErrorCode, buildRunParameters, useDeviceSelect } from '@/composables/useDeviceSelect'
 
 const mGetDefault = vi.mocked(getDefaultDevice)
 const mListDevices = vi.mocked(listDevices)
 const mSetDefault = vi.mocked(setDefaultDevice)
 const mCreateCase = vi.mocked(createCaseExecution)
+const mCreateBatch = vi.mocked(createBatchExecution)
 const mCreateSuite = vi.mocked(createSuiteExecution)
 const mRetry = vi.mocked(retryExecution)
 
@@ -38,6 +40,7 @@ describe('useDeviceSelect（Windows 方案 §4.2 自动选机）', () => {
     mListDevices.mockResolvedValue({ total: 2, page: 1, page_size: 200, items: [IDLE, BUSY] } as never)
     mCreateCase.mockResolvedValue({ id: 100, status: 'queued' } as never)
     mCreateSuite.mockResolvedValue({ id: 200, status: 'queued' } as never)
+    mCreateBatch.mockResolvedValue({ id: 250, status: 'queued' } as never)
     mRetry.mockResolvedValue({ id: 300, status: 'queued' } as never)
   })
 
@@ -69,6 +72,21 @@ describe('useDeviceSelect（Windows 方案 §4.2 自动选机）', () => {
     expect(select.dialogVisible.value).toBe(true)
     expect(select.selectedId.value).toBe(11)
     expect(mCreateSuite).not.toHaveBeenCalled()
+  })
+
+  it('batch：确认运行时提交全部 suite_ids', async () => {
+    mGetDefault.mockResolvedValue({ device_id: 11, device: IDLE, available: true, reason: '' } as never)
+    const select = useDeviceSelect()
+    await select.open({ kind: 'batch', suiteIds: [2, 5, 8], name: '全部套件' })
+
+    const execution = await select.confirmRun({ timeout_seconds: 1200 })
+
+    expect(execution?.id).toBe(250)
+    expect(mCreateBatch).toHaveBeenCalledWith({
+      suite_ids: [2, 5, 8],
+      timeout_seconds: 1200,
+      device_id: 11,
+    })
   })
 
   it('retry：弹窗预选默认设备；确认运行调用 {device_id, timeout_seconds?}，不伪装成 case/suite', async () => {
@@ -185,6 +203,13 @@ describe('运行阶段参数', () => {
 
   it('套件不允许携带当前界面模式', () => {
     expect(buildRunParameters('suite', settings)).toEqual({
+      use_pre_steps: true,
+      use_post_steps: true,
+    })
+  })
+
+  it('批量套件沿用套件阶段选项且不携带当前界面模式', () => {
+    expect(buildRunParameters('batch', settings)).toEqual({
       use_pre_steps: true,
       use_post_steps: true,
     })

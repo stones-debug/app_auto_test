@@ -30,7 +30,7 @@ const profileReadonly = ref(false)
 const retryRevisionNotice = ref('')
 let previewSequence = 0
 
-let targetIdTracker = 0
+let targetIdsTracker: number[] = []
 
 /** 弹窗路径的 open() 挂起解析器（成功/取消时唤醒父级 await）。 */
 let openResolve: ((exec: Execution | null) => void) | null = null
@@ -120,7 +120,10 @@ async function doPreview() {
   try {
     const result = await previewExecution({
       project_id: props.projectId ?? 0,
-      target: { type: targetKind.value === 'suite' ? 'suite' : 'case', ids: [targetIdTracker] },
+      target: {
+        type: targetKind.value === 'batch' ? 'batch' : (targetKind.value === 'suite' ? 'suite' : 'case'),
+        ids: targetIdsTracker,
+      },
       app_profile_id: profileId.value,
       app_release_id: releaseId.value,
       device_id: selectedId.value,
@@ -206,8 +209,10 @@ defineExpose({
         retryRevisionNotice.value = '这是历史兼容执行，重试将继续使用原始公共测试资产流程。'
       }
     }
-    if (options.targetId) targetIdTracker = options.targetId
-    else if (target.kind === 'case' || target.kind === 'suite') targetIdTracker = target.id
+    if (target.kind === 'batch') targetIdsTracker = target.suiteIds
+    else if (options.targetId) targetIdsTracker = [options.targetId]
+    else if (target.kind === 'case' || target.kind === 'suite') targetIdsTracker = [target.id]
+    else targetIdsTracker = []
     store.projectId = props.projectId ?? store.projectId
     if (props.projectId != null) {
       await store.loadProfiles()
@@ -285,7 +290,7 @@ watch([selectedId, usePreSteps, usePostSteps, attachToCurrentApp], () => {
       <el-form-item label="超时(s)">
         <el-input-number v-model="timeout" :min="60" :max="7200" :step="60" />
       </el-form-item>
-      <template v-if="targetKind === 'case' || targetKind === 'suite'">
+      <template v-if="targetKind === 'case' || targetKind === 'suite' || targetKind === 'batch'">
         <el-divider content-position="left">执行选项</el-divider>
         <el-form-item label="用例阶段">
           <div class="option-list">
