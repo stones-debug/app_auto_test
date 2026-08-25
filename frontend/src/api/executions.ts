@@ -2,6 +2,13 @@ import request from '@/utils/request'
 
 import type { PageData } from './projects'
 
+export interface ProfileRunRef {
+  app_profile_id: number
+  app_release_id: number | null
+  expected_profile_revision: number
+  expected_test_asset_revision: number
+}
+
 export type ExecutionStatus =
   | 'queued'
   | 'running'
@@ -107,6 +114,11 @@ export interface RunOptions {
   device_id?: number | null
   parameters?: Record<string, unknown>
   timeout_seconds?: number
+  // 方案 §4.8：执行创建必填档案/版本与 revision（required 语义）
+  app_profile_id?: number
+  app_release_id?: number | null
+  expected_profile_revision?: number
+  expected_test_asset_revision?: number
 }
 
 export interface ExecutionRunSettings {
