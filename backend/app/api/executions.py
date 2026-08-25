@@ -16,6 +16,7 @@ from app.core.errors import api_error
 from app.core.ratelimit import rate_limit
 from app.models import (
     Agent,
+    AppProfile,
     Device,
     Execution,
     ExecutionCase,
@@ -35,16 +36,83 @@ from app.schemas.execution import (
     ExecutionLogPage,
     ExecutionOut,
     ExecutionPage,
+    ExecutionPreviewRequest,
+    ExecutionPreviewResponse,
     ExecutionRetryRequest,
     ExecutionStepOut,
 )
 from app.services import execution_service
 from app.services.access_scope import visible_project_ids
 from app.services.execution_detail_service import load_case_tree
+from app.services.profile_resolver import (
+    ProfileEmpty,
+    ProfileRevisionConflict,
+    ProfileRuleError,
+    ResolutionRequest,
+    get_resolver,
+)
 from app.services.screenshot_store import resolve_screenshot_path
 from app.utils.pagination import get_pagination
 
 router = APIRouter(tags=["执行管理"])
+
+
+@router.post("/executions/preview", response_model=ExecutionPreviewResponse)
+async def preview_execution(
+    body: ExecutionPreviewRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """执行预检（方案 §4.7）：只读解析，不创建执行、不抢设备。"""
+    project, role = await get_project_permission(body.project_id, user, db)
+    if role not in ("owner", "admin", "member"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权执行")
+    # 读取当前档案/项目 revision 作为 expected（预检返回给前端，供提交时二次校验）
+    profile = await db.get(AppProfile, body.app_profile_id)
+    if profile is None or profile.deleted_at is not None or profile.project_id != body.project_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="APP 档案不存在")
+    expected_profile_rev = profile.revision
+    expected_asset_rev = project.test_asset_revision
+    request = ResolutionRequest(
+        project_id=body.project_id,
+        profile_id=body.app_profile_id,
+        release_id=body.app_release_id,
+        target_type=body.target.type,
+        target_ids=body.target.ids,
+        expected_profile_revision=expected_profile_rev,
+        expected_test_asset_revision=expected_asset_rev,
+        run_options=body.parameters,
+        execution_variables=(body.parameters or {}).get("variables") or {},
+    )
+    try:
+        result = await get_resolver().preview(request, db)
+    except ProfileRevisionConflict as err:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": err.code, "current": err.current, "expected": err.expected}) from None
+    except ProfileEmpty as err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "PROFILE_EMPTY", "exclusions": [{"target_type": e.target_type, "name": e.display_snapshot.get("name")} for e in err.exclusions]},
+        ) from None
+    except ProfileRuleError as err:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail={"code": err.code, "message": err.message}) from None
+
+    return ExecutionPreviewResponse(
+        profile_revision=result.profile_revision,
+        test_asset_revision=result.test_asset_revision,
+        profile={"id": body.app_profile_id, "name": result.profile_name},
+        release={"id": body.app_release_id, "version": result.release_version},
+        counts={**result.summary},
+        exclusion_preview=[
+            {
+                "target_type": e.target_type,
+                "path": e.display_snapshot.get("name") or "",
+                "reason_code": e.reason_code,
+                "reason_note": e.reason_note,
+            }
+            for e in result.exclusions
+        ],
+        warnings=result.warnings,
+    )
 
 
 async def _get_execution_or_404(execution_id: int, db: AsyncSession) -> Execution:

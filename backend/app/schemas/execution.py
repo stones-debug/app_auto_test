@@ -35,6 +35,36 @@ class ExecutionRetryRequest(BaseModel):
     timeout_seconds: int | None = Field(default=None, ge=60, le=7200)
 
 
+# ---------- 执行预检（方案 §4.7） ----------
+
+
+class ExecutionPreviewTarget(BaseModel):
+    type: str = Field(pattern="^(case|suite|batch)$")
+    ids: list[int] = Field(min_length=1)
+
+
+class ExecutionPreviewRequest(BaseModel):
+    project_id: int
+    target: ExecutionPreviewTarget
+    app_profile_id: int
+    app_release_id: int | None = None
+    device_id: int | None = None
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    timeout_seconds: int | None = Field(default=None, ge=60, le=7200)
+
+    _run_parameters = field_validator("parameters")(_validate_run_parameters)
+
+
+class ExecutionPreviewResponse(BaseModel):
+    profile_revision: int
+    test_asset_revision: int
+    profile: dict[str, Any]
+    release: dict[str, Any]
+    counts: dict[str, int]
+    exclusion_preview: list[dict[str, Any]]
+    warnings: list[dict[str, Any]]
+
+
 class ExecutionCaseOut(BaseModel):
     id: int
     case_id: int

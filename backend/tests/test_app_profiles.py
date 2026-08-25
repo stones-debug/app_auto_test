@@ -233,6 +233,43 @@ async def test_workspace_and_nodes(client: AsyncClient):
     assert diff.json()["items"][0]["target_type"] == "case"
 
 
+async def test_execution_preview(client: AsyncClient):
+    """执行预检：返回双 revision + 计数 + 排除项；空档案返回 PROFILE_EMPTY。"""
+    token = await _register(client, OWNER)
+    h = {"Authorization": f"Bearer {token}"}
+    pid = (await client.post("/api/projects", json={"name": "预检项目"}, headers=h)).json()["id"]
+    profile_id = (await client.post(f"/api/projects/{pid}/app-profiles", json={"name": "PV", "code": f"pv{uuid.uuid4().hex[:6]}"}, headers=h)).json()["id"]
+    case_id = (await client.post(f"/api/projects/{pid}/cases", json={"name": "预检用例", "steps": [{"order": 1, "key": str(uuid.uuid4()), "action": "sleep", "params": {"duration": 1}}], "assertions": []}, headers=h)).json()["id"]
+    suite_id = (await client.post(f"/api/projects/{pid}/suites", json={"name": "预检套件"}, headers=h)).json()["id"]
+    await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)
+
+    resp = await client.post(
+        "/api/executions/preview",
+        json={"project_id": pid, "target": {"type": "suite", "ids": [suite_id]}, "app_profile_id": profile_id, "device_id": None},
+        headers=h,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["profile_revision"] == 1
+    assert data["test_asset_revision"] == 1
+    assert data["counts"]["executable_cases"] == 1
+    assert data["counts"]["executable_steps"] == 1
+
+    # 空档案（所有用例跳过）→ 400 PROFILE_EMPTY
+    await client.post(
+        f"/api/app-profiles/{profile_id}/skip-rules/batch",
+        json={"expected_revision": 1, "operation": "skip", "reason": {"code": "unsupported"}, "targets": [{"type": "case", "case_id": case_id}]},
+        headers=h,
+    )
+    empty = await client.post(
+        "/api/executions/preview",
+        json={"project_id": pid, "target": {"type": "suite", "ids": [suite_id]}, "app_profile_id": profile_id},
+        headers=h,
+    )
+    assert empty.status_code == 400
+    assert empty.json()["detail"]["code"] == "PROFILE_EMPTY"
+
+
 async def test_member_cannot_manage_profile(client: AsyncClient):
     """Member 不能创建/修改档案（Owner/Admin only），但可读取。"""
     token = await _register(client, OWNER)
