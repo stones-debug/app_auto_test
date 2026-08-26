@@ -44,6 +44,20 @@ def _aggregate_status(statuses: list[str]) -> str:
     return "skipped"
 
 
+# 用例步骤阶段归一化：后端快照五值 → 本地分桶的三段（setup/main/teardown）。
+# 协议 V2 起后端下发 case_setup/case_main/case_teardown；历史兼容 setup/main/teardown。
+_CASE_PHASE_BUCKET = {
+    "case_setup": "setup",
+    "case_main": "main",
+    "case_teardown": "teardown",
+}
+
+
+def _case_phase_bucket(phase: str | None) -> str:
+    """将用例步骤 phase 归一化为分桶阶段（缺省视为 main）。"""
+    return _CASE_PHASE_BUCKET.get(str(phase or "main"), str(phase or "main"))
+
+
 def _run_action_in_thread(action_cls, driver, context, params: dict) -> dict:
     """Windows 方案 §2：动作在独立工作线程的专用事件循环中执行。
 
@@ -284,9 +298,9 @@ class TestRunner:
         case_status = "passed"
 
         all_steps = case.get("steps_snapshot") or []
-        setup_steps = [s for s in all_steps if str(s.get("phase") or "main") == "setup"]
-        main_steps = [s for s in all_steps if str(s.get("phase") or "main") == "main"]
-        teardown_steps = [s for s in all_steps if str(s.get("phase") or "main") == "teardown"]
+        setup_steps = [s for s in all_steps if _case_phase_bucket(s.get("phase")) == "setup"]
+        main_steps = [s for s in all_steps if _case_phase_bucket(s.get("phase")) == "main"]
+        teardown_steps = [s for s in all_steps if _case_phase_bucket(s.get("phase")) == "teardown"]
 
         setup_failed, setup_halted = await self._run_steps(
             setup_steps, context, reporter, "setup", execution_case_id=execution_case_id

@@ -145,6 +145,29 @@ async def test_runner_passing_flow():
     assert assertion_msg["assertions"][0]["status"] == "passed"
 
 
+async def test_runner_executes_case_main_phase_steps():
+    """协议 V2：后端快照使用 case_setup/case_main/case_teardown，Agent 必须归一化分桶并执行。"""
+    case = _make_case(
+        steps=[
+            {"order": 1, "phase": "case_setup", "action": "input", "element_id": 1, "params": {"value": "pre"}},
+            {"order": 2, "phase": "case_main", "action": "click", "element_id": 2, "params": {}},
+            {"order": 3, "phase": "case_teardown", "action": "input", "element_id": 1, "params": {"value": "post"}},
+        ],
+        assertions=[
+            {"order": 1, "type": "text_equals", "element_id": 1, "params": {"expected": "pre"}},
+        ],
+    )
+    status, sent = await _run_and_capture(case)
+    assert status == "passed"
+    step_types = [m["type"] for m in sent]
+    # 前置 + 主体 + 后置各一条 step_result，而非"仅送达断言后直接返回"
+    assert step_types.count("step_result") == 3
+    assert step_types.count("log") == 3
+    assert [m["step_order"] for m in sent if m["type"] == "step_result"] == [1, 2, 3]
+    assertion_msg = next(m for m in sent if m["type"] == "assertion_result")
+    assert assertion_msg["assertions"][0]["status"] == "passed"
+
+
 async def test_runner_fails_on_mismatch_assertion():
     case = _make_case(
         steps=[{"order": 1, "action": "input", "element_id": 1, "params": {"value": "admin"}}],
