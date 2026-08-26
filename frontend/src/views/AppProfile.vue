@@ -14,8 +14,10 @@ import {
   listReleases,
   listProfileOverrides,
   restoreNodeOverride,
+  restoreSuiteStepOverride,
   skipRulesBatch,
   upsertNodeOverride,
+  upsertSuiteStepOverride,
   type ProfileNode,
   type SkipTarget,
   workspace,
@@ -30,6 +32,8 @@ interface DisplayNode extends ProfileNode {
   _depth: number
   _suiteId?: number
   _caseId?: number
+  _phase?: 'suite_setup' | 'suite_teardown'
+  _isPhaseGroup?: boolean
 }
 
 const route = useRoute()
@@ -68,6 +72,44 @@ const displayRows = computed<DisplayNode[]>(() => {
     const suiteId = suite.id
     rows.push({ ...suite, _key: `suite:${suiteId}`, _depth: 0, _suiteId: suiteId })
     if (!store.expandedKeys.has(`suite:${suiteId}`)) continue
+
+    // 套件前后置伪节点行（depth 1）：展开后懒加载对应步骤节点
+    const phaseGroups: { key: string; phase: 'suite_setup' | 'suite_teardown'; label: string; count: number }[] = [
+      { key: `suite:${suiteId}:setup`, phase: 'suite_setup', label: '套件前置', count: suite.setup_step_count ?? 0 },
+      { key: `suite:${suiteId}:teardown`, phase: 'suite_teardown', label: '套件后置', count: suite.teardown_step_count ?? 0 },
+    ]
+    for (const g of phaseGroups) {
+      const expandedGroup = store.expandedKeys.has(g.key)
+      rows.push({
+        node_type: 'suite_step',
+        id: null,
+        node_key: null,
+        name: `${g.label} (${g.count})`,
+        phase: g.phase,
+        effective_status: 'enabled',
+        status_source: 'none',
+        reason: null,
+        override_count: 0,
+        has_children: g.count > 0,
+        _key: g.key,
+        _depth: 1,
+        _suiteId: suiteId,
+        _phase: g.phase,
+        _isPhaseGroup: true,
+      })
+      if (!expandedGroup) continue
+      for (const node of store.childrenByParent[g.key] ?? []) {
+        const nodeKey = node.node_key ?? String(node.id ?? '')
+        rows.push({
+          ...node,
+          _key: `${node.node_type}:${suiteId}:${g.phase}:${nodeKey}`,
+          _depth: 2,
+          _suiteId: suiteId,
+          _phase: g.phase,
+        })
+      }
+    }
+
     for (const testCase of store.childrenByParent[`suite:${suiteId}`] ?? []) {
       if (testCase.id == null) continue
       const caseId = testCase.id
@@ -100,6 +142,13 @@ async function load() {
 }
 
 async function toggleNode(row: DisplayNode) {
+  if (row._isPhaseGroup) {
+    if (row.has_children && row._suiteId != null && row._phase != null && !store.expandedKeys.has(row._key)) {
+      await store.loadSuiteSteps(row._suiteId, row._phase)
+    }
+    store.toggleExpand(row._key)
+    return
+  }
   if (!row.has_children || row.id == null) return
   if (row.node_type === 'suite') {
     if (!store.expandedKeys.has(row._key)) await store.loadChildren('suite', row.id)
@@ -165,7 +214,15 @@ async function batchRestore() {
 }
 
 async function openNodeOverride(row: DisplayNode) {
-  if (!store.selectedProfileId || !row._caseId || !row.node_key) return
+  if (!store.selectedProfileId || !row.node_key) return
+  if (row.node_type === 'suite_step') {
+    nodeOverrideDialog.row = row
+    nodeOverrideDialog.patchText = '{}'
+    nodeOverrideDialog.overridden = row.status_source === 'override'
+    nodeOverrideDialog.visible = true
+    return
+  }
+  if (!row._caseId) return
   const data = await listProfileOverrides(store.selectedProfileId)
   const existing = data.nodes.find((item) => (
     item.case_id === row._caseId && item.node_type === row.node_type && item.node_key === row.node_key
@@ -178,7 +235,7 @@ async function openNodeOverride(row: DisplayNode) {
 
 async function saveNodeOverride() {
   const row = nodeOverrideDialog.row
-  if (!store.selectedProfileId || store.profileRevision == null || !row?._caseId || !row.node_key) return
+  if (!store.selectedProfileId || store.profileRevision == null || !row?.node_key) return
   let patch: Record<string, unknown>
   try {
     patch = JSON.parse(nodeOverrideDialog.patchText) as Record<string, unknown>
@@ -187,13 +244,20 @@ async function saveNodeOverride() {
     ElMessage.warning('覆盖内容必须是 JSON 对象')
     return
   }
-  const result = await upsertNodeOverride(
-    store.selectedProfileId,
-    row._caseId,
-    row.node_type as 'step' | 'assertion',
-    row.node_key,
-    { expected_revision: store.profileRevision, patch },
-  )
+  const result = row.node_type === 'suite_step'
+    ? await upsertSuiteStepOverride(
+        store.selectedProfileId,
+        row._suiteId!,
+        row.node_key,
+        { expected_revision: store.profileRevision, patch },
+      )
+    : await upsertNodeOverride(
+        store.selectedProfileId,
+        row._caseId!,
+        row.node_type as 'step' | 'assertion',
+        row.node_key,
+        { expected_revision: store.profileRevision, patch },
+      )
   store.markRevision(result.revision, store.testAssetRevision ?? 1)
   nodeOverrideDialog.visible = false
   await store.refreshVisibleWorkspace()
@@ -202,14 +266,23 @@ async function saveNodeOverride() {
 
 async function restoreNode() {
   const row = nodeOverrideDialog.row
-  if (!store.selectedProfileId || store.profileRevision == null || !row?._caseId || !row.node_key) return
-  await restoreNodeOverride(
-    store.selectedProfileId,
-    row._caseId,
-    row.node_type as 'step' | 'assertion',
-    row.node_key,
-    { expected_revision: store.profileRevision },
-  )
+  if (!store.selectedProfileId || store.profileRevision == null || !row?.node_key) return
+  if (row.node_type === 'suite_step') {
+    await restoreSuiteStepOverride(
+      store.selectedProfileId,
+      row._suiteId!,
+      row.node_key,
+      { expected_revision: store.profileRevision },
+    )
+  } else {
+    await restoreNodeOverride(
+      store.selectedProfileId,
+      row._caseId!,
+      row.node_type as 'step' | 'assertion',
+      row.node_key,
+      { expected_revision: store.profileRevision },
+    )
+  }
   const profile = await getAppProfile(store.selectedProfileId)
   store.markRevision(profile.revision, store.testAssetRevision ?? 1)
   nodeOverrideDialog.visible = false
@@ -338,7 +411,7 @@ onMounted(load)
       </div>
 
       <el-table v-loading="store.loading || saving" :data="displayRows" row-key="_key" size="small" @selection-change="selectedRows = $event">
-        <el-table-column v-if="canEditProject" type="selection" width="42" />
+        <el-table-column v-if="canEditProject" type="selection" width="42" :selectable="(row: unknown) => !displayNode(row)._isPhaseGroup" />
         <el-table-column label="名称" min-width="260">
           <template #default="{ row }">
             <span class="node-name" :style="{ paddingLeft: `${row._depth * 22}px` }">
@@ -356,8 +429,8 @@ onMounted(load)
         <el-table-column label="操作" width="210" align="right">
           <template #default="{ row }">
             <el-button v-if="canExecute && (row.node_type === 'suite' || row.node_type === 'case')" size="small" text type="primary" @click="runNode(displayNode(row))">运行</el-button>
-            <template v-if="canEditProject">
-              <el-button v-if="row.node_type === 'step' || row.node_type === 'assertion'" size="small" text @click="openNodeOverride(displayNode(row))">覆盖</el-button>
+            <template v-if="canEditProject && !displayNode(row)._isPhaseGroup">
+              <el-button v-if="row.node_type === 'step' || row.node_type === 'assertion' || row.node_type === 'suite_step'" size="small" text @click="openNodeOverride(displayNode(row))">覆盖</el-button>
               <el-button v-if="row.status_source === 'direct'" size="small" text @click="restoreRow(displayNode(row))">恢复</el-button>
               <el-button v-else-if="row.status_source !== 'inherited'" size="small" text type="danger" @click="openSkip([displayNode(row)])">跳过</el-button>
             </template>

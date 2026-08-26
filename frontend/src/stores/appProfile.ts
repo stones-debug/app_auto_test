@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 
 import {
   listAppProfiles,
+  suiteSteps,
   workspace,
   workspaceNodes,
   type AppProfileSummary,
@@ -116,6 +117,20 @@ export const useAppProfileStore = defineStore('appProfile', () => {
     return page.items
   }
 
+  // 套件前后置步骤懒加载：写入 `suite:<sid>:setup|teardown` 伪节点缓存。
+  async function loadSuiteSteps(
+    suiteId: number,
+    phase: 'suite_setup' | 'suite_teardown',
+    force = false,
+  ): Promise<ProfileNode[]> {
+    if (projectId.value == null || selectedProfileId.value == null) return []
+    const key = `suite:${suiteId}:${phase === 'suite_setup' ? 'setup' : 'teardown'}`
+    if (!force && childrenByParent.value[key]) return childrenByParent.value[key]
+    const page = await suiteSteps(selectedProfileId.value, suiteId, { phase })
+    childrenByParent.value = { ...childrenByParent.value, [key]: page.items }
+    return page.items
+  }
+
   async function refreshVisibleWorkspace() {
     const expanded = [...expandedKeys.value]
     childrenByParent.value = {}
@@ -123,7 +138,11 @@ export const useAppProfileStore = defineStore('appProfile', () => {
     for (const key of expanded) {
       const parts = key.split(':')
       if (parts[0] === 'suite') {
-        await loadChildren('suite', Number(parts[1]))
+        if (parts.length === 3 && (parts[2] === 'setup' || parts[2] === 'teardown')) {
+          await loadSuiteSteps(Number(parts[1]), parts[2] === 'setup' ? 'suite_setup' : 'suite_teardown')
+        } else {
+          await loadChildren('suite', Number(parts[1]))
+        }
       } else if (parts[0] === 'case') {
         await loadChildren('case', Number(parts[2]), Number(parts[1]))
       }
@@ -177,6 +196,7 @@ export const useAppProfileStore = defineStore('appProfile', () => {
     selectProfile,
     loadWorkspace,
     loadChildren,
+    loadSuiteSteps,
     refreshVisibleWorkspace,
     toggleExpand,
     setStale,

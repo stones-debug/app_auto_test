@@ -1,5 +1,7 @@
 import request from '@/utils/request'
 
+import type { Step } from './cases'
+
 export interface Suite {
   id: number
   project_id: number
@@ -8,6 +10,9 @@ export interface Suite {
   status: string
   created_by?: number | null
   case_count: number
+  // 方案 §2：套件前后置步骤（Action Step，与用例步骤同构）
+  setup_steps?: Step[]
+  teardown_steps?: Step[]
   created_at: string
   updated_at: string
 }
@@ -52,7 +57,12 @@ export async function listSuites(projectId: number) {
   return data.items
 }
 
-export function createSuite(projectId: number, data: { name: string; description?: string }) {
+export function createSuite(projectId: number, data: {
+  name: string
+  description?: string
+  setup_steps?: Step[]
+  teardown_steps?: Step[]
+}) {
   return request.post<Suite>(`/projects/${projectId}/suites`, data)
 }
 

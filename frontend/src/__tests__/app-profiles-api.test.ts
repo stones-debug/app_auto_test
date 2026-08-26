@@ -64,3 +64,19 @@ describe('appProfiles 编辑/删除契约', () => {
     expect(typeof mod.deleteAppProfile).toBe('function')
   })
 })
+
+describe('appProfiles 套件前后置步骤契约', () => {
+  it('suiteSteps 存在且 SkipTarget 支持 suite_step', async () => {
+    const mod = await import('@/api/appProfiles')
+    expect(typeof mod.suiteSteps).toBe('function')
+    const target: import('@/api/appProfiles').SkipTarget = { type: 'suite_step', suite_id: 11, node_key: 'uuid' }
+    expect(target.type).toBe('suite_step')
+    expect(target.suite_id).toBe(11)
+    expect(target.node_key).toBe('uuid')
+  })
+  it('suite-step 覆盖 API 存在', async () => {
+    const mod = await import('@/api/appProfiles')
+    expect(typeof mod.upsertSuiteStepOverride).toBe('function')
+    expect(typeof mod.restoreSuiteStepOverride).toBe('function')
+  })
+})

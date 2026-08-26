@@ -9,6 +9,7 @@ import {
   createSuite,
   deleteSuite,
   deleteVariable,
+  getSuite,
   listSuiteCases,
   listSuites,
   listVariables,
@@ -20,8 +21,10 @@ import {
   type SuiteCase,
   type Variable,
 } from '@/api/suites'
-import { listCases } from '@/api/cases'
+import { listCases, normalizeStep, type Step } from '@/api/cases'
+import CaseStepEditor from '@/components/CaseStepEditor.vue'
 import RunButton from '@/components/RunButton.vue'
+import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 
 const route = useRoute()
 const projectId = Number(route.params.projectId)
@@ -38,6 +41,24 @@ const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
 const form = ref({ name: '', description: '' })
 
+// 套件前后置步骤（方案 §2）：与用例步同构，复用 CaseStepEditor
+const suiteDetail = ref<Suite | null>(null)
+const setupSteps = ref<Step[]>([])
+const teardownSteps = ref<Step[]>([])
+const savingSteps = ref(false)
+const { markDirty, markSaved } = useUnsavedChanges()
+let stepsLoaded = false
+
+function onSetupStepsChange(steps: Step[]) {
+  setupSteps.value = steps
+  if (stepsLoaded) markDirty()
+}
+
+function onTeardownStepsChange(steps: Step[]) {
+  teardownSteps.value = steps
+  if (stepsLoaded) markDirty()
+}
+
 const addDialogVisible = ref(false)
 const allCases = ref<{ id: number; name: string }[]>([])
 const selectedCaseId = ref<number | null>(null)
@@ -52,9 +73,14 @@ async function loadSuites() {
 
 async function selectSuite(id: number) {
   activeSuite.value = id
+  const detail = await getSuite(id)
+  suiteDetail.value = detail
+  setupSteps.value = (detail.setup_steps ?? []).map((s) => normalizeStep({ ...s, phase: 'setup' }))
+  teardownSteps.value = (detail.teardown_steps ?? []).map((s) => normalizeStep({ ...s, phase: 'teardown' }))
   suiteCases.value = await listSuiteCases(id)
   suiteVars.value = await listVariables({ scope: 'suite', suite_id: id })
   varEditing.value = null
+  stepsLoaded = true
 }
 
 async function saveVarValue(v: Variable) {
@@ -89,13 +115,33 @@ async function save() {
     return
   }
   if (editingId.value) {
-    await updateSuite(editingId.value, form.value)
+    const updated = await updateSuite(editingId.value, form.value)
+    suiteDetail.value = { ...suiteDetail.value, ...updated }
   } else {
     const suite = await createSuite(projectId, form.value)
     activeSuite.value = suite.id
+    await selectSuite(suite.id)
   }
   dialogVisible.value = false
   await loadSuites()
+}
+
+async function saveSuiteSteps() {
+  if (!activeSuite.value || !suiteDetail.value) return
+  savingSteps.value = true
+  try {
+    await updateSuite(activeSuite.value, {
+      name: suiteDetail.value.name,
+      description: suiteDetail.value.description ?? null,
+      setup_steps: setupSteps.value,
+      teardown_steps: teardownSteps.value,
+    })
+    markSaved()
+    ElMessage.success('套件配置已保存')
+    await loadSuites()
+  } finally {
+    savingSteps.value = false
+  }
 }
 
 async function remove(suite: Suite) {
@@ -186,6 +232,41 @@ onMounted(loadSuites)
           </template>
         </Draggable>
         <el-empty v-if="suiteCases.length === 0" description="该套件暂无用例，点击「添加用例」" />
+
+        <!-- 套件前后置步骤（方案 §2）：与用例步同构，复用 CaseStepEditor -->
+        <el-collapse class="suite-steps-collapse">
+          <el-collapse-item name="setup">
+            <template #title>
+              <span>套件前置步骤</span>
+              <el-tag size="small" type="warning" class="step-count">{{ setupSteps.length }}</el-tag>
+            </template>
+            <CaseStepEditor
+              :model-value="setupSteps"
+              @update:model-value="onSetupStepsChange"
+              phase="setup"
+              title="前置操作"
+              description="运行时在套件内每个用例主体之前执行"
+              tone="warning"
+            />
+          </el-collapse-item>
+          <el-collapse-item name="teardown">
+            <template #title>
+              <span>套件后置步骤</span>
+              <el-tag size="small" type="success" class="step-count">{{ teardownSteps.length }}</el-tag>
+            </template>
+            <CaseStepEditor
+              :model-value="teardownSteps"
+              @update:model-value="onTeardownStepsChange"
+              phase="teardown"
+              title="后置操作"
+              description="运行时在套件内每个用例完成后执行；主体验证失败时仍会尝试清理"
+              tone="success"
+            />
+          </el-collapse-item>
+        </el-collapse>
+        <div class="save-steps">
+          <el-button type="primary" :loading="savingSteps" @click="saveSuiteSteps">保存套件配置</el-button>
+        </div>
 
         <!-- 套件变量（V2 §5.7） -->
         <el-collapse class="suite-vars">
@@ -299,6 +380,16 @@ onMounted(loadSuites)
 }
 .suite-vars {
   margin-top: 16px;
+}
+.suite-steps-collapse {
+  margin-top: 16px;
+}
+.step-count {
+  margin-left: 8px;
+}
+.save-steps {
+  margin-top: 8px;
+  text-align: right;
 }
 .var-row {
   display: flex;

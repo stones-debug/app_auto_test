@@ -26,6 +26,22 @@ describe('APP 档案跳过目标', () => {
     })
   })
 
+  it('套件前后置步骤目标仅需套件与节点 key', () => {
+    expect(buildProfileSkipTarget({
+      node_type: 'suite_step',
+      node_key: 'suite-node-key',
+      _suiteId: 11,
+    })).toEqual({
+      type: 'suite_step',
+      suite_id: 11,
+      node_key: 'suite-node-key',
+    })
+  })
+
+  it('缺少 node_key 时拒绝生成套件步骤目标', () => {
+    expect(buildProfileSkipTarget({ node_type: 'suite_step', _suiteId: 11 })).toBeNull()
+  })
+
   it('缺少套件上下文时拒绝生成用例目标', () => {
     expect(buildProfileSkipTarget({ node_type: 'case', id: 22 })).toBeNull()
   })

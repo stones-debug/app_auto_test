@@ -543,3 +543,200 @@ async def test_member_cannot_manage_profile(client: AsyncClient):
     # Member 可读取列表
     listed = await client.get(f"/api/projects/{pid}/app-profiles", headers={"Authorization": f"Bearer {member_token}"})
     assert listed.status_code == 200
+
+
+async def _seed_suite_steps(client: AsyncClient, h: dict, pid: int) -> tuple[int, str, str]:
+    """建含前后置步骤的套件，返回 (suite_id, setup_key, teardown_key)。"""
+    setup_key = str(uuid.uuid4())
+    teardown_key = str(uuid.uuid4())
+    suite_id = (
+        await client.post(
+            f"/api/projects/{pid}/suites",
+            json={
+                "name": "前后置套件",
+                "setup_steps": [{"order": 1, "key": setup_key, "action": "sleep", "params": {"duration": 1}}],
+                "teardown_steps": [{"order": 1, "key": teardown_key, "action": "sleep", "params": {"duration": 1}}],
+            },
+            headers=h,
+        )
+    ).json()["id"]
+    return suite_id, setup_key, teardown_key
+
+
+async def test_suite_steps_workspace_query(client: AsyncClient):
+    """套件前后置步骤工作台：套件计数 + suite-steps 节点列表 + 跳过状态。"""
+    token = await _register(client, OWNER)
+    h = {"Authorization": f"Bearer {token}"}
+    pid = (await client.post("/api/projects", json={"name": "前后置工作台"}, headers=h)).json()["id"]
+    profile_id = (
+        await client.post(
+            f"/api/projects/{pid}/app-profiles",
+            json={"name": "SS", "code": f"ss{uuid.uuid4().hex[:6]}"},
+            headers=h,
+        )
+    ).json()["id"]
+    suite_id, setup_key, teardown_key = await _seed_suite_steps(client, h, pid)
+
+    ws = await client.get(f"/api/app-profiles/{profile_id}/workspace", headers=h)
+    assert ws.status_code == 200
+    suite_node = next(n for n in ws.json()["items"] if n["id"] == suite_id)
+    assert suite_node["setup_step_count"] == 1
+    assert suite_node["teardown_step_count"] == 1
+    assert suite_node["has_children"] is True
+
+    setup = await client.get(f"/api/app-profiles/{profile_id}/suite-steps/{suite_id}?phase=suite_setup", headers=h)
+    assert setup.status_code == 200
+    assert setup.json()["total"] == 1
+    item = setup.json()["items"][0]
+    assert item["node_type"] == "suite_step"
+    assert item["id"] == suite_id
+    assert item["node_key"] == setup_key
+    assert item["phase"] == "suite_setup"
+    assert item["effective_status"] == "enabled"
+    assert item["status_source"] == "none"
+
+    teardown = await client.get(f"/api/app-profiles/{profile_id}/suite-steps/{suite_id}?phase=suite_teardown", headers=h)
+    assert teardown.status_code == 200
+    assert teardown.json()["items"][0]["phase"] == "suite_teardown"
+    assert teardown.json()["items"][0]["node_key"] == teardown_key
+
+    # 缺省 phase 返回全部（前后置各一条）
+    all_phases = await client.get(f"/api/app-profiles/{profile_id}/suite-steps/{suite_id}", headers=h)
+    assert all_phases.status_code == 200
+    assert all_phases.json()["total"] == 2
+    invalid_phase = await client.get(f"/api/app-profiles/{profile_id}/suite-steps/{suite_id}?phase=bogus", headers=h)
+    assert invalid_phase.status_code == 422
+
+    # 跳过前置步骤 → 状态变 skipped
+    skip = await client.post(
+        f"/api/app-profiles/{profile_id}/skip-rules/batch",
+        json={
+            "expected_revision": 1,
+            "operation": "skip",
+            "reason": {"code": "unsupported", "note": "不支持"},
+            "targets": [{"type": "suite_step", "suite_id": suite_id, "node_key": setup_key}],
+        },
+        headers=h,
+    )
+    assert skip.status_code == 200, skip.text
+    assert skip.json()["changed"] == 1
+    after = await client.get(f"/api/app-profiles/{profile_id}/suite-steps/{suite_id}?phase=suite_setup", headers=h)
+    assert after.json()["items"][0]["effective_status"] == "skipped"
+    assert after.json()["items"][0]["status_source"] == "direct"
+
+    # 带 case_id 套件步骤目标 → 422
+    bad = await client.post(
+        f"/api/app-profiles/{profile_id}/skip-rules/batch",
+        json={
+            "expected_revision": 2,
+            "operation": "skip",
+            "reason": {"code": "unsupported"},
+            "targets": [{"type": "suite_step", "suite_id": suite_id, "case_id": 1, "node_key": teardown_key}],
+        },
+        headers=h,
+    )
+    assert bad.status_code == 422
+
+
+async def test_suite_step_override_roundtrip(client: AsyncClient):
+    """套件步骤覆盖 upsert + restore + 非法 patch 拒绝。"""
+    token = await _register(client, OWNER)
+    h = {"Authorization": f"Bearer {token}"}
+    pid = (await client.post("/api/projects", json={"name": "前后置覆盖"}, headers=h)).json()["id"]
+    profile_id = (
+        await client.post(
+            f"/api/projects/{pid}/app-profiles",
+            json={"name": "SO", "code": f"so{uuid.uuid4().hex[:6]}"},
+            headers=h,
+        )
+    ).json()["id"]
+    suite_id, setup_key, _teardown_key = await _seed_suite_steps(client, h, pid)
+
+    request_id = str(uuid.uuid4())
+    body = {"request_id": request_id, "expected_revision": 1, "patch": {"params": {"duration": 5}}}
+    r = await client.put(f"/api/app-profiles/{profile_id}/suite-step-overrides/{suite_id}/{setup_key}", json=body, headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["revision"] == 2
+    assert r.json()["node_type"] == "suite_step"
+    replay = await client.put(f"/api/app-profiles/{profile_id}/suite-step-overrides/{suite_id}/{setup_key}", json=body, headers=h)
+    assert replay.status_code == 200
+    assert replay.json() == r.json()
+
+    listed = await client.get(f"/api/app-profiles/{profile_id}/suite-steps/{suite_id}?phase=suite_setup", headers=h)
+    assert listed.json()["items"][0]["effective_status"] == "overridden"
+    assert listed.json()["items"][0]["override_count"] == 1
+
+    # 非法 patch（改 order）→ 422，revision 不变
+    bad = await client.put(
+        f"/api/app-profiles/{profile_id}/suite-step-overrides/{suite_id}/{setup_key}",
+        json={"expected_revision": 2, "patch": {"order": 5}},
+        headers=h,
+    )
+    assert bad.status_code == 422
+    missing = await client.put(
+        f"/api/app-profiles/{profile_id}/suite-step-overrides/{suite_id}/{uuid.uuid4()}",
+        json={"expected_revision": 2, "patch": {"params": {"duration": 10}}},
+        headers=h,
+    )
+    assert missing.status_code == 422
+
+    # restore → 状态恢复 enabled
+    restored = await client.request(
+        "DELETE",
+        f"/api/app-profiles/{profile_id}/suite-step-overrides/{suite_id}/{setup_key}",
+        json={"expected_revision": 2},
+        headers=h,
+    )
+    assert restored.status_code == 204
+    after = await client.get(f"/api/app-profiles/{profile_id}/suite-steps/{suite_id}?phase=suite_setup", headers=h)
+    assert after.json()["items"][0]["effective_status"] == "enabled"
+    assert after.json()["items"][0]["override_count"] == 0
+
+
+async def test_differences_suite_step(client: AsyncClient):
+    """差异清单包含套件步骤的跳过（前置）与覆盖（后置）行。"""
+    token = await _register(client, OWNER)
+    h = {"Authorization": f"Bearer {token}"}
+    pid = (await client.post("/api/projects", json={"name": "前后置差异"}, headers=h)).json()["id"]
+    profile_id = (
+        await client.post(
+            f"/api/projects/{pid}/app-profiles",
+            json={"name": "SD", "code": f"sd{uuid.uuid4().hex[:6]}"},
+            headers=h,
+        )
+    ).json()["id"]
+    suite_id, setup_key, teardown_key = await _seed_suite_steps(client, h, pid)
+
+    skip = await client.post(
+        f"/api/app-profiles/{profile_id}/skip-rules/batch",
+        json={
+            "expected_revision": 1,
+            "operation": "skip",
+            "reason": {"code": "unsupported"},
+            "targets": [{"type": "suite_step", "suite_id": suite_id, "node_key": setup_key}],
+        },
+        headers=h,
+    )
+    assert skip.status_code == 200
+    override = await client.put(
+        f"/api/app-profiles/{profile_id}/suite-step-overrides/{suite_id}/{teardown_key}",
+        json={"expected_revision": 2, "patch": {"params": {"duration": 5}}},
+        headers=h,
+    )
+    assert override.status_code == 200
+
+    skipped = await client.get(f"/api/app-profiles/{profile_id}/differences?type=skipped", headers=h)
+    assert skipped.status_code == 200
+    skip_rows = [r for r in skipped.json()["items"] if r["target_type"] == "suite_step"]
+    assert len(skip_rows) == 1
+    assert "前置" in skip_rows[0]["path"]
+
+    overridden = await client.get(f"/api/app-profiles/{profile_id}/differences?type=overridden", headers=h)
+    assert overridden.status_code == 200
+    ov_rows = [r for r in overridden.json()["items"] if r["target_type"] == "suite_step"]
+    assert len(ov_rows) == 1
+    assert "后置" in ov_rows[0]["path"]
+
+    all_rows = await client.get(f"/api/app-profiles/{profile_id}/differences?type=all&target_type=suite_step", headers=h)
+    assert all_rows.status_code == 200
+    assert all_rows.json()["total"] == 2

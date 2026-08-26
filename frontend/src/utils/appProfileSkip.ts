@@ -16,6 +16,9 @@ export function buildProfileSkipTarget(node: ProfileSkipNodeContext): SkipTarget
   if (node.node_type === 'case' && node.id != null && node._suiteId != null) {
     return { type: 'case', suite_id: node._suiteId, case_id: node.id }
   }
+  if (node.node_type === 'suite_step' && node._suiteId != null && node.node_key) {
+    return { type: 'suite_step', suite_id: node._suiteId, node_key: node.node_key }
+  }
   if (
     (node.node_type === 'step' || node.node_type === 'assertion')
     && node._suiteId != null

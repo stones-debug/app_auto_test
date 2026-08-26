@@ -33,7 +33,7 @@ export interface AppProfileRelease {
 }
 
 export interface ProfileNode {
-  node_type: 'suite' | 'case' | 'step' | 'assertion'
+  node_type: 'suite' | 'case' | 'step' | 'assertion' | 'suite_step'
   id: number | null
   node_key: string | null
   name: string
@@ -46,6 +46,9 @@ export interface ProfileNode {
   child_count?: number
   difference_count?: number
   has_children: boolean
+  // 套件节点：前后置步骤计数（工作台树状展开用）
+  setup_step_count?: number
+  teardown_step_count?: number
   updated_at?: string | null
 }
 
@@ -91,7 +94,7 @@ export interface ExecutionPreview {
 }
 
 export interface SkipTarget {
-  type: 'suite' | 'case' | 'step' | 'assertion'
+  type: 'suite' | 'case' | 'step' | 'assertion' | 'suite_step'
   suite_id?: number
   case_id?: number
   node_key?: string
@@ -203,6 +206,16 @@ export function restoreNodeOverride(profileId: number, caseId: number, nodeType:
   return request.delete<void>(`/app-profiles/${profileId}/node-overrides/${caseId}/${nodeType}/${nodeKey}`, { data })
 }
 
+// ---------- 套件前后置步骤覆盖 ----------
+
+export function upsertSuiteStepOverride(profileId: number, suiteId: number, nodeKey: string, data: { request_id?: string; expected_revision: number; patch: Record<string, unknown> }) {
+  return request.put<{ revision: number }>(`/app-profiles/${profileId}/suite-step-overrides/${suiteId}/${nodeKey}`, data)
+}
+
+export function restoreSuiteStepOverride(profileId: number, suiteId: number, nodeKey: string, data: { request_id?: string; expected_revision: number }) {
+  return request.delete<void>(`/app-profiles/${profileId}/suite-step-overrides/${suiteId}/${nodeKey}`, { data })
+}
+
 // ---------- 工作台 ----------
 
 export function workspace(profileId: number, params?: { page?: number; page_size?: number; keyword?: string; effective_status?: string; reason_code?: string; sort_by?: string; sort_order?: string }) {
@@ -211,6 +224,10 @@ export function workspace(profileId: number, params?: { page?: number; page_size
 
 export function workspaceNodes(profileId: number, params: { parent_type: 'suite' | 'case'; parent_id: number; ancestor_suite_id?: number; page?: number; page_size?: number; include?: string }) {
   return request.get<PageData<ProfileNode>>(`/app-profiles/${profileId}/workspace/nodes`, { params })
+}
+
+export function suiteSteps(profileId: number, suiteId: number, params?: { phase?: 'suite_setup' | 'suite_teardown'; page?: number; page_size?: number }) {
+  return request.get<PageData<ProfileNode>>(`/app-profiles/${profileId}/suite-steps/${suiteId}`, { params })
 }
 
 export function differences(profileId: number, params?: { type?: 'all' | 'skipped' | 'overridden'; target_type?: string; reason_code?: string; keyword?: string; page?: number; page_size?: number }) {

@@ -621,6 +621,22 @@ def _find_case_node(case: TestCase, node_type: str, node_key: str) -> tuple[str,
     return None
 
 
+def _find_suite_step(suite: TestSuite, node_key: str) -> tuple[str, dict, str] | None:
+    """在套件 setup/teardown 步骤中定位节点，返回 (normalized_key, node, phase)。
+
+    phase 为执行语义的 suite_setup / suite_teardown（不取节点自身的 setup/main/teardown）。
+    """
+    try:
+        normalized_key = str(UUID(str(node_key)))
+    except ValueError:
+        return None
+    for phase, collection in (("suite_setup", suite.setup_steps or []), ("suite_teardown", suite.teardown_steps or [])):
+        for node in collection or []:
+            if isinstance(node, dict) and str(node.get("key") or "") == normalized_key:
+                return normalized_key, node, phase
+    return None
+
+
 async def _validate_skip_target(db: AsyncSession, project_id: int, target, reason) -> tuple[dict, str | None]:
     """校验单个跳过目标；返回 (字段dict, 错误信息)。"""
     from app.models import TestCase, TestSuite
@@ -653,6 +669,23 @@ async def _validate_skip_target(db: AsyncSession, project_id: int, target, reaso
             "target_type": "case",
             "suite_id": target.suite_id,
             "case_id": target.case_id,
+        }, None
+    if target.type == "suite_step":
+        if target.suite_id is None or not target.node_key:
+            return {}, "套件步骤目标必须提供 suite_id 与 node_key"
+        if target.case_id is not None:
+            return {}, "套件步骤目标不允许提供 case_id"
+        suite = await db.get(TestSuite, target.suite_id)
+        if suite is None or suite.deleted_at is not None or suite.project_id != project_id:
+            return {}, "套件不存在或跨项目"
+        found = _find_suite_step(suite, target.node_key)
+        if found is None:
+            return {}, "套件步骤节点不存在或 node_key 非法"
+        normalized_key, _node, _phase = found
+        return {
+            "target_type": "suite_step",
+            "suite_id": target.suite_id,
+            "node_key": normalized_key,
         }, None
     # step / assertion
     if target.suite_id is None or target.case_id is None or not target.node_key:
@@ -707,11 +740,22 @@ async def skip_rules_batch(
 
     target_fields: list[dict] = []
     field_errors: list[dict] = []
+    seen: set[tuple] = set()
     for idx, target in enumerate(body.targets):
         fields, err = await _validate_skip_target(db, profile.project_id, target, body.reason)
         if err:
             field_errors.append({"index": idx, "error": err})
             continue
+        dedup_key = (
+            fields["target_type"],
+            fields.get("suite_id"),
+            fields.get("case_id"),
+            fields.get("node_key"),
+        )
+        if dedup_key in seen:
+            field_errors.append({"index": idx, "error": "同一目标在批量中重复"})
+            continue
+        seen.add(dedup_key)
         target_fields.append((idx, fields))
     if field_errors:
         raise HTTPException(
@@ -1210,6 +1254,135 @@ async def restore_node_override(
     await db.commit()
 
 
+@router.put("/app-profiles/{profile_id}/suite-step-overrides/{suite_id}/{node_key}", response_model=dict)
+async def upsert_suite_step_override(
+    profile_id: int,
+    suite_id: int,
+    node_key: str,
+    body: NodeOverridePatch,
+    request: Request,
+    modal_perm: tuple[Project, str | None] = Depends(require_profile_manager_by_profile()),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """套件前后置步骤节点覆盖（case_id 为空）。复用白名单 + Registry 校验。"""
+    profile = await _get_profile_or_404(profile_id, db)
+    _project, role = modal_perm
+    if body.request_id:
+        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        if replay is not None:
+            return replay
+    suite = await db.get(TestSuite, suite_id)
+    if suite is None or suite.deleted_at is not None or suite.project_id != profile.project_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="套件不存在或跨项目")
+    found = _find_suite_step(suite, node_key)
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": "PROFILE_TARGET_NOT_FOUND", "message": "套件步骤节点不存在或 node_key 非法"},
+        )
+    normalized_key, source_node, _phase = found
+    # 白名单合并校验（禁止改身份/顺序）；套件步骤是 Action Step，验证逻辑与 step 一致
+    from app.services.profile_resolver import (
+        NODE_IDENTITY_FIELDS,
+        NODE_PATCH_ALLOWED,
+        ProfileRuleError,
+        validate_node_patch,
+    )
+
+    for key in body.patch:
+        if key in NODE_IDENTITY_FIELDS:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"禁止修改节点字段: {key}")
+        if key not in NODE_PATCH_ALLOWED:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"不允许覆盖字段: {key}")
+    try:
+        validate_node_patch("step", source_node, body.patch)
+    except ProfileRuleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": exc.code, "message": exc.message},
+        ) from None
+    existing = (
+        await db.execute(
+            select(AppProfileNodeOverride).where(
+                AppProfileNodeOverride.profile_id == profile_id,
+                AppProfileNodeOverride.target_type == "suite_step",
+                AppProfileNodeOverride.suite_id == suite_id,
+                AppProfileNodeOverride.node_key == normalized_key,
+                AppProfileNodeOverride.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        existing = AppProfileNodeOverride(
+            profile_id=profile_id,
+            target_type="suite_step",
+            suite_id=suite_id,
+            case_id=None,
+            node_key=normalized_key,
+            patch=body.patch,
+            created_by=user.id,
+            updated_by=user.id,
+        )
+        db.add(existing)
+        await db.flush()
+    else:
+        existing.deleted_at = None
+        existing.patch = body.patch
+        existing.updated_by = user.id
+    response_data = {
+        "suite_id": suite_id,
+        "node_type": "suite_step",
+        "node_key": normalized_key,
+        "patch": body.patch,
+    }
+    new_revision = await _bump_and_audit(
+        db, profile, body, "node_override_upsert", user, role, request, response_data=response_data
+    )
+    await db.commit()
+    return {"revision": new_revision, **response_data}
+
+
+@router.delete("/app-profiles/{profile_id}/suite-step-overrides/{suite_id}/{node_key}", status_code=status.HTTP_204_NO_CONTENT)
+async def restore_suite_step_override(
+    profile_id: int,
+    suite_id: int,
+    node_key: str,
+    body: NodeOverrideDelete,
+    request: Request,
+    modal_perm: tuple[Project, str | None] = Depends(require_profile_manager_by_profile()),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    profile = await _get_profile_or_404(profile_id, db)
+    _project, role = modal_perm
+    if body.request_id:
+        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        if replay is not None:
+            return
+    try:
+        normalized_key = str(UUID(node_key))
+    except ValueError:
+        return
+    existing = (
+        await db.execute(
+            select(AppProfileNodeOverride).where(
+                AppProfileNodeOverride.profile_id == profile_id,
+                AppProfileNodeOverride.target_type == "suite_step",
+                AppProfileNodeOverride.suite_id == suite_id,
+                AppProfileNodeOverride.node_key == normalized_key,
+                AppProfileNodeOverride.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        return
+    existing.deleted_at = datetime.now(UTC)
+    existing.updated_by = user.id
+    await _bump_and_audit(db, profile, body, "node_override_restore", user, role, request)
+    await db.commit()
+
+
 # ---------- 配置工作台（方案 §4.4） ----------
 
 
@@ -1268,7 +1441,13 @@ async def workspace(
                 "override_count": override_count,
                 "child_count": case_counts.get(s.id, 0),
                 "difference_count": diff_counts.get(s.id, 0) + override_count,
-                "has_children": case_counts.get(s.id, 0) > 0,
+                "has_children": (
+                    case_counts.get(s.id, 0) > 0
+                    or (s.setup_steps or []) != []
+                    or (s.teardown_steps or []) != []
+                ),
+                "setup_step_count": len(s.setup_steps or []),
+                "teardown_step_count": len(s.teardown_steps or []),
                 "updated_at": s.updated_at,
             }
         )
@@ -1364,6 +1543,54 @@ async def workspace_nodes(
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="parent_type 必须是 suite 或 case")
 
 
+@router.get("/app-profiles/{profile_id}/suite-steps/{suite_id}")
+async def hub_suite_steps(
+    profile_id: int,
+    suite_id: int,
+    phase: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=500),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """套件前后置步骤节点列表（node_type='suite_step'），供工作台树状展开。
+
+    用法 `?phase=suite_setup|suite_teardown` 单独取前置/后置；缺省返回全部。
+    """
+    if phase is not None and phase not in ("suite_setup", "suite_teardown"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="phase 只允许 suite_setup 或 suite_teardown",
+        )
+    profile = await _get_profile_or_404(profile_id, db)
+    await get_project_permission(profile.project_id, user, db)
+    suite = await db.get(TestSuite, suite_id)
+    if suite is None or suite.deleted_at is not None or suite.project_id != profile.project_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="套件不存在")
+    skip = await _load_skip_index(db, profile_id)
+    overrides = await _load_override_index(db, profile_id)
+
+    items: list[dict] = []
+    for phase_name, collection in (("suite_setup", suite.setup_steps or []), ("suite_teardown", suite.teardown_steps or [])):
+        if phase and phase != phase_name:
+            continue
+        for node in collection:
+            if not isinstance(node, dict):
+                continue
+            node_key = str(node.get("key") or "")
+            rule = skip["suite_step"].get((suite_id, node_key))
+            overridden = (suite_id, node_key) in overrides["suite_step"]
+            items.append(_suite_step_item(suite_id, node_key, node, phase_name, rule, overridden))
+    start = (page - 1) * page_size
+    return {
+        "profile_revision": profile.revision,
+        "total": len(items),
+        "page": page,
+        "page_size": page_size,
+        "items": items[start : start + page_size],
+    }
+
+
 @router.get("/app-profiles/{profile_id}/differences")
 async def differences(
     profile_id: int,
@@ -1385,6 +1612,7 @@ async def differences(
     # 收集出现的套件/用例 ID，一次性查名称（差异清单展示名称而非 ID）
     suite_ids: set[int] = set()
     case_ids: set[int] = set()
+    step_suite_ids: set[int] = set()
     for sid in skip["suite"]:
         suite_ids.add(sid)
     for (sid, cid) in skip["case"]:
@@ -1396,13 +1624,22 @@ async def differences(
     for (sid, cid) in skip["assertion"]:
         suite_ids.add(sid)
         case_ids.add(cid)
+    for sid, _nk in skip["suite_step"]:
+        suite_ids.add(sid)
+        step_suite_ids.add(sid)
     for cid in overrides["node"]:
         case_ids.add(cid)
+    for sid, _nk in overrides["suite_step"]:
+        suite_ids.add(sid)
+        step_suite_ids.add(sid)
     suite_names: dict[int, str] = (
         {s.id: s.name for s in (await db.execute(select(TestSuite).where(TestSuite.id.in_(suite_ids)))).scalars()} if suite_ids else {}
     )
     case_names: dict[int, str] = (
         {c.id: c.name for c in (await db.execute(select(TestCase).where(TestCase.id.in_(case_ids)))).scalars()} if case_ids else {}
+    )
+    step_suites: dict[int, TestSuite] = (
+        {s.id: s for s in (await db.execute(select(TestSuite).where(TestSuite.id.in_(step_suite_ids)))).scalars()} if step_suite_ids else {}
     )
 
     def _n(sid: int | None) -> str:
@@ -1410,6 +1647,17 @@ async def differences(
 
     def _c(cid: int | None) -> str:
         return case_names.get(cid, f"用例 {cid}") if cid is not None else "?"
+
+    def _suite_step_phase(sid: int, node_key: str) -> str:
+        suite = step_suites.get(sid)
+        if suite is not None:
+            for node in suite.setup_steps or []:
+                if isinstance(node, dict) and str(node.get("key") or "") == node_key:
+                    return "suite_setup"
+            for node in suite.teardown_steps or []:
+                if isinstance(node, dict) and str(node.get("key") or "") == node_key:
+                    return "suite_teardown"
+        return "suite_setup"
 
     # 跳过项
     for sid, rule in skip["suite"].items():
@@ -1422,6 +1670,9 @@ async def differences(
     for (sid, cid), rules in skip["assertion"].items():
         for rule in rules.values():
             rows.append(_skip_row("assertion", f"{_n(sid)} / {_c(cid)} / 断言", rule, "direct", suite_id=sid, case_id=cid))
+    for (sid, nk), rule in skip["suite_step"].items():
+        label = "前置" if _suite_step_phase(sid, nk) == "suite_setup" else "后置"
+        rows.append(_skip_row("suite_step", f"{_n(sid)} / {label} / 步骤", rule, "direct", suite_id=sid))
 
     # 覆盖项
     if type_ in ("all", "overridden"):
@@ -1435,6 +1686,16 @@ async def differences(
                         "case_id": cid,
                     }
                 )
+        for (sid, nk), _patch in overrides["suite_step"].items():
+            label = "前置" if _suite_step_phase(sid, nk) == "suite_setup" else "后置"
+            rows.append(
+                {
+                    "target_type": "suite_step",
+                    "path": f"{_n(sid)} / {label} / 步骤",
+                    "override": True,
+                    "suite_id": sid,
+                }
+            )
         for el_id in overrides["element"]:
             rows.append({"target_type": "element", "path": f"元素 {el_id}", "override": True})
         for name in overrides["variable"]:
@@ -1466,12 +1727,18 @@ async def _load_skip_index(db: AsyncSession, profile_id: int) -> dict:
             )
         )
     ).scalars().all()
-    idx = {"suite": {}, "case": {}, "step": {}, "assertion": {}}
+    idx = {"suite": {}, "case": {}, "step": {}, "assertion": {}, "suite_step": {}}
     for rule in rows:
         if rule.target_type == "suite" and rule.suite_id is not None:
             idx["suite"][rule.suite_id] = rule
         elif rule.target_type == "case" and rule.suite_id is not None and rule.case_id is not None:
             idx["case"][(rule.suite_id, rule.case_id)] = rule
+        elif (
+            rule.target_type == "suite_step"
+            and rule.suite_id is not None
+            and rule.node_key is not None
+        ):
+            idx["suite_step"][(rule.suite_id, str(rule.node_key))] = rule
         elif (
             rule.target_type in ("step", "assertion")
             and rule.suite_id is not None
@@ -1501,14 +1768,18 @@ async def _load_override_index(db: AsyncSession, profile_id: int) -> dict:
     ).scalars().all()
     node = (
         await db.execute(
-            select(AppProfileNodeOverride.case_id, AppProfileNodeOverride.target_type, AppProfileNodeOverride.node_key)
+            select(AppProfileNodeOverride.suite_id, AppProfileNodeOverride.case_id, AppProfileNodeOverride.target_type, AppProfileNodeOverride.node_key, AppProfileNodeOverride.patch)
             .where(AppProfileNodeOverride.profile_id == profile_id, AppProfileNodeOverride.deleted_at.is_(None))
         )
     ).all()
     node_idx: dict[int, dict[str, str]] = {}
-    for cid, ttype, nkey in node:
+    suite_step_idx: dict[tuple[int, str], dict] = {}
+    for sid, cid, ttype, nkey, patch in node:
+        if ttype == "suite_step" and sid is not None:
+            suite_step_idx[(sid, str(nkey))] = patch
+            continue
         node_idx.setdefault(cid, {})[str(nkey)] = ttype
-    return {"element": list(el), "variable": list(var), "node": node_idx}
+    return {"element": list(el), "variable": list(var), "node": node_idx, "suite_step": suite_step_idx}
 
 
 async def _case_counts(db: AsyncSession, project_id: int) -> dict[int, int]:
@@ -1527,7 +1798,7 @@ async def _case_counts(db: AsyncSession, project_id: int) -> dict[int, int]:
 
 
 async def _diff_counts(db: AsyncSession, project_id: int, profile_id: int) -> dict[int, int]:
-    """按套件聚合差异（跳过用例 + 节点 + 覆盖）数，简化：返回套件维度跳过用例数。"""
+    """按套件聚合差异（跳过用例 + 节点 + 套件步骤 + 覆盖）数，简化：返回套件维度跳过用例数。"""
     skip = await _load_skip_index(db, profile_id)
     counts: dict[int, int] = {}
     for sid, _cid in skip["case"]:
@@ -1536,11 +1807,13 @@ async def _diff_counts(db: AsyncSession, project_id: int, profile_id: int) -> di
         counts[sid] = counts.get(sid, 0) + len(rules)
     for (sid, _cid), rules in skip["assertion"].items():
         counts[sid] = counts.get(sid, 0) + len(rules)
+    for (sid, _nk), _rule in skip["suite_step"].items():
+        counts[sid] = counts.get(sid, 0) + 1
     return counts
 
 
 async def _override_counts(db: AsyncSession, project_id: int, profile_id: int) -> dict[int, int]:
-    """按套件聚合节点覆盖数量，供工作台“已覆盖”状态筛选。"""
+    """按套件聚合节点覆盖数量（用例维度 + 套件步骤维度），供工作台“已覆盖”状态筛选。"""
     rows = (
         await db.execute(
             select(TestSuiteCase.suite_id, func.count(AppProfileNodeOverride.id))
@@ -1558,7 +1831,22 @@ async def _override_counts(db: AsyncSession, project_id: int, profile_id: int) -
             .group_by(TestSuiteCase.suite_id)
         )
     ).all()
-    return {suite_id: count for suite_id, count in rows}
+    counts = {suite_id: count for suite_id, count in rows}
+    suite_step_rows = (
+        await db.execute(
+            select(AppProfileNodeOverride.suite_id, func.count(AppProfileNodeOverride.id))
+            .where(
+                AppProfileNodeOverride.profile_id == profile_id,
+                AppProfileNodeOverride.deleted_at.is_(None),
+                AppProfileNodeOverride.target_type == "suite_step",
+                AppProfileNodeOverride.suite_id.is_not(None),
+            )
+            .group_by(AppProfileNodeOverride.suite_id)
+        )
+    ).all()
+    for suite_id, count in suite_step_rows:
+        counts[suite_id] = counts.get(suite_id, 0) + count
+    return counts
 
 
 def _sort_workspace(items: list[dict], sort_by: str, sort_order: str) -> list[dict]:
@@ -1601,6 +1889,37 @@ def _node_item(
         "node_key": node_key,
         "name": name,
         "phase": node.get("phase"),
+        "order": node.get("order"),
+        "effective_status": effective,
+        "status_source": source,
+        "reason": reason,
+        "override_count": 1 if overridden else 0,
+        "has_children": False,
+        "updated_at": None,
+    }
+
+
+def _suite_step_item(
+    suite_id: int,
+    node_key: str,
+    node: dict,
+    phase: str,
+    rule,
+    overridden: bool = False,
+) -> dict:
+    """套件前后置步骤工作台节点：node_type='suite_step'，id=suite_id，phase=suite_setup/suite_teardown。"""
+    effective = "skipped" if rule else ("overridden" if overridden else "enabled")
+    source = "direct" if rule else ("override" if overridden else "none")
+    reason = None
+    if rule:
+        reason = {"code": rule.reason_code, "note": rule.reason_note or ""}
+    name = node.get("description") or node.get("action") or node.get("type") or ""
+    return {
+        "node_type": "suite_step",
+        "id": suite_id,
+        "node_key": node_key,
+        "name": name,
+        "phase": phase,
         "order": node.get("order"),
         "effective_status": effective,
         "status_source": source,
