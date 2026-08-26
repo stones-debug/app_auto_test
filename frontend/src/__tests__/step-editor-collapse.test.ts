@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 
 import type { Step } from '@/api/cases'
 import { stepActionLabel, stepSummaryText } from '@/utils/stepEditorSummary'
-
 describe('步骤编辑器折叠摘要', () => {
   it('显示动作、元素、关键参数和失败后继续', () => {
     const step: Step = {
@@ -46,5 +45,20 @@ describe('步骤编辑器折叠摘要', () => {
     }
 
     expect(stepSummaryText(step)).toBe('无附加参数')
+  })
+
+  it('收起摘要显示元素名而非编号（缺失元素则回退编号）', () => {
+    const step: Step = {
+      order: 1,
+      phase: 'main',
+      action: 'click',
+      element_id: 42,
+      params: {},
+      continue_on_failure: false,
+    }
+    expect(stepSummaryText(step, new Map([[42, '登录按钮']]))).toBe('元素：登录按钮')
+    // 无映射/映射不含该 id → 回退编号
+    expect(stepSummaryText(step)).toBe('元素 #42')
+    expect(stepSummaryText(step, new Map([[99, '其他']]))).toBe('元素 #42')
   })
 })

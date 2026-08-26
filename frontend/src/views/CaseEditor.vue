@@ -19,7 +19,7 @@ import {
   type StepPhase,
   type TestCase,
 } from '@/api/cases'
-import { listModules } from '@/api/elements'
+import { listElements, listModules } from '@/api/elements'
 import CaseStepEditor from '@/components/CaseStepEditor.vue'
 import ElementSelector from '@/components/ElementSelector.vue'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
@@ -187,8 +187,17 @@ async function save() {
   }
 }
 
+// 元素 id → 名称映射：收起摘要显示元素名（而非编号），加载失败时回退为编号展示
+const elementNames = ref(new Map<number, string>())
+
 onMounted(async () => {
   modules.value = await listModules(projectId)
+  try {
+    const data = await listElements({ page: 1, page_size: 200 })
+    elementNames.value = new Map(data.items.map((e) => [e.id, e.name]))
+  } catch {
+    // 元素列表加载失败不影响用例编辑，摘要回退显示元素编号
+  }
   if (isEdit.value) {
     const data = await getCase(caseId.value!)
     form.name = data.name
@@ -258,6 +267,7 @@ onMounted(async () => {
       title="前置操作"
       description="运行时勾选后，在每个用例主体步骤之前执行"
       tone="warning"
+      :element-names="elementNames"
     />
 
     <CaseStepEditor
@@ -266,6 +276,7 @@ onMounted(async () => {
       title="执行步骤"
       description="用例的主体操作，始终执行"
       tone="primary"
+      :element-names="elementNames"
     />
 
     <CaseStepEditor
@@ -274,6 +285,7 @@ onMounted(async () => {
       title="后置操作"
       description="运行时勾选后，在断言完成后执行；主体失败时仍会尝试清理"
       tone="success"
+      :element-names="elementNames"
     />
 
     <div class="content-card mb16">

@@ -11,7 +11,7 @@ import {
   type StepPhase,
 } from '@/api/cases'
 import ElementSelector from '@/components/ElementSelector.vue'
-import { stepActionLabel, stepSummaryText } from '@/utils/stepEditorSummary'
+import { stepActionLabel, stepSummaryText, type ElementNameMap } from '@/utils/stepEditorSummary'
 
 const props = defineProps<{
   modelValue: Step[]
@@ -19,6 +19,8 @@ const props = defineProps<{
   title: string
   description: string
   tone?: 'primary' | 'warning' | 'success'
+  /** 元素 id → 名称映射（收起摘要显示元素名而非编号；未提供时回退编号） */
+  elementNames?: ElementNameMap
 }>()
 const emit = defineEmits<{ 'update:modelValue': [steps: Step[]] }>()
 
@@ -143,9 +145,9 @@ function onDragEnd() {
           >
             <span class="drag-handle" @click.stop>⠿</span>
             <span class="step-badge">{{ index + 1 }}</span>
-            <div v-if="isStepCollapsed(element)" class="step-summary" :title="stepSummaryText(element)">
+            <div v-if="isStepCollapsed(element)" class="step-summary" :title="stepSummaryText(element, props.elementNames)">
               <span class="step-action-label">{{ stepActionLabel(element) }}</span>
-              <span class="step-summary-text">{{ stepSummaryText(element) }}</span>
+              <span class="step-summary-text">{{ stepSummaryText(element, props.elementNames) }}</span>
             </div>
             <el-select v-else v-model="element.action" class="action-select" @change="onActionChange(element)">
               <el-option v-for="action in ACTIONS" :key="action.value" :label="action.label" :value="action.value" />
