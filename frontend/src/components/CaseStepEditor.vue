@@ -27,6 +27,19 @@ const stepUiIds = new WeakMap<object, number>()
 const collapsedStepIds = ref(new Set<number>())
 let nextStepUiId = 0
 
+// 区块默认收起：进入编辑页仅见阶段标题与数量，避免长用例/前后置步骤占据整屏详情
+const sectionCollapsed = ref(true)
+
+function toggleSection() {
+  sectionCollapsed.value = !sectionCollapsed.value
+}
+
+function onSectionKeydown(event: KeyboardEvent) {
+  if (!['Enter', ' '].includes(event.key)) return
+  event.preventDefault()
+  toggleSection()
+}
+
 function stepUiId(step: Step): number {
   const rawStep = toRaw(step)
   const existing = stepUiIds.get(rawStep)
@@ -69,6 +82,7 @@ function update(steps: Step[]) {
 }
 
 function addStep() {
+  sectionCollapsed.value = false
   update([
     ...props.modelValue,
     {
@@ -101,13 +115,27 @@ function onDragEnd() {
 <template>
   <div class="content-card mb16 phase-card" :class="`tone-${tone ?? 'primary'}`">
     <div class="section-title-row">
-      <div>
-        <div class="section-title">{{ title }}</div>
-        <div class="section-description">{{ description }}</div>
+      <div
+        class="phase-heading"
+        role="button"
+        tabindex="0"
+        :aria-expanded="!sectionCollapsed"
+        @click="toggleSection"
+        @keydown="onSectionKeydown"
+      >
+        <span class="phase-chevron">{{ sectionCollapsed ? '▸' : '▾' }}</span>
+        <div>
+          <div class="section-title">{{ title }}</div>
+          <div class="section-description">{{ description }}</div>
+        </div>
+        <el-tag v-if="modelValue.length" size="small" type="info" effect="plain" class="phase-count">
+          {{ modelValue.length }} 步
+        </el-tag>
       </div>
       <el-button type="primary" plain size="small" @click="addStep">添加操作</el-button>
     </div>
-    <Draggable
+    <div v-show="!sectionCollapsed">
+      <Draggable
       :model-value="modelValue"
       :item-key="stepUiId"
       handle=".drag-handle"
@@ -181,6 +209,7 @@ function onDragEnd() {
     <div class="add-more">
       <el-button type="primary" plain class="w-full" @click="addStep">+ 添加操作</el-button>
     </div>
+    </div>
   </div>
 </template>
 
@@ -198,6 +227,10 @@ function onDragEnd() {
 .section-title-row { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; }
 .section-title { font-size: 15px; font-weight: 600; color: var(--text); }
 .section-description { margin-top: 4px; color: var(--text-2); font-size: 12px; }
+.phase-heading { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; min-width: 0; }
+.phase-heading:focus-visible { outline: 2px solid var(--primary); outline-offset: 4px; border-radius: 4px; }
+.phase-chevron { color: var(--primary); font-size: 13px; margin-top: 3px; flex-shrink: 0; }
+.phase-count { margin-top: 2px; flex-shrink: 0; }
 .step-list { display: flex; flex-direction: column; gap: 8px; }
 .step-card { border-radius: 8px; }
 .step-card.collapsed :deep(.el-card__body) { padding-top: 10px; padding-bottom: 10px; }
