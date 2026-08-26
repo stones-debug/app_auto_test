@@ -62,6 +62,78 @@ describe('Step 7 执行详情：日志去重与 WS 状态', () => {
     expect(suites[0].cases[0].status).toBe('passed')
   })
 
+  it('execution_case_id 精确匹配 ExecutionCase.id，不与原 case_id 数字碰撞', () => {
+    // 场景：套件B 某用例原 case_id=7 恰好等于套件A 实例 execution_case_id=7，且套件B 先出现
+    // 旧实现按 (id==7 || case_id==7) 匹配——遍历到套件B 的 case_id=7 即误命中。
+    const suites = [{
+      id: 11, suite_id: null, suite_name: '套件B', status: 'running', setup_steps: [], teardown_steps: [],
+      cases: [
+        { id: 8, case_id: 7, status: 'running', steps: [{ id: 81, step_order: 1, status: 'passing' }], assertions: [] },
+      ],
+    }, {
+      id: 10, suite_id: null, suite_name: '套件A', status: 'running', setup_steps: [], teardown_steps: [],
+      cases: [
+        { id: 7, case_id: 100, status: 'running', steps: [{ id: 71, step_order: 1, status: 'pending' }], assertions: [] },
+      ],
+    }]
+
+    applyStepResult(suites, {
+      execution_case_id: 7, // 唯一应命中套件A.id=7；旧实现会先因 case_id=7 命中套件B
+      step_order: 1,
+      status: 'passed',
+      case_status: 'passed',
+    })
+
+    expect(suites[1].cases[0].status).toBe('passed') // 套件A 实例更新
+    expect(suites[1].cases[0].steps[0].status).toBe('passed')
+    expect(suites[0].cases[0].status).toBe('running') // 套件B（case_id=7）绝不更新
+    expect(suites[0].cases[0].steps[0].status).toBe('passing')
+  })
+
+  it('execution_case_id 不命中时不再回退 case_id（修复共享用例碰撞）', () => {
+    const suites = [{
+      id: 1, suite_id: null, suite_name: '套件', status: 'running', setup_steps: [], teardown_steps: [],
+      cases: [{ id: 5, case_id: 42, status: 'running', steps: [{ id: 51, step_order: 1, status: 'pending' }], assertions: [] }],
+    }]
+    // execution_case_id=999 不存在任何实例；case_id=42 存在但必须不匹配
+    applyStepResult(suites, { execution_case_id: 999, case_id: 42, step_order: 1, status: 'passed' })
+    expect(suites[0].cases[0].status).toBe('running')
+    expect(suites[0].cases[0].steps[0].status).toBe('pending')
+    // 旧协议仅 case_id → 回退按原 case_id 匹配
+    applyStepResult(suites, { case_id: 42, step_order: 1, status: 'passed' })
+    expect(suites[0].cases[0].steps[0].status).toBe('passed')
+  })
+
+  it('套件步骤实时按 execution_suite_id 匹配 ExecutionSuite.id 并刷新', () => {
+    const suites = [{
+      id: 100, // ExecutionSuite.id
+      suite_id: 5, // 原 TestSuite.id（不同值，旧实现要求二者相等导致永不匹配）
+      suite_name: '套件X',
+      status: 'running',
+      setup_steps: [{ id: 501, step_order: 1, action: 'sleep', status: 'pending', phase: 'suite_setup' }],
+      teardown_steps: [{ id: 502, step_order: 1, action: 'sleep', status: 'pending', phase: 'suite_teardown' }],
+      cases: [],
+    }]
+
+    applyStepResult(suites, {
+      execution_suite_id: 100, // ExecutionSuite.id
+      execution_step_id: 501,
+      phase: 'suite_setup',
+      step_order: 1,
+      status: 'passed',
+    })
+    expect(suites[0].setup_steps[0].status).toBe('passed')
+
+    applyStepResult(suites, {
+      execution_suite_id: 100,
+      execution_step_id: 502,
+      phase: 'suite_teardown',
+      step_order: 1,
+      status: 'failed',
+    })
+    expect(suites[0].teardown_steps[0].status).toBe('failed')
+  })
+
   it('实时合并断言结果，并兼容 pass/passed 状态口径', () => {
     const suites = [{
       suite_id: null,

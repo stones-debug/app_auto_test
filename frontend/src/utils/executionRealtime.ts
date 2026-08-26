@@ -49,15 +49,23 @@ export function executionConnectionState(
   return { kind: 'down', label: '已断开' }
 }
 
-/** 在嵌套 suites 中查找 execution_case_id / case_id 匹配的用例。 */
+/** 在嵌套 suites 中按 execution_case_id 优先（仅匹配 ExecutionCase.id）定位用例；
+ *  无 execution_case_id 时才回退按原 case.case_id 匹配（旧协议消息）。 */
 function findCase(suites: RealtimeSuite[], message: RealtimeMessage): RealtimeCase | null {
-  const targetId = message.execution_case_id ?? message.case_id
-  if (targetId == null) return null
-  const numeric = Number(targetId)
+  const executionCaseId = message.execution_case_id
+  if (executionCaseId != null) {
+    const numeric = Number(executionCaseId)
+    for (const suite of suites) {
+      const caseRow = suite.cases.find((item) => item.id != null && item.id === numeric)
+      if (caseRow) return caseRow
+    }
+    return null
+  }
+  const legacyCaseId = message.case_id
+  if (legacyCaseId == null) return null
+  const numeric = Number(legacyCaseId)
   for (const suite of suites) {
-    const caseRow = suite.cases.find(
-      (item) => (item.id != null && item.id === numeric) || item.case_id === numeric,
-    )
+    const caseRow = suite.cases.find((item) => item.case_id === numeric)
     if (caseRow) return caseRow
   }
   return null
@@ -86,12 +94,23 @@ function findStep(
   }
 
   // 可能是套件级步骤（suite_setup / suite_teardown），在 suites 中查找
-  const targetSuiteId = message.execution_suite_id ?? message.suite_id
-  if (targetSuiteId == null) return null
-  const numeric = Number(targetSuiteId)
+  // execution_suite_id 优先（仅匹配 ExecutionSuite.id）；缺省时回退原 suite_id（旧协议）。
+  const executionSuiteId = message.execution_suite_id
+  if (executionSuiteId != null) {
+    const numeric = Number(executionSuiteId)
+    for (const suite of suites) {
+      if (suite.id != null && suite.id !== numeric) continue
+      return (phase === 'suite_teardown'
+        ? rawStep(suite.teardown_steps)
+        : rawStep(suite.setup_steps)) ?? null
+    }
+    return null
+  }
+  const legacySuiteId = message.suite_id
+  if (legacySuiteId == null) return null
+  const numeric = Number(legacySuiteId)
   for (const suite of suites) {
     if (suite.suite_id !== null && suite.suite_id !== numeric) continue
-    if (suite.id != null && suite.id !== numeric) continue
     return (phase === 'suite_teardown'
       ? rawStep(suite.teardown_steps)
       : rawStep(suite.setup_steps)) ?? null
