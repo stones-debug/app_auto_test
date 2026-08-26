@@ -754,6 +754,7 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
                 "suite_name": s.suite_name,
                 "suite_order": s.suite_order,
                 "is_virtual": s.is_virtual,
+                "elements_snapshot": s.elements_snapshot or {},
                 "setup_steps": setup_steps,
                 "cases": suite_cases,
                 "teardown_steps": teardown_steps,

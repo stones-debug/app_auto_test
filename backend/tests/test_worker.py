@@ -355,11 +355,13 @@ async def test_create_execution_snapshots_idempotent(client: AsyncClient):
 
 
 async def test_suites_payload_injects_execution_assertion_id(client: AsyncClient):
-    """协议 V2：_build_suites_payload 下发断言时必须注入预建的 execution_assertion_id。
+    """协议 V2：_build_suites_payload 下发断言时必须注入预建的 execution_assertion_id，
+    且套件元素表随套件 payload 一并下发（否则套件前后置元素操作失败）。
 
-    回归：此前原样下发 assertions_snapshot（无 id），Agent 又按遍历序号从 1 重编号，
+    回归1：此前原样下发 assertions_snapshot（无 id），Agent 又按遍历序号从 1 重编号，
     导致后端 _upsert_assertion 匹配不到预建 pending 行而插入新断言，原行被标记 skipped，
     造成报告重复与统计错误。模拟档案路径（materialize_snapshot）预建断言的形态。
+    回归2：此前套件 payload 缺 elements_snapshot，Agent 始终以空元素表执行套件前后置。
     """
     token, case_id = await _setup_case(client)
     _agent_id, device_id = await _create_agent_device()
@@ -388,12 +390,26 @@ async def test_suites_payload_injects_execution_assertion_id(client: AsyncClient
             status="pending",
         )
         db.add(row)
+        # 模拟档案路径：套件元素表已固化（materialize_snapshot 写入 elements_snapshot）
+        suite_row = (
+            await db.execute(
+                select(ExecutionSuite).where(
+                    ExecutionSuite.execution_id == execution_id,
+                    ExecutionSuite.is_virtual.is_(True),
+                )
+            )
+        ).scalars().first()
+        assert suite_row is not None
+        suite_row.elements_snapshot = {"9": {"locator_type": "id", "locator_value": "svc_btn"}}
         await db.commit()
         precreated_id = row.id
 
         payload = await worker_service._build_suites_payload(db, execution)
         assert len(payload) == 1
-        case_payload = payload[0]["cases"][0]
+        suite_payload = payload[0]
+        # 套件元素表必须随 payload 下发（非空、非缺字段）
+        assert suite_payload.get("elements_snapshot") == {"9": {"locator_type": "id", "locator_value": "svc_btn"}}
+        case_payload = suite_payload["cases"][0]
         sent_assertion = case_payload["assertions_snapshot"][0]
         # 必须注入 execution_assertion_id，且与预建行一致
         assert sent_assertion.get("execution_assertion_id") == precreated_id

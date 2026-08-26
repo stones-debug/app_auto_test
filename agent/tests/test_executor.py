@@ -28,13 +28,14 @@ def _make_case(steps, assertions=None, elements=None) -> dict:
     }
 
 
-def _make_suite(cases, setup_steps=None, teardown_steps=None, suite_id=None) -> dict:
+def _make_suite(cases, setup_steps=None, teardown_steps=None, suite_id=None, elements_snapshot=None) -> dict:
     return {
         "execution_suite_id": 1001,
         "suite_id": suite_id,
         "suite_name": "基础功能",
         "suite_order": 1,
         "is_virtual": suite_id is None,
+        "elements_snapshot": elements_snapshot or {},
         "setup_steps": setup_steps or [],
         "cases": cases,
         "teardown_steps": teardown_steps or [],
@@ -1211,6 +1212,34 @@ async def test_run_suite_setup_failure_skips_cases_runs_teardown():
     assert [m["execution_step_id"] for m in step_msgs] == [5001, 5009]
     assert [m["phase"] for m in step_msgs] == ["suite_setup", "suite_teardown"]
     assert [m["action"] for m in step_msgs] == ["no_such_action", "sleep"]
+
+
+async def test_run_suite_setup_element_uses_suite_elements_snapshot():
+    """V2：套件前后置步通过套件自身 elements_snapshot 解析元素（不再恒为空表）。
+
+    回归：Worker 未下发套件 elements_snapshot → Agent 以空元素表执行套件步，
+    元素查找失败（ElementNotFound）。assert setup 点击成功并不抛元素缺失。
+    """
+    driver = MockDriver()
+    suite = _make_suite(
+        [_suite_case()],
+        setup_steps=[
+            {
+                "execution_step_id": 5001,
+                "action": "click",
+                "element_id": "9",
+                "order": 1,
+                "params": {},
+            },
+        ],
+        teardown_steps=[],
+        elements_snapshot={"9": {"locator_type": "id", "locator_value": "svc_btn"}},
+    )
+    status, sent = await _run_suite_and_capture(suite, driver=driver)
+    assert status == "passed"
+    setup_step = next(m for m in sent if m["type"] == "step_result")
+    assert setup_step["action"] == "click"
+    assert setup_step["status"] == "passed"
 
 
 async def test_run_suite_step_result_carries_execution_step_id_for_suite_steps():
