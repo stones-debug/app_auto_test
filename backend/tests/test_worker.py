@@ -12,6 +12,7 @@ from app.models import (
     Agent,
     Device,
     Execution,
+    ExecutionAssertion,
     ExecutionCase,
     ExecutionLog,
     ExecutionQueue,
@@ -351,6 +352,53 @@ async def test_create_execution_snapshots_idempotent(client: AsyncClient):
             select(ExecutionStep).where(ExecutionStep.execution_case_id == ecs[0].id)
         )).scalars().all()
         assert len(steps) == 0
+
+
+async def test_suites_payload_injects_execution_assertion_id(client: AsyncClient):
+    """协议 V2：_build_suites_payload 下发断言时必须注入预建的 execution_assertion_id。
+
+    回归：此前原样下发 assertions_snapshot（无 id），Agent 又按遍历序号从 1 重编号，
+    导致后端 _upsert_assertion 匹配不到预建 pending 行而插入新断言，原行被标记 skipped，
+    造成报告重复与统计错误。模拟档案路径（materialize_snapshot）预建断言的形态。
+    """
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "btn_login"}}, device_id)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution.app_profile_id is None
+        # 无档案 → 走 _rebuild_legacy_snapshot 重建用例（含断言 snapshot，但不预建断言行）
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        await db.commit()
+        ec = (
+            await db.execute(
+                select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+            )
+        ).scalars().first()
+        assert ec is not None
+        # 模拟档案路径：执行已含 assertion snapshot（order 从 steps 数量后开始），预建 pending 断言
+        assertions_snapshot = ec.assertions_snapshot or []
+        assert len(assertions_snapshot) >= 1
+        sent_order = int(assertions_snapshot[0].get("order") or 0)
+        row = ExecutionAssertion(
+            execution_case_id=ec.id,
+            assertion_order=sent_order,
+            assertion_type=assertions_snapshot[0].get("type") or "",
+            status="pending",
+        )
+        db.add(row)
+        await db.commit()
+        precreated_id = row.id
+
+        payload = await worker_service._build_suites_payload(db, execution)
+        assert len(payload) == 1
+        case_payload = payload[0]["cases"][0]
+        sent_assertion = case_payload["assertions_snapshot"][0]
+        # 必须注入 execution_assertion_id，且与预建行一致
+        assert sent_assertion.get("execution_assertion_id") == precreated_id
+        # assertion_order 应沿用快照 order（而非 Agent 从 1 重编号），与预建行 assertion_order 对齐
+        assert int(sent_assertion.get("order") or 0) == sent_order
 
 
 # ---------- 扫描任务 ----------

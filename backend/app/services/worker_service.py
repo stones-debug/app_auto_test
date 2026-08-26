@@ -667,6 +667,33 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
     for c in cases:
         cases_by_suite.setdefault(c.execution_suite_id, []).append(c)
 
+    # 预建断言（S1 固化 pending）：按 (execution_case_id, assertion_order) 建立 id 映射，
+    # 供下发时注入 execution_assertion_id，Agent 精确回传避免生成重复断言。
+    _case_ids = [c.id for c in cases]
+    _assertion_rows = (
+        await db.execute(
+            select(ExecutionAssertion)
+            .where(ExecutionAssertion.execution_case_id.in_(_case_ids))
+            .order_by(ExecutionAssertion.execution_case_id, ExecutionAssertion.assertion_order)
+        )
+    ).scalars().all()
+    assertion_id_by_key: dict[tuple[int, int], int] = {
+        (a.execution_case_id, a.assertion_order): a.id for a in _assertion_rows
+    }
+
+    def _inject_assertion_ids(case: ExecutionCase, assertions: list) -> list:
+        """向断言快照注入 execution_assertion_id（按 order 匹配预建行），缺行时保留原样让后端幂等创建。"""
+        out: list[dict] = []
+        for a in assertions:
+            entry = dict(a)
+            order = entry.get("order")
+            if order is not None:
+                _aid = assertion_id_by_key.get((case.id, int(order)))
+                if _aid is not None:
+                    entry["execution_assertion_id"] = _aid
+            out.append(entry)
+        return out
+
     suite_steps = (
         await db.execute(
             select(ExecutionStep)
@@ -715,7 +742,7 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
                 "case_order": c.case_order,
                 "module_name": c.module_name,
                 "steps_snapshot": c.steps_snapshot,
-                "assertions_snapshot": c.assertions_snapshot,
+                "assertions_snapshot": _inject_assertion_ids(c, c.assertions_snapshot or []),
                 "elements_snapshot": c.elements_snapshot,
             }
             for c in cases_by_suite.get(s.id, [])

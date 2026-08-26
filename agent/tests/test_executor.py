@@ -334,6 +334,36 @@ async def test_runner_runs_assertions_before_teardown_and_keeps_assertion_failur
     assert status == "failed"
 
 
+async def test_runner_assertion_uses_snapshot_order_and_injected_id():
+    """协议 V2：断言按快照自带 order（非从 1 重编号）上报，并透传注入的 execution_assertion_id。
+
+    回归：后端预建断言 assertion_order 从 len(steps) 起（≥步骤数），Agent 却从 1 重编号，
+    导致 _upsert_assertion 匹配不到预建行而插入新断言（重复）、原行被 skipped（统计错误）。
+    """
+    driver = MockDriver()
+    case = _make_case(
+        steps=[{"order": 1, "phase": "case_main", "action": "input", "element_id": 1, "params": {"value": "admin"}}],
+        assertions=[
+            {
+                "order": 2,
+                "execution_assertion_id": 501,
+                "type": "text_equals",
+                "element_id": 1,
+                "params": {"expected": "admin"},
+            },
+        ],
+    )
+
+    status, sent = await _run_and_capture(case, driver=driver)
+
+    assert status == "passed"
+    assertion_msg = next(m for m in sent if m["type"] == "assertion_result")
+    item = assertion_msg["assertions"][0]
+    # 断言 order 应沿用快照值 2（而非遍历序号 1），execution_assertion_id 透传
+    assert item["assertion_order"] == 2
+    assert item["execution_assertion_id"] == 501
+
+
 async def test_runner_current_screen_mode_skips_launch_app_action():
     driver = MockDriver()
     driver.attach_to_current_app()

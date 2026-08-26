@@ -316,7 +316,7 @@ class TestRunner:
 
         assertion_results: list[AssertionItem] = []
         assertions = [] if setup_halted else (case.get("assertions_snapshot") or [])
-        for assertion_index, assertion in enumerate(assertions, start=1):
+        for _assertion_index, assertion in enumerate(assertions, start=1):
             try:
                 cls = ASSERTION_REGISTRY.get(assertion.get("type"))
                 if cls is None:
@@ -336,7 +336,9 @@ class TestRunner:
                 }
             item: AssertionItem = {
                 "type": str(assertion.get("type") or ""),
-                "assertion_order": assertion_index,
+                # 保持与后端预建断言一致的 assertion_order：优先取快照自带 order，
+                # 缺省回退遍历序号（后端按 execution_case_id+assertion_order 幂等创建）。
+                "assertion_order": int(assertion.get("order") or _assertion_index),
                 "expected": str(res.get("expected") or ""),
                 "actual": str(res.get("actual") or ""),
                 "status": str(res.get("status") or "failed"),
@@ -344,6 +346,7 @@ class TestRunner:
                     str(res["error_message"]) if res.get("error_message") else None
                 ),
             }
+            # 协议 V2：Worker 已注入 execution_assertion_id，精确回传避免重复插入/误 skipped
             if assertion.get("execution_assertion_id") is not None:
                 item["execution_assertion_id"] = assertion["execution_assertion_id"]
             assertion_results.append(item)
