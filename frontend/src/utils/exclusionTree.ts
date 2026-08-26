@@ -1,6 +1,5 @@
 // 方案 §7.2：把扁平排除项构造成 套件→用例→步骤 的独立层级树（报告 N/A 视图专用）。
-// 结构：suite 容器（按 suite_id + 名称）→ case 容器（按 case_id + 名称）→ 叶子（step/assertion/suite_step）。
-// 无 suite/case 上下文的历史数据以独立叶子兜底，保证永远可渲染。
+// 只要排除项携带 suite_id，就主动补出套件容器，避免只有 case/step 排除时层级断裂。
 
 import type { ReportExclusion } from '@/api/reports'
 
@@ -24,50 +23,53 @@ export function buildExclusionTree(exclusions: ReportExclusion[]): ExclusionTree
   const caseNodes = new Map<string, ExclusionTreeNode>()
   const roots: ExclusionTreeNode[] = []
 
-  const segmentOf = (r: ReportExclusion) => r.path?.split('/') || []
+  const segmentsOf = (row: ReportExclusion) =>
+    (row.path ?? '').split('/').map((part) => part.trim()).filter(Boolean)
+
+  const ensureSuite = (row: ReportExclusion): ExclusionTreeNode | null => {
+    if (row.suite_id == null) return null
+    const suiteId = String(row.suite_id)
+    if (!suiteNodes.has(suiteId)) {
+      suiteNodes.set(suiteId, {
+        key: `suite:${suiteId}`,
+        name: segmentsOf(row)[0] || `套件 #${suiteId}`,
+        isLeaf: false,
+        children: [],
+      })
+    }
+    return suiteNodes.get(suiteId)!
+  }
+
+  const ensureCase = (row: ReportExclusion): ExclusionTreeNode | null => {
+    if (row.case_id == null) return null
+    const suiteId = row.suite_id == null ? '' : String(row.suite_id)
+    const caseId = String(row.case_id)
+    const caseKey = `${suiteId}::${caseId}`
+    if (!caseNodes.has(caseKey)) {
+      const segments = segmentsOf(row)
+      const caseNode: ExclusionTreeNode = {
+        key: `case:${caseKey}`,
+        name: segments[row.suite_id == null ? 0 : 1] || `用例 #${caseId}`,
+        isLeaf: false,
+        children: [],
+      }
+      caseNodes.set(caseKey, caseNode)
+      const suiteNode = ensureSuite(row)
+      if (suiteNode) suiteNode.children.push(caseNode)
+      else roots.push(caseNode)
+    }
+    return caseNodes.get(caseKey)!
+  }
 
   for (const row of rows) {
-    const seg = segmentOf(row)
     const why = {
       reasonCode: row.reason_code,
       reasonNote: row.reason_note,
       sourceType: row.source_type,
       path: row.path,
     }
-
-    if (row.target_type === 'suite') {
-      roots.push({
-        key: `ex-suite-${row.suite_id ?? ''}-${row.node_key ?? row.path}`,
-        name: row.path || `套件 #${row.suite_id}`,
-        isLeaf: true,
-        children: [],
-        targetType: row.target_type,
-        ...why,
-      })
-      continue
-    }
-    if (row.target_type === 'case') {
-      const suiteId = `${row.suite_id ?? ''}`
-      const caseKey = `${suiteId}::${row.case_id ?? ''}`
-      if (!caseNodes.has(caseKey)) {
-        const caseName = seg[1] || `用例 #${row.case_id}`
-        caseNodes.set(caseKey, { key: `case:${caseKey}`, name: caseName, isLeaf: false, children: [] })
-      }
-      caseNodes.get(caseKey)!.children.push({
-        key: `ex-case-${row.case_id}-${row.node_key ?? row.path}`,
-        name: row.path || `用例 #${row.case_id}`,
-        isLeaf: true,
-        children: [],
-        targetType: row.target_type,
-        ...why,
-      })
-      continue
-    }
-
-    const suiteId = `${row.suite_id ?? ''}`
-    const caseId = `${row.case_id ?? ''}`
     const leaf: ExclusionTreeNode = {
-      key: `ex-${row.target_type}-${suiteId}-${caseId}-${row.node_key ?? row.path}`,
+      key: `ex-${row.target_type}-${row.suite_id ?? ''}-${row.case_id ?? ''}-${row.node_key ?? row.path}`,
       name: row.path || row.node_key || row.target_type,
       isLeaf: true,
       children: [],
@@ -75,40 +77,30 @@ export function buildExclusionTree(exclusions: ReportExclusion[]): ExclusionTree
       ...why,
     }
 
-    if (caseId && caseId !== '') {
-      const caseKey = `${suiteId}::${caseId}`
-      if (!caseNodes.has(caseKey)) {
-        const caseName = row.path.split('/')[1] || `用例 #${caseId}`
-        caseNodes.set(caseKey, { key: `case:${caseKey}`, name: caseName, isLeaf: false, children: [] })
-      }
-      caseNodes.get(caseKey)!.children.push(leaf)
-    } else if (suiteId && suiteId !== '') {
-      if (!suiteNodes.has(suiteId)) {
-        suiteNodes.set(suiteId, {
-          key: `suite:${suiteId}`,
-          name: row.path?.split('/')[0] || `套件 #${suiteId}`,
-          isLeaf: false,
-          children: [],
-        })
-      }
-      suiteNodes.get(suiteId)!.children.push(leaf)
-    } else {
-      roots.push(leaf)
+    if (row.target_type === 'suite') {
+      const suiteNode = ensureSuite(row)
+      if (suiteNode) suiteNode.children.push(leaf)
+      else roots.push(leaf)
+      continue
     }
+    if (row.target_type === 'case' || row.case_id != null) {
+      const caseNode = ensureCase(row)
+      if (caseNode) caseNode.children.push(leaf)
+      else roots.push(leaf)
+      continue
+    }
+    const suiteNode = ensureSuite(row)
+    if (suiteNode) suiteNode.children.push(leaf)
+    else roots.push(leaf)
   }
 
-  // case 节点挂回对应 suite 下；无 suite 的 case 独立成根
-  for (const [caseKey, caseNode] of caseNodes) {
-    const suiteId = caseKey.split('::')[0]
-    const suiteNode = suiteNodes.get(suiteId)
-    if (suiteNode) suiteNode.children.push(caseNode)
-    else roots.push(caseNode)
-  }
   roots.push(...suiteNodes.values())
   return roots
 }
 
 /** 收集树中全部节点的 key（展开/收起用）。 */
 export function flattenTreeKeys(nodes: ExclusionTreeNode[]): string[] {
-  return nodes.flatMap((n) => (n.isLeaf ? [n.key] : [n.key, ...flattenTreeKeys(n.children)]))
+  return nodes.flatMap((node) => (
+    node.isLeaf ? [node.key] : [node.key, ...flattenTreeKeys(node.children)]
+  ))
 }

@@ -369,7 +369,7 @@ class ExecutionExclusion(Base):
     case_name_snapshot: Mapped[str | None] = mapped_column(String(255))
     node_key: Mapped[UUID | None] = mapped_column(nullable=True)
     node_name_snapshot: Mapped[str | None] = mapped_column(String(255))
-    source_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(24), nullable=False)
     source_rule_id: Mapped[int | None] = mapped_column(Integer)
     reason_code: Mapped[str] = mapped_column(String(32), nullable=False)
     reason_note: Mapped[str | None] = mapped_column(String(500))

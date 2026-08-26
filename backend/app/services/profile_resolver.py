@@ -736,6 +736,23 @@ async def _build_suite(
             resolved_cases.append(resolved_case)
 
     if not resolved_cases:
+        if not virtual:
+            exclusions.append(
+                ExclusionItem(
+                    target_type="suite",
+                    suite_id=suite_id,
+                    case_id=None,
+                    node_key=None,
+                    source_type="empty_after_filter",
+                    reason_code="other",
+                    reason_note="套件内无可执行用例",
+                    display_snapshot={
+                        "name": suite_name,
+                        "key": str(suite_id),
+                        "suite_name": suite_name,
+                    },
+                )
+            )
         return (
             ResolvedSuite(
                 suite_id=suite_id, suite_name=suite_name, suite_order=suite_order,

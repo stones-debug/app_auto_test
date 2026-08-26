@@ -9,7 +9,8 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.main import app
-from app.models import Execution, ExecutionCase, ExecutionExclusion, ExecutionStep, Project
+from app.models import Execution, ExecutionCase, ExecutionExclusion, ExecutionStep, Project, Report
+from app.services import worker_service
 from app.services.profile_resolver import ResolutionRequest, resolve
 from tests.helpers import create_bound_agent_device
 
@@ -462,12 +463,24 @@ async def test_batch_shared_case_executes_from_unskipped_suite(client: AsyncClie
                 )
             )
         ).scalars().all()
+        execution = await db.get(Execution, created.json()["id"])
+        execution.status = "running"
+        await db.commit()
+        await worker_service._mark_terminal(db, execution, "passed")
+        report = await db.scalar(
+            select(Report).where(Report.execution_id == created.json()["id"])
+        )
 
     assert [item.case_id for item in execution_cases] == [case_id]
     assert any(
         item.target_type == "case" and item.suite_id_snapshot == suite_ids[0]
         for item in exclusions
     )
+    assert any(
+        item.target_type == "suite" and item.suite_id_snapshot == suite_ids[0]
+        for item in exclusions
+    )
+    assert report.not_applicable_suites == 1
 
 
 async def test_retry_reuses_profile(client: AsyncClient):

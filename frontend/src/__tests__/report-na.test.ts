@@ -116,4 +116,33 @@ describe('报告 N/A 契约（方案 §7）', () => {
     // 无上下文叶子独立为根
     expect(tree.find((n) => n.isLeaf)?.name).toBe('单用例步')
   })
+
+  it('只有 case/step 排除项时也补出套件容器', () => {
+    const tree = buildExclusionTree([
+      {
+        target_type: 'case',
+        suite_id: 10,
+        case_id: 20,
+        path: '套件A/登录用例',
+        reason_code: 'unsupported',
+        reason_note: null,
+        source_type: 'direct',
+      },
+      {
+        target_type: 'step',
+        suite_id: 10,
+        case_id: 20,
+        path: '套件A/登录用例/点击登录',
+        reason_code: 'unsupported',
+        reason_note: null,
+        source_type: 'direct',
+      },
+    ])
+
+    expect(tree).toHaveLength(1)
+    expect(tree[0].key).toBe('suite:10')
+    expect(tree[0].children).toHaveLength(1)
+    expect(tree[0].children[0].key).toBe('case:10::20')
+    expect(tree[0].children[0].children).toHaveLength(2)
+  })
 })
