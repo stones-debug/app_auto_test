@@ -1,10 +1,10 @@
 ; Inno Setup installer script (Windows plan 4.2)
 ; ASCII-only on purpose: Inno reads .iss as ANSI without BOM; keep this file ASCII.
-; Usage: iscc packaging\setup.iss /DAppVersion=1.1.0 /DOutputDir=dist
+; Usage: iscc packaging\setup.iss /DAppVersion=2.0.0 /DOutputDir=dist
 ; Output: app-auto-test-agent-<version>-windows-x64-setup.exe
 
 #ifndef AppVersion
-  #define AppVersion "1.1.0"
+  #define AppVersion "2.0.0"
 #endif
 #ifndef OutputDir
   #define OutputDir "dist"
