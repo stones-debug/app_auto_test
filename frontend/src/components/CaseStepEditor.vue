@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, toRaw } from 'vue'
+import { ref, toRaw, watch } from 'vue'
 
 import Draggable from 'vuedraggable'
 
@@ -26,6 +26,18 @@ const emit = defineEmits<{ 'update:modelValue': [steps: Step[]] }>()
 const stepUiIds = new WeakMap<object, number>()
 const collapsedStepIds = ref(new Set<number>())
 let nextStepUiId = 0
+
+// 「进入编辑页默认全部收起」：仅对首次加载的步骤生效一次；
+// 之后的添加/删除/拖拽由用户显式操作，不再自动折叠。
+let collapseApplied = false
+watch(
+  () => props.modelValue,
+  (steps) => {
+    if (collapseApplied || !steps.length) return
+    collapseApplied = true
+    collapsedStepIds.value = new Set(steps.map((s) => stepUiId(s)))
+  },
+)
 
 function stepUiId(step: Step): number {
   const rawStep = toRaw(step)
@@ -69,6 +81,8 @@ function update(steps: Step[]) {
 }
 
 function addStep() {
+  // 用户主动添加：视作已开始编辑，后续步骤不再自动折叠
+  collapseApplied = true
   update([
     ...props.modelValue,
     {
