@@ -876,6 +876,45 @@ async def test_mark_terminal_skips_unexecuted_steps(client: AsyncClient):
         assert steps[1].status == "skipped"
 
 
+async def test_mark_terminal_never_started_case_with_precreated_rows_is_skipped(client: AsyncClient):
+    """CR-11 修正：快照预建的 pending 步骤/断言行不算"已开始"信号。
+
+    回归：材料化路径（档案执行）在创建时预建全部 ExecutionStep/ExecutionAssertion（pending），
+    旧逻辑以"存在步骤或断言行"判断是否开始，导致尚未开始的后续用例被误判为 stopped/error；
+    按方案应为 skipped（未开始→skipped，已开始→stopped/error）。
+    """
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        # 模拟材料化路径：预建 pending 步骤/断言（执行何时开始此时不定）
+        ec = (await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )).scalar_one()
+        db.add(ExecutionStep(execution_case_id=ec.id, step_order=1, action="click", status="pending"))
+        db.add(ExecutionAssertion(execution_case_id=ec.id, assertion_order=1, assertion_type="element_exists", status="pending"))
+        execution.status = "running"
+        execution.started_at = datetime.now(UTC)
+        await db.commit()
+        # 停止收敛：用例从未 report running/case_status，无 started_at → skipped
+        await worker_service._mark_terminal(db, execution, "stopped")
+
+    async with SessionLocal() as db:
+        ec = (await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )).scalar_one()
+        assert ec.status == "skipped"
+        assert ec.started_at is None
+        steps = (await db.execute(
+            select(ExecutionStep).where(ExecutionStep.execution_case_id == ec.id)
+        )).scalars().all()
+        # 收敛后未执行步骤仍置 skipped（与终态一致）
+        assert all(s.status == "skipped" for s in steps)
+
+
 # ---------- CR-12：queued 取消与 Worker 原子认领竞争 ----------
 
 

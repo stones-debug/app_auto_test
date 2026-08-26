@@ -469,7 +469,7 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
     for case in cases:
         cases_by_suite.setdefault(case.execution_suite_id, []).append(case)
 
-    # ---------- 用例状态归并（沿用既有逻辑） ----------
+    # ---------- 用例状态归并（沿用既有逻辑；CR-11 修正：快照预建行不算"开始"信号） ----------
     for c in cases:
         if c.status in ("pending", "running"):
             steps = (
@@ -487,8 +487,11 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
                 c.status = "failed"
             elif status_ == "passed":
                 c.status = "passed"
-            elif steps or assertions:
-                # CR-11：已有执行痕迹但被中断 → 当前项 stopped/error
+            # 用例是否真正开始过：started_at / status=running / 任一子行非 pending
+            # （快照在创建时已预建全部 pending 步骤断言行，行存在≠开始过）
+            elif c.started_at is not None or c.status == "running" or any(
+                s.status != "pending" for s in steps
+            ) or any(a.status != "pending" for a in assertions):
                 c.status = "stopped" if status_ in ("stopped", "cancelled") else "error"
                 c.error_message = c.error_message or f"执行被中断（{status_}）"
             else:
