@@ -557,7 +557,7 @@ async def test_list_extended_filters_and_names(client: AsyncClient):
 async def test_execution_detail_aggregates_steps_assertions(client: AsyncClient):
     """B4：执行详情聚合 steps/assertions，并填充 project_name/device_name/created_by_name。"""
     from app.core.database import SessionLocal
-    from app.models import Device, Execution
+    from app.models import Device, Execution, ExecutionAssertion, ExecutionCase, ExecutionStep
     from app.services import worker_service
     from app.ws import handlers
 
@@ -580,13 +580,26 @@ async def test_execution_detail_aggregates_steps_assertions(client: AsyncClient)
         execution.status = "running"
         await db.commit()
         agent_id = (await db.execute(select(Device.agent_id).where(Device.id == device_id))).scalar_one()
+        ec = (await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )).scalar_one()
+        step_row = (await db.execute(
+            select(ExecutionStep).where(
+                ExecutionStep.execution_case_id == ec.id,
+                ExecutionStep.step_order == 1,
+            )
+        )).scalar_one()
+        assertion_row = (await db.execute(
+            select(ExecutionAssertion).where(ExecutionAssertion.execution_case_id == ec.id)
+        )).scalar_one()
+        # 协议 V2：只按 execution_*_id 精确定位（旧协议 case_id/step_order 已拒绝）
         await handlers.handle_step_result(
             db, agent_id,
-            {"execution_id": execution_id, "case_id": case_id, "step_order": 1, "action": "click", "status": "passed", "duration": 100},
+            {"execution_id": execution_id, "execution_step_id": step_row.id, "action": "click", "status": "passed", "duration": 100},
         )
         await handlers.handle_assertion_result(
             db, agent_id,
-            {"execution_id": execution_id, "case_id": case_id, "assertions": [{"type": "text_equals", "expected": "a", "actual": "a", "status": "pass"}]},
+            {"execution_id": execution_id, "execution_case_id": ec.id, "assertions": [{"execution_assertion_id": assertion_row.id, "type": "text_equals", "expected": "a", "actual": "a", "status": "pass"}]},
         )
 
     detail = (await client.get(f"/api/executions/{execution_id}", headers=headers)).json()

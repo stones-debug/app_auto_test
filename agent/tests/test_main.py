@@ -66,7 +66,7 @@ def _sleep_suite(duration: float = 5) -> list[dict]:
                     "execution_case_id": 2001,
                     "case_id": 1,
                     "case_name": "睡眠用例",
-                    "steps_snapshot": [{"order": 1, "action": "sleep", "params": {"duration": duration}}],
+                    "steps_snapshot": [{"order": 1, "execution_step_id": 3001, "action": "sleep", "params": {"duration": duration}}],
                     "assertions_snapshot": [],
                     "elements_snapshot": {},
                 }

@@ -99,7 +99,7 @@ class RunnerReporter:
         *,
         execution_case_id: int | None = None,
         execution_suite_id: int | None = None,
-        execution_step_id: int | None = None,
+        execution_step_id: int,
         phase: str,
         step_order: int | None,
         action: str,
@@ -113,6 +113,7 @@ class RunnerReporter:
             "type": "step_result",
             "execution_id": self.execution_id,
             "session_token": self.session_token,
+            "execution_step_id": execution_step_id,
             "phase": phase,
             "step_order": step_order,
             "action": action,
@@ -126,8 +127,6 @@ class RunnerReporter:
             msg["execution_case_id"] = execution_case_id
         if execution_suite_id is not None:
             msg["execution_suite_id"] = execution_suite_id
-        if execution_step_id is not None:
-            msg["execution_step_id"] = execution_step_id
         await self.send(msg)
 
     async def assertion_result(self, execution_case_id: int, assertions: list[AssertionItem]) -> None:
@@ -228,6 +227,9 @@ class TestRunner:
         for step in steps:
             if self.should_stop():
                 raise StopRequested("执行被用户停止")
+            execution_step_id = int(step.get("execution_step_id") or 0)
+            if execution_step_id <= 0:
+                raise ValueError("协议 V2 快照缺少有效 execution_step_id")
             step_order = step.get("order") or step.get("step_order")
             start = time.monotonic()
             result: dict = {"status": "passed"}
@@ -257,7 +259,7 @@ class TestRunner:
             await reporter.step_result(
                 execution_case_id=execution_case_id,
                 execution_suite_id=execution_suite_id,
-                execution_step_id=step.get("execution_step_id"),
+                execution_step_id=execution_step_id,
                 phase=phase,
                 step_order=step_order,
                 action=action_name,
@@ -287,6 +289,8 @@ class TestRunner:
 
     async def run_case(self, case: dict, reporter: RunnerReporter | None = None) -> str:
         execution_case_id = int(case.get("execution_case_id") or 0)
+        if execution_case_id <= 0:
+            raise ValueError("协议 V2 快照缺少有效 execution_case_id")
         context = ExecutionContext(
             self.driver,
             case,
@@ -334,7 +338,11 @@ class TestRunner:
                     "actual": "",
                     "error_message": str(exc),
                 }
+            execution_assertion_id = int(assertion.get("execution_assertion_id") or 0)
+            if execution_assertion_id <= 0:
+                raise ValueError("协议 V2 快照缺少有效 execution_assertion_id")
             item: AssertionItem = {
+                "execution_assertion_id": execution_assertion_id,
                 "type": str(assertion.get("type") or ""),
                 # 保持与后端预建断言一致的 assertion_order：优先取快照自带 order，
                 # 缺省回退遍历序号（后端按 execution_case_id+assertion_order 幂等创建）。
@@ -346,9 +354,6 @@ class TestRunner:
                     str(res["error_message"]) if res.get("error_message") else None
                 ),
             }
-            # 协议 V2：Worker 已注入 execution_assertion_id，精确回传避免重复插入/误 skipped
-            if assertion.get("execution_assertion_id") is not None:
-                item["execution_assertion_id"] = assertion["execution_assertion_id"]
             assertion_results.append(item)
             if res.get("status") != "passed":
                 case_status = "failed"
@@ -369,6 +374,8 @@ class TestRunner:
         """
         reporter = RunnerReporter(self.send, self.execution_id, self.session_token)
         suite_id = int(suite.get("execution_suite_id") or 0)
+        if suite_id <= 0:
+            raise ValueError("协议 V2 快照缺少有效 execution_suite_id")
         await reporter.suite_status(suite_id, "running")
         context = ExecutionContext(
             self.driver,

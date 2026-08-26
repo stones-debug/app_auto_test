@@ -9,7 +9,7 @@ class StepResultMessage(TypedDict):
     session_token: str | None
     execution_suite_id: NotRequired[int | None]
     execution_case_id: NotRequired[int | None]
-    execution_step_id: NotRequired[int | None]
+    execution_step_id: int
     phase: str
     step_order: int
     action: str
@@ -21,7 +21,7 @@ class StepResultMessage(TypedDict):
 
 
 class AssertionItem(TypedDict):
-    execution_assertion_id: NotRequired[int | None]
+    execution_assertion_id: int
     assertion_order: NotRequired[int]
     type: str
     expected: str

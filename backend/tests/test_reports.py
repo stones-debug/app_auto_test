@@ -12,6 +12,7 @@ from app.main import app
 from app.models import (
     Device,
     Execution,
+    ExecutionAssertion,
     ExecutionCase,
     ExecutionExclusion,
     ExecutionStep,
@@ -126,24 +127,38 @@ async def _setup(client: AsyncClient) -> tuple[str, int]:
                 "step_order": 1,
             },
         )
+        # 协议 V2：只按 execution_*_id 精确定位（旧协议 case_id/step_order 已拒绝）
+        ec = (await db.execute(
+            sa_select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )).scalar_one()
+        step_rows = (
+            await db.execute(
+                sa_select(ExecutionStep)
+                .where(ExecutionStep.execution_case_id == ec.id)
+                .order_by(ExecutionStep.step_order)
+            )
+        ).scalars().all()
         await handlers.handle_step_result(
             db,
             agent_id,
-            {"execution_id": execution_id, "session_token": "rp-token", "case_id": case_id, "step_order": 1, "action": "input", "status": "passed", "actual_value": "admin"},
+            {"execution_id": execution_id, "session_token": "rp-token", "execution_step_id": step_rows[0].id, "action": "input", "status": "passed", "actual_value": "admin"},
         )
         await handlers.handle_step_result(
             db,
             agent_id,
-            {"execution_id": execution_id, "session_token": "rp-token", "case_id": case_id, "step_order": 2, "action": "click", "status": "passed"},
+            {"execution_id": execution_id, "session_token": "rp-token", "execution_step_id": step_rows[1].id, "action": "click", "status": "passed"},
         )
+        assertion_row = (await db.execute(
+            sa_select(ExecutionAssertion).where(ExecutionAssertion.execution_case_id == ec.id)
+        )).scalar_one()
         await handlers.handle_assertion_result(
             db,
             agent_id,
             {
                 "execution_id": execution_id,
                 "session_token": "rp-token",
-                "case_id": case_id,
-                "assertions": [{"type": "text_equals", "expected": "admin", "actual": "admin", "status": "pass"}],
+                "execution_case_id": ec.id,
+                "assertions": [{"execution_assertion_id": assertion_row.id, "type": "text_equals", "expected": "admin", "actual": "admin", "status": "pass"}],
             },
         )
         execution = await db.get(Execution, execution_id)

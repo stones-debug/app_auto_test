@@ -14,12 +14,20 @@ from executor import (
 
 
 def _make_case(steps, assertions=None, elements=None) -> dict:
+    normalized_steps = [
+        {"execution_step_id": 3000 + index, **step}
+        for index, step in enumerate(steps, start=1)
+    ]
+    normalized_assertions = [
+        {"execution_assertion_id": 4000 + index, **assertion}
+        for index, assertion in enumerate(assertions or [], start=1)
+    ]
     return {
         "execution_case_id": 2001,
         "case_id": 1,
         "case_name": "测试用例",
-        "steps_snapshot": steps,
-        "assertions_snapshot": assertions or [],
+        "steps_snapshot": normalized_steps,
+        "assertions_snapshot": normalized_assertions,
         "elements_snapshot": elements or {
             "1": {"locator_type": "id", "locator_value": "username"},
             "2": {"locator_type": "id", "locator_value": "login_btn"},
@@ -29,6 +37,14 @@ def _make_case(steps, assertions=None, elements=None) -> dict:
 
 
 def _make_suite(cases, setup_steps=None, teardown_steps=None, suite_id=None, elements_snapshot=None) -> dict:
+    normalized_setup = [
+        {"execution_step_id": 5000 + index, **step}
+        for index, step in enumerate(setup_steps or [], start=1)
+    ]
+    normalized_teardown = [
+        {"execution_step_id": 6000 + index, **step}
+        for index, step in enumerate(teardown_steps or [], start=1)
+    ]
     return {
         "execution_suite_id": 1001,
         "suite_id": suite_id,
@@ -36,9 +52,9 @@ def _make_suite(cases, setup_steps=None, teardown_steps=None, suite_id=None, ele
         "suite_order": 1,
         "is_virtual": suite_id is None,
         "elements_snapshot": elements_snapshot or {},
-        "setup_steps": setup_steps or [],
+        "setup_steps": normalized_setup,
         "cases": cases,
-        "teardown_steps": teardown_steps or [],
+        "teardown_steps": normalized_teardown,
     }
 
 
@@ -1158,14 +1174,25 @@ async def _run_suite_and_capture(suite, parameters=None, driver=None):
 
 
 def _suite_case(*, execution_case_id=2001, steps=None, assertions=None):
+    normalized_steps = [
+        {"execution_step_id": 7000 + index, **step}
+        for index, step in enumerate(
+            steps or [{"order": 1, "action": "sleep", "params": {"duration": 0.01}}],
+            start=1,
+        )
+    ]
+    normalized_assertions = [
+        {"execution_assertion_id": 8000 + index, **assertion}
+        for index, assertion in enumerate(assertions or [], start=1)
+    ]
     return {
         "execution_case_id": execution_case_id,
         "case_id": 1,
         "case_name": "用例",
         "case_order": 1,
         "module_name": None,
-        "steps_snapshot": steps or [{"order": 1, "action": "sleep", "params": {"duration": 0.01}}],
-        "assertions_snapshot": assertions or [],
+        "steps_snapshot": normalized_steps,
+        "assertions_snapshot": normalized_assertions,
         "elements_snapshot": {
             "1": {"locator_type": "id", "locator_value": "username"},
             "2": {"locator_type": "id", "locator_value": "login_btn"},

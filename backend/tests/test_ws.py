@@ -100,7 +100,14 @@ async def _setup_case_execution(client: AsyncClient) -> tuple[str, int, int]:
         json={
             "name": "WS用例",
             "steps": [{"order": 1, "action": "click", "element_id": element_id, "params": {}}],
-            "assertions": [],
+            "assertions": [
+                {
+                    "order": 1,
+                    "type": "text_equals",
+                    "element_id": element_id,
+                    "params": {"expected": "admin"},
+                }
+            ],
         },
     )
     case_id = case.json()["id"]
@@ -113,6 +120,33 @@ async def _setup_case_execution(client: AsyncClient) -> tuple[str, int, int]:
     )
     assert execution.status_code == 201, execution.text
     return token, case_id, execution.json()["id"]
+
+
+async def _snapshot_ids(
+    db, execution_id: int
+) -> tuple[ExecutionCase, list[ExecutionStep], list[ExecutionAssertion]]:
+    execution_case = await db.scalar(
+        select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+    )
+    steps = list(
+        (
+            await db.execute(
+                select(ExecutionStep)
+                .where(ExecutionStep.execution_case_id == execution_case.id)
+                .order_by(ExecutionStep.step_order)
+            )
+        ).scalars()
+    )
+    assertions = list(
+        (
+            await db.execute(
+                select(ExecutionAssertion)
+                .where(ExecutionAssertion.execution_case_id == execution_case.id)
+                .order_by(ExecutionAssertion.assertion_order)
+            )
+        ).scalars()
+    )
+    return execution_case, steps, assertions
 
 
 # ---------- managers ----------
@@ -209,6 +243,8 @@ async def test_handle_log_step_result_execution_result(client: AsyncClient):
         execution = await db.get(Execution, execution_id)
         await worker_service.create_execution_cases_from_execution(db, execution)
         await _bind_execution_to_agent(db, execution_id, agent_id)
+        execution_case, execution_steps, _assertions = await _snapshot_ids(db, execution_id)
+        execution_step = execution_steps[0]
         execution = await db.get(Execution, execution_id)
         execution.started_at = datetime.now(UTC)
         await db.commit()
@@ -230,7 +266,8 @@ async def test_handle_log_step_result_execution_result(client: AsyncClient):
             {
                 "execution_id": execution_id,
                 "session_token": "sess-token",
-                "case_id": case_id,
+                "execution_case_id": execution_case.id,
+                "execution_step_id": execution_step.id,
                 "step_order": 1,
                 "action": "click",
                 "status": "passed",
@@ -284,6 +321,8 @@ async def test_step_result_rejects_unsafe_screenshot_path(client: AsyncClient):
         execution = await db.get(Execution, execution_id)
         await worker_service.create_execution_cases_from_execution(db, execution)
         await _bind_execution_to_agent(db, execution_id, agent_id)
+        execution_case, execution_steps, _assertions = await _snapshot_ids(db, execution_id)
+        execution_step = execution_steps[0]
 
     async with SessionLocal() as db:
         for bad in [
@@ -300,7 +339,8 @@ async def test_step_result_rejects_unsafe_screenshot_path(client: AsyncClient):
                 {
                     "execution_id": execution_id,
                     "session_token": "sess-token",
-                    "case_id": case_id,
+                    "execution_case_id": execution_case.id,
+                    "execution_step_id": execution_step.id,
                     "step_order": 1,
                     "action": "screenshot",
                     "status": "passed",
@@ -329,7 +369,7 @@ async def test_cross_agent_cannot_submit_other_execution(client: AsyncClient):
         await handlers.handle_log(db, agent_b, {"execution_id": execution_id, "session_token": "sess-token", "level": "INFO", "message": "冒名日志", "step_order": 1})
         await handlers.handle_step_result(
             db, agent_b,
-            {"execution_id": execution_id, "session_token": "sess-token", "case_id": case_id, "step_order": 1, "action": "click", "status": "passed"},
+            {"execution_id": execution_id, "session_token": "sess-token", "execution_step_id": 999999999, "step_order": 1, "action": "click", "status": "passed"},
         )
         await handlers.handle_execution_result(db, agent_b, {"execution_id": execution_id, "session_token": "sess-token", "status": "passed"})
 
@@ -477,6 +517,9 @@ async def test_handle_assertion_result(client: AsyncClient):
         execution = await db.get(Execution, execution_id)
         await worker_service.create_execution_cases_from_execution(db, execution)
         await _bind_execution_to_agent(db, execution_id, agent_id)
+        execution_case, execution_steps, execution_assertions = await _snapshot_ids(
+            db, execution_id
+        )
 
     front = FakeWebSocket()
     await execution_manager.connect(execution_id, front)
@@ -485,7 +528,15 @@ async def test_handle_assertion_result(client: AsyncClient):
         await handlers.handle_step_result(
             db,
             agent_id,
-            {"execution_id": execution_id, "session_token": "sess-token", "case_id": case_id, "step_order": 1, "action": "input", "status": "passed"},
+            {
+                "execution_id": execution_id,
+                "session_token": "sess-token",
+                "execution_case_id": execution_case.id,
+                "execution_step_id": execution_steps[0].id,
+                "step_order": 1,
+                "action": "input",
+                "status": "passed",
+            },
         )
         await handlers.handle_assertion_result(
             db,
@@ -493,8 +544,16 @@ async def test_handle_assertion_result(client: AsyncClient):
             {
                 "execution_id": execution_id,
                 "session_token": "sess-token",
-                "case_id": case_id,
-                "assertions": [{"type": "text_equals", "expected": "admin", "actual": "admin", "status": "pass"}],
+                "execution_case_id": execution_case.id,
+                "assertions": [
+                    {
+                        "execution_assertion_id": execution_assertions[0].id,
+                        "type": "text_equals",
+                        "expected": "admin",
+                        "actual": "admin",
+                        "status": "pass",
+                    }
+                ],
             },
         )
 
@@ -575,12 +634,24 @@ async def test_assertion_failure_survives_teardown_and_overrides_agent_passed(
     client: AsyncClient,
 ):
     """回归：后置步骤成功不能覆盖断言失败，执行终态也不能被 Agent passed 覆盖。"""
-    _token, case_id, execution_id = await _setup_case_execution(client)
+    _token, _case_id, execution_id = await _setup_case_execution(client)
     async with SessionLocal() as db:
         agent_id = await _create_agent()
         execution = await db.get(Execution, execution_id)
         await worker_service.create_execution_cases_from_execution(db, execution)
         await _bind_execution_to_agent(db, execution_id, agent_id)
+        execution_case, execution_steps, execution_assertions = await _snapshot_ids(
+            db, execution_id
+        )
+        teardown_step = ExecutionStep(
+            execution_case_id=execution_case.id,
+            phase="case_teardown",
+            step_order=2,
+            action="clear",
+            status="pending",
+        )
+        db.add(teardown_step)
+        await db.commit()
 
     async with SessionLocal() as db:
         await handlers.handle_step_result(
@@ -589,7 +660,8 @@ async def test_assertion_failure_survives_teardown_and_overrides_agent_passed(
             {
                 "execution_id": execution_id,
                 "session_token": "sess-token",
-                "case_id": case_id,
+                "execution_case_id": execution_case.id,
+                "execution_step_id": execution_steps[0].id,
                 "step_order": 1,
                 "action": "input",
                 "status": "passed",
@@ -601,9 +673,10 @@ async def test_assertion_failure_survives_teardown_and_overrides_agent_passed(
             {
                 "execution_id": execution_id,
                 "session_token": "sess-token",
-                "case_id": case_id,
+                "execution_case_id": execution_case.id,
                 "assertions": [
                     {
+                        "execution_assertion_id": execution_assertions[0].id,
                         "type": "text_equals",
                         "expected": "wrong",
                         "actual": "admin",
@@ -618,7 +691,8 @@ async def test_assertion_failure_survives_teardown_and_overrides_agent_passed(
             {
                 "execution_id": execution_id,
                 "session_token": "sess-token",
-                "case_id": case_id,
+                "execution_case_id": execution_case.id,
+                "execution_step_id": teardown_step.id,
                 "step_order": 2,
                 "action": "clear",
                 "status": "passed",

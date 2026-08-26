@@ -217,12 +217,12 @@ def _legacy_phase_to_exec_phase(phase: str | None) -> str:
 
 
 async def _rebuild_legacy_snapshot(db: AsyncSession, execution: Execution) -> list[ExecutionCase]:
-    """无档案旧执行（兼容期）：按套件级虚拟套件重建快照。
+    """无档案执行：按套件级虚拟套件重建 V2 快照。
 
     - 先行清除旧快照（避免重复执行/重试产生重复行），按依赖顺序删除；
     - 旧扁平用例归入单个虚拟 ExecutionSuite（is_virtual=True、无套件前后置）；
-    - 用例快照（steps/assertions/elements）落库，但步骤/断言行由 Agent 回传时按需创建，
-      与历史 Agent 协议保持兼容（S2 再统一为预建 pending）。
+    - 用例快照（steps/assertions/elements）落库，并预建步骤/断言 pending 行，
+      确保所有 V2 消息都使用不可歧义的 execution_*_id。
     """
     existing_cases = (
         await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == execution.id))
@@ -283,6 +283,34 @@ async def _rebuild_legacy_snapshot(db: AsyncSession, execution: Execution) -> li
             elements_snapshot=snapshot["elements"],
         )
         db.add(ec)
+        await db.flush()
+        for step in snapshot["steps"]:
+            db.add(
+                ExecutionStep(
+                    execution_case_id=ec.id,
+                    phase=_legacy_phase_to_exec_phase(step.get("phase")),
+                    step_order=int(step.get("order") or 0),
+                    action=step.get("action") or "",
+                    source_key=step.get("source_key") or step.get("key"),
+                    source_order=step.get("source_order"),
+                    parameters=step.get("params") or {},
+                    continue_on_failure=bool(step.get("continue_on_failure", False)),
+                    status="pending",
+                )
+            )
+        for assertion in snapshot["assertions"]:
+            expected = assertion.get("expected")
+            if expected is None:
+                expected = assertion.get("expected_value")
+            db.add(
+                ExecutionAssertion(
+                    execution_case_id=ec.id,
+                    assertion_order=int(assertion.get("order") or 0),
+                    assertion_type=assertion.get("type") or assertion.get("assertion_type") or "",
+                    expected_value=str(expected) if expected is not None else None,
+                    status="pending",
+                )
+            )
         created.append(ec)
     await db.commit()
     for ec in created:
@@ -645,8 +673,8 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
     - 以固化的 ExecutionSuite / ExecutionCase 为单元下发（含 execution_suite_id/execution_case_id）；
     - 套件前后置步骤读取已固化的 ExecutionStep（execution_suite_id 非空、phase 为
       suite_setup/suite_teardown），携带 execution_step_id 供 Agent 精确回传；
-    - 用例的 steps_snapshot/assertions_snapshot 保留原始快照 dict，Agent 侧以
-      source_key/phase 映射回 execution_step_id/execution_assertion_id（缺行时后端幂等创建）。
+    - 用例步骤和断言均从预建行注入 execution_step_id/execution_assertion_id；缺行视为
+      服务端快照不完整并立即失败，不再回退按顺序猜测或动态创建。
     """
     suites = (
         await db.execute(
@@ -670,9 +698,20 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
     for c in cases:
         cases_by_suite.setdefault(c.execution_suite_id, []).append(c)
 
-    # 预建断言（S1 固化 pending）：按 (execution_case_id, assertion_order) 建立 id 映射，
-    # 供下发时注入 execution_assertion_id，Agent 精确回传避免生成重复断言。
+    # 预建步骤/断言：按父节点、阶段和顺序建立 id 映射，供 Agent 精确回传。
     _case_ids = [c.id for c in cases]
+    _case_step_rows = (
+        await db.execute(
+            select(ExecutionStep)
+            .where(ExecutionStep.execution_case_id.in_(_case_ids))
+            .order_by(ExecutionStep.execution_case_id, ExecutionStep.phase, ExecutionStep.step_order)
+        )
+    ).scalars().all()
+    step_id_by_key: dict[tuple[int, str, int], int] = {
+        (step.execution_case_id, step.phase, step.step_order): step.id
+        for step in _case_step_rows
+        if step.execution_case_id is not None
+    }
     _assertion_rows = (
         await db.execute(
             select(ExecutionAssertion)
@@ -684,16 +723,35 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
         (a.execution_case_id, a.assertion_order): a.id for a in _assertion_rows
     }
 
+    def _inject_step_ids(case: ExecutionCase, steps: list) -> list:
+        out: list[dict] = []
+        for raw_step in steps:
+            entry = dict(raw_step)
+            order = int(entry.get("order") or 0)
+            phase = str(entry.get("phase") or "case_main")
+            if phase in _LEGACY_PHASE_MAP:
+                phase = _legacy_phase_to_exec_phase(phase)
+            step_id = step_id_by_key.get((case.id, phase, order))
+            if step_id is None:
+                raise RuntimeError(
+                    f"执行快照缺少步骤行 execution_case_id={case.id}, phase={phase}, order={order}"
+                )
+            entry["execution_step_id"] = step_id
+            out.append(entry)
+        return out
+
     def _inject_assertion_ids(case: ExecutionCase, assertions: list) -> list:
-        """向断言快照注入 execution_assertion_id（按 order 匹配预建行），缺行时保留原样让后端幂等创建。"""
+        """向断言快照注入 execution_assertion_id；缺行说明快照物化不完整。"""
         out: list[dict] = []
         for a in assertions:
             entry = dict(a)
-            order = entry.get("order")
-            if order is not None:
-                _aid = assertion_id_by_key.get((case.id, int(order)))
-                if _aid is not None:
-                    entry["execution_assertion_id"] = _aid
+            order = int(entry.get("order") or 0)
+            assertion_id = assertion_id_by_key.get((case.id, order))
+            if assertion_id is None:
+                raise RuntimeError(
+                    f"执行快照缺少断言行 execution_case_id={case.id}, order={order}"
+                )
+            entry["execution_assertion_id"] = assertion_id
             out.append(entry)
         return out
 
@@ -746,7 +804,7 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
                 "case_name": c.case_name,
                 "case_order": c.case_order,
                 "module_name": c.module_name,
-                "steps_snapshot": c.steps_snapshot,
+                "steps_snapshot": _inject_step_ids(c, c.steps_snapshot or []),
                 "assertions_snapshot": _inject_assertion_ids(c, c.assertions_snapshot or []),
                 "elements_snapshot": c.elements_snapshot,
             }

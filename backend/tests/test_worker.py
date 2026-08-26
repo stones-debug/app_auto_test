@@ -337,7 +337,10 @@ async def test_create_execution_snapshots_idempotent(client: AsyncClient):
         ec = (await db.execute(
             select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
         )).scalar_one()
-        db.add(ExecutionStep(execution_case_id=ec.id, step_order=1, action="click", status="passed"))
+        injected_step = await db.scalar(
+            select(ExecutionStep).where(ExecutionStep.execution_case_id == ec.id)
+        )
+        injected_step.status = "passed"
         await db.commit()
 
         cases = await worker_service.create_execution_cases_from_execution(db, execution)
@@ -351,11 +354,12 @@ async def test_create_execution_snapshots_idempotent(client: AsyncClient):
         steps = (await db.execute(
             select(ExecutionStep).where(ExecutionStep.execution_case_id == ecs[0].id)
         )).scalars().all()
-        assert len(steps) == 0
+        assert len(steps) == len(ecs[0].steps_snapshot)
+        assert all(step.status == "pending" for step in steps)
 
 
-async def test_suites_payload_injects_execution_assertion_id(client: AsyncClient):
-    """协议 V2：_build_suites_payload 下发断言时必须注入预建的 execution_assertion_id，
+async def test_suites_payload_injects_execution_node_ids(client: AsyncClient):
+    """协议 V2：_build_suites_payload 下发步骤/断言时必须注入预建的 execution_*_id，
     且套件元素表随套件 payload 一并下发（否则套件前后置元素操作失败）。
 
     回归1：此前原样下发 assertions_snapshot（无 id），Agent 又按遍历序号从 1 重编号，
@@ -383,13 +387,13 @@ async def test_suites_payload_injects_execution_assertion_id(client: AsyncClient
         assertions_snapshot = ec.assertions_snapshot or []
         assert len(assertions_snapshot) >= 1
         sent_order = int(assertions_snapshot[0].get("order") or 0)
-        row = ExecutionAssertion(
-            execution_case_id=ec.id,
-            assertion_order=sent_order,
-            assertion_type=assertions_snapshot[0].get("type") or "",
-            status="pending",
+        row = await db.scalar(
+            select(ExecutionAssertion).where(
+                ExecutionAssertion.execution_case_id == ec.id,
+                ExecutionAssertion.assertion_order == sent_order,
+            )
         )
-        db.add(row)
+        assert row is not None
         # 模拟档案路径：套件元素表已固化（materialize_snapshot 写入 elements_snapshot）
         suite_row = (
             await db.execute(
@@ -410,6 +414,14 @@ async def test_suites_payload_injects_execution_assertion_id(client: AsyncClient
         # 套件元素表必须随 payload 下发（非空、非缺字段）
         assert suite_payload.get("elements_snapshot") == {"9": {"locator_type": "id", "locator_value": "svc_btn"}}
         case_payload = suite_payload["cases"][0]
+        sent_step = case_payload["steps_snapshot"][0]
+        precreated_step = await db.scalar(
+            select(ExecutionStep).where(
+                ExecutionStep.execution_case_id == ec.id,
+                ExecutionStep.step_order == int(sent_step["order"]),
+            )
+        )
+        assert sent_step["execution_step_id"] == precreated_step.id
         sent_assertion = case_payload["assertions_snapshot"][0]
         # 必须注入 execution_assertion_id，且与预建行一致
         assert sent_assertion.get("execution_assertion_id") == precreated_id
@@ -520,9 +532,14 @@ async def test_mark_terminal_derives_case_status(client: AsyncClient):
         ec = (await db.execute(
             select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
         )).scalar_one()
-        # 模拟步骤已执行：passed
-        step = ExecutionStep(execution_case_id=ec.id, step_order=1, action="click", status="passed")
-        db.add(step)
+        # 模拟步骤已执行：passed（快照重建已预建 pending 行，直接更新状态）
+        step = (await db.execute(
+            select(ExecutionStep).where(
+                ExecutionStep.execution_case_id == ec.id,
+                ExecutionStep.step_order == 1,
+            )
+        )).scalar_one()
+        step.status = "passed"
         execution.status = "running"
         execution.started_at = datetime.now(UTC) - timedelta(minutes=10)
         execution.timeout_seconds = 60
@@ -817,8 +834,16 @@ async def test_mark_terminal_fractional_success_rate(client: AsyncClient):
             select(ExecutionCase).where(ExecutionCase.execution_id == execution_id).order_by(ExecutionCase.id)
         )).scalars().all()
         assert len(ecs) == 3
-        for i, ec in enumerate(ecs):
-            db.add(ExecutionStep(execution_case_id=ec.id, step_order=1, action="click", status="failed" if i == 0 else "passed"))
+        # ecs[0] 来自快照重建（已预建 order=1 行）→ 更新；ecs[1]/ecs[2] 为手补用例（空快照）→ 新建
+        first_step = (await db.execute(
+            select(ExecutionStep).where(
+                ExecutionStep.execution_case_id == ecs[0].id,
+                ExecutionStep.step_order == 1,
+            )
+        )).scalar_one()
+        first_step.status = "failed"
+        for ec in ecs[1:]:
+            db.add(ExecutionStep(execution_case_id=ec.id, step_order=1, action="click", status="passed"))
         await db.commit()
         execution.status = "running"
         execution.started_at = datetime.now(UTC) - timedelta(seconds=10)
@@ -899,7 +924,14 @@ async def test_mark_terminal_skips_unexecuted_steps(client: AsyncClient):
         ec = (await db.execute(
             select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
         )).scalar_one()
-        db.add(ExecutionStep(execution_case_id=ec.id, step_order=1, action="click", status="passed"))
+        # 快照重建已预建 order=1 的 pending 行：更新为 passed；另补一条 order=2 pending（尚未执行）
+        step1 = (await db.execute(
+            select(ExecutionStep).where(
+                ExecutionStep.execution_case_id == ec.id,
+                ExecutionStep.step_order == 1,
+            )
+        )).scalar_one()
+        step1.status = "passed"
         db.add(ExecutionStep(execution_case_id=ec.id, step_order=2, action="input", status="pending"))
         execution.status = "running"
         execution.started_at = datetime.now(UTC)
@@ -932,12 +964,10 @@ async def test_mark_terminal_never_started_case_with_precreated_rows_is_skipped(
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
         await worker_service.create_execution_cases_from_execution(db, execution)
-        # 模拟材料化路径：预建 pending 步骤/断言（执行何时开始此时不定）
+        # 材料化路径：快照预建 pending 行已由重建产生（用例从未 report running，无 started_at）
         ec = (await db.execute(
             select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
         )).scalar_one()
-        db.add(ExecutionStep(execution_case_id=ec.id, step_order=1, action="click", status="pending"))
-        db.add(ExecutionAssertion(execution_case_id=ec.id, assertion_order=1, assertion_type="element_exists", status="pending"))
         execution.status = "running"
         execution.started_at = datetime.now(UTC)
         await db.commit()

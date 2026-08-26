@@ -35,7 +35,7 @@ class AgentLogIn(BaseModel):
 
 class AgentAssertionIn(BaseModel):
     type: str = ""
-    execution_assertion_id: int | None = None
+    execution_assertion_id: int
     assertion_order: int | None = None
     expected: str | None = None
     actual: str | None = None
@@ -49,9 +49,8 @@ class StepResultIn(BaseModel):
     session_token: str | None = None
     execution_suite_id: int | None = None
     execution_case_id: int | None = None
-    execution_step_id: int | None = None
+    execution_step_id: int
     phase: str | None = None
-    case_id: int | None = None
     step_order: int | None = None
     action: str = "unknown"
     status: str = "passed"
@@ -66,27 +65,25 @@ class AssertionResultIn(BaseModel):
     type: Literal["assertion_result"]
     execution_id: int
     session_token: str | None = None
-    execution_case_id: int | None = None
-    case_id: int | None = None
+    execution_case_id: int
     step_order: int | None = None
     assertions: list[AgentAssertionIn] = Field(default_factory=list)
 
 
 class CaseStatusIn(BaseModel):
     type: Literal["case_status"]
-    execution_id: int | None = None
+    execution_id: int
     session_token: str | None = None
-    execution_case_id: int | None = None
-    case_id: int | None = None
+    execution_case_id: int
     status: str = "running"
     error_message: str | None = None
 
 
 class SuiteStatusIn(BaseModel):
     type: Literal["suite_status"]
-    execution_id: int | None = None
+    execution_id: int
     session_token: str | None = None
-    execution_suite_id: int | None = None
+    execution_suite_id: int
     status: str = "running"
     error_message: str | None = None
 

@@ -11,9 +11,16 @@ def test_validate_agent_message_unknown_type():
 
 
 def test_validate_agent_message_missing_required_field():
-    # 协议 V2：step_result 以 execution_step_id 为核心，case_id/step_order 不再强制
+    # 协议 V2：step_result 必须携带 execution_id + execution_step_id。
     with pytest.raises(ValidationError):
         validate_agent_message({"type": "step_result"})
+    with pytest.raises(ValidationError):
+        validate_agent_message({"type": "step_result", "execution_id": 7})
+    with pytest.raises(ValidationError):
+        validate_agent_message(
+            {"type": "assertion_result", "execution_id": 7, "execution_case_id": 9,
+             "assertions": [{"type": "text_equals", "status": "pass"}]}
+        )
     with pytest.raises(ValidationError):
         validate_agent_message({"type": "log", "message": "x"})
     with pytest.raises(ValidationError):
@@ -37,10 +44,10 @@ def test_validate_agent_message_ok_shapes():
         {
             "type": "step_result",
             "execution_id": 7,
-            "case_id": 3,
+            "execution_step_id": 501,
             "step_order": 1,
             "status": "passed",
-            "assertions": [{"type": "text_equals", "expected": "a", "actual": "a", "status": "pass"}],
+            "assertions": [{"execution_assertion_id": 601, "type": "text_equals", "expected": "a", "actual": "a", "status": "pass"}],
         }
     )
     assert step is not None
