@@ -48,7 +48,7 @@ function promptCode(name: string): string {
 
 function skipLabel(p: AppProfileSummary): string {
   const c = p.skip_counts
-  return `${c.case} 用例 / ${c.step} 步骤`
+  return `已跳过：${c.case} 用例 / ${c.step} 步骤`
 }
 
 async function onEdit(p: AppProfileSummary) {
