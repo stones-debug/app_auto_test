@@ -58,6 +58,7 @@ from app.models import (  # noqa: E402
     ExecutionLog,
     ExecutionQueue,
     ExecutionStep,
+    ExecutionSuite,
     Project,
     ProjectMember,
     RefreshToken,
@@ -144,29 +145,36 @@ async def _cleanup_test_data():
                     )
                 ).scalars().all()
                 if exec_ids:
+                    exec_suite_ids = (
+                        await session.execute(
+                            select(ExecutionSuite.id).where(
+                                ExecutionSuite.execution_id.in_(exec_ids)
+                            )
+                        )
+                    ).scalars().all()
                     case_ids = (
                         await session.execute(
                             select(ExecutionCase.id).where(ExecutionCase.execution_id.in_(exec_ids))
                         )
                     ).scalars().all()
+                    # ExecutionAssertion 现在直接归属 ExecutionCase（原 execution_step_id 已移除）
                     if case_ids:
-                        step_ids = (
-                            await session.execute(
-                                select(ExecutionStep.id).where(
-                                    ExecutionStep.execution_case_id.in_(case_ids)
-                                )
+                        await session.execute(
+                            delete(ExecutionAssertion).where(
+                                ExecutionAssertion.execution_case_id.in_(case_ids)
                             )
-                        ).scalars().all()
-                        if step_ids:
-                            await session.execute(
-                                delete(ExecutionAssertion).where(
-                                    ExecutionAssertion.execution_step_id.in_(step_ids)
-                                )
-                            )
+                        )
                         await session.execute(
                             delete(ExecutionStep).where(ExecutionStep.execution_case_id.in_(case_ids))
                         )
+                    if exec_suite_ids:
+                        await session.execute(
+                            delete(ExecutionStep).where(
+                                ExecutionStep.execution_suite_id.in_(exec_suite_ids)
+                            )
+                        )
                     await session.execute(delete(ExecutionCase).where(ExecutionCase.execution_id.in_(exec_ids)))
+                    await session.execute(delete(ExecutionSuite).where(ExecutionSuite.execution_id.in_(exec_ids)))
                     await session.execute(delete(ExecutionLog).where(ExecutionLog.execution_id.in_(exec_ids)))
                     await session.execute(delete(ExecutionQueue).where(ExecutionQueue.execution_id.in_(exec_ids)))
                     await session.execute(delete(Report).where(Report.execution_id.in_(exec_ids)))

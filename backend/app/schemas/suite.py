@@ -2,16 +2,23 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.schemas.case import StepCreate
+
 
 class SuiteCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: str | None = None
+    # 方案 §2：套件前后置步骤（仅 Action，无断言）；复用 StepCreate 校验与 UUID 兜底
+    setup_steps: list[StepCreate] = Field(default_factory=list)
+    teardown_steps: list[StepCreate] = Field(default_factory=list)
 
 
 class SuiteUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
     status: str | None = Field(default=None, pattern="^(active|disabled)$")
+    setup_steps: list[StepCreate] | None = None
+    teardown_steps: list[StepCreate] | None = None
 
 
 class SuiteOut(BaseModel):
@@ -22,6 +29,8 @@ class SuiteOut(BaseModel):
     status: str
     created_by: int | None
     case_count: int = 0
+    setup_steps: list[dict] = Field(default_factory=list)
+    teardown_steps: list[dict] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 

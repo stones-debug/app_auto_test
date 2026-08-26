@@ -593,8 +593,11 @@ async def test_execution_detail_aggregates_steps_assertions(client: AsyncClient)
     assert detail["project_name"] == "执行测试项目"
     assert detail["device_name"] is not None
     assert detail["created_by_name"] == "pytest_exec_user"
-    assert len(detail["cases"]) == 1
-    case = detail["cases"][0]
+    assert len(detail["suites"]) == 1
+    suite = detail["suites"][0]
+    assert suite["suite_name"] == "虚拟套件"
+    assert len(suite["cases"]) == 1
+    case = suite["cases"][0]
     assert case["steps"][0]["action"] == "click"
     assert case["steps"][0]["status"] == "passed"
     assert case["assertions"][0]["assertion_type"] == "text_equals"

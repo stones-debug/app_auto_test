@@ -13,7 +13,7 @@ from app.models import (
     ExecutionLog,
     Report,
 )
-from app.services.execution_detail_service import load_case_tree
+from app.services.execution_detail_service import load_case_tree, load_suite_tree
 from app.services.screenshot_store import resolve_screenshot_path, validate_object_key
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates" / "reports"
@@ -98,6 +98,90 @@ async def get_report_detail(db: AsyncSession, execution_id: int) -> dict:
             }
         )
 
+    # 方案 §2：套件树（套件→用例→步骤/前后置），供报告分层展示
+    suites: list[dict] = []
+    for s in await load_suite_tree(db, execution_id):
+        suites.append(
+            {
+                "id": s["id"],
+                "suite_id": s["suite_id"],
+                "suite_name": s["suite_name"],
+                "suite_order": s["suite_order"],
+                "status": s["status"],
+                "duration": s["duration"],
+                "error_message": s["error_message"],
+                "setup_steps": [
+                    {
+                        "id": st["id"],
+                        "step_order": st["step_order"],
+                        "action": st["action"],
+                        "phase": st["phase"],
+                        "parameters": st["parameters"],
+                        "status": st["status"],
+                        "duration": st["duration"],
+                        "actual_value": st["actual_value"],
+                        "error_message": st["error_message"],
+                        "screenshot": _rel_screenshot(execution_id, st["screenshot_path"]),
+                    }
+                    for st in s["setup_steps"]
+                ],
+                "cases": [
+                    {
+                        "id": c["id"],
+                        "case_id": c["case_id"],
+                        "case_name": c["case_name"],
+                        "module_name": c["module_name"],
+                        "status": c["status"],
+                        "duration": c["duration"],
+                        "error_message": c["error_message"],
+                        "elements": c["elements"],
+                        "steps": [
+                            {
+                                "id": st["id"],
+                                "step_order": st["step_order"],
+                                "action": st["action"],
+                                "phase": st["phase"],
+                                "parameters": st["parameters"],
+                                "status": st["status"],
+                                "duration": st["duration"],
+                                "actual_value": st["actual_value"],
+                                "error_message": st["error_message"],
+                                "screenshot": _rel_screenshot(execution_id, st["screenshot_path"]),
+                            }
+                            for st in c["steps"]
+                        ],
+                        "assertions": [
+                            {
+                                "id": a["id"],
+                                "assertion_type": a["assertion_type"],
+                                "expected_value": a["expected_value"],
+                                "actual_value": a["actual_value"],
+                                "status": a["status"],
+                                "error_message": a["error_message"],
+                            }
+                            for a in c["assertions"]
+                        ],
+                    }
+                    for c in s["cases"]
+                ],
+                "teardown_steps": [
+                    {
+                        "id": st["id"],
+                        "step_order": st["step_order"],
+                        "action": st["action"],
+                        "phase": st["phase"],
+                        "parameters": st["parameters"],
+                        "status": st["status"],
+                        "duration": st["duration"],
+                        "actual_value": st["actual_value"],
+                        "error_message": st["error_message"],
+                        "screenshot": _rel_screenshot(execution_id, st["screenshot_path"]),
+                    }
+                    for st in s["teardown_steps"]
+                ],
+            }
+        )
+
     # Step 8：报告日志上限——先 count，超限取最后 N 条保持正序
     logs_total = (
         await db.scalar(
@@ -139,7 +223,22 @@ async def get_report_detail(db: AsyncSession, execution_id: int) -> dict:
             "success_rate": report.success_rate if report else 0,
             "not_applicable": report.not_applicable if report else 0,
             "exclusion_summary": report.exclusion_summary if report else {},
+            # 方案 §2：套件/步骤三层统计 + N/A 套件
+            "suite_total": report.suite_total if report else 0,
+            "suite_passed": report.suite_passed if report else 0,
+            "suite_failed": report.suite_failed if report else 0,
+            "suite_error_count": report.suite_error_count if report else 0,
+            "suite_skipped": report.suite_skipped if report else 0,
+            "suite_success_rate": report.suite_success_rate if report else 0,
+            "step_total": report.step_total if report else 0,
+            "step_passed": report.step_passed if report else 0,
+            "step_failed": report.step_failed if report else 0,
+            "step_error_count": report.step_error_count if report else 0,
+            "step_skipped": report.step_skipped if report else 0,
+            "step_success_rate": report.step_success_rate if report else 0,
+            "not_applicable_suites": report.not_applicable_suites if report else 0,
         },
+        "suites": suites,
         "cases": cases,
         "exclusions": [
             {

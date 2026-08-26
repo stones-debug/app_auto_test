@@ -102,7 +102,7 @@ class AppProfileSkipRule(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "app_profile_skip_rules"
     __table_args__ = (
         CheckConstraint(
-            "target_type IN ('suite', 'case', 'step', 'assertion')",
+            "target_type IN ('suite', 'case', 'step', 'assertion', 'suite_step')",
             name="ck_profile_skip_target_type",
         ),
         CheckConstraint(
@@ -117,6 +117,8 @@ class AppProfileSkipRule(Base, TimestampMixin, SoftDeleteMixin):
             "(target_type = 'suite' AND suite_id IS NOT NULL AND case_id IS NULL AND node_key IS NULL)"
             " OR (target_type = 'case' AND suite_id IS NOT NULL"
             " AND case_id IS NOT NULL AND node_key IS NULL)"
+            " OR (target_type = 'suite_step' AND suite_id IS NOT NULL"
+            " AND case_id IS NULL AND node_key IS NOT NULL)"
             " OR (target_type IN ('step', 'assertion') AND suite_id IS NOT NULL"
             " AND case_id IS NOT NULL AND node_key IS NOT NULL)",
             name="ck_profile_skip_target_shape",
@@ -147,6 +149,14 @@ class AppProfileSkipRule(Base, TimestampMixin, SoftDeleteMixin):
             postgresql_where=text(
                 "target_type IN ('step', 'assertion') AND deleted_at IS NULL"
             ),
+        ),
+        Index(
+            "uq_profile_skip_suite_step_active",
+            "profile_id",
+            "suite_id",
+            "node_key",
+            unique=True,
+            postgresql_where=text("target_type = 'suite_step' AND deleted_at IS NULL"),
         ),
         Index(
             "idx_profile_skip_profile_type",
@@ -230,11 +240,16 @@ class AppProfileNodeOverride(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "app_profile_node_overrides"
     __table_args__ = (
         CheckConstraint(
-            "target_type IN ('step', 'assertion')", name="ck_profile_node_override_type"
+            "target_type IN ('step', 'assertion', 'suite_step')", name="ck_profile_node_override_type"
         ),
         CheckConstraint(
             "jsonb_typeof(patch) = 'object' AND patch <> '{}'::jsonb",
             name="ck_profile_node_override_patch",
+        ),
+        CheckConstraint(
+            "(target_type IN ('step', 'assertion') AND suite_id IS NULL AND case_id IS NOT NULL)"
+            " OR (target_type = 'suite_step' AND suite_id IS NOT NULL AND case_id IS NULL)",
+            name="ck_profile_node_override_shape",
         ),
         Index(
             "uq_profile_node_override_active",
@@ -243,19 +258,34 @@ class AppProfileNodeOverride(Base, TimestampMixin, SoftDeleteMixin):
             "case_id",
             "node_key",
             unique=True,
-            postgresql_where=text("deleted_at IS NULL"),
+            postgresql_where=text("deleted_at IS NULL AND suite_id IS NULL"),
+        ),
+        Index(
+            "uq_profile_node_override_suite_step_active",
+            "profile_id",
+            "suite_id",
+            "node_key",
+            unique=True,
+            postgresql_where=text("target_type = 'suite_step' AND deleted_at IS NULL"),
         ),
         Index(
             "idx_profile_node_override_case",
             "case_id",
             postgresql_where=text("deleted_at IS NULL"),
         ),
+        Index(
+            "idx_profile_node_override_suite",
+            "suite_id",
+            postgresql_where=text("deleted_at IS NULL AND suite_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     profile_id: Mapped[int] = mapped_column(ForeignKey("app_profiles.id"), nullable=False)
+    # 方案 §2.3：套件上下文，避免共享用例在不同套件中的覆盖互相污染；套件步骤覆盖时 case_id 为空
+    suite_id: Mapped[int | None] = mapped_column(ForeignKey("test_suites.id"))
     target_type: Mapped[str] = mapped_column(String(16), nullable=False)
-    case_id: Mapped[int] = mapped_column(ForeignKey("test_cases.id"), nullable=False)
+    case_id: Mapped[int | None] = mapped_column(ForeignKey("test_cases.id"))
     node_key: Mapped[UUID] = mapped_column(nullable=False)
     patch: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
@@ -308,7 +338,7 @@ class ExecutionExclusion(Base):
     __tablename__ = "execution_exclusions"
     __table_args__ = (
         CheckConstraint(
-            "target_type IN ('suite', 'case', 'step', 'assertion')",
+            "target_type IN ('suite', 'case', 'step', 'assertion', 'suite_step')",
             name="ck_execution_exclusion_target",
         ),
         CheckConstraint(

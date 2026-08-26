@@ -35,6 +35,56 @@ def _step_snapshot(execution_case: ExecutionCase, step_order: int) -> dict:
     return {}
 
 
+_CASE_PHASE_MAP = {"setup": "case_setup", "main": "case_main", "teardown": "case_teardown"}
+
+
+def _case_phase_to_exec(phase: str | None) -> str:
+    return _CASE_PHASE_MAP.get(str(phase or "main"), "case_main")
+
+
+async def _upsert_assertion(
+    db: AsyncSession, execution_case_id: int, assertion_order: int, data: dict
+) -> None:
+    """按 (execution_case_id, assertion_order) 更新或创建执行断言。
+
+    §3.1：快照预建 pending，Agent 按 id 上报后更新；旧 Agent / 兼容路径无预建行时插入。
+    """
+    existing = (
+        await db.execute(
+            select(ExecutionAssertion).where(
+                ExecutionAssertion.execution_case_id == execution_case_id,
+                ExecutionAssertion.assertion_order == assertion_order,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing.assertion_type = data.get("type") or data.get("assertion_type") or existing.assertion_type
+        expected = data.get("expected") if data.get("expected") is not None else data.get("expected_value")
+        if expected is not None:
+            existing.expected_value = str(expected)
+        actual = data.get("actual") if data.get("actual") is not None else data.get("actual_value")
+        if actual is not None:
+            existing.actual_value = str(actual)
+        if data.get("status"):
+            existing.status = str(data["status"])
+        if data.get("error_message") is not None:
+            existing.error_message = data["error_message"]
+        return
+    expected = data.get("expected") if data.get("expected") is not None else data.get("expected_value")
+    actual = data.get("actual") if data.get("actual") is not None else data.get("actual_value")
+    db.add(
+        ExecutionAssertion(
+            execution_case_id=execution_case_id,
+            assertion_order=assertion_order,
+            assertion_type=data.get("type") or data.get("assertion_type") or "",
+            expected_value=str(expected) if expected is not None else None,
+            actual_value=str(actual) if actual is not None else None,
+            status=data.get("status") or "pass",
+            error_message=data.get("error_message"),
+        )
+    )
+
+
 async def _settle_execution_cases(
     db: AsyncSession,
     execution_id: int,
@@ -274,6 +324,7 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
     if step is None:
         step = ExecutionStep(
             execution_case_id=execution_case.id,
+            phase=_case_phase_to_exec(snapshot.get("phase") or "main"),
             step_order=step_order,
             action=payload.get("action") or snapshot.get("action") or "unknown",
             parameters=dict(snapshot_parameters),
@@ -305,17 +356,8 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
     elif execution_case.status != "failed":
         execution_case.status = "running"
 
-    for assertion in payload.get("assertions") or []:
-        db.add(
-            ExecutionAssertion(
-                execution_step_id=step.id,
-                assertion_type=assertion.get("type") or "",
-                expected_value=str(assertion.get("expected", "")),
-                actual_value=str(assertion.get("actual", "")),
-                status=assertion.get("status") or "pass",
-                error_message=assertion.get("error_message"),
-            )
-        )
+    for order, assertion in enumerate(payload.get("assertions") or [], start=1):
+        await _upsert_assertion(db, execution_case.id, order, assertion)
     await db.commit()
 
     await execution_manager.broadcast(
@@ -354,27 +396,8 @@ async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict
     ).scalar_one_or_none()
     if execution_case is None:
         return
-    last_step = (
-        await db.execute(
-            select(ExecutionStep)
-            .where(ExecutionStep.execution_case_id == execution_case.id)
-            .order_by(ExecutionStep.step_order.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if last_step is None:
-        db.add(
-            ExecutionLog(
-                execution_id=execution_id,
-                level="WARN",
-                message=f"assertion_result 无步骤可关联 (case_id={case_id})",
-                source="agent",
-            )
-        )
-        await db.commit()
-        return
     normalized_assertions: list[dict] = []
-    for assertion in payload.get("assertions") or []:
+    for order, assertion in enumerate(payload.get("assertions") or [], start=1):
         raw_status = str(assertion.get("status") or "fail").lower()
         normalized = {
             **assertion,
@@ -382,16 +405,7 @@ async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict
             "status": "pass" if raw_status in {"pass", "passed"} else "fail",
         }
         normalized_assertions.append(normalized)
-        db.add(
-            ExecutionAssertion(
-                execution_step_id=last_step.id,
-                assertion_type=normalized.get("type") or "",
-                expected_value=str(normalized.get("expected") or ""),
-                actual_value=str(normalized.get("actual") or ""),
-                status=normalized["status"],
-                error_message=normalized.get("error_message"),
-            )
-        )
+        await _upsert_assertion(db, execution_case.id, order, normalized)
     assertion_failed = any(item["status"] == "fail" for item in normalized_assertions)
     if execution_case.status != "failed":
         execution_case.status = "failed" if assertion_failed else "passed"
@@ -407,7 +421,7 @@ async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict
             "type": "assertion_result",
             "execution_id": execution_id,
             "case_id": case_id,
-            "step_order": last_step.step_order,
+            "step_order": payload.get("step_order"),
             "assertions": normalized_assertions,
             "case_status": execution_case.status,
             "timestamp": now.isoformat(),

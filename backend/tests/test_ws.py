@@ -501,11 +501,8 @@ async def test_handle_assertion_result(client: AsyncClient):
         ec = (await db.execute(
             select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
         )).scalar_one()
-        step = (await db.execute(
-            select(ExecutionStep).where(ExecutionStep.execution_case_id == ec.id)
-        )).scalar_one()
         rows = (await db.execute(
-            select(ExecutionAssertion).where(ExecutionAssertion.execution_step_id == step.id)
+            select(ExecutionAssertion).where(ExecutionAssertion.execution_case_id == ec.id)
         )).scalars().all()
         assert len(rows) == 1
         assert rows[0].assertion_type == "text_equals"
@@ -594,8 +591,7 @@ async def test_assertion_failure_survives_teardown_and_overrides_agent_passed(
         assertion = (
             await db.execute(
                 select(ExecutionAssertion)
-                .join(ExecutionStep)
-                .where(ExecutionStep.execution_case_id == execution_case.id)
+                .where(ExecutionAssertion.execution_case_id == execution_case.id)
             )
         ).scalar_one()
         assert assertion.status == "fail"

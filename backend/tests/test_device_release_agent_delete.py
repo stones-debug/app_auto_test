@@ -378,7 +378,7 @@ async def test_release_and_worker_lock_never_double_occupy(client: AsyncClient):
 
 # ---------- Worker 恢复扫描（finalize_unfinished_terminal） ----------
 
-from app.models import ExecutionCase, Project  # noqa: E402
+from app.models import ExecutionCase, ExecutionSuite, Project  # noqa: E402
 from app.services import worker_service  # noqa: E402
 
 
@@ -396,10 +396,29 @@ async def test_finalize_unfinished_terminal_recovers_summary(client: AsyncClient
         db.add(execution)
         await db.flush()
         db.add(
+            ExecutionSuite(
+                execution_id=execution.id,
+                suite_id=None,
+                suite_name="恢复虚拟套件",
+                suite_order=1,
+                is_virtual=True,
+                status="passed",
+                setup_steps_snapshot=[],
+                teardown_steps_snapshot=[],
+                elements_snapshot={},
+            )
+        )
+        suite = await db.execute(
+            select(ExecutionSuite).where(ExecutionSuite.execution_id == execution.id)
+        )
+        suite_id = suite.scalar_one().id
+        db.add(
             ExecutionCase(
                 execution_id=execution.id,
+                execution_suite_id=suite_id,
                 case_id=1,
                 case_name="恢复用例",
+                case_order=1,
                 status="passed",
                 steps_snapshot=[],
                 assertions_snapshot=[],

@@ -12,6 +12,7 @@ from app.models import (
     ExecutionCase,
     ExecutionLog,
     ExecutionStep,
+    ExecutionSuite,
     Project,
     User,
 )
@@ -42,19 +43,34 @@ async def _project_and_execution() -> int:
 
 
 async def _seed_tree(execution_id: int, case_count: int = 100) -> None:
-    """按 case_count 建 case/step/assertion（保持 tree 结构，query 计数不受 N 影响）。"""
-    cases = [
-        ExecutionCase(
-            execution_id=execution_id,
-            case_id=i,
-            case_name=f"C{i}",
-            status="passed",
-            steps_snapshot=[],
-            assertions_snapshot=[],
-        )
-        for i in range(case_count)
-    ]
+    """按 case_count 建 suite/case/step/assertion（保持 tree 结构，query 计数不受 N 影响）。"""
     async with SessionLocal() as db:
+        suite = ExecutionSuite(
+            execution_id=execution_id,
+            suite_id=None,
+            suite_name="perf虚拟套件",
+            suite_order=1,
+            is_virtual=True,
+            status="passed",
+            setup_steps_snapshot=[],
+            teardown_steps_snapshot=[],
+            elements_snapshot={},
+        )
+        db.add(suite)
+        await db.flush()
+        cases = [
+            ExecutionCase(
+                execution_id=execution_id,
+                execution_suite_id=suite.id,
+                case_id=i,
+                case_name=f"C{i}",
+                case_order=i + 1,
+                status="passed",
+                steps_snapshot=[],
+                assertions_snapshot=[],
+            )
+            for i in range(case_count)
+        ]
         db.add_all(cases)
         await db.flush()
         steps = []
@@ -66,9 +82,9 @@ async def _seed_tree(execution_id: int, case_count: int = 100) -> None:
                 )
         db.add_all(steps)
         await db.flush()
-        for s in steps:
+        for ec in cases:
             assertions.append(
-                ExecutionAssertion(execution_step_id=s.id, assertion_type="text_equals", status="pass")
+                ExecutionAssertion(execution_case_id=ec.id, assertion_order=1, assertion_type="text_equals", status="pass")
             )
         db.add_all(assertions)
         await db.commit()

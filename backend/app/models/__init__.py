@@ -19,6 +19,7 @@ from app.models.execution import (
     ExecutionLog,
     ExecutionQueue,
     ExecutionStep,
+    ExecutionSuite,
     Report,
 )
 from app.models.project import Project, ProjectMember
@@ -52,6 +53,7 @@ __all__ = [
     "ExecutionLog",
     "ExecutionQueue",
     "ExecutionStep",
+    "ExecutionSuite",
     "Report",
     "Project",
     "ProjectMember",

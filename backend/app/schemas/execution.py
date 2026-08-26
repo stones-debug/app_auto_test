@@ -22,6 +22,8 @@ class ExecutionCreate(BaseModel):
     app_release_id: int | None = None
     expected_profile_revision: int | None = Field(default=None, ge=1)
     expected_test_asset_revision: int | None = Field(default=None, ge=1)
+    # 方案 §2：单用例执行可指定套件上下文（引用该套件规则，而非虚拟套件）
+    context_suite_id: int | None = None
 
     _run_parameters = field_validator("parameters")(_validate_run_parameters)
 
@@ -88,6 +90,8 @@ class ExecutionPreviewRequest(BaseModel):
     device_id: int | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
     timeout_seconds: int | None = Field(default=None, ge=60, le=7200)
+    # 方案 §2：预检可携带单用例套件上下文
+    context_suite_id: int | None = None
 
     _run_parameters = field_validator("parameters")(_validate_run_parameters)
 
@@ -173,11 +177,31 @@ class ExecutionOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ExecutionSuiteOut(BaseModel):
+    id: int
+    suite_id: int | None
+    suite_name: str
+    suite_order: int
+    is_virtual: bool
+    status: str
+    error_message: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration: int | None = None
+    setup_steps: list["ExecutionStepOut"] = Field(default_factory=list)
+    teardown_steps: list["ExecutionStepOut"] = Field(default_factory=list)
+    cases: list[ExecutionCaseOut] = Field(default_factory=list)
+
+    model_config = {"from_attributes": True}
+
+
 class ExecutionDetail(ExecutionOut):
     project_name: str | None = None
     device_name: str | None = None
     created_by_name: str | None = None
-    cases: list[ExecutionCaseOut] = Field(default_factory=list)
+    suites: list[ExecutionSuiteOut] = Field(default_factory=list)
+    # 过渡兼容：执行概要计数（套件/用例/步骤），供前端逐步迁移
+    summary: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExecutionListItem(BaseModel):

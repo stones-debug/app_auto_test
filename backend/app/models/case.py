@@ -1,4 +1,14 @@
-from sqlalchemy import JSON, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -23,6 +33,15 @@ class TestCase(Base, TimestampMixin, SoftDeleteMixin):
 
 class TestSuite(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "test_suites"
+    __table_args__ = (
+        # §2 套件前后置仅 Action Registry 步骤；稳定 UUID key + order + action + params + continue_on_failure
+        CheckConstraint(
+            "jsonb_typeof(setup_steps) = 'array'", name="ck_test_suites_setup_steps"
+        ),
+        CheckConstraint(
+            "jsonb_typeof(teardown_steps) = 'array'", name="ck_test_suites_teardown_steps"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False)
@@ -30,6 +49,8 @@ class TestSuite(Base, TimestampMixin, SoftDeleteMixin):
     description: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="active")
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    setup_steps: Mapped[list] = mapped_column(JSONB, default=list)
+    teardown_steps: Mapped[list] = mapped_column(JSONB, default=list)
 
 
 class TestSuiteCase(Base, TimestampMixin):

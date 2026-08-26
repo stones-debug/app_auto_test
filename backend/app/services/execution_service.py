@@ -157,6 +157,7 @@ async def _build_resolution_request(
     suite_id: int | None,
     case_id: int | None,
     body,
+    context_suite_id: int | None = None,
 ) -> ResolutionRequest:
     """从创建请求构造解析请求；缺档案/版本时抛 APP_PROFILE_REQUIRED。"""
     if body.app_profile_id is None:
@@ -175,6 +176,7 @@ async def _build_resolution_request(
         expected_test_asset_revision=body.expected_test_asset_revision or 1,
         run_options=body.parameters or {},
         execution_variables=(body.parameters or {}).get("variables") or {},
+        context_suite_id=context_suite_id if type_ == "case" else None,
     )
 
 
@@ -191,6 +193,7 @@ async def _create_execution_with_profile(
     suite_id: int | None = None,
     case_id: int | None = None,
     retry_of: int | None = None,
+    context_suite_id: int | None = None,
 ) -> Execution:
     """方案 §6.1：创建执行并在同一事务固化快照/排除项/队列。
 
@@ -199,6 +202,7 @@ async def _create_execution_with_profile(
     """
     request = await _build_resolution_request(
         db, project_id=project_id, type_=type_, suite_id=suite_id, case_id=case_id, body=body,
+        context_suite_id=context_suite_id,
     )
     try:
         result = await get_resolver().preview(request, db)
@@ -348,6 +352,7 @@ async def create_case_execution(
     parameters: dict,
     timeout_seconds: int | None,
     body=None,
+    context_suite_id: int | None = None,
 ) -> Execution:
     if body is None:
         return await _create_and_enqueue(
@@ -357,6 +362,7 @@ async def create_case_execution(
     return await _create_execution_with_profile(
         db, project_id=case.project_id, type_="case", user=user, device_id=device_id,
         parameters=parameters, timeout_seconds=timeout_seconds, body=body, case_id=case.id,
+        context_suite_id=context_suite_id,
     )
 
 

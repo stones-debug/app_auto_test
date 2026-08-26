@@ -25,6 +25,7 @@ from app.models import (
     ExecutionLog,
     ExecutionQueue,
     ExecutionStep,
+    ExecutionSuite,
     Report,
     TestCase,
     TestElement,
@@ -199,33 +200,58 @@ async def _resolve_cases(db: AsyncSession, execution: Execution) -> list[TestCas
     return cases
 
 
-async def create_execution_cases_from_execution(db: AsyncSession, execution: Execution) -> list[ExecutionCase]:
-    # 方案 §6.1：新执行快照已在创建事务固化（app_profile 非空），Worker 直接消费，不重建。
-    if execution.app_profile_id is not None:
-        existing = (
-            await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == execution.id))
-        ).scalars().all()
-        if existing:
-            return list(existing)
-    # 兼容期旧执行（无档案）：清除已存在快照（避免重复执行/重试导致重复行），Core delete 按依赖顺序执行
-    existing = (
+_LEGACY_PHASE_MAP = {"setup": "case_setup", "main": "case_main", "teardown": "case_teardown"}
+
+
+def _legacy_phase_to_exec_phase(phase: str | None) -> str:
+    return _LEGACY_PHASE_MAP.get(str(phase or "main"), "case_main")
+
+
+async def _rebuild_legacy_snapshot(db: AsyncSession, execution: Execution) -> list[ExecutionCase]:
+    """无档案旧执行（兼容期）：按套件级虚拟套件重建快照。
+
+    - 先行清除旧快照（避免重复执行/重试产生重复行），按依赖顺序删除；
+    - 旧扁平用例归入单个虚拟 ExecutionSuite（is_virtual=True、无套件前后置）；
+    - 用例快照（steps/assertions/elements）落库，但步骤/断言行由 Agent 回传时按需创建，
+      与历史 Agent 协议保持兼容（S2 再统一为预建 pending）。
+    """
+    existing_cases = (
         await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == execution.id))
     ).scalars().all()
-    for ec in existing:
-        step_ids = (
-            await db.execute(select(ExecutionStep.id).where(ExecutionStep.execution_case_id == ec.id))
-        ).scalars().all()
-        if step_ids:
-            await db.execute(
-                delete(ExecutionAssertion).where(ExecutionAssertion.execution_step_id.in_(step_ids))
-            )
-            await db.execute(delete(ExecutionStep).where(ExecutionStep.id.in_(step_ids)))
-        await db.execute(delete(ExecutionCase).where(ExecutionCase.id == ec.id))
+    old_case_ids = [c.id for c in existing_cases]
+    if old_case_ids:
+        await db.execute(
+            delete(ExecutionAssertion).where(ExecutionAssertion.execution_case_id.in_(old_case_ids))
+        )
+        await db.execute(delete(ExecutionStep).where(ExecutionStep.execution_case_id.in_(old_case_ids)))
+    await db.execute(delete(ExecutionCase).where(ExecutionCase.execution_id == execution.id))
+    await db.execute(delete(ExecutionStep).where(ExecutionStep.execution_suite_id.in_(
+        select(ExecutionSuite.id).where(ExecutionSuite.execution_id == execution.id)
+    )))
+    await db.execute(delete(ExecutionSuite).where(ExecutionSuite.execution_id == execution.id))
     await db.flush()
 
     cases = await _resolve_cases(db, execution)
+    if not cases:
+        await db.commit()
+        return []
+
+    suite = ExecutionSuite(
+        execution_id=execution.id,
+        suite_id=None,
+        suite_name="虚拟套件",
+        suite_order=1,
+        is_virtual=True,
+        status="pending",
+        setup_steps_snapshot=[],
+        teardown_steps_snapshot=[],
+        elements_snapshot={},
+    )
+    db.add(suite)
+    await db.flush()
+
     created: list[ExecutionCase] = []
-    for case in cases:
+    for case_order, case in enumerate(cases, start=1):
         variable_map = await build_variable_map(db, execution, case)
         options = execution.parameters or {}
         snapshot = await build_case_snapshot(
@@ -237,9 +263,11 @@ async def create_execution_cases_from_execution(db: AsyncSession, execution: Exe
         )
         ec = ExecutionCase(
             execution_id=execution.id,
+            execution_suite_id=suite.id,
             case_id=case.id,
             case_name=case.name,
             module_name=None,
+            case_order=case_order,
             status="pending",
             steps_snapshot=snapshot["steps"],
             assertions_snapshot=snapshot["assertions"],
@@ -251,6 +279,22 @@ async def create_execution_cases_from_execution(db: AsyncSession, execution: Exe
     for ec in created:
         await db.refresh(ec)
     return created
+
+
+async def create_execution_cases_from_execution(db: AsyncSession, execution: Execution) -> list[ExecutionCase]:
+    # 方案 §6.1：档案执行的快照已在创建事务固化，Worker 直接消费，不重建。
+    if execution.app_profile_id is not None:
+        return list(
+            (
+                await db.execute(
+                    select(ExecutionCase)
+                    .where(ExecutionCase.execution_id == execution.id)
+                    .order_by(ExecutionCase.execution_suite_id, ExecutionCase.case_order)
+                )
+            ).scalars().all()
+        )
+    # 兼容期旧执行（无档案）：改写为套件级（虚拟套件）重建
+    return await _rebuild_legacy_snapshot(db, execution)
 
 
 # ---------- 队列认领（SKIP LOCKED） ----------
@@ -334,12 +378,40 @@ def _stop_grace_exceeded(execution: Execution) -> bool:
     )
 
 
+def _aggregate_status(statuses: list[str]) -> str:
+    """套件/父节点终态汇总优先级：error > failed > stopped > skipped > passed。"""
+    if "error" in statuses:
+        return "error"
+    if "failed" in statuses:
+        return "failed"
+    if "stopped" in statuses:
+        return "stopped"
+    if "skipped" in statuses:
+        return "skipped"
+    if statuses and all(s == "passed" for s in statuses):
+        return "passed"
+    if statuses:
+        return "passed"
+    return "skipped"
+
+
+def _rate_percent(numerator: int, denominator: int) -> Decimal:
+    """方案 §7.1：成功率仅按 passed/(passed+failed+error_count)，N/A 与停止 skipped 不入分母；分母 0 → 0。"""
+    if denominator:
+        return Decimal(str(round(numerator / denominator * 100, 2)))
+    return Decimal("0")
+
+
 async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, message: str | None = None) -> None:
-    """终态汇总（CR-10/CR-11）。
+    """终态汇总（CR-10/CR-11，套件级 / §2 三层统计）。
 
     - 条件更新：以 `finalized_at is null` 做最终汇总 CAS，只有一个调用方成为 finalizer；
       没有抢到 finalizer 的调用方立即返回（status 已终态的重复路径），避免重复汇总；
-    - 状态归并：中断时当前 case 置 stopped/error、未执行步骤置 skipped、未执行 case 置 skipped；
+    - 状态归并（套件级）：ExecutionSuite / ExecutionCase 层次归并——套件按子节点优先级汇成终态，
+      用例沿用旧逻辑（failed 有步骤/断言失败；passed 等；stopped/error 有执行痕迹；skipped 否则），
+      未执行 ExecutionStep（pending 且父节点 pending/running）置 skipped；
+    - 三层报告统计：total/passed/... 按用例；suite_* 按套件；step_* 含套件步骤与用例步骤；
+      not_applicable_suites 统计 target_type == 'suite' 排除项；exclusion_summary 增加 na_suite_steps；
     - 报告幂等：reports.execution_id 唯一 + on_conflict_do_nothing，重复汇总不会产生多份报告；
     - Windows 方案 §2：推进终态时写入 finalized_at（唯一终态汇总完成时刻）。
     """
@@ -368,9 +440,27 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
     if execution.started_at is not None:
         execution.duration = int((now - execution.started_at).total_seconds() * 1000)
 
-    cases = (
-        await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == execution.id))
+    suites = (
+        await db.execute(
+            select(ExecutionSuite)
+            .where(ExecutionSuite.execution_id == execution.id)
+            .order_by(ExecutionSuite.suite_order)
+        )
     ).scalars().all()
+    suite_ids = [s.id for s in suites]
+    cases = (
+        await db.execute(
+            select(ExecutionCase)
+            .where(ExecutionCase.execution_id == execution.id)
+            .order_by(ExecutionCase.execution_suite_id, ExecutionCase.case_order)
+        )
+    ).scalars().all()
+    case_ids = [c.id for c in cases]
+    cases_by_suite: dict[int, list[ExecutionCase]] = {}
+    for case in cases:
+        cases_by_suite.setdefault(case.execution_suite_id, []).append(case)
+
+    # ---------- 用例状态归并（沿用既有逻辑） ----------
     for c in cases:
         if c.status in ("pending", "running"):
             steps = (
@@ -378,9 +468,7 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
             ).scalars().all()
             assertions = (
                 await db.execute(
-                    select(ExecutionAssertion)
-                    .join(ExecutionStep, ExecutionAssertion.execution_step_id == ExecutionStep.id)
-                    .where(ExecutionStep.execution_case_id == c.id)
+                    select(ExecutionAssertion).where(ExecutionAssertion.execution_case_id == c.id)
                 )
             ).scalars().all()
             failed = any(s.status == "failed" for s in steps) or any(
@@ -394,38 +482,100 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
                 # CR-11：已有执行痕迹但被中断 → 当前项 stopped/error
                 c.status = "stopped" if status_ in ("stopped", "cancelled") else "error"
                 c.error_message = c.error_message or f"执行被中断（{status_}）"
-                # 未执行步骤标记 skipped
-                await db.execute(
-                    update(ExecutionStep)
-                    .where(
-                        ExecutionStep.execution_case_id == c.id,
-                        ExecutionStep.status == "pending",
-                    )
-                    .values(status="skipped")
-                )
             else:
                 c.status = "skipped"
+        # 未执行断言（pending）置 skipped（隶属用例）
+        await db.execute(
+            update(ExecutionAssertion)
+            .where(ExecutionAssertion.execution_case_id == c.id, ExecutionAssertion.status == "pending")
+            .values(status="skipped")
+        )
+        # 未执行用例步骤（pending）置 skipped（父节点 pending/running → 已归并，未执行即 skipped）
+        await db.execute(
+            update(ExecutionStep)
+            .where(ExecutionStep.execution_case_id == c.id, ExecutionStep.status == "pending")
+            .values(status="skipped")
+        )
 
+    # ---------- 套件状态归并（按子节点优先级） ----------
+    for suite in suites:
+        if suite.status not in ("pending", "running"):
+            continue
+        suite_steps = (
+            await db.execute(select(ExecutionStep).where(ExecutionStep.execution_suite_id == suite.id))
+        ).scalars().all()
+        child_statuses = [s.status for s in suite_steps] + [
+            c.status for c in cases_by_suite.get(suite.id, [])
+        ]
+        suite.status = _aggregate_status(child_statuses)
+        if suite.status not in ("passed",):
+            suite.error_message = suite.error_message or (
+                f"执行被中断（{status_}）" if status_ in ("stopped", "cancelled") else None
+            )
+        # 未执行套件步骤（pending）置 skipped
+        await db.execute(
+            update(ExecutionStep)
+            .where(ExecutionStep.execution_suite_id == suite.id, ExecutionStep.status == "pending")
+            .values(status="skipped")
+        )
+
+    # ---------- 三步统计：用例 / 套件 / 步骤（含套件步骤与用例步骤） ----------
     total = len(cases)
     passed = sum(1 for c in cases if c.status == "passed")
     failed = sum(1 for c in cases if c.status == "failed")
     error_count = sum(1 for c in cases if c.status == "error")
     skipped = sum(1 for c in cases if c.status == "skipped")
-    # 方案 §7.1：成功率仅按 passed/(passed+failed+error_count)，N/A 与停止 skipped 不入分母；分母 0 → 0
-    rate_base = passed + failed + error_count
-    rate = Decimal(str(round(passed / rate_base * 100, 2))) if rate_base else Decimal("0")
-    # 方案 §7.1：N/A 相关统计（执行创建时固化的排除项）
+    rate = _rate_percent(passed, passed + failed + error_count)
+
+    suite_total = len(suites)
+    suite_passed = sum(1 for s in suites if s.status == "passed")
+    suite_failed = sum(1 for s in suites if s.status == "failed")
+    suite_error_count = sum(1 for s in suites if s.status == "error")
+    suite_skipped = sum(1 for s in suites if s.status == "skipped")
+    suite_rate = _rate_percent(suite_passed, suite_passed + suite_failed + suite_error_count)
+
+    all_steps: list[ExecutionStep] = []
+    if case_ids:
+        all_steps = (
+            await db.execute(
+                select(ExecutionStep)
+                .where(ExecutionStep.execution_case_id.in_(case_ids))
+            )
+        ).scalars().all()
+    if suite_ids:
+        all_steps = [
+            *all_steps,
+            *(
+                await db.execute(
+                    select(ExecutionStep).where(ExecutionStep.execution_suite_id.in_(suite_ids))
+                )
+            ).scalars().all(),
+        ]
+    step_total = len(all_steps)
+    step_passed = sum(1 for s in all_steps if s.status == "passed")
+    step_failed = sum(1 for s in all_steps if s.status == "failed")
+    step_error_count = sum(1 for s in all_steps if s.status == "error")
+    step_skipped = sum(1 for s in all_steps if s.status == "skipped")
+    step_rate = _rate_percent(step_passed, step_passed + step_failed + step_error_count)
+
+    # ---------- 排除项统计：not_applicable（用例）与 not_applicable_suites（套件） ----------
     na_cases = 0
-    exclusion_summary: dict[str, int] = {"na_suites": 0, "na_cases": 0, "na_steps": 0, "na_assertions": 0}
+    na_suites = 0
+    exclusion_summary: dict[str, int] = {
+        "na_suites": 0, "na_cases": 0, "na_steps": 0, "na_assertions": 0, "na_suite_steps": 0,
+    }
     exclusions = (
         await db.execute(select(ExecutionExclusion).where(ExecutionExclusion.execution_id == execution.id))
     ).scalars().all()
     for ex in exclusions:
         if ex.target_type == "case":
             na_cases += 1
+        elif ex.target_type == "suite":
+            na_suites += 1
         key = f"na_{ex.target_type}s"
         if key in exclusion_summary:
             exclusion_summary[key] += 1
+
     await db.execute(
         pg_insert(Report)
         .values(
@@ -439,6 +589,19 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
             duration=execution.duration,
             not_applicable=na_cases,
             exclusion_summary=exclusion_summary,
+            suite_total=suite_total,
+            suite_passed=suite_passed,
+            suite_failed=suite_failed,
+            suite_error_count=suite_error_count,
+            suite_skipped=suite_skipped,
+            suite_success_rate=suite_rate,
+            step_total=step_total,
+            step_passed=step_passed,
+            step_failed=step_failed,
+            step_error_count=step_error_count,
+            step_skipped=step_skipped,
+            step_success_rate=step_rate,
+            not_applicable_suites=na_suites,
         )
         .on_conflict_do_nothing(constraint="uq_reports_execution_id")
     )

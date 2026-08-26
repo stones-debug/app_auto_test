@@ -25,10 +25,12 @@ from app.models import (
     Project,
     TestCase,
     TestSuite,
+    TestSuiteCase,
     User,
 )
 from app.schemas.execution import (
     BatchExecutionCreate,
+    ExecutionAssertionOut,
     ExecutionCaseOut,
     ExecutionCreate,
     ExecutionDetail,
@@ -41,10 +43,11 @@ from app.schemas.execution import (
     ExecutionPreviewResponse,
     ExecutionRetryRequest,
     ExecutionStepOut,
+    ExecutionSuiteOut,
 )
 from app.services import execution_service
 from app.services.access_scope import visible_project_ids
-from app.services.execution_detail_service import load_case_tree
+from app.services.execution_detail_service import load_suite_tree
 from app.services.profile_resolver import (
     ProfileEmpty,
     ProfileRevisionConflict,
@@ -56,6 +59,44 @@ from app.services.screenshot_store import resolve_screenshot_path
 from app.utils.pagination import get_pagination
 
 router = APIRouter(tags=["执行管理"])
+
+
+def _apply_artifact(step_out: ExecutionStepOut, src: dict) -> ExecutionStepOut:
+    step_out.artifact_id = src["id"] if src.get("screenshot_path") else None
+    return step_out
+
+
+def suite_step_out(src: dict) -> ExecutionStepOut:
+    return _apply_artifact(ExecutionStepOut.model_validate(src), src)
+
+
+def case_step_out(src: dict) -> ExecutionStepOut:
+    return _apply_artifact(ExecutionStepOut.model_validate(src), src)
+
+
+def _execution_summary(suite_outs: list[ExecutionSuiteOut]) -> dict[str, int]:
+    """过渡兼容：执行概要计数（套件/用例/步骤），供前端逐步迁移到 suites 嵌套结构。"""
+    suites = len(suite_outs)
+    cases = sum(len(s.cases) for s in suite_outs)
+    setup_steps = sum(len(s.setup_steps) for s in suite_outs)
+    teardown_steps = sum(len(s.teardown_steps) for s in suite_outs)
+    case_steps = sum(len(c.steps) for s in suite_outs for c in s.cases)
+    roles = {"passed", "failed", "error", "stopped", "skipped"}
+    suite_by_status = {role: sum(1 for s in suite_outs if s.status == role) for role in roles}
+    case_by_status = {role: sum(1 for s in suite_outs for c in s.cases if c.status == role) for role in roles}
+    return {
+        "suite_total": suites,
+        "case_total": cases,
+        "step_total": setup_steps + teardown_steps + case_steps,
+        "suite_passed": suite_by_status.get("passed", 0),
+        "suite_failed": suite_by_status.get("failed", 0),
+        "suite_error_count": suite_by_status.get("error", 0),
+        "suite_skipped": suite_by_status.get("skipped", 0),
+        "case_passed": case_by_status.get("passed", 0),
+        "case_failed": case_by_status.get("failed", 0),
+        "case_error_count": case_by_status.get("error", 0),
+        "case_skipped": case_by_status.get("skipped", 0),
+    }
 
 
 @router.post("/executions/preview", response_model=ExecutionPreviewResponse)
@@ -78,6 +119,13 @@ async def preview_execution(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="APP 档案不存在")
     expected_profile_rev = profile.revision
     expected_asset_rev = project.test_asset_revision
+    await _validate_context_suite(
+        db,
+        project_id=body.project_id,
+        target_type=body.target.type,
+        target_ids=body.target.ids,
+        context_suite_id=body.context_suite_id,
+    )
     request = ResolutionRequest(
         project_id=body.project_id,
         profile_id=body.app_profile_id,
@@ -88,6 +136,7 @@ async def preview_execution(
         expected_test_asset_revision=expected_asset_rev,
         run_options=body.parameters,
         execution_variables=(body.parameters or {}).get("variables") or {},
+        context_suite_id=body.context_suite_id,
     )
     try:
         result = await get_resolver().preview(request, db)
@@ -151,6 +200,29 @@ async def _get_suite_or_404(suite_id: int, db: AsyncSession) -> TestSuite:
     return suite
 
 
+async def _validate_context_suite(
+    db: AsyncSession, *, project_id: int, target_type: str, target_ids: list[int], context_suite_id: int | None
+) -> None:
+    """方案 §2：单用例套件上下文校验——仅 case 类型；用例必须属于该套件；套件/用例/项目同项目。"""
+    if context_suite_id is None:
+        return
+    if target_type != "case":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="context_suite_id 仅支持执行单个用例")
+    if len(target_ids) != 1:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="context_suite_id 仅支持单个用例")
+    suite = await _get_suite_or_404(context_suite_id, db)
+    case = await _get_case_or_404(target_ids[0], db)
+    if suite.project_id != project_id or case.project_id != project_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="套件/用例/项目必须属于同一项目")
+    member = (
+        await db.execute(
+            select(TestSuiteCase).where(TestSuiteCase.suite_id == suite.id, TestSuiteCase.case_id == case.id)
+        )
+    ).scalar_one_or_none()
+    if member is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="用例不属于该套件")
+
+
 async def _validate_device_for_execution(
     device_id: int | None, user: User, db: AsyncSession
 ) -> Device:
@@ -205,11 +277,19 @@ async def create_case_execution(
 ):
     case = await _get_case_or_404(case_id, db)
     await require_project_write(case.project_id, user, db)
+    await _validate_context_suite(
+        db,
+        project_id=case.project_id,
+        target_type="case",
+        target_ids=[case.id],
+        context_suite_id=body.context_suite_id,
+    )
     await _validate_device_for_execution(body.device_id, user, db)
     profile_body = await execution_service.apply_app_profile_feature_mode(db, case.project_id, body)
     return await execution_service.create_case_execution(
         db, case, user, body.device_id, body.parameters, body.timeout_seconds,
         body=profile_body,
+        context_suite_id=body.context_suite_id,
     )
 
 
@@ -365,20 +445,27 @@ async def get_execution(
 ):
     execution = await _get_execution_or_404(execution_id, db)
     await _require_execution_access(execution, user, db)
-    # Step 8：case tree 经常数级聚合服务加载（3 条查询，不随 N 增长）
-    tree = await load_case_tree(db, execution_id)
-    case_outs: list[ExecutionCaseOut] = []
-    for case in tree:
-        case_out = ExecutionCaseOut.model_validate(case)
-        case_out.steps = []
-        for src in case.get("steps") or []:
-            step_out = ExecutionStepOut.model_validate(src)
-            step_out.artifact_id = src["id"] if src["screenshot_path"] else None
-            case_out.steps.append(step_out)
-        case_outs.append(case_out)
+    # S1-7 §2：套件级嵌套聚合（含套件前后置 + 用例步骤/断言）
+    tree = await load_suite_tree(db, execution_id)
+    suite_outs: list[ExecutionSuiteOut] = []
+    for suite in tree:
+        suite_out = ExecutionSuiteOut.model_validate(suite)
+        suite_out.setup_steps = [suite_step_out(s) for s in suite.get("setup_steps") or []]
+        suite_out.teardown_steps = [suite_step_out(s) for s in suite.get("teardown_steps") or []]
+        case_outs: list[ExecutionCaseOut] = []
+        for case in suite.get("cases") or []:
+            case_out = ExecutionCaseOut.model_validate(case)
+            case_out.steps = [case_step_out(s) for s in case.get("steps") or []]
+            case_out.assertions = [
+                ExecutionAssertionOut.model_validate(a) for a in case.get("assertions") or []
+            ]
+            case_outs.append(case_out)
+        suite_out.cases = case_outs
+        suite_outs.append(suite_out)
 
     detail = ExecutionDetail.model_validate(execution)
-    detail.cases = case_outs
+    detail.suites = suite_outs
+    detail.summary = _execution_summary(suite_outs)
     project = await db.get(Project, execution.project_id)
     detail.project_name = project.name if project else None
     if execution.device_id:

@@ -83,6 +83,19 @@ class ReportLogOut(BaseModel):
     created_at: str | None
 
 
+class ReportSuiteOut(BaseModel):
+    id: int
+    suite_id: int | None
+    suite_name: str
+    suite_order: int
+    status: str
+    duration: int | None
+    error_message: str | None
+    setup_steps: list[ReportStepOut]
+    cases: list[ReportCaseOut]
+    teardown_steps: list[ReportStepOut]
+
+
 class ReportSummaryOut(BaseModel):
     id: int | None
     total: int
@@ -93,6 +106,20 @@ class ReportSummaryOut(BaseModel):
     success_rate: float
     not_applicable: int = 0
     exclusion_summary: dict[str, int] = Field(default_factory=dict)
+    # 方案 §2：套件/步骤三层统计 + N/A 套件
+    suite_total: int = 0
+    suite_passed: int = 0
+    suite_failed: int = 0
+    suite_error_count: int = 0
+    suite_skipped: int = 0
+    suite_success_rate: float = 0
+    step_total: int = 0
+    step_passed: int = 0
+    step_failed: int = 0
+    step_error_count: int = 0
+    step_skipped: int = 0
+    step_success_rate: float = 0
+    not_applicable_suites: int = 0
 
 
 class ReportExclusionOut(BaseModel):
@@ -107,7 +134,8 @@ class ReportExclusionOut(BaseModel):
 class ReportDetailOut(BaseModel):
     execution: dict[str, Any]
     report: ReportSummaryOut
-    cases: list[ReportCaseOut]
+    suites: list[ReportSuiteOut]
+    cases: list[ReportCaseOut] = Field(default_factory=list)
     logs: list[ReportLogOut]
     # 方案 §7.2：不适用内容清单
     exclusions: list[ReportExclusionOut] = Field(default_factory=list)

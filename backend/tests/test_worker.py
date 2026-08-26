@@ -16,6 +16,7 @@ from app.models import (
     ExecutionLog,
     ExecutionQueue,
     ExecutionStep,
+    ExecutionSuite,
     Report,
 )
 from app.services import worker_service
@@ -698,8 +699,13 @@ async def test_mark_terminal_fractional_success_rate(client: AsyncClient):
         execution = await db.get(Execution, execution_id)
         await worker_service.create_execution_cases_from_execution(db, execution)
         # 再补 2 个用例行：共 3 个 case，其中 1 个 failed → 2/3 = 66.67
-        db.add(ExecutionCase(execution_id=execution_id, case_id=9001, case_name="c1", status="running", steps_snapshot=[], assertions_snapshot=[]))
-        db.add(ExecutionCase(execution_id=execution_id, case_id=9002, case_name="c2", status="running", steps_snapshot=[], assertions_snapshot=[]))
+        exec_suite_id = (
+            await db.execute(
+                select(ExecutionSuite).where(ExecutionSuite.execution_id == execution_id)
+            )
+        ).scalar_one().id
+        db.add(ExecutionCase(execution_id=execution_id, execution_suite_id=exec_suite_id, case_id=9001, case_name="c1", case_order=2, status="running", steps_snapshot=[], assertions_snapshot=[]))
+        db.add(ExecutionCase(execution_id=execution_id, execution_suite_id=exec_suite_id, case_id=9002, case_name="c2", case_order=3, status="running", steps_snapshot=[], assertions_snapshot=[]))
         await db.commit()
         ecs = (await db.execute(
             select(ExecutionCase).where(ExecutionCase.execution_id == execution_id).order_by(ExecutionCase.id)

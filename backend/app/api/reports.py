@@ -16,6 +16,7 @@ from app.schemas.report import (
     ReportListItem,
     ReportLogOut,
     ReportPage,
+    ReportSuiteOut,
     ReportSummaryOut,
 )
 from app.services import report_service
@@ -160,6 +161,7 @@ async def _build_detail(db: AsyncSession, execution_id: int) -> ReportDetailOut:
     return ReportDetailOut(
         execution=detail["execution"],
         report=ReportSummaryOut(**detail["report"]),
+        suites=[ReportSuiteOut(**s) for s in detail["suites"]],
         cases=[ReportCaseOut(**c) for c in detail["cases"]],
         exclusions=[ReportExclusionOut(**item) for item in detail["exclusions"]],
         logs=[ReportLogOut(**log_item) for log_item in detail["logs"]],

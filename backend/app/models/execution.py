@@ -22,6 +22,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
 from app.models.base import TimestampMixin
 
+# 执行步骤阶段（§1 分层结构）：套件前后置 + 用例三阶段
+STEP_PHASES = ("suite_setup", "case_setup", "case_main", "case_teardown", "suite_teardown")
+
 
 class Execution(Base, TimestampMixin):
     __tablename__ = "executions"
@@ -75,23 +78,68 @@ class Execution(Base, TimestampMixin):
     )
 
 
-class ExecutionCase(Base, TimestampMixin):
-    __tablename__ = "execution_cases"
+class ExecutionSuite(Base, TimestampMixin):
+    """执行内套件（§1 执行与结果汇总单位）。虚拟套件（单用例无上下文）时 suite_id 为空。"""
+
+    __tablename__ = "execution_suites"
     __table_args__ = (
-        Index("idx_exec_cases_execution", "execution_id"),
-        # §5.2：批量去重语义下同一执行内用例唯一
-        UniqueConstraint("execution_id", "case_id", name="uq_execution_cases_execution_case"),
+        UniqueConstraint("execution_id", "suite_order", name="uq_execution_suites_execution_order"),
+        Index(
+            "uq_execution_suites_execution_suite",
+            "execution_id",
+            "suite_id",
+            unique=True,
+            postgresql_where=text("suite_id IS NOT NULL"),
+        ),
+        CheckConstraint(
+            "status IN ('pending','running','stopping','passed','failed','error','stopped','skipped')",
+            name="ck_execution_suites_status",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(setup_steps_snapshot) = 'array'", name="ck_execution_suites_setup_steps"
+        ),
+        CheckConstraint(
+            "jsonb_typeof(teardown_steps_snapshot) = 'array'", name="ck_execution_suites_teardown_steps"
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     execution_id: Mapped[int] = mapped_column(ForeignKey("executions.id"), nullable=False)
+    suite_id: Mapped[int | None] = mapped_column(ForeignKey("test_suites.id"))
+    suite_name: Mapped[str] = mapped_column(String(255), nullable=False)  # 快照
+    suite_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_virtual: Mapped[bool] = mapped_column(default=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    setup_steps_snapshot: Mapped[list] = mapped_column(JSONB, nullable=False)
+    teardown_steps_snapshot: Mapped[list] = mapped_column(JSONB, nullable=False)
+    elements_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration: Mapped[int | None] = mapped_column(Integer)
+    error_message: Mapped[str | None] = mapped_column(Text)
+
+
+class ExecutionCase(Base, TimestampMixin):
+    """执行内用例（§1 分层：隶属于 ExecutionSuite，可在多套件中重复出现）。"""
+
+    __tablename__ = "execution_cases"
+    __table_args__ = (
+        Index("idx_exec_cases_suite", "execution_suite_id"),
+        UniqueConstraint("execution_suite_id", "case_id", name="uq_execution_cases_suite_case"),
+        UniqueConstraint("execution_suite_id", "case_order", name="uq_execution_cases_suite_order"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    execution_id: Mapped[int] = mapped_column(ForeignKey("executions.id"), nullable=False)
+    execution_suite_id: Mapped[int] = mapped_column(ForeignKey("execution_suites.id"), nullable=False)
     case_id: Mapped[int] = mapped_column(Integer, nullable=False)
     case_name: Mapped[str] = mapped_column(String(255), nullable=False)  # 快照
     module_name: Mapped[str | None] = mapped_column(String(255))
+    case_order: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     steps_snapshot: Mapped[list] = mapped_column(JSON, nullable=False)
     assertions_snapshot: Mapped[list] = mapped_column(JSON, nullable=False)
-    elements_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)  # V1.1 §10.3
+    elements_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     duration: Mapped[int | None] = mapped_column(Integer)
@@ -99,16 +147,47 @@ class ExecutionCase(Base, TimestampMixin):
 
 
 class ExecutionStep(Base, TimestampMixin):
+    """执行步骤，两种互斥父节点：套件步骤(suite)或用例步骤(case)，由阶段约束保证一致。"""
+
     __tablename__ = "execution_steps"
     __table_args__ = (
-        # CR-11（§5.2）：同用例步骤顺序唯一
-        UniqueConstraint("execution_case_id", "step_order", name="uq_execution_steps_case_order"),
+        # CR-11：套件步骤、用例步骤各自按阶段保持顺序唯一
+        Index(
+            "uq_execution_steps_suite_order",
+            "execution_suite_id",
+            "phase",
+            "step_order",
+            unique=True,
+            postgresql_where=text("execution_suite_id IS NOT NULL AND execution_case_id IS NULL"),
+        ),
+        Index(
+            "uq_execution_steps_case_order",
+            "execution_case_id",
+            "phase",
+            "step_order",
+            unique=True,
+            postgresql_where=text("execution_suite_id IS NULL AND execution_case_id IS NOT NULL"),
+        ),
+        CheckConstraint(
+            "phase IN ('suite_setup','case_setup','case_main','case_teardown','suite_teardown')",
+            name="ck_execution_steps_phase",
+        ),
+        # 阶段与父节点一致性：套件阶段只能挂在套件，用例阶段只能挂在用例
+        CheckConstraint(
+            "(phase IN ('suite_setup','suite_teardown') AND execution_suite_id IS NOT NULL AND execution_case_id IS NULL)"
+            " OR (phase IN ('case_setup','case_main','case_teardown') AND execution_suite_id IS NULL AND execution_case_id IS NOT NULL)",
+            name="ck_execution_steps_parent_phase",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    execution_case_id: Mapped[int] = mapped_column(ForeignKey("execution_cases.id"), nullable=False)
+    execution_suite_id: Mapped[int | None] = mapped_column(ForeignKey("execution_suites.id"))
+    execution_case_id: Mapped[int | None] = mapped_column(ForeignKey("execution_cases.id"))
+    phase: Mapped[str] = mapped_column(String(20), nullable=False, default="case_main")
     step_order: Mapped[int] = mapped_column(Integer, nullable=False)
     action: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_key: Mapped[str | None] = mapped_column(String(255))
+    source_order: Mapped[int | None] = mapped_column(Integer)
     parameters: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -120,10 +199,22 @@ class ExecutionStep(Base, TimestampMixin):
 
 
 class ExecutionAssertion(Base, TimestampMixin):
+    """执行断言（§3.1：直接关联 execution_case_id，预建 pending 供 Agent 按 id 上报）。"""
+
     __tablename__ = "execution_assertions"
+    __table_args__ = (
+        Index("idx_exec_assertions_case", "execution_case_id"),
+        Index(
+            "uq_exec_assertions_case_order",
+            "execution_case_id",
+            "assertion_order",
+            unique=True,
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    execution_step_id: Mapped[int] = mapped_column(ForeignKey("execution_steps.id"), nullable=False)
+    execution_case_id: Mapped[int] = mapped_column(ForeignKey("execution_cases.id"), nullable=False)
+    assertion_order: Mapped[int] = mapped_column(Integer, nullable=False)
     assertion_type: Mapped[str] = mapped_column(String(50), nullable=False)
     expected_value: Mapped[str | None] = mapped_column(Text)
     actual_value: Mapped[str | None] = mapped_column(Text)
@@ -174,6 +265,20 @@ class Report(Base, TimestampMixin):
     success_rate: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("0"))
     duration: Mapped[int | None] = mapped_column(Integer)
     report_path: Mapped[str | None] = mapped_column(Text)
+    # §2 报告三层统计：套件 / 步骤 / N/A（套件）
+    suite_total: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    suite_passed: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    suite_failed: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    suite_error_count: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    suite_skipped: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    suite_success_rate: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("0"))
+    step_total: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    step_passed: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    step_failed: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    step_error_count: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    step_skipped: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    step_success_rate: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("0"))
+    not_applicable_suites: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
 
 
 class ExecutionQueue(Base, TimestampMixin):

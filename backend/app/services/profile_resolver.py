@@ -100,21 +100,41 @@ class ResolutionRequest:
     expected_test_asset_revision: int
     run_options: dict[str, bool] = field(default_factory=dict)
     execution_variables: dict[str, Any] = field(default_factory=dict)
+    # 方案 §2：单用例执行时可指定套件上下文（引用该套件规则，而非虚拟套件）
+    context_suite_id: int | None = None
 
 
 @dataclass(frozen=True)
 class ResolvedCase:
+    suite_id: int | None
+    suite_name: str | None
     case_id: int
     case_name: str
     module_name: str | None
+    case_order: int
     steps_snapshot: list[dict[str, Any]]
     assertions_snapshot: list[dict[str, Any]]
     elements_snapshot: dict[str, dict[str, Any]]
 
 
 @dataclass(frozen=True)
+class ResolvedSuite:
+    suite_id: int | None
+    suite_name: str
+    suite_order: int
+    is_virtual: bool
+    # 套件前后置快照（仅 Action，含 source_key/source_order）
+    setup_steps_snapshot: list[dict[str, Any]]
+    teardown_steps_snapshot: list[dict[str, Any]]
+    elements_snapshot: dict[str, dict[str, Any]]
+    cases: list[ResolvedCase]
+    # 是否“整体 N/A”（所有用例被排除）：不创建实际套件，进入 N/A 区
+    is_na: bool = False
+
+
+@dataclass(frozen=True)
 class ExclusionItem:
-    target_type: Literal["suite", "case", "step", "assertion"]
+    target_type: Literal["suite", "case", "step", "assertion", "suite_step"]
     suite_id: int | None
     case_id: int | None
     node_key: UUID | None
@@ -122,6 +142,7 @@ class ExclusionItem:
     reason_code: str
     reason_note: str | None
     display_snapshot: dict[str, Any]
+    phase: str | None = None
 
 
 @dataclass(frozen=True)
@@ -130,10 +151,15 @@ class ResolutionResult:
     test_asset_revision: int
     profile_name: str
     release_version: str
-    cases: list[ResolvedCase]
+    suites: list[ResolvedSuite]
     exclusions: list[ExclusionItem]
     summary: dict[str, int]
     warnings: list[dict[str, Any]]
+
+    @property
+    def cases(self) -> list[ResolvedCase]:
+        """兼容历史调用方（扁平展开所有套件用例）。"""
+        return [c for s in self.suites for c in s.cases]
 
 
 # ---------- 缓存（方案 §3.4） ----------
@@ -252,6 +278,7 @@ async def _load_config(db: AsyncSession, profile_id: int) -> dict:
     skip_case: dict[tuple[int, int], AppProfileSkipRule] = {}
     step_rules: dict[tuple[int, int], dict[str, AppProfileSkipRule]] = {}
     assertion_rules: dict[tuple[int, int], dict[str, AppProfileSkipRule]] = {}
+    skip_suite_step: dict[tuple[int, str], AppProfileSkipRule] = {}
     for rule in skip_rules:
         if rule.target_type == "suite" and rule.suite_id is not None:
             skip_suite[rule.suite_id] = rule
@@ -262,6 +289,12 @@ async def _load_config(db: AsyncSession, profile_id: int) -> dict:
         ):
             skip_case[(rule.suite_id, rule.case_id)] = rule
         elif (
+            rule.target_type == "suite_step"
+            and rule.suite_id is not None
+            and rule.node_key is not None
+        ):
+            skip_suite_step[(rule.suite_id, str(rule.node_key))] = rule
+        elif (
             rule.target_type in ("step", "assertion")
             and rule.suite_id is not None
             and rule.case_id is not None
@@ -270,80 +303,65 @@ async def _load_config(db: AsyncSession, profile_id: int) -> dict:
             bucket = step_rules if rule.target_type == "step" else assertion_rules
             bucket.setdefault((rule.suite_id, rule.case_id), {})[str(rule.node_key)] = rule
 
-    step_overrides: dict[int, dict[str, dict[str, Any]]] = {}
-    assertion_overrides: dict[int, dict[str, dict[str, Any]]] = {}
+    # 节点覆盖键结构：(suite_id, case_id)；套件步骤覆盖（case_id 为空）单独索引
+    step_overrides: dict[tuple[int | None, int], dict[str, dict[str, Any]]] = {}
+    assertion_overrides: dict[tuple[int | None, int], dict[str, dict[str, Any]]] = {}
+    suite_step_overrides: dict[tuple[int, str], dict[str, Any]] = {}
     for ov in node_overrides:
+        if ov.target_type == "step" and ov.case_id is None:
+            if ov.suite_id is not None:
+                suite_step_overrides[(ov.suite_id, str(ov.node_key))] = deepcopy(ov.patch)
+            continue
         bucket = step_overrides if ov.target_type == "step" else assertion_overrides
-        bucket.setdefault(ov.case_id, {})[str(ov.node_key)] = deepcopy(ov.patch)
+        bucket.setdefault((ov.suite_id, ov.case_id), {})[str(ov.node_key)] = deepcopy(ov.patch)
 
     return {
         "skip_suite": skip_suite,
         "skip_case": skip_case,
         "step_rules": step_rules,
         "assertion_rules": assertion_rules,
+        "skip_suite_step": skip_suite_step,
         "element_overrides": {ov.element_id: ov for ov in element_overrides},
         "variable_overrides": {ov.name: ov.value for ov in variable_overrides},
         "step_overrides": step_overrides,
         "assertion_overrides": assertion_overrides,
+        "suite_step_overrides": suite_step_overrides,
     }
 
 
-async def _load_targets(db: AsyncSession, request: ResolutionRequest) -> dict:
-    """加载目标用例与套件成员。返回 {suites:[id...], case_suite:{case_id:suite_id}}。"""
-    if request.target_type == "case":
-        return {"case_ids": list(request.target_ids), "suite_ids": []}
-    suite_ids = list(request.target_ids)
-    if request.target_type == "batch":
-        return {"case_ids": [], "suite_ids": suite_ids}
-    # suite 执行：套件 id 列表
-    return {"case_ids": [], "suite_ids": suite_ids}
+async def _collect_suite_cases(
+    db: AsyncSession, suite_ids: list[int]
+) -> tuple[dict[int, list[int]], dict[int, TestCase]]:
+    """按套件聚合用例 id（严格按 sort_order），并完成用例对象加载。
 
-
-async def _collect_cases(
-    db: AsyncSession,
-    target: dict,
-    suite_skip: dict,
-) -> tuple[dict[int, list[int | None]], list[TestCase], list[ExclusionItem]]:
-    """解析目标 → 去重用例列表 + case→全部套件上下文 + 套件级排除项。"""
-    case_ids: list[int] = list(target["case_ids"])
-    case_to_suites: dict[int, list[int | None]] = {
-        case_id: [None] for case_id in target["case_ids"]
-    }
-    suite_ids = list(target["suite_ids"])
+    返回 ``({suite_id: [case_id...]}, {case_id: TestCase})``。
+    """
+    suite_case_ids: dict[int, list[int]] = {sid: [] for sid in suite_ids}
+    case_ids: list[int] = []
     if suite_ids:
-        memberships = (
+        rows = (
             await db.execute(
-                select(
-                    TestSuiteCase.suite_id,
-                    TestSuiteCase.case_id,
-                    TestSuiteCase.sort_order,
-                )
+                select(TestSuiteCase.suite_id, TestSuiteCase.case_id)
                 .where(TestSuiteCase.suite_id.in_(suite_ids))
                 .order_by(TestSuiteCase.suite_id, TestSuiteCase.sort_order, TestSuiteCase.id)
             )
         ).all()
-        by_suite: dict[int, list[int]] = {sid: [] for sid in suite_ids}
-        for suite_id, case_id, _sort_order in memberships:
-            by_suite.setdefault(suite_id, []).append(case_id)
-        # 严格保留请求中的套件顺序以及套件内部 sort_order。
-        for suite_id in suite_ids:
-            if suite_id in suite_skip:
-                continue
-            for case_id in by_suite.get(suite_id, []):
-                case_ids.append(case_id)
-                case_to_suites.setdefault(case_id, []).append(suite_id)
+        for suite_id, case_id in rows:
+            suite_case_ids.setdefault(suite_id, []).append(case_id)
+            case_ids.append(case_id)
+    return suite_case_ids, await _load_cases_by_id(db, case_ids)
 
+
+async def _load_cases_by_id(db: AsyncSession, case_ids: list[int]) -> dict[int, TestCase]:
     case_ids = list(dict.fromkeys(case_ids))
     if not case_ids:
-        return {}, [], []
-    case_rows = (
+        return {}
+    rows = (
         await db.execute(
             select(TestCase).where(TestCase.id.in_(case_ids), TestCase.deleted_at.is_(None))
         )
     ).scalars().all()
-    cases_by_id = {case.id: case for case in case_rows}
-    cases = [cases_by_id[case_id] for case_id in case_ids if case_id in cases_by_id]
-    return case_to_suites, cases, []
+    return {case.id: case for case in rows}
 
 
 # ---------- 节点过滤与覆盖 ----------
@@ -354,11 +372,12 @@ def _filter_and_patch(
     rules: dict[str, AppProfileSkipRule],
     overrides: dict[str, dict[str, Any]],
     target_type: str,
-    case_id: int,
+    case_id: int | None,
     *,
-    case_name: str,
+    case_name: str | None,
     suite_id: int | None,
     suite_name: str | None,
+    phase: str | None = None,
 ) -> tuple[list[dict], list[ExclusionItem]]:
     """过滤被跳过节点并应用白名单覆盖，保留 _source_key/_source_order。"""
     kept: list[dict] = []
@@ -385,6 +404,7 @@ def _filter_and_patch(
                         "case_name": case_name,
                         "node_name": node.get("description") or node.get("action") or node.get("type") or "",
                     },
+                    phase=phase,
                 )
             )
             continue
@@ -462,6 +482,37 @@ def finalize_snapshot_node(node: dict, phase: str = "main", order_offset: int = 
     return out
 
 
+# 用例步骤阶段映射：源节点 setup/main/teardown → 执行树 case_setup/case_main/case_teardown
+_CASE_PHASE_MAP = {"setup": "case_setup", "main": "case_main", "teardown": "case_teardown"}
+
+
+def _finalize_case_step(node: dict) -> dict:
+    out = {k: v for k, v in node.items() if not k.startswith("_")}
+    raw_phase = str(out.get("phase") or "main")
+    out["phase"] = _CASE_PHASE_MAP.get(raw_phase, "case_main")
+    out["source_order"] = node.get("_source_order")
+    out["source_key"] = node.get("_source_key")
+    return out
+
+
+def _finalize_suite_step(node: dict, phase: str) -> dict:
+    out = {k: v for k, v in node.items() if not k.startswith("_")}
+    out["phase"] = phase
+    out["source_order"] = node.get("_source_order")
+    out["source_key"] = node.get("_source_key")
+    return out
+
+
+def _case_scoped(
+    config: dict, suite_id: int | None, case_id: int, kind: str
+) -> dict[str, dict[str, Any]]:
+    """合成用例步骤/断言的节点覆盖：语境无关(None, case_id) 作为回退，套件级(suite_id, case_id) 覆盖之。"""
+    bucket = config["step_overrides"] if kind == "step" else config["assertion_overrides"]
+    merged = dict(bucket.get((None, case_id), {}))
+    merged.update(bucket.get((suite_id, case_id), {}))
+    return merged
+
+
 # ---------- 主解析（方案 §3.2） ----------
 
 
@@ -502,166 +553,71 @@ async def resolve(request: ResolutionRequest, db: AsyncSession, cache: _LRUCache
         config = await _load_config(db, request.profile_id)
         cache.set(cache_key, config)
 
-    target = await _load_targets(db, request)
-    case_to_suites, cases, suite_exclusions = await _collect_cases(
-        db, target, config["skip_suite"]
-    )
-    suite_rows = (
-        await db.execute(select(TestSuite).where(TestSuite.id.in_(target["suite_ids"])))
-    ).scalars().all() if target["suite_ids"] else []
-    suite_names = {suite.id: suite.name for suite in suite_rows}
+    # 构建待解析的套件规格：严格保留请求中的套件顺序与套件内 sort_order；
+    # 单用例可选套件上下文（复用套件变量/规则），否则建虚拟套件。
+    if request.target_type == "case":
+        case_ids = list(dict.fromkeys(request.target_ids))
+        if request.context_suite_id is not None:
+            suite_specs: list[dict] = [
+                {"suite_id": request.context_suite_id, "virtual": False, "case_ids": case_ids}
+            ]
+        else:
+            suite_specs = [
+                {"suite_id": None, "virtual": True, "case_ids": case_ids}
+            ]
+        cases_by_id = await _load_cases_by_id(db, case_ids)
+    else:
+        suite_ids = list(dict.fromkeys(request.target_ids))
+        suite_case_ids, cases_by_id = await _collect_suite_cases(db, suite_ids)
+        suite_specs = [
+            {"suite_id": sid, "virtual": False, "case_ids": suite_case_ids.get(sid, [])}
+            for sid in suite_ids
+        ]
 
-    # 套件整体跳过：以排除项记录（不展开子节点）
-    exclusions: list[ExclusionItem] = [*suite_exclusions]
-    for sid in target["suite_ids"]:
-        rule = config["skip_suite"].get(sid)
-        if rule is not None:
-            exclusions.append(
-                ExclusionItem(
-                    target_type="suite",
-                    suite_id=sid,
-                    case_id=None,
-                    node_key=None,
-                    source_type="direct",
-                    reason_code=rule.reason_code,
-                    reason_note=rule.reason_note,
-                    display_snapshot={
-                        "name": suite_names.get(sid, f"suite:{sid}"),
-                        "key": str(sid),
-                        "suite_name": suite_names.get(sid),
-                    },
-                )
-            )
-
-    resolved_cases: list[ResolvedCase] = []
-    applied_override_count = 0
-    module_ids = {case.module_id for case in cases if case.module_id is not None}
+    module_ids = {case.module_id for case in cases_by_id.values() if case.module_id is not None}
     module_names: dict[int, str] = {}
     if module_ids:
         module_rows = (
             await db.execute(select(TestModule).where(TestModule.id.in_(module_ids)))
         ).scalars().all()
         module_names = {module.id: module.name for module in module_rows}
-    for case in cases:
-        suite_contexts = case_to_suites.get(case.id, [None])
-        executable_contexts: list[int | None] = []
-        for context_suite_id in suite_contexts:
-            case_rule = (
-                config["skip_case"].get((context_suite_id, case.id))
-                if context_suite_id is not None
-                else None
-            )
-            if case_rule is None:
-                executable_contexts.append(context_suite_id)
-                continue
-            exclusions.append(
-                ExclusionItem(
-                    target_type="case",
-                    suite_id=context_suite_id,
-                    case_id=case.id,
-                    node_key=None,
-                    source_type="direct",
-                    reason_code=case_rule.reason_code,
-                    reason_note=case_rule.reason_note,
-                    display_snapshot={
-                        "name": case.name,
-                        "key": str(case.id),
-                        "suite_name": suite_names.get(context_suite_id),
-                        "case_name": case.name,
-                    },
-                )
-            )
-        if not executable_contexts:
-            continue
 
-        # 批量执行仍按既有语义对共享用例去重；若第一个套件已跳过，使用首个未跳过套件的上下文。
-        suite_id = executable_contexts[0]
-        suite_name = suite_names.get(suite_id) if suite_id is not None else None
-        variables = await _merge_variables(db, request.project_id, suite_id, case, config, request.execution_variables)
+    # 逐套件解析：同一用例可在多套件各自生成独立 ResolvedCase（不跨套件去重）
+    applied_override_count = 0
+    suites: list[ResolvedSuite] = []
+    exclusions: list[ExclusionItem] = []
+    for suite_order, spec in enumerate(suite_specs, start=1):
+        resolved_suite, suite_ex, ov_count = await _build_suite(
+            db, request, config, spec, suite_order, cases_by_id, module_names
+        )
+        suites.append(resolved_suite)
+        exclusions.extend(suite_ex)
+        applied_override_count += ov_count
 
-        selected_steps = _select_steps_for_run(case.steps or [], request.run_options)
-        applied_override_count += len(
-            {str(node.get("key") or "") for node in selected_steps}
-            & set(config["step_overrides"].get(case.id, {}))
-        )
-        applied_override_count += len(
-            {str(node.get("key") or "") for node in (case.assertions or []) if isinstance(node, dict)}
-            & set(config["assertion_overrides"].get(case.id, {}))
-        )
-        kept_steps, step_ex = _filter_and_patch(
-            selected_steps, config["step_rules"].get((suite_id, case.id), {}),
-            config["step_overrides"].get(case.id, {}), "step", case.id,
-            case_name=case.name, suite_id=suite_id, suite_name=suite_name,
-        )
-        exclusions.extend(step_ex)
-        kept_assertions, assert_ex = _filter_and_patch(
-            case.assertions or [], config["assertion_rules"].get((suite_id, case.id), {}),
-            config["assertion_overrides"].get(case.id, {}), "assertion", case.id,
-            case_name=case.name, suite_id=suite_id, suite_name=suite_name,
-        )
-        exclusions.extend(assert_ex)
-
-        # 渲染 + Registry 校验
-        steps = [_registry_validate_step(_render_node_with_context(n, variables, case.name)) for n in kept_steps]
-        assertions = [
-            _registry_validate_assertion(_render_node_with_context(n, variables, case.name))
-            for n in kept_assertions
-        ]
-
-        # 重新生成执行级连续 order，保留 source_order/source_key。
-        steps = _assign_order(steps, order_offset=0)
-        assertions = _assign_order(assertions, order_offset=len(steps))
-
-        if not steps and not assertions:
-            exclusions.append(
-                ExclusionItem(
-                    target_type="case",
-                    suite_id=suite_id,
-                    case_id=case.id,
-                    node_key=None,
-                    source_type="empty_after_filter",
-                    reason_code="other",
-                    reason_note="过滤后无可执行内容",
-                    display_snapshot={
-                        "name": case.name,
-                        "key": str(case.id),
-                        "suite_name": suite_name,
-                        "case_name": case.name,
-                    },
-                )
-            )
-            continue
-
-        elements = await _resolve_element_snapshots(
-            db, steps, assertions, config["element_overrides"], variables
-        )
-        applied_override_count += sum(
-            1 for element_id in elements if int(element_id) in config["element_overrides"]
-        )
-        resolved_cases.append(
-            ResolvedCase(
-                case_id=case.id,
-                case_name=case.name,
-                module_name=module_names.get(case.module_id) if case.module_id is not None else None,
-                steps_snapshot=[finalize_snapshot_node(s) for s in steps],
-                assertions_snapshot=[finalize_snapshot_node(a) for a in assertions],
-                elements_snapshot=elements,
-            )
-        )
-
-    if not resolved_cases:
+    if not any(not s.is_na for s in suites):
         raise ProfileEmpty(exclusions)
 
+    executable_suites = [s for s in suites if not s.is_na]
+    executable_cases = [c for s in executable_suites for c in s.cases]
+    na_cases = [e for e in exclusions if e.target_type == "case"]
+
     summary = {
-        "source_suites": len(target["suite_ids"]),
-        "source_cases": len(cases),
-        "executable_cases": len(resolved_cases),
-        "executable_steps": sum(len(c.steps_snapshot) for c in resolved_cases),
-        "executable_assertions": sum(len(c.assertions_snapshot) for c in resolved_cases),
+        "source_suites": len(suite_specs),
+        "source_cases": sum(len(s["case_ids"]) for s in suite_specs),
+        "executable_suites": len(executable_suites),
+        "executable_cases": len(executable_cases),
+        "executable_steps": sum(len(c.steps_snapshot) for c in executable_cases)
+        + sum(
+            len(s.setup_steps_snapshot) + len(s.teardown_steps_snapshot)
+            for s in executable_suites
+        ),
+        "executable_assertions": sum(len(c.assertions_snapshot) for c in executable_cases),
         "na_suites": sum(1 for e in exclusions if e.target_type == "suite"),
-        "na_cases": sum(1 for e in exclusions if e.target_type == "case"),
+        "na_cases": sum(1 for e in na_cases if e.suite_id is None),
         "na_steps": sum(1 for e in exclusions if e.target_type == "step"),
         "na_assertions": sum(1 for e in exclusions if e.target_type == "assertion"),
+        "na_suite_steps": sum(1 for e in exclusions if e.target_type == "suite_step"),
+        "na_suite_cases": sum(1 for e in na_cases if e.suite_id is not None),
         "overrides": applied_override_count + len(config["variable_overrides"]),
     }
 
@@ -670,11 +626,247 @@ async def resolve(request: ResolutionRequest, db: AsyncSession, cache: _LRUCache
         test_asset_revision=project.test_asset_revision,
         profile_name=profile.name,
         release_version=release_version,
-        cases=resolved_cases,
+        suites=suites,
         exclusions=exclusions,
         summary=summary,
         warnings=[],
     )
+
+
+async def _build_suite(
+    db: AsyncSession,
+    request: ResolutionRequest,
+    config: dict,
+    spec: dict,
+    suite_order: int,
+    cases_by_id: dict[int, TestCase],
+    module_names: dict[int, str],
+) -> tuple[ResolvedSuite, list[ExclusionItem], int]:
+    """按一个套件规格生成 ResolvedSuite（含前后置步骤与用例），并返回该套件产生的排除项与覆盖计数。"""
+    suite_id = spec["suite_id"]
+    virtual = spec["virtual"]
+    exclusions: list[ExclusionItem] = []
+    override_count = 0
+
+    if virtual:
+        suite_name = "虚拟套件"
+        setup_snapshot: list[dict[str, Any]] = []
+        teardown_snapshot: list[dict[str, Any]] = []
+        suite_elements: dict[str, dict[str, Any]] = {}
+    else:
+        suite = await db.get(TestSuite, suite_id)
+        if suite is None or suite.deleted_at is not None:
+            exclusions.append(
+                ExclusionItem(
+                    target_type="suite", suite_id=suite_id, case_id=None, node_key=None,
+                    source_type="direct", reason_code="other", reason_note="套件不存在或已删除",
+                    display_snapshot={"name": f"suite:{suite_id}", "key": str(suite_id), "suite_name": None},
+                )
+            )
+            return (
+                ResolvedSuite(
+                    suite_id=suite_id, suite_name=f"suite:{suite_id}", suite_order=suite_order,
+                    is_virtual=False, setup_steps_snapshot=[], teardown_steps_snapshot=[],
+                    elements_snapshot={}, cases=[], is_na=True,
+                ),
+                exclusions, override_count,
+            )
+        suite_name = suite.name
+        skip_rule = config["skip_suite"].get(suite_id)
+        if skip_rule is not None:
+            exclusions.append(
+                ExclusionItem(
+                    target_type="suite", suite_id=suite_id, case_id=None, node_key=None,
+                    source_type="direct", reason_code=skip_rule.reason_code,
+                    reason_note=skip_rule.reason_note,
+                    display_snapshot={"name": suite_name, "key": str(suite_id), "suite_name": suite_name},
+                )
+            )
+            setup_snapshot, teardown_snapshot, suite_elements, step_ex, step_ov = await _parse_suite_steps(
+                db, request.project_id, suite.setup_steps or [], suite.teardown_steps or [],
+                config, suite_id, suite_name, request.execution_variables,
+            )
+            exclusions.extend(step_ex)
+            override_count += step_ov
+            return (
+                ResolvedSuite(
+                    suite_id=suite_id, suite_name=suite_name, suite_order=suite_order,
+                    is_virtual=False, setup_steps_snapshot=setup_snapshot,
+                    teardown_steps_snapshot=teardown_snapshot, elements_snapshot=suite_elements,
+                    cases=[], is_na=True,
+                ),
+                exclusions, override_count,
+            )
+        setup_snapshot, teardown_snapshot, suite_elements, step_ex, step_ov = await _parse_suite_steps(
+            db, request.project_id, suite.setup_steps or [], suite.teardown_steps or [],
+            config, suite_id, suite_name, request.execution_variables,
+        )
+        exclusions.extend(step_ex)
+        override_count += step_ov
+
+    resolved_cases: list[ResolvedCase] = []
+    for case_pos, case_id in enumerate(spec["case_ids"], start=1):
+        case = cases_by_id.get(case_id)
+        if case is None:
+            continue
+        if not virtual:
+            case_rule = config["skip_case"].get((suite_id, case_id))
+            if case_rule is not None:
+                exclusions.append(
+                    ExclusionItem(
+                        target_type="case", suite_id=suite_id, case_id=case.id, node_key=None,
+                        source_type="direct", reason_code=case_rule.reason_code,
+                        reason_note=case_rule.reason_note,
+                        display_snapshot={
+                            "name": case.name, "key": str(case.id),
+                            "suite_name": suite_name, "case_name": case.name,
+                        },
+                    )
+                )
+                continue
+        resolved_case, case_ex, case_ov = await _resolve_case(
+            db, request, config, case, suite_id, suite_name, case_pos, module_names
+        )
+        exclusions.extend(case_ex)
+        override_count += case_ov
+        if resolved_case is not None:
+            resolved_cases.append(resolved_case)
+
+    if not resolved_cases:
+        return (
+            ResolvedSuite(
+                suite_id=suite_id, suite_name=suite_name, suite_order=suite_order,
+                is_virtual=virtual, setup_steps_snapshot=setup_snapshot,
+                teardown_steps_snapshot=teardown_snapshot, elements_snapshot=suite_elements,
+                cases=[], is_na=True,
+            ),
+            exclusions, override_count,
+        )
+    return (
+        ResolvedSuite(
+            suite_id=suite_id, suite_name=suite_name, suite_order=suite_order,
+            is_virtual=virtual, setup_steps_snapshot=setup_snapshot,
+            teardown_steps_snapshot=teardown_snapshot, elements_snapshot=suite_elements,
+            cases=resolved_cases, is_na=False,
+        ),
+        exclusions, override_count,
+    )
+
+
+async def _resolve_case(
+    db: AsyncSession,
+    request: ResolutionRequest,
+    config: dict,
+    case: TestCase,
+    suite_id: int | None,
+    suite_name: str | None,
+    case_order: int,
+    module_names: dict[int, str],
+) -> tuple[ResolvedCase | None, list[ExclusionItem], int]:
+    """解析单个用例（步骤/断言/元素），返回 ResolvedCase（或 None 表示整体 N/A）与排除项。"""
+    variables = await _merge_variables(db, request.project_id, suite_id, case, config, request.execution_variables)
+    selected_steps = _select_steps_for_run(case.steps or [], request.run_options)
+    step_overrides = _case_scoped(config, suite_id, case.id, "step")
+    assert_overrides = _case_scoped(config, suite_id, case.id, "assertion")
+    override_count = len(
+        {str(node.get("key") or "") for node in selected_steps if isinstance(node, dict)} & set(step_overrides)
+    )
+    override_count += len(
+        {str(node.get("key") or "") for node in (case.assertions or []) if isinstance(node, dict)}
+        & set(assert_overrides)
+    )
+
+    kept_steps, step_ex = _filter_and_patch(
+        selected_steps, config["step_rules"].get((suite_id, case.id), {}), step_overrides,
+        "step", case.id, case_name=case.name, suite_id=suite_id, suite_name=suite_name,
+    )
+    kept_assertions, assert_ex = _filter_and_patch(
+        case.assertions or [], config["assertion_rules"].get((suite_id, case.id), {}), assert_overrides,
+        "assertion", case.id, case_name=case.name, suite_id=suite_id, suite_name=suite_name,
+    )
+    exclusions = [*step_ex, *assert_ex]
+
+    # 渲染 + Registry 校验
+    steps = [_registry_validate_step(_render_node_with_context(n, variables, case.name)) for n in kept_steps]
+    assertions = [
+        _registry_validate_assertion(_render_node_with_context(n, variables, case.name))
+        for n in kept_assertions
+    ]
+
+    # 重新生成执行级连续 order，保留 source_order/source_key。
+    steps = _assign_order(steps, order_offset=0)
+    assertions = _assign_order(assertions, order_offset=len(steps))
+
+    if not steps and not assertions:
+        exclusions.append(
+            ExclusionItem(
+                target_type="case", suite_id=suite_id, case_id=case.id, node_key=None,
+                source_type="empty_after_filter", reason_code="other", reason_note="过滤后无可执行内容",
+                display_snapshot={
+                    "name": case.name, "key": str(case.id),
+                    "suite_name": suite_name, "case_name": case.name,
+                },
+            )
+        )
+        return None, exclusions, override_count
+
+    elements = await _resolve_element_snapshots(db, steps, assertions, config["element_overrides"], variables)
+    override_count += sum(1 for element_id in elements if int(element_id) in config["element_overrides"])
+
+    return (
+        ResolvedCase(
+            suite_id=suite_id,
+            suite_name=suite_name,
+            case_id=case.id,
+            case_name=case.name,
+            module_name=module_names.get(case.module_id) if case.module_id is not None else None,
+            case_order=case_order,
+            steps_snapshot=[_finalize_case_step(s) for s in steps],
+            assertions_snapshot=[finalize_snapshot_node(a) for a in assertions],
+            elements_snapshot=elements,
+        ),
+        exclusions, override_count,
+    )
+
+
+async def _parse_suite_steps(
+    db: AsyncSession,
+    project_id: int,
+    setup_nodes: list,
+    teardown_nodes: list,
+    config: dict,
+    suite_id: int,
+    suite_name: str,
+    execution_variables: dict,
+) -> tuple[list[dict], list[dict], dict[str, dict[str, Any]], list[ExclusionItem], int]:
+    """套件前后置步骤：过滤+覆盖+渲染+Registry 校验+元素，返回 (setup, teardown, elements, exclusions, overrides)。"""
+    variables = await _merge_suite_variables(db, project_id, suite_id, config, execution_variables)
+    suite_rules = {nk: r for (sid, nk), r in config["skip_suite_step"].items() if sid == suite_id}
+    suite_overrides = {nk: patch for (sid, nk), patch in config["suite_step_overrides"].items() if sid == suite_id}
+    exclusions: list[ExclusionItem] = []
+    override_count = 0
+
+    def _process(nodes: list, phase: str) -> tuple[list[dict], list[ExclusionItem]]:
+        nonlocal override_count
+        kept, ex = _filter_and_patch(
+            nodes or [], suite_rules, suite_overrides, "suite_step", None,
+            case_name=None, suite_id=suite_id, suite_name=suite_name, phase=phase,
+        )
+        override_count += len(
+            {str(n.get("key") or "") for n in (nodes or []) if isinstance(n, dict)} & set(suite_overrides)
+        )
+        steps = [_registry_validate_step(_render_node_with_context(n, variables, suite_name)) for n in kept]
+        steps = _assign_order(steps, order_offset=0)
+        return [_finalize_suite_step(n, phase) for n in steps], ex
+
+    setup_snapshot, setup_ex = _process(setup_nodes, "suite_setup")
+    teardown_snapshot, teardown_ex = _process(teardown_nodes, "suite_teardown")
+    exclusions = [*setup_ex, *teardown_ex]
+    elements = await _resolve_element_snapshots(
+        db, [*setup_snapshot, *teardown_snapshot], [], config["element_overrides"], variables
+    )
+    override_count += sum(1 for element_id in elements if int(element_id) in config["element_overrides"])
+    return setup_snapshot, teardown_snapshot, elements, exclusions, override_count
 
 
 def _assign_order(nodes: list[dict], order_offset: int) -> list[dict]:
@@ -732,6 +924,31 @@ async def _merge_variables(
         merged[v.name] = v.value
     if case is not None and case.variables:
         merged.update(case.variables)
+    if suite_id is not None:
+        for v in (
+            await db.execute(select(Variable).where(Variable.scope == "suite", Variable.suite_id == suite_id))
+        ).scalars().all():
+            merged[v.name] = v.value
+    merged.update(config["variable_overrides"])
+    merged.update(execution_variables)
+    return merged
+
+
+async def _merge_suite_variables(
+    db: AsyncSession,
+    project_id: int,
+    suite_id: int | None,
+    config: dict,
+    execution_variables: dict,
+) -> dict:
+    """套件级变量：全局 → 项目 → 套件 → APP档案 → 执行参数（不用例级）。"""
+    merged: dict = {}
+    for v in (await db.execute(select(Variable).where(Variable.scope == "global"))).scalars().all():
+        merged[v.name] = v.value
+    for v in (
+        await db.execute(select(Variable).where(Variable.scope == "project", Variable.project_id == project_id))
+    ).scalars().all():
+        merged[v.name] = v.value
     if suite_id is not None:
         for v in (
             await db.execute(select(Variable).where(Variable.scope == "suite", Variable.suite_id == suite_id))

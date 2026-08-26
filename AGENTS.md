@@ -56,6 +56,17 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 - 执行状态机**全小写**：`queued / running / stopping / passed / failed / error / stopped / cancelled`
 - Action/Assertion Registry 属于 agent 包，不属于 backend（backend/app/executor 目录可能废弃）
 
+## 套件级执行（以测试套件为执行与结果汇总单位，实施中）
+- 执行结构分层：`Execution → ExecutionSuite → ExecutionCase → ExecutionStep → ExecutionAssertion`；套件前后置步也只存 `ExecutionStep`（`execution_suite_id` 非空、`execution_case_id` 为空）。
+- `ExecutionStep.phase` 五值：`suite_setup / case_setup / case_main / case_teardown / suite_teardown`；检查约束保证父节点一致（套件阶段挂套件、用例阶段挂用例）。
+- `ExecutionAssertion` 直接关联 `execution_case_id`（`assertion_order` 排序），**移除了旧的 `execution_step_id`**——订阅/上报一律用 `execution_case_id` + `assertion_order`，勿再用 step 关联。
+- `ExecutionCase` 必填 `execution_suite_id` + `case_order`；同一 `case_id` 可在不同套件重复出现（取消跨套件去重）。
+- 单用例无套件上下文时建**虚拟套件**（`ExecutionSuite.is_virtual=True, suite_id IS NULL`）；带 `context_suite_id` 时用指定套件规则。
+- 解析器 `profile_resolver.ResolutionResult.suites: list[ResolvedSuite]`（不再扁平 cases，`cases` 仅为兼容属性）。节点覆盖以 `(suite_id, case_id)` 区分，避免共享用例跨套件污染；套件步跳过/覆盖用 `target_type='suite_step'` + `(suite_id, node_key)`。
+- 报告三层统计：用例（`total/passed/...`）+ 套件（`suite_*`）+ 步骤（`step_*`），N/A 不入任何成功率分母；`not_applicable_suites` 单列。
+- 执行详情/报告详情响应由扁平 `cases` 改为嵌套 `suites`（`load_suite_tree`）；报告服务保留 `cases`（`load_case_tree`）供 HTML/列表，`suites` 供分层展示。
+- 执行状态优先级：`error > failed > stopped > skipped > passed`；套件前置失败则套件内用例 `skipped` 但套件后置仍执行。
+
 ## 编码测试规则（Step 门禁）
 - **测试只在整个 Step 全部子任务完成后才执行**。一个 Step 内若包含多个子步骤任务（后端接口 / 前端页面 / 迁移 / 文档等），必须等所有子任务都实现完成，才运行该 Step 的完整测试（后端 pytest / Agent pytest / 前端 vitest+build / ruff / alembic check）。
 - 禁止在 Step 中途对半成品跑完整测试集或提交；中途只做轻量语法自检（如 `ruff` 单文件、`vue-tsc` 单文件），不作为通过依据。

@@ -89,6 +89,8 @@ async def create_suite(
         name=body.name,
         description=body.description,
         created_by=user.id,
+        setup_steps=[s.model_dump() for s in body.setup_steps],
+        teardown_steps=[s.model_dump() for s in body.teardown_steps],
     )
     db.add(suite)
     await touch_project_asset_revision(db, project_id)
@@ -128,6 +130,10 @@ async def update_suite(
     for field in ("name", "description", "status"):
         if field in body.model_fields_set:
             setattr(suite, field, getattr(body, field))
+    # 方案 §2：套件前后置步骤随元数据更新并递增资产 revision
+    for field in ("setup_steps", "teardown_steps"):
+        if field in body.model_fields_set and getattr(body, field) is not None:
+            setattr(suite, field, [s.model_dump() for s in getattr(body, field)])
     await touch_project_asset_revision(db, suite.project_id)
     await db.commit()
     await db.refresh(suite)
