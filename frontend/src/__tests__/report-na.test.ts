@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ReportDetail, ReportExclusion } from '@/api/reports'
+import { buildExclusionTree, flattenTreeKeys } from '@/utils/exclusionTree'
 
 describe('报告 N/A 契约（方案 §7）', () => {
   it('ReportSummary 含 not_applicable / exclusion_summary', () => {
@@ -60,5 +61,59 @@ describe('报告 N/A 契约（方案 §7）', () => {
     }
     expect(item.app_profile_name).toBe('DVR')
     expect(item.not_applicable).toBe(2)
+  })
+
+  it('exclusionTree 按 套件→用例→叶子 构造成层级树', () => {
+    const rows: ReportExclusion[] = [
+      {
+        target_type: 'suite_step',
+        suite_id: 10,
+        case_id: null,
+        phase: 'suite_setup',
+        path: '套件A/启动环境',
+        reason_code: 'unsupported',
+        reason_note: '无 DVR',
+        source_type: 'direct',
+      },
+      {
+        target_type: 'step',
+        suite_id: 10,
+        case_id: 20,
+        path: '套件A/登录用例/点击登录',
+        reason_code: 'not_adapted',
+        reason_note: null,
+        source_type: 'inherited',
+      },
+      {
+        target_type: 'case',
+        suite_id: 10,
+        case_id: 20,
+        path: '套件A/登录用例',
+        reason_code: 'unsupported',
+        reason_note: null,
+        source_type: 'direct',
+      },
+      {
+        target_type: 'step',
+        suite_id: null,
+        case_id: null,
+        path: '单用例步',
+        reason_code: 'empty_after_filter',
+        reason_note: null,
+        source_type: 'direct',
+      },
+    ]
+    const tree = buildExclusionTree(rows)
+    // 两个根：套件容器 + 无上下文叶子的独立节点
+    expect(tree).toHaveLength(2)
+    const suite = tree.find((n) => !n.isLeaf)!
+    expect(suite.children).toHaveLength(2) // 用例节点 + 套件前置步
+    const caseNode = suite.children.find((n) => !n.isLeaf)!
+    expect(caseNode.name).toBe('登录用例')
+    expect(caseNode.children).toHaveLength(2) // case 级排除 + step 级排除
+    // 展开收集全部节点 key（含根 + 子 + 孙）
+    expect(flattenTreeKeys(tree).length).toBeGreaterThan(rows.length)
+    // 无上下文叶子独立为根
+    expect(tree.find((n) => n.isLeaf)?.name).toBe('单用例步')
   })
 })

@@ -721,6 +721,7 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
                 "params": st.parameters or {},
                 "source_key": st.source_key,
                 "source_order": st.source_order,
+                "continue_on_failure": st.continue_on_failure,
             }
             for st in steps_by_suite.get(s.id, [])
             if st.phase == "suite_setup"
@@ -733,6 +734,7 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
                 "params": st.parameters or {},
                 "source_key": st.source_key,
                 "source_order": st.source_order,
+                "continue_on_failure": st.continue_on_failure,
             }
             for st in steps_by_suite.get(s.id, [])
             if st.phase == "suite_teardown"

@@ -3,12 +3,13 @@ import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { executionStatusMeta } from '@/api/executions'
-import { downloadReport, getReportDetail, type ReportCase, type ReportDetail, type ReportStep, type ReportSuite } from '@/api/reports'
+import { downloadReport, getReportDetail, type ReportCase, type ReportDetail, type ReportExclusion, type ReportStep, type ReportSuite } from '@/api/reports'
 import DevicePicker from '@/components/DevicePicker.vue'
 import ExecutionParameters from '@/components/ExecutionParameters.vue'
 import ReportStepTable from '@/components/ReportStepTable.vue'
 import { useExecutionRetry } from '@/composables/useExecutionRetry'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
+import { buildExclusionTree, flattenTreeKeys, type ExclusionTreeNode } from '@/utils/exclusionTree'
 import { splitExecutionSteps } from '@/utils/executionOrder'
 import { formatDateTime } from '@/utils/format'
 
@@ -44,21 +45,15 @@ const displayCases = computed(() => {
   return detail.value.cases.filter((c) => ['failed', 'error'].includes(c.status))
 })
 
-// 方案 §7.2：不适用内容清单（exclusions 扁平展开）
+// 方案 §7.2：不适用内容清单——套件→用例→步骤 独立层级树（builder 在 utils/exclusionTree.ts，可测试）
 const activeExclusions = ref<string[]>([])
-const exclusionRows = computed(() => {
-  const ex = detail.value?.exclusions ?? []
-  return ex.map((e, i) => ({
-    key: `${e.target_type}-${i}`,
-    target_type: e.target_type,
-    path: e.path,
-    reason_code: e.reason_code,
-    reason_note: e.reason_note,
-    source_type: e.source_type,
-  }))
-})
+
+const exclusionTree = computed<ExclusionTreeNode[]>(() =>
+  buildExclusionTree((detail.value?.exclusions ?? []) as ReportExclusion[]),
+)
+
 function expandAllExclusions() {
-  activeExclusions.value = exclusionRows.value.map((row) => row.key)
+  activeExclusions.value = flattenTreeKeys(exclusionTree.value)
 }
 
 function collapseAllExclusions() {
@@ -67,6 +62,18 @@ function collapseAllExclusions() {
 
 function typeLabel(t: unknown) {
   return { case: '用例', suite: '套件', batch: '批量' }[t as string] ?? '-'
+}
+
+// 不适用内容的目标类型标签（层级树叶子项）
+function typeLabel2(t: unknown) {
+  const map: Record<string, string> = {
+    suite: '套件',
+    case: '用例',
+    step: '步骤',
+    assertion: '断言',
+    suite_step: '套件步骤',
+  }
+  return map[t as string] ?? String(t ?? '-')
 }
 
 function durationText(ms: unknown) {
@@ -243,7 +250,7 @@ function stepsAfterAssertions(steps: ReportStep[]) {
         </div>
       </div>
 
-      <div v-if="exclusionRows.length" class="card">
+      <div v-if="exclusionTree.length" class="card">
         <div class="case-toolbar">
           <h2>不适用内容</h2>
           <div class="case-actions">
@@ -251,18 +258,55 @@ function stepsAfterAssertions(steps: ReportStep[]) {
             <el-button size="small" @click="collapseAllExclusions">全部折叠</el-button>
           </div>
         </div>
+        <!-- 方案 §7.2：独立层级树（套件 → 用例 → 步骤/断言/套件步；无上下文时叶子独立展示） -->
         <el-collapse v-model="activeExclusions" class="exclusion-collapse">
-          <el-collapse-item v-for="row in exclusionRows" :key="row.key" :name="row.key">
-            <template #title>
-              <el-tag size="small" type="danger" class="mr8">{{ row.target_type }}</el-tag>
-              <span class="exclusion-path">{{ row.path }}</span>
+          <template v-for="node in exclusionTree" :key="node.key">
+            <template v-if="node.children.length">
+              <el-collapse-item :name="node.key">
+                <template #title>
+                  <el-tag size="small" class="mr8" :type="node.targetType ? 'danger' : 'info'">套件</el-tag>
+                  <span class="exclusion-path">{{ node.name }}</span>
+                </template>
+                <el-collapse v-model="activeExclusions" class="exclusion-sub">
+                  <el-collapse-item v-for="child in node.children" :key="child.key" :name="child.key">
+                    <template #title>
+                      <el-tag size="small" class="mr8" :type="child.targetType ? 'danger' : 'warning'">{{ child.targetType === 'suite' ? '套件' : '用例' }}</el-tag>
+                      <span class="exclusion-path">{{ child.name }}</span>
+                    </template>
+                    <template v-if="child.children.length">
+                      <div v-for="leaf in child.children" :key="leaf.key" class="exclusion-row">
+                        <el-tag size="small" type="danger" class="mr8">{{ typeLabel2(leaf.targetType) }}</el-tag>
+                        <span class="exclusion-path">{{ leaf.name }}</span>
+                        <span class="exclusion-detail">
+                          <span>差异：{{ leaf.reasonCode }}</span>
+                          <span v-if="leaf.reasonNote">备注：{{ leaf.reasonNote }}</span>
+                          <span>来源：{{ leaf.sourceType }}</span>
+                        </span>
+                      </div>
+                    </template>
+                    <div v-else class="exclusion-detail">
+                      <span>差异：{{ child.reasonCode }}</span>
+                      <span v-if="child.reasonNote">备注：{{ child.reasonNote }}</span>
+                      <span>来源：{{ child.sourceType }}</span>
+                    </div>
+                  </el-collapse-item>
+                </el-collapse>
+              </el-collapse-item>
             </template>
-            <div class="exclusion-detail">
-              <span>差异：{{ row.reason_code }}</span>
-              <span v-if="row.reason_note">备注：{{ row.reason_note }}</span>
-              <span>来源：{{ row.source_type }}</span>
-            </div>
-          </el-collapse-item>
+            <template v-else>
+              <el-collapse-item :name="node.key">
+                <template #title>
+                  <el-tag size="small" type="danger" class="mr8">{{ typeLabel2(node.targetType) }}</el-tag>
+                  <span class="exclusion-path">{{ node.name }}</span>
+                </template>
+                <div class="exclusion-detail">
+                  <span>差异：{{ node.reasonCode }}</span>
+                  <span v-if="node.reasonNote">备注：{{ node.reasonNote }}</span>
+                  <span>来源：{{ node.sourceType }}</span>
+                </div>
+              </el-collapse-item>
+            </template>
+          </template>
         </el-collapse>
       </div>
 
@@ -514,6 +558,15 @@ function stepsAfterAssertions(steps: ReportStep[]) {
 }
 .exclusion-collapse {
   margin-top: 4px;
+}
+.exclusion-sub {
+  border: none;
+}
+.exclusion-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
 }
 .exclusion-path {
   font-size: 13px;

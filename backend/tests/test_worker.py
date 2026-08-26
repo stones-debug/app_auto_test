@@ -417,6 +417,48 @@ async def test_suites_payload_injects_execution_assertion_id(client: AsyncClient
         assert int(sent_assertion.get("order") or 0) == sent_order
 
 
+async def test_suites_payload_carries_suite_step_continue_on_failure(client: AsyncClient):
+    """协议 V2：套件步的 continue_on_failure 必须经 ExecutionStep 行固化并下发。
+
+    回归：快照（setup_steps_snapshot）保留 continue_on_failure，但 ExecutionStep 无该列、
+    payload 也不下发，Agent 运行时步失败始终中止（continue_on_failure 配置丢失）。
+    """
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        await db.commit()
+        suite = (
+            await db.execute(
+                select(ExecutionSuite).where(
+                    ExecutionSuite.execution_id == execution_id,
+                    ExecutionSuite.is_virtual.is_(True),
+                )
+            )
+        ).scalars().first()
+        assert suite is not None
+        db.add(
+            ExecutionStep(
+                execution_suite_id=suite.id,
+                phase="suite_setup",
+                step_order=1,
+                action="sleep",
+                parameters={"duration": 1},
+                continue_on_failure=True,
+                status="pending",
+            )
+        )
+        await db.commit()
+
+        payload = await worker_service._build_suites_payload(db, execution)
+        setup_steps = payload[0]["setup_steps"]
+        assert len(setup_steps) == 1
+        assert setup_steps[0]["continue_on_failure"] is True
+
+
 # ---------- 扫描任务 ----------
 
 

@@ -243,6 +243,9 @@ async def get_report_detail(db: AsyncSession, execution_id: int) -> dict:
         "exclusions": [
             {
                 "target_type": row.target_type,
+                "suite_id": row.suite_id_snapshot,
+                "case_id": row.case_id_snapshot,
+                "phase": (row.details or {}).get("phase"),
                 "path": "/".join(
                     part
                     for part in (

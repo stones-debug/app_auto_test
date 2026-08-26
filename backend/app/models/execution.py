@@ -5,6 +5,7 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -189,6 +190,8 @@ class ExecutionStep(Base, TimestampMixin):
     source_key: Mapped[str | None] = mapped_column(String(255))
     source_order: Mapped[int | None] = mapped_column(Integer)
     parameters: Mapped[dict] = mapped_column(JSON, default=dict)
+    # 步骤任意阶段失败是否继续（快照固化，防止运行时配置丢失；套件步同口径）
+    continue_on_failure: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -153,6 +153,10 @@ export interface ReportExclusion {
   reason_note: string | null
   source_type: string | null
   node_key?: string | null
+  // 方案 §7.2：层级树所需结构字段（历史执行可能缺失）
+  suite_id?: number | null
+  case_id?: number | null
+  phase?: string | null
 }
 
 export interface ReportDetail {

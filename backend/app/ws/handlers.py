@@ -465,6 +465,7 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
             step_order=step_order,
             action=payload.get("action") or snap.get("action") or "unknown",
             parameters=dict(snapshot_parameters),
+            continue_on_failure=bool(snap.get("continue_on_failure", False)),
             status=payload.get("status") or "passed",
             started_at=now,
             finished_at=now,

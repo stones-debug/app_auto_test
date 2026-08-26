@@ -46,6 +46,7 @@ async def materialize_snapshot(
                     source_key=step.get("source_key"),
                     source_order=step.get("source_order"),
                     parameters=step.get("params") or {},
+                    continue_on_failure=bool(step.get("continue_on_failure", False)),
                     status="pending",
                 )
             )
@@ -59,6 +60,7 @@ async def materialize_snapshot(
                     source_key=step.get("source_key"),
                     source_order=step.get("source_order"),
                     parameters=step.get("params") or {},
+                    continue_on_failure=bool(step.get("continue_on_failure", False)),
                     status="pending",
                 )
             )
@@ -89,6 +91,7 @@ async def materialize_snapshot(
                         source_key=step.get("source_key"),
                         source_order=step.get("source_order"),
                         parameters=step.get("params") or {},
+                        continue_on_failure=bool(step.get("continue_on_failure", False)),
                         status="pending",
                     )
                 )

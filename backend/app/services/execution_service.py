@@ -288,6 +288,8 @@ async def _create_execution_with_profile(
     observe_snapshot(snapshot_bytes, (_t1 - _t0) * 1000.0)
     for ex in result.exclusions:
         display = ex.display_snapshot or {}
+        if ex.phase is not None:
+            display = {**display, "phase": ex.phase}
         db.add(
             ExecutionExclusion(
                 execution_id=execution.id,
