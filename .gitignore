@@ -21,6 +21,7 @@ dist/
 AppAutoTestAgent/
 .playwright-mcp
 
+
 # 环境与密钥
 .env
 .env.local
@@ -47,3 +48,8 @@ Thumbs.db
 
 frontend/src/auto-imports.d.ts
 frontend/src/components.d.ts
+
+
+# agent
+.opencode
+.omo
