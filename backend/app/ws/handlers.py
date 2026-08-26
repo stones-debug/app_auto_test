@@ -657,6 +657,56 @@ async def handle_suite_status(db: AsyncSession, agent_id: int, payload: dict) ->
     )
 
 
+async def _stored_execution_terminal(
+    db: AsyncSession, execution_id: int
+) -> tuple[str | None, str | None]:
+    """返回已落库分层结果中阻止执行通过的最高优先级终态及来源。"""
+    suite_statuses = set(
+        (
+            await db.execute(
+                select(ExecutionSuite.status).where(
+                    ExecutionSuite.execution_id == execution_id,
+                    ExecutionSuite.status.in_(("error", "failed", "stopped")),
+                )
+            )
+        ).scalars()
+    )
+    case_statuses = set(
+        (
+            await db.execute(
+                select(ExecutionCase.status).where(
+                    ExecutionCase.execution_id == execution_id,
+                    ExecutionCase.status.in_(("error", "failed", "stopped")),
+                )
+            )
+        ).scalars()
+    )
+    suite_step_statuses = set(
+        (
+            await db.execute(
+                select(ExecutionStep.status)
+                .join(
+                    ExecutionSuite,
+                    ExecutionSuite.id == ExecutionStep.execution_suite_id,
+                )
+                .where(
+                    ExecutionSuite.execution_id == execution_id,
+                    ExecutionStep.execution_case_id.is_(None),
+                    ExecutionStep.status.in_(("error", "failed", "stopped")),
+                )
+            )
+        ).scalars()
+    )
+    for candidate in ("error", "failed", "stopped"):
+        if candidate in suite_statuses:
+            return candidate, f"{candidate} 套件"
+        if candidate in case_statuses:
+            return candidate, f"{candidate} 用例"
+        if candidate in suite_step_statuses:
+            return candidate, f"{candidate} 套件步骤"
+    return None, None
+
+
 async def handle_execution_result(db: AsyncSession, agent_id: int, payload: dict) -> None:
     execution_id = payload.get("execution_id")
     execution = await _bound_execution(db, agent_id, execution_id, payload.get("session_token"))
@@ -665,24 +715,20 @@ async def handle_execution_result(db: AsyncSession, agent_id: int, payload: dict
     status = (payload.get("status") or "error").lower()
     if status not in TERMINAL_STATES:
         status = "error"
-    # 服务端以已落库的用例结果为准，不能让迟到、旧版本或异常 Agent 的 passed
-    # 覆盖断言/步骤已经判定的失败状态。
+    # 服务端以已落库的分层结果为准，不能让迟到或异常 Agent 的 passed
+    # 覆盖套件、用例或套件级步骤已经判定的失败状态。
     if status == "passed":
-        failed_case_id = await db.scalar(
-            select(ExecutionCase.id)
-            .where(
-                ExecutionCase.execution_id == execution.id,
-                ExecutionCase.status == "failed",
-            )
-            .limit(1)
-        )
-        if failed_case_id is not None:
-            status = "failed"
+        corrected_status, failure_source = await _stored_execution_terminal(db, execution.id)
+        if corrected_status is not None:
+            status = corrected_status
             db.add(
                 ExecutionLog(
                     execution_id=execution_id,
                     level="WARN",
-                    message="Agent 上报执行通过，但服务端已记录失败用例，终态已修正为 failed",
+                    message=(
+                        f"Agent 上报执行通过，但服务端已记录{failure_source}，"
+                        f"终态已修正为 {corrected_status}"
+                    ),
                     source="worker",
                 )
             )

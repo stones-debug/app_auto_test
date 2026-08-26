@@ -17,6 +17,7 @@ from app.models import (
     ExecutionCase,
     ExecutionLog,
     ExecutionStep,
+    ExecutionSuite,
     Project,
     User,
 )
@@ -516,6 +517,58 @@ async def test_handle_assertion_result(client: AsyncClient):
     assert assertion_msgs[0]["assertions"][0]["status"] == "pass"
     assert assertion_msgs[0]["case_status"] == "passed"
     await execution_manager.disconnect(execution_id, front)
+
+
+@pytest.mark.parametrize("failure_source", ["suite", "suite_step"])
+async def test_execution_result_passed_cannot_override_suite_failure(
+    client: AsyncClient, failure_source: str
+):
+    """Agent 的 passed 不能覆盖已落库的失败套件或失败套件步骤。"""
+    _token, _case_id, execution_id = await _setup_case_execution(client)
+    async with SessionLocal() as db:
+        agent_id = await _create_agent()
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        await _bind_execution_to_agent(db, execution_id, agent_id)
+        suite = (
+            await db.execute(
+                select(ExecutionSuite).where(ExecutionSuite.execution_id == execution_id)
+            )
+        ).scalar_one()
+        if failure_source == "suite":
+            suite.status = "failed"
+        else:
+            db.add(
+                ExecutionStep(
+                    execution_suite_id=suite.id,
+                    phase="suite_setup",
+                    step_order=1,
+                    action="sleep",
+                    status="failed",
+                )
+            )
+        await db.commit()
+        await handlers.handle_execution_result(
+            db,
+            agent_id,
+            {
+                "execution_id": execution_id,
+                "session_token": "sess-token",
+                "status": "passed",
+            },
+        )
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution.status == "failed"
+        warning = await db.scalar(
+            select(ExecutionLog.message).where(
+                ExecutionLog.execution_id == execution_id,
+                ExecutionLog.level == "WARN",
+            )
+        )
+        expected_source = "套件步骤" if failure_source == "suite_step" else "套件"
+        assert expected_source in warning
 
 
 async def test_assertion_failure_survives_teardown_and_overrides_agent_passed(
