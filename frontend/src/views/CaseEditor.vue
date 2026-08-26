@@ -85,10 +85,6 @@ const teardownSteps = phaseSteps('teardown')
 // 收起/展开：编辑完成后可折叠为一行简略信息，点击展开
 const collapsed = ref(false)
 
-// 详情区块默认收起（断言/变量）：进入编辑页仅见标题，避免详情抢占整屏
-const assertionsCollapsed = ref(true)
-const variablesCollapsed = ref(true)
-
 const moduleName = computed(() => {
   if (form.module_id == null) return '未分组'
   return modules.value.find((m) => m.id === form.module_id)?.name ?? '未分组'
@@ -119,7 +115,6 @@ function toggleCollapsed() {
 }
 
 function addAssertion() {
-  assertionsCollapsed.value = false
   const assertions = form.assertions as Assertion[]
   assertions.push({
     key: crypto.randomUUID(),
@@ -145,7 +140,6 @@ function reorderAssertions() {
 }
 
 function addVariable() {
-  variablesCollapsed.value = false
   variableEntries.value.push({ key: '', value: '' })
 }
 
@@ -283,25 +277,10 @@ onMounted(async () => {
     />
 
     <div class="content-card mb16">
-      <div class="section-title-row collapse-title-row">
-        <div
-          class="collapse-heading"
-          role="button"
-          tabindex="0"
-          :aria-expanded="!assertionsCollapsed"
-          @click="assertionsCollapsed = !assertionsCollapsed"
-          @keydown.enter.prevent="assertionsCollapsed = !assertionsCollapsed"
-          @keydown.space.prevent="assertionsCollapsed = !assertionsCollapsed"
-        >
-          <span class="collapse-chevron">{{ assertionsCollapsed ? '▸' : '▾' }}</span>
-          <span class="section-title">断言</span>
-          <el-tag v-if="(form.assertions ?? []).length" size="small" type="info" effect="plain">
-            {{ (form.assertions ?? []).length }}
-          </el-tag>
-        </div>
+      <div class="section-title-row">
+        <span class="section-title">断言</span>
         <el-button type="primary" size="small" @click="addAssertion">添加断言</el-button>
       </div>
-      <template v-if="!assertionsCollapsed">
       <Draggable v-model="form.assertions" item-key="order" handle=".drag-handle" class="step-list" @end="reorderAssertions">
         <template #item="{ element, index }">
           <el-card class="step-card assertion" shadow="never">
@@ -351,29 +330,13 @@ onMounted(async () => {
       <div class="add-more">
         <el-button type="primary" plain class="w-full" @click="addAssertion">+ 添加断言</el-button>
       </div>
-      </template>
     </div>
 
     <div class="content-card mb16">
-      <div class="section-title-row collapse-title-row">
-        <div
-          class="collapse-heading"
-          role="button"
-          tabindex="0"
-          :aria-expanded="!variablesCollapsed"
-          @click="variablesCollapsed = !variablesCollapsed"
-          @keydown.enter.prevent="variablesCollapsed = !variablesCollapsed"
-          @keydown.space.prevent="variablesCollapsed = !variablesCollapsed"
-        >
-          <span class="collapse-chevron">{{ variablesCollapsed ? '▸' : '▾' }}</span>
-          <span class="section-title">用例变量</span>
-          <el-tag v-if="variableEntries.length" size="small" type="info" effect="plain">
-            {{ variableEntries.length }}
-          </el-tag>
-        </div>
+      <div class="section-title-row">
+        <span class="section-title">用例变量</span>
         <el-button type="primary" size="small" @click="addVariable">添加变量</el-button>
       </div>
-      <template v-if="!variablesCollapsed">
       <div v-for="(entry, idx) in variableEntries" :key="idx" class="variable-row">
         <el-input v-model="entry.key" placeholder="变量名" class="var-name" />
         <el-input v-model="entry.value" placeholder="变量值" class="var-value" />
@@ -382,7 +345,6 @@ onMounted(async () => {
       <div class="add-more">
         <el-button type="primary" plain class="w-full" @click="addVariable">+ 添加变量</el-button>
       </div>
-      </template>
     </div>
 
     <div class="footer">
@@ -472,17 +434,6 @@ onMounted(async () => {
   border-radius: 12px;
   padding: 20px;
 }
-.collapse-title-row { align-items: center; }
-.collapse-heading {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  cursor: pointer;
-  min-width: 0;
-}
-.collapse-heading:focus-visible { outline: 2px solid var(--primary); outline-offset: 4px; border-radius: 4px; }
-.collapse-chevron { color: var(--primary); font-size: 13px; flex-shrink: 0; }
-.collapse-heading .section-title { margin-bottom: 0; }
 .section-title {
   font-size: 15px;
   font-weight: 600;
