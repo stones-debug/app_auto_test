@@ -13,13 +13,31 @@ function durationText(ms: number | null | undefined) {
   if (ms == null) return '-'
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
 }
+
+// 五值 phase 归一化为中文标签（未匹配时兜底为"主体"）
+function phaseLabel(phase?: string) {
+  switch (phase) {
+    case 'setup':
+    case 'case_setup':
+      return '用例前置'
+    case 'teardown':
+    case 'case_teardown':
+      return '用例后置'
+    case 'suite_setup':
+      return '套件前置'
+    case 'suite_teardown':
+      return '套件后置'
+    default:
+      return '主体'
+  }
+}
 </script>
 
 <template>
   <el-table :data="steps" size="small">
     <el-table-column prop="step_order" label="#" width="50" />
-    <el-table-column label="阶段" width="70">
-      <template #default="{ row }">{{ row.phase === 'setup' ? '前置' : row.phase === 'teardown' ? '后置' : '主体' }}</template>
+    <el-table-column label="阶段" width="80">
+      <template #default="{ row }">{{ phaseLabel(row.phase) }}</template>
     </el-table-column>
     <el-table-column prop="action" label="动作" width="120" />
     <el-table-column label="参数" min-width="180" show-overflow-tooltip>

@@ -19,11 +19,21 @@ export type ExecutionStatus =
   | 'stopped'
   | 'cancelled'
 
+export type ExecutionStepPhase =
+  | 'setup'
+  | 'main'
+  | 'teardown'
+  | 'case_setup'
+  | 'case_main'
+  | 'case_teardown'
+  | 'suite_setup'
+  | 'suite_teardown'
+
 export interface ExecutionStep {
   id: number
   step_order: number
   action: string
-  phase?: 'setup' | 'main' | 'teardown'
+  phase?: ExecutionStepPhase
   parameters: Record<string, unknown>
   status: string
   duration: number | null
@@ -55,6 +65,28 @@ export interface ExecutionCase {
   assertions?: ExecutionAssertion[]
 }
 
+export interface ExecutionSuite {
+  id: number
+  suite_id: number | null
+  suite_name: string
+  suite_order: number
+  status: string
+  duration: number | null
+  error_message: string | null
+  setup_steps: ExecutionStep[]
+  cases: ExecutionCase[]
+  teardown_steps: ExecutionStep[]
+}
+
+// 执行摘要：可执行的套件/用例计数（后端 _execution_summary）
+export interface ExecutionSummary {
+  executable_suites?: number
+  executable_cases?: number
+  suite_total?: number
+  case_total?: number
+  [key: string]: number | undefined
+}
+
 export interface Execution {
   id: number
   project_id: number
@@ -83,7 +115,11 @@ export interface ExecutionDetail extends Execution {
   project_name: string | null
   device_name: string | null
   created_by_name: string | null
-  cases: ExecutionCase[]
+  // 方案 §4.3：执行详情嵌套 suites（套件级执行单位）
+  suites?: ExecutionSuite[]
+  summary?: ExecutionSummary
+  // 兼容：单用例/历史执行仍可能返回扁平 cases
+  cases?: ExecutionCase[]
 }
 
 export interface ExecutionLog {

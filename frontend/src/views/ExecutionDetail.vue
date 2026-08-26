@@ -13,7 +13,7 @@ import {
 import { findReportByExecution } from '@/api/reports'
 import DevicePicker from '@/components/DevicePicker.vue'
 import ExecutionParameters from '@/components/ExecutionParameters.vue'
-import ExecutionTimeline, { type TimelineCase } from '@/components/ExecutionTimeline.vue'
+import ExecutionTimeline, { type TimelineSuite } from '@/components/ExecutionTimeline.vue'
 import LiveLogViewer, { type LogEntry } from '@/components/LiveLogViewer.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { useExecutionRetry } from '@/composables/useExecutionRetry'
@@ -21,7 +21,7 @@ import { useExecutionSocket } from '@/composables/useExecutionSocket'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { getToken } from '@/utils/request'
 import { liveLogKey, mergeExecutionLogs, type LogLike } from '@/utils/executionLogs'
-import { applyAssertionResult, applyStepResult, settleExecutionCases } from '@/utils/executionRealtime'
+import { applyAssertionResult, applyStepResult, settleExecutionSuites } from '@/utils/executionRealtime'
 import { formatDateTime } from '@/utils/format'
 
 const route = useRoute()
@@ -45,32 +45,54 @@ let completedPulled = false
 const socket = shallowRef<ReturnType<typeof useExecutionSocket> | null>(null)
 let staleId = 0 // loadAll 的异步完成检查：只允许当前路由的请求生效
 
-const timelineCases = computed<TimelineCase[]>(() => {
-  return (detail.value?.cases ?? []).map((c) => ({
-    case_id: c.case_id,
-    case_name: c.case_name,
-    status: c.status,
-    steps: (c.steps ?? []).map((s) => ({
-      step_order: s.step_order,
-      action: s.action,
-      phase: s.phase,
-      parameters: s.parameters,
-      status: s.status,
-      duration: s.duration,
-      actual_value: s.actual_value,
-      error_message: s.error_message,
-      // Step 7：保留 API 返回的 artifact_id（截图鉴权入口依赖）
-      artifact_id: s.artifact_id ?? null,
+const timelineSuites = computed<TimelineSuite[]>(() => {
+  return (detail.value?.suites ?? []).map((s) => ({
+    suite_id: s.suite_id,
+    suite_name: s.suite_name,
+    status: s.status,
+    duration: s.duration,
+    error_message: s.error_message,
+    setup_steps: (s.setup_steps ?? []).map(toTimelineStep),
+    cases: (s.cases ?? []).map((c) => ({
+      case_id: c.case_id,
+      case_name: c.case_name,
+      status: c.status,
+      steps: (c.steps ?? []).map(toTimelineStep),
+      assertions: (c.assertions ?? []).map((a) => ({
+        assertion_type: a.assertion_type,
+        expected_value: a.expected_value,
+        actual_value: a.actual_value,
+        status: a.status,
+        error_message: a.error_message,
+      })),
     })),
-    assertions: (c.assertions ?? []).map((a) => ({
-      assertion_type: a.assertion_type,
-      expected_value: a.expected_value,
-      actual_value: a.actual_value,
-      status: a.status,
-      error_message: a.error_message,
-    })),
+    teardown_steps: (s.teardown_steps ?? []).map(toTimelineStep),
   }))
 })
+
+function toTimelineStep(s: {
+  step_order: number
+  action: string
+  phase?: string
+  parameters: Record<string, unknown>
+  status: string
+  duration: number | null
+  actual_value: string | null
+  error_message: string | null
+  artifact_id?: number | null
+}) {
+  return {
+    step_order: s.step_order,
+    action: s.action,
+    phase: s.phase as never,
+    parameters: s.parameters,
+    status: s.status,
+    duration: s.duration,
+    actual_value: s.actual_value,
+    error_message: s.error_message,
+    artifact_id: s.artifact_id ?? null,
+  }
+}
 
 const logEntries = computed<LogEntry[]>(() => {
   const live: LogLike[] = liveLogs.value.map((l) => ({ id: l.id, level: l.level, message: l.message, source: l.source, created_at: l.created_at }))
@@ -143,16 +165,16 @@ function subscribe(id: number) {
         created_at: (msg.timestamp as string) ?? new Date().toISOString(),
       })
     } else if (type === 'step_result') {
-      if (detail.value) applyStepResult(detail.value.cases, msg)
+      if (detail.value) applyStepResult(detail.value.suites ?? [], msg)
     } else if (type === 'assertion_result') {
-      if (detail.value) applyAssertionResult(detail.value.cases, msg)
+      if (detail.value) applyAssertionResult(detail.value.suites ?? [], msg)
     } else if (type === 'completed') {
       // Step 7：completed 只触发一次 REST 补拉并关闭 socket
       if (completedPulled) return
       completedPulled = true
       if (detail.value) {
         detail.value.status = (msg.status as ExecutionStatus) ?? detail.value.status
-        settleExecutionCases(detail.value.cases, detail.value.status)
+        settleExecutionSuites(detail.value.suites ?? [], detail.value.status)
       }
       ws.close()
       void loadAll(id)
@@ -243,8 +265,8 @@ onBeforeUnmount(() => socket.value?.close())
 
     <div class="detail-grid">
       <div class="content-card">
-        <div class="v2-card-title">用例、步骤、断言</div>
-        <ExecutionTimeline v-if="detail" :cases="timelineCases" />
+        <div class="v2-card-title">套件、用例、步骤、断言</div>
+        <ExecutionTimeline v-if="detail" :suites="timelineSuites" />
       </div>
       <div class="content-card log-card">
         <div class="v2-card-title">实时日志</div>

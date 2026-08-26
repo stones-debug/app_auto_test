@@ -6,6 +6,11 @@ interface PhasedStep {
   phase?: string
 }
 
+/** 判断是否为"后置"阶段（旧 'teardown' 与新 'case_teardown'）。 */
+export function isTeardownPhase(phase?: string): boolean {
+  return phase === 'teardown' || phase === 'case_teardown'
+}
+
 /** 用例的实际执行顺序：前置/主体步骤 → 断言 → 后置步骤。 */
 export function orderExecutionItems<TStep extends PhasedStep, TAssertion>(
   steps: TStep[],
@@ -16,7 +21,7 @@ export function orderExecutionItems<TStep extends PhasedStep, TAssertion>(
 
   steps.forEach((step, index) => {
     const item = { kind: 'step' as const, index, value: step }
-    if (step.phase === 'teardown') afterAssertions.push(item)
+    if (isTeardownPhase(step.phase)) afterAssertions.push(item)
     else beforeAssertions.push(item)
   })
 
@@ -36,8 +41,8 @@ export function splitExecutionSteps<TStep extends PhasedStep>(steps: TStep[]): {
   afterAssertions: TStep[]
 } {
   return {
-    beforeAssertions: steps.filter((step) => step.phase !== 'teardown'),
-    afterAssertions: steps.filter((step) => step.phase === 'teardown'),
+    beforeAssertions: steps.filter((step) => !isTeardownPhase(step.phase)),
+    afterAssertions: steps.filter((step) => isTeardownPhase(step.phase)),
   }
 }
 

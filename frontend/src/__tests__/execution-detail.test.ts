@@ -5,7 +5,7 @@ import {
   applyAssertionResult,
   applyStepResult,
   executionConnectionState,
-  settleExecutionCases,
+  settleExecutionSuites,
 } from '@/utils/executionRealtime'
 import { applyOnlyFailed } from '@/utils/reportFilter'
 import { assertionPassed, orderExecutionItems } from '@/utils/executionOrder'
@@ -16,48 +16,63 @@ import { formatParameters, hasParameters } from '@/utils/parameters'
 ;(globalThis as Record<string, unknown>).location = { protocol: 'http:', host: 'test.local' }
 
 describe('Step 7 执行详情：日志去重与 WS 状态', () => {
-  it('步骤结果分别更新步骤状态与服务端 case_status', () => {
-    const cases = [{
-      id: 1,
-      case_id: 10,
-      case_name: '登录',
-      module_name: null,
-      status: 'pending',
-      started_at: null,
-      finished_at: null,
+  it('步骤结果分别更新步骤状态与服务端 case_status（嵌套 suites 定位）', () => {
+    const suites = [{
+      id: 5,
+      suite_id: null,
+      suite_name: '虚拟套件',
+      status: 'running',
       duration: null,
       error_message: null,
-      steps: [{
-        id: 2,
-        step_order: 1,
-        action: 'click',
-        parameters: {},
+      setup_steps: [],
+      cases: [{
+        id: 1,
+        case_id: 10,
+        case_name: '登录',
         status: 'pending',
-        duration: null,
-        actual_value: null,
-        error_message: null,
+        steps: [{
+          id: 2,
+          step_order: 1,
+          action: 'click',
+          parameters: {},
+          status: 'pending',
+          duration: null,
+          actual_value: null,
+          error_message: null,
+        }],
+        assertions: [],
       }],
-      assertions: [],
+      teardown_steps: [],
     }]
 
-    applyStepResult(cases, {
-      case_id: 10,
+    applyStepResult(suites, {
+      execution_case_id: 1,
       step_order: 1,
       status: 'passed',
       case_status: 'running',
       duration: 120,
     })
 
-    expect(cases[0].steps[0].status).toBe('passed')
-    expect(cases[0].status).toBe('running')
-    applyAssertionResult(cases, { case_id: 10, case_status: 'passed' })
-    expect(cases[0].status).toBe('passed')
+    expect(suites[0].cases[0].steps[0].status).toBe('passed')
+    expect(suites[0].cases[0].status).toBe('running')
+    applyAssertionResult(suites, {
+      execution_case_id: 1,
+      case_status: 'passed',
+    })
+    expect(suites[0].cases[0].status).toBe('passed')
   })
 
   it('实时合并断言结果，并兼容 pass/passed 状态口径', () => {
-    const cases = [{ case_id: 10, status: 'running', steps: [], assertions: [] }]
-    applyAssertionResult(cases, {
-      case_id: 10,
+    const suites = [{
+      suite_id: null,
+      suite_name: '套件',
+      status: 'running',
+      setup_steps: [],
+      cases: [{ id: 3, case_id: 10, status: 'running', steps: [], assertions: [] }],
+      teardown_steps: [],
+    }]
+    applyAssertionResult(suites, {
+      execution_case_id: 3,
       case_status: 'failed',
       assertions: [{
         type: 'text_equals',
@@ -67,14 +82,14 @@ describe('Step 7 执行详情：日志去重与 WS 状态', () => {
       }],
     })
 
-    expect(cases[0].assertions).toEqual([{
+    expect(suites[0].cases[0].assertions).toEqual([{
       assertion_type: 'text_equals',
       expected_value: 'wrong',
       actual_value: 'admin',
       status: 'fail',
       error_message: null,
     }])
-    expect(cases[0].status).toBe('failed')
+    expect(suites[0].cases[0].status).toBe('failed')
     expect(assertionPassed('pass')).toBe(true)
     expect(assertionPassed('passed')).toBe(true)
     expect(assertionPassed('failed')).toBe(false)
@@ -83,9 +98,9 @@ describe('Step 7 执行详情：日志去重与 WS 状态', () => {
   it('时间线按前置/主体 → 断言 → 后置的真实顺序展示', () => {
     const items = orderExecutionItems(
       [
-        { phase: 'setup', name: 'setup' },
-        { phase: 'main', name: 'main' },
-        { phase: 'teardown', name: 'teardown' },
+        { phase: 'case_setup', name: 'setup' },
+        { phase: 'case_main', name: 'main' },
+        { phase: 'case_teardown', name: 'teardown' },
       ],
       [{ name: 'assertion' }],
     )
@@ -97,13 +112,23 @@ describe('Step 7 执行详情：日志去重与 WS 状态', () => {
     ])
   })
 
-  it('completed 立即收敛仍为 pending/running 的用例', () => {
-    const cases = [
-      { case_id: 1, status: 'running' },
-      { case_id: 2, status: 'pending' },
+  it('completed 立即收敛仍为 pending/running 的套件与用例', () => {
+    const suites = [
+      {
+        suite_id: null,
+        suite_name: '套件A',
+        status: 'running',
+        setup_steps: [],
+        cases: [
+          { id: 1, case_id: 11, status: 'running' },
+          { id: 2, case_id: 12, status: 'pending' },
+        ],
+        teardown_steps: [],
+      },
     ]
-    settleExecutionCases(cases, 'failed')
-    expect(cases.map((item) => item.status)).toEqual(['failed', 'skipped'])
+    settleExecutionSuites(suites, 'failed')
+    expect(suites[0].status).toBe('failed')
+    expect(suites[0].cases.map((item) => item.status)).toEqual(['failed', 'skipped'])
   })
 
   it('执行终态优先显示已结束，不再显示连接中', () => {

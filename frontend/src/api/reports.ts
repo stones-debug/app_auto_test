@@ -52,11 +52,21 @@ export interface ReportExecution {
   profile_resolution_summary: Record<string, number>
 }
 
+export type ReportStepPhase =
+  | 'setup'
+  | 'main'
+  | 'teardown'
+  | 'case_setup'
+  | 'case_main'
+  | 'case_teardown'
+  | 'suite_setup'
+  | 'suite_teardown'
+
 export interface ReportStep {
   id: number
   step_order: number
   action: string
-  phase?: 'setup' | 'main' | 'teardown'
+  phase?: ReportStepPhase
   parameters: Record<string, unknown>
   status: string
   duration: number | null
@@ -87,6 +97,20 @@ export interface ReportCase {
   assertions: ReportAssertion[]
 }
 
+// 方案 §4.4：嵌套套件（套件前后置 + 套件内用例）
+export interface ReportSuite {
+  id: number
+  suite_id: number | null
+  suite_name: string
+  suite_order: number
+  status: string
+  duration: number | null
+  error_message: string | null
+  setup_steps: ReportStep[]
+  cases: ReportCase[]
+  teardown_steps: ReportStep[]
+}
+
 export interface ReportLog {
   id: number
   level: string
@@ -106,6 +130,20 @@ export interface ReportSummary {
   // 方案 §7：不适用（N/A）计数与排除摘要
   not_applicable?: number
   exclusion_summary?: Record<string, number>
+  // 方案 §4.4：套件/步骤三层统计
+  suite_total?: number
+  suite_passed?: number
+  suite_failed?: number
+  suite_error_count?: number
+  suite_skipped?: number
+  suite_success_rate?: number
+  step_total?: number
+  step_passed?: number
+  step_failed?: number
+  step_error_count?: number
+  step_skipped?: number
+  step_success_rate?: number
+  not_applicable_suites?: number
 }
 
 export interface ReportExclusion {
@@ -121,6 +159,8 @@ export interface ReportDetail {
   execution: ReportExecution
   report: ReportSummary
   cases: ReportCase[]
+  // 方案 §4.4：嵌套套件（套件级执行单位）
+  suites: ReportSuite[]
   logs: ReportLog[]
   // 方案 §7.2：不适用内容清单
   exclusions?: ReportExclusion[]

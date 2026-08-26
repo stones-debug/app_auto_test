@@ -3,13 +3,12 @@ import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { executionStatusMeta } from '@/api/executions'
-import { downloadReport, getReportDetail, type ReportDetail, type ReportStep } from '@/api/reports'
+import { downloadReport, getReportDetail, type ReportCase, type ReportDetail, type ReportStep, type ReportSuite } from '@/api/reports'
 import DevicePicker from '@/components/DevicePicker.vue'
 import ExecutionParameters from '@/components/ExecutionParameters.vue'
 import ReportStepTable from '@/components/ReportStepTable.vue'
 import { useExecutionRetry } from '@/composables/useExecutionRetry'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
-import { applyOnlyFailed } from '@/utils/reportFilter'
 import { splitExecutionSteps } from '@/utils/executionOrder'
 import { formatDateTime } from '@/utils/format'
 
@@ -21,15 +20,26 @@ const reportId = computed(() => Number(route.params.reportId ?? route.params.id)
 
 const loading = ref(false)
 const detail = ref<ReportDetail | null>(null)
-// Step 7：activeCases 存 case.id（el-collapse name 必须是 case.id，而非过滤后数组索引）
-const activeCases = ref<number[]>([])
+// Step 7：activeSuites 存套件/用例的展示 key（el-collapse name 用 suite:<id>/case:<id> 双段）
+const activeSuites = ref<string[]>([])
 const onlyFailed = ref(false)
 let loadedReportId: number | null = null
 
 const { picker, retry: retryEntry, running: retrying } = useExecutionRetry()
 
+// 方案 §4.4：按 suites 分层；single-failed 时每个套件内仅保失败用例
+const displaySuites = computed(() => {
+  if (!detail.value?.suites) return []
+  if (!onlyFailed.value) return detail.value.suites
+  return detail.value.suites
+    .map((s) => ({ ...s, cases: s.cases.filter((c) => ['failed', 'error'].includes(c.status)) }))
+    .filter((s) => s.cases.length > 0)
+})
+
+// 单用例/历史兼容：无 suites 时回退扁平 cases
 const displayCases = computed(() => {
-  if (!detail.value) return []
+  if (detail.value?.suites?.length) return []
+  if (!detail.value?.cases) return []
   if (!onlyFailed.value) return detail.value.cases
   return detail.value.cases.filter((c) => ['failed', 'error'].includes(c.status))
 })
@@ -77,21 +87,37 @@ function statusMeta(s: unknown) {
 }
 
 function expandAll() {
-  activeCases.value = displayCases.value.map((c) => c.id)
+  activeSuites.value = flattenFailKeys(displaySuites.value, displayCases.value, false)
 }
 
 function collapseAll() {
-  activeCases.value = []
+  activeSuites.value = []
 }
 
-// Step 7：checkbox 只使用 v-model；handler 接收新 boolean，不再自行反转
+// 计算应展开/收起的 key 集合：
+// - suites 模式：每套件展开其 id，失败用例展开其 id 前缀；key 形如 suite:<id>、case:<id>
+// - cases 回退模式：仅展开失败用例 case:<id>
+function flattenFailKeys(suites: ReportSuite[], cases: ReportCase[], onlyFailed: boolean): string[] {
+  if (!suites.length) {
+    return cases.map((c) => (onlyFailed || ['failed', 'error'].includes(c.status) ? `case:${c.id}` : '')).filter(Boolean)
+  }
+  return suites.flatMap((s) => {
+    const keys = [`suite:${s.id}`]
+    for (const c of s.cases) {
+      const fail = ['failed', 'error'].includes(c.status)
+      if (onlyFailed) {
+        if (fail) keys.push(`case:${c.id}`)
+      } else if (fail) {
+        keys.push(`case:${c.id}`)
+      }
+    }
+    return keys
+  })
+}
+
+// Step 7：checkbox 只使用 v-model；handler 接收新 boolean，刷新 activeSuites
 function onOnlyFailedChange(value: string | number | boolean) {
-  if (!detail.value) return
-  activeCases.value = applyOnlyFailed(
-    activeCases.value,
-    Boolean(value),
-    detail.value.cases,
-  )
+  activeSuites.value = flattenFailKeys(displaySuites.value, displayCases.value, Boolean(value))
 }
 
 async function load() {
@@ -103,10 +129,10 @@ async function load() {
     const data = await getReportDetail(id)
     await navigation.normalizeProjectDetail('report', id, data.execution.project_id)
     detail.value = data
-    // 首次加载默认展开 failed/error
-    activeCases.value = detail.value.cases
-      .map((c) => (['failed', 'error'].includes(c.status) ? c.id : -1))
-      .filter((cid) => cid >= 0)
+    // 首次加载：套件全部展开；失败/异常用例自动展开
+    activeSuites.value = data.suites?.length
+      ? flattenFailKeys(data.suites, [], false)
+      : data.cases.map((c) => (['failed', 'error'].includes(c.status) ? `case:${c.id}` : '')).filter(Boolean)
     activeExclusions.value = []
   } finally {
     loading.value = false
@@ -194,6 +220,29 @@ function stepsAfterAssertions(steps: ReportStep[]) {
         </div>
       </div>
 
+      <div v-if="detail.report.suite_total != null" class="card">
+        <div class="stats">
+          <div class="stat"><div class="num blue">{{ detail.report.suite_total }}</div><div class="label">套件总数</div></div>
+          <div class="stat"><div class="num green">{{ detail.report.suite_passed }}</div><div class="label">套件通过</div></div>
+          <div class="stat"><div class="num red">{{ detail.report.suite_failed }}</div><div class="label">套件失败</div></div>
+          <div class="stat"><div class="num orange">{{ detail.report.suite_error_count }}</div><div class="label">套件异常</div></div>
+          <div class="stat"><div class="num gray">{{ detail.report.suite_skipped }}</div><div class="label">套件跳过</div></div>
+          <div class="stat"><div class="num blue">{{ detail.report.suite_success_rate }}%</div><div class="label">套件成功率</div></div>
+          <div class="stat"><div class="num gray">{{ detail.report.not_applicable_suites ?? 0 }}</div><div class="label">不适用套件</div></div>
+        </div>
+      </div>
+
+      <div v-if="detail.report.step_total != null" class="card">
+        <div class="stats">
+          <div class="stat"><div class="num blue">{{ detail.report.step_total }}</div><div class="label">步骤总数</div></div>
+          <div class="stat"><div class="num green">{{ detail.report.step_passed }}</div><div class="label">步骤通过</div></div>
+          <div class="stat"><div class="num red">{{ detail.report.step_failed }}</div><div class="label">步骤失败</div></div>
+          <div class="stat"><div class="num orange">{{ detail.report.step_error_count }}</div><div class="label">步骤异常</div></div>
+          <div class="stat"><div class="num gray">{{ detail.report.step_skipped }}</div><div class="label">步骤跳过</div></div>
+          <div class="stat"><div class="num blue">{{ detail.report.step_success_rate }}%</div><div class="label">步骤成功率</div></div>
+        </div>
+      </div>
+
       <div v-if="exclusionRows.length" class="card">
         <div class="case-toolbar">
           <h2>不适用内容</h2>
@@ -219,29 +268,88 @@ function stepsAfterAssertions(steps: ReportStep[]) {
 
       <div class="card">
         <div class="case-toolbar">
-          <h2>用例明细</h2>
+          <h2>{{ detail.suites?.length ? '套件明细' : '用例明细' }}</h2>
           <div class="case-actions">
             <el-checkbox v-model="onlyFailed" @change="onOnlyFailedChange">只看失败/异常</el-checkbox>
             <el-button size="small" @click="expandAll">全部展开</el-button>
             <el-button size="small" @click="collapseAll">全部折叠</el-button>
           </div>
         </div>
-        <el-collapse v-model="activeCases">
-          <el-collapse-item v-for="c in displayCases" :key="c.id" :name="c.id">
+
+        <!-- 方案 §4.4：按套件分层（套件头 + 套件前置 + 套件内用例 + 套件后置） -->
+        <el-collapse v-if="detail.suites?.length" v-model="activeSuites">
+          <el-collapse-item v-for="s in displaySuites" :key="s.id" :name="`suite:${s.id}`">
+            <template #title>
+              <span class="case-name">{{ s.suite_name }}</span>
+              <el-tag :type="statusMeta(s.status).type" size="small">{{ statusMeta(s.status).label }}</el-tag>
+              <span v-if="s.suite_id" class="case-dur">#{{ s.suite_id }}</span>
+              <span class="case-dur">{{ durationText(s.duration) }}</span>
+            </template>
+            <div v-if="s.error_message" class="error-text">{{ s.error_message }}</div>
+
+            <template v-if="s.setup_steps.length">
+              <div class="suite-phase">套件前置</div>
+              <ReportStepTable :steps="s.setup_steps" :report-id="reportId" />
+            </template>
+
+            <div v-for="c in s.cases" :key="c.id" class="suite-case">
+              <el-collapse v-model="activeSuites" :class="{ 'suite-collapse': true }">
+                <el-collapse-item :key="c.id" :name="`case:${c.id}`">
+                  <template #title>
+                    <span class="case-name">{{ c.case_name }}</span>
+                    <el-tag :type="statusMeta(c.status).type" size="small">{{ statusMeta(c.status).label }}</el-tag>
+                    <span class="case-dur">{{ durationText(c.duration) }}</span>
+                  </template>
+                  <div v-if="c.error_message" class="error-text">{{ c.error_message }}</div>
+                  <ReportStepTable
+                    v-if="stepsBeforeAssertions(c.steps).length"
+                    :steps="stepsBeforeAssertions(c.steps)"
+                    :report-id="reportId"
+                  />
+                  <el-empty v-else-if="!c.assertions.length && !stepsAfterAssertions(c.steps).length" description="无步骤" :image-size="60" />
+                  <el-table v-if="c.assertions.length" :data="c.assertions" size="small" class="mt8">
+                    <el-table-column prop="assertion_type" label="断言" width="150" />
+                    <el-table-column prop="expected_value" label="期望" min-width="120" show-overflow-tooltip />
+                    <el-table-column prop="actual_value" label="实际" min-width="120" show-overflow-tooltip />
+                    <el-table-column label="状态" width="90">
+                      <template #default="{ row }">
+                        <el-tag :type="['pass', 'passed'].includes(row.status) ? 'success' : 'danger'" size="small">{{ row.status }}</el-tag>
+                      </template>
+                    </el-table-column>
+                    <el-table-column prop="error_message" label="错误" min-width="140" show-overflow-tooltip />
+                  </el-table>
+                  <ReportStepTable
+                    v-if="stepsAfterAssertions(c.steps).length"
+                    :steps="stepsAfterAssertions(c.steps)"
+                    :report-id="reportId"
+                    class="mt8"
+                  />
+                </el-collapse-item>
+              </el-collapse>
+            </div>
+
+            <template v-if="s.teardown_steps.length">
+              <div class="suite-phase">套件后置</div>
+              <ReportStepTable :steps="s.teardown_steps" :report-id="reportId" />
+            </template>
+          </el-collapse-item>
+        </el-collapse>
+
+        <!-- 单用例/历史兼容：无套件时回退扁平 cases -->
+        <el-collapse v-else v-model="activeSuites">
+          <el-collapse-item v-for="c in displayCases" :key="c.id" :name="`case:${c.id}`">
             <template #title>
               <span class="case-name">{{ c.case_name }}</span>
               <el-tag :type="statusMeta(c.status).type" size="small">{{ statusMeta(c.status).label }}</el-tag>
               <span class="case-dur">{{ durationText(c.duration) }}</span>
             </template>
             <div v-if="c.error_message" class="error-text">{{ c.error_message }}</div>
-
             <ReportStepTable
               v-if="stepsBeforeAssertions(c.steps).length"
               :steps="stepsBeforeAssertions(c.steps)"
               :report-id="reportId"
             />
             <el-empty v-else-if="!c.assertions.length && !stepsAfterAssertions(c.steps).length" description="无步骤" :image-size="60" />
-
             <el-table v-if="c.assertions.length" :data="c.assertions" size="small" class="mt8">
               <el-table-column prop="assertion_type" label="断言" width="150" />
               <el-table-column prop="expected_value" label="期望" min-width="120" show-overflow-tooltip />
@@ -377,6 +485,18 @@ function stepsAfterAssertions(steps: ReportStep[]) {
   color: #999;
   font-size: 12px;
   margin-left: 10px;
+}
+.suite-case {
+  margin: 6px 0 6px 12px;
+}
+.suite-collapse {
+  border: none;
+}
+.suite-phase {
+  color: #909399;
+  font-size: 12px;
+  font-weight: 600;
+  margin: 8px 0 4px;
 }
 .error-text {
   color: #f56c6c;

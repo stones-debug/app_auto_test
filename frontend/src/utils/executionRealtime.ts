@@ -3,12 +3,14 @@ import type { ExecutionStatus } from '@/api/executions'
 type RealtimeMessage = Record<string, unknown>
 
 interface RealtimeStep {
+  id?: number
   step_order: number
   status: string
   duration?: number | null
   actual_value?: string | null
   error_message?: string | null
   artifact_id?: number | null
+  phase?: string | null
 }
 
 interface RealtimeAssertion {
@@ -20,10 +22,20 @@ interface RealtimeAssertion {
 }
 
 interface RealtimeCase {
+  id?: number
   case_id: number
   status: string
   steps?: RealtimeStep[]
   assertions?: RealtimeAssertion[]
+}
+
+interface RealtimeSuite {
+  id?: number
+  suite_id: number | null
+  status: string
+  setup_steps?: RealtimeStep[]
+  cases: RealtimeCase[]
+  teardown_steps?: RealtimeStep[]
 }
 
 export function executionConnectionState(
@@ -37,13 +49,61 @@ export function executionConnectionState(
   return { kind: 'down', label: '已断开' }
 }
 
-export function applyStepResult(cases: RealtimeCase[], message: RealtimeMessage): void {
-  const executionCase = cases.find((item) => item.case_id === Number(message.case_id))
-  if (!executionCase) return
+/** 在嵌套 suites 中查找 execution_case_id / case_id 匹配的用例。 */
+function findCase(suites: RealtimeSuite[], message: RealtimeMessage): RealtimeCase | null {
+  const targetId = message.execution_case_id ?? message.case_id
+  if (targetId == null) return null
+  const numeric = Number(targetId)
+  for (const suite of suites) {
+    const caseRow = suite.cases.find(
+      (item) => (item.id != null && item.id === numeric) || item.case_id === numeric,
+    )
+    if (caseRow) return caseRow
+  }
+  return null
+}
 
-  const step = executionCase.steps?.find(
-    (item) => item.step_order === Number(message.step_order),
-  )
+/** 在套件的前/后置步或用例步中定位 execution_step_id / (phase+step_order) 匹配的步骤。 */
+function findStep(
+  suites: RealtimeSuite[],
+  caseRow: RealtimeCase | null,
+  message: RealtimeMessage,
+): RealtimeStep | null {
+  const targetStepId = message.execution_step_id ?? message.step_id
+  const stepOrder = Number(message.step_order)
+  const phase = String(message.phase ?? '') || null
+
+  const rawStep = (steps?: RealtimeStep[]) => {
+    if (!steps) return undefined
+    return steps.find((item) => {
+      if (targetStepId != null && item.id != null) return item.id === Number(targetStepId)
+      return item.step_order === stepOrder && (!phase || item.phase === phase)
+    })
+  }
+
+  if (caseRow) {
+    return rawStep(caseRow.steps) ?? null
+  }
+
+  // 可能是套件级步骤（suite_setup / suite_teardown），在 suites 中查找
+  const targetSuiteId = message.execution_suite_id ?? message.suite_id
+  if (targetSuiteId == null) return null
+  const numeric = Number(targetSuiteId)
+  for (const suite of suites) {
+    if (suite.suite_id !== null && suite.suite_id !== numeric) continue
+    if (suite.id != null && suite.id !== numeric) continue
+    return (phase === 'suite_teardown'
+      ? rawStep(suite.teardown_steps)
+      : rawStep(suite.setup_steps)) ?? null
+  }
+  return null
+}
+
+export function applyStepResult(suites: RealtimeSuite[], message: RealtimeMessage): void {
+  if (!Array.isArray(suites)) return
+  const caseRow = findCase(suites, message)
+
+  const step = findStep(suites, caseRow, message)
   if (step) {
     step.status = String(message.status ?? step.status)
     step.duration = message.duration == null ? step.duration : Number(message.duration)
@@ -56,18 +116,20 @@ export function applyStepResult(cases: RealtimeCase[], message: RealtimeMessage)
     step.artifact_id = message.artifact_id == null ? step.artifact_id : Number(message.artifact_id)
   }
 
+  if (!caseRow) return
   const caseStatus = message.case_status
   if (typeof caseStatus === 'string' && caseStatus) {
-    executionCase.status = caseStatus
+    caseRow.status = caseStatus
   } else if (message.status === 'failed') {
-    executionCase.status = 'failed'
+    caseRow.status = 'failed'
   } else {
-    executionCase.status = 'running'
+    caseRow.status = 'running'
   }
 }
 
-export function applyAssertionResult(cases: RealtimeCase[], message: RealtimeMessage): void {
-  const executionCase = cases.find((item) => item.case_id === Number(message.case_id))
+export function applyAssertionResult(suites: RealtimeSuite[], message: RealtimeMessage): void {
+  if (!Array.isArray(suites)) return
+  const executionCase = findCase(suites, message)
   if (!executionCase) return
 
   const incoming = Array.isArray(message.assertions)
@@ -100,13 +162,25 @@ export function applyAssertionResult(cases: RealtimeCase[], message: RealtimeMes
   }
 }
 
-export function settleExecutionCases(cases: RealtimeCase[], status: ExecutionStatus): void {
-  for (const executionCase of cases) {
-    if (!['pending', 'running'].includes(executionCase.status)) continue
-    if (status === 'passed') executionCase.status = 'passed'
-    else if (executionCase.status === 'pending') executionCase.status = 'skipped'
-    else if (status === 'failed') executionCase.status = 'failed'
-    else if (['stopped', 'cancelled'].includes(status)) executionCase.status = 'stopped'
-    else executionCase.status = 'error'
+/** completed 时按执行终态归置所有套件/用例的待定状态。 */
+export function settleExecutionSuites(suites: RealtimeSuite[], status: ExecutionStatus): void {
+  for (const suite of suites) {
+    if (['pending', 'running'].includes(suite.status)) {
+      suite.status = status === 'passed'
+        ? 'passed'
+        : ['stopped', 'cancelled'].includes(status)
+          ? 'stopped'
+          : status === 'failed'
+            ? 'failed'
+            : 'error'
+    }
+    for (const executionCase of suite.cases) {
+      if (!['pending', 'running'].includes(executionCase.status)) continue
+      if (status === 'passed') executionCase.status = 'passed'
+      else if (executionCase.status === 'pending') executionCase.status = 'skipped'
+      else if (status === 'failed') executionCase.status = 'failed'
+      else if (['stopped', 'cancelled'].includes(status)) executionCase.status = 'stopped'
+      else executionCase.status = 'error'
+    }
   }
 }

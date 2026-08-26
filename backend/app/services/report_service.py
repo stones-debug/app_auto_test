@@ -18,7 +18,7 @@ from app.services.screenshot_store import resolve_screenshot_path, validate_obje
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates" / "reports"
 # Step 8：HTML 缓存版本标记——修改模板/数据规则后旧缓存不再复用
-_REPORT_HTML_VERSION = "app-profile-exclusions-v5"
+_REPORT_HTML_VERSION = "suite-html-v6"
 
 
 def _execution_dict(execution: Execution) -> dict:
@@ -283,8 +283,9 @@ def _rel_screenshot(execution_id: int, path: str | None) -> str | None:
 
 def _embed_screenshots(detail: dict) -> None:
     execution_id = detail["execution"]["id"]
-    for case in detail["cases"]:
-        for step in case["steps"]:
+
+    def _embed(steps: list[dict]) -> None:
+        for step in steps:
             if not step["screenshot"]:
                 continue
             # screenshot 字段为 screenshots/xxx.png（已剥掉 execution_{id}/ 前缀）
@@ -298,6 +299,14 @@ def _embed_screenshots(detail: dict) -> None:
                 step["screenshot_base64"] = base64.b64encode(data).decode()
             except OSError:
                 step["screenshot_base64"] = None
+
+    for case in detail["cases"]:
+        _embed(case["steps"])
+    for suite in detail.get("suites", []):
+        _embed(suite["setup_steps"])
+        _embed(suite["teardown_steps"])
+        for case in suite["cases"]:
+            _embed(case["steps"])
 
 
 async def render_report_html(db: AsyncSession, execution_id: int) -> Path:
@@ -327,6 +336,7 @@ async def render_report_html(db: AsyncSession, execution_id: int) -> Path:
     html = template.render(
         execution=detail["execution"],
         report=detail["report"],
+        suites=detail["suites"],
         cases=detail["cases"],
         logs=detail["logs"],
         exclusions=detail["exclusions"],

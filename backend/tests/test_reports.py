@@ -9,7 +9,15 @@ from sqlalchemy import select as sa_select
 from app.core.config import reports_dir
 from app.core.database import SessionLocal
 from app.main import app
-from app.models import Device, Execution, ExecutionCase, ExecutionExclusion, ExecutionStep, Report
+from app.models import (
+    Device,
+    Execution,
+    ExecutionCase,
+    ExecutionExclusion,
+    ExecutionStep,
+    ExecutionSuite,
+    Report,
+)
 from app.services import report_service, worker_service
 from app.services.screenshot_store import resolve_screenshot_path, validate_object_key
 from app.ws import handlers
@@ -155,6 +163,112 @@ def _cleanup(execution_id: int) -> None:
         shutil.rmtree(target)
 
 
+async def _suite_with_setup_steps(client: AsyncClient) -> tuple[str, int, int, int]:
+    """造一个含套件前置/后置步的执行，返回 (token, execution_id, project_id, case_id)。"""
+    await client.post("/api/auth/register", json=REG)
+    login = await client.post("/api/auth/login", json={"username": REG["username"], "password": REG["password"]})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    project = await client.post(
+        "/api/projects", headers=headers, json={"name": "套件报告项目", "visibility": "private"}
+    )
+    project_id = project.json()["id"]
+    profile_id = (
+        await client.post(
+            f"/api/projects/{project_id}/app-profiles",
+            headers=headers,
+            json={"name": "套件档案", "code": f"suite-{uuid.uuid4().hex[:6]}"},
+        )
+    ).json()["id"]
+    release_id = (
+        await client.post(f"/api/app-profiles/{profile_id}/releases", headers=headers, json={"version": "1.0"})
+    ).json()["id"]
+    element = await client.post(
+        f"/api/projects/{project_id}/elements",
+        headers=headers,
+        json={"name": "元素", "locator_type": "id", "locator_value": "x"},
+    )
+    element_id = element.json()["id"]
+    case = await client.post(
+        f"/api/projects/{project_id}/cases",
+        headers=headers,
+        json={
+            "name": "套件内用例",
+            "steps": [{"order": 1, "action": "click", "element_id": element_id, "params": {}}],
+            "assertions": [],
+        },
+    )
+    case_id = case.json()["id"]
+    agent_id, device_id = await create_bound_agent_device(REG["username"])
+    execution = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers=headers,
+        json={"device_id": device_id, "parameters": {}},
+    )
+    assert execution.status_code == 201, execution.text
+    execution_id = execution.json()["id"]
+    _ = agent_id
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        suite = ExecutionSuite(
+            execution_id=execution_id,
+            suite_id=None,
+            suite_name="登录套件",
+            suite_order=1,
+            is_virtual=True,
+            status="pending",
+            setup_steps_snapshot=[],
+            teardown_steps_snapshot=[],
+            elements_snapshot={},
+        )
+        db.add(suite)
+        await db.flush()
+        case_row = ExecutionCase(
+            execution_id=execution_id,
+            execution_suite_id=suite.id,
+            case_id=case_id,
+            case_name="套件内用例",
+            case_order=1,
+            status="pending",
+            steps_snapshot=[{"order": 1, "action": "click", "phase": "case_main", "params": {}}],
+            assertions_snapshot=[],
+            elements_snapshot={},
+        )
+        db.add(case_row)
+        await db.flush()
+        db.add(
+            ExecutionStep(
+                execution_suite_id=suite.id, step_order=1, action="准备环境", phase="suite_setup", status="passed", actual_value="ok"
+            )
+        )
+        db.add(
+            ExecutionStep(
+                execution_suite_id=suite.id, step_order=2, action="清理环境", phase="suite_teardown", status="passed", actual_value="ok"
+            )
+        )
+        db.add(
+            ExecutionStep(
+                execution_case_id=case_row.id, step_order=1, action="click", phase="case_main", status="passed", actual_value="done"
+            )
+        )
+        device = await db.get(Device, device_id)
+        execution.device_id = device_id
+        execution.app_profile_id = profile_id
+        execution.app_profile_name_snapshot = "套件档案"
+        execution.app_release_id = release_id
+        execution.app_release_version_snapshot = "1.0"
+        execution.profile_revision = 1
+        execution.test_asset_revision = 3
+        execution.status = "running"
+        execution.started_at = datetime.now(UTC)
+        device.status = "busy"
+        device.locked_by_execution = execution_id
+        await db.commit()
+        await worker_service._mark_terminal(db, execution, "passed")
+    return token, execution_id, project_id, case_id
+
+
 async def test_report_list_and_detail(client: AsyncClient):
     token, execution_id = await _setup(client)
     headers = {"Authorization": f"Bearer {token}"}
@@ -224,6 +338,9 @@ async def test_report_download_generates_and_caches(client: AsyncClient):
     assert "account" in resp1.text
     assert "报告档案" in resp1.text
     assert "报告用例/不支持步骤" in resp1.text
+    assert "套件总数" in resp1.text
+    assert "步骤总数" in resp1.text
+    assert "虚拟套件" in resp1.text
 
     html_path = reports_dir() / f"execution_{execution_id}" / "report.html"
     assert html_path.exists()
@@ -236,6 +353,32 @@ async def test_report_download_generates_and_caches(client: AsyncClient):
     resp2 = await client.get(f"/api/reports/{report_id}/download", headers=headers)
     assert resp2.status_code == 200
     assert resp2.text == resp1.text
+
+    _cleanup(execution_id)
+
+
+async def test_report_html_suite_stats_with_setup_steps(client: AsyncClient):
+    """套件级报告：套件前后置步渲染 + 三层统计（套件总数/步骤总数）+ 套件名。"""
+    token, execution_id, _project_id, _case_id = await _suite_with_setup_steps(client)
+
+    async with SessionLocal() as db:
+        html_path = await report_service.render_report_html(db, execution_id)
+    html = html_path.read_text(encoding="utf-8")
+    assert "套件总数" in html
+    assert "步骤总数" in html
+    assert "登录套件" in html
+    assert "套件前置" in html
+    assert "套件后置" in html
+    assert "套件内用例" in html
+
+    headers = {"Authorization": f"Bearer {token}"}
+    report_id = await _report_id(execution_id)
+    download = await client.get(f"/api/reports/{report_id}/download", headers=headers)
+    assert download.status_code == 200
+    assert "套件总数" in download.text
+    assert "步骤总数" in download.text
+    assert "登录套件" in download.text
+    assert "套件前置" in download.text
 
     _cleanup(execution_id)
 
