@@ -11,9 +11,9 @@ def test_validate_agent_message_unknown_type():
 
 
 def test_validate_agent_message_missing_required_field():
-    # step_result 缺 case_id/step_order → ValidationError（路由层转协议错误）
+    # 协议 V2：step_result 以 execution_step_id 为核心，case_id/step_order 不再强制
     with pytest.raises(ValidationError):
-        validate_agent_message({"type": "step_result", "execution_id": 1})
+        validate_agent_message({"type": "step_result"})
     with pytest.raises(ValidationError):
         validate_agent_message({"type": "log", "message": "x"})
     with pytest.raises(ValidationError):
@@ -46,6 +46,28 @@ def test_validate_agent_message_ok_shapes():
     assert step is not None
     assert step["assertions"][0]["status"] == "pass"
 
+    # 协议 V2：step_result 以 execution_step_id 定位（case_id/step_order 可选）
+    v2_step = validate_agent_message(
+        {
+            "type": "step_result",
+            "execution_id": 7,
+            "execution_case_id": 9,
+            "execution_step_id": 501,
+            "phase": "case_main",
+            "status": "passed",
+        }
+    )
+    assert v2_step is not None
+    assert v2_step["execution_step_id"] == 501
+
+    # 协议 V2：case_status / suite_status
+    assert validate_agent_message(
+        {"type": "case_status", "execution_id": 7, "execution_case_id": 9, "status": "running"}
+    ) is not None
+    assert validate_agent_message(
+        {"type": "suite_status", "execution_id": 7, "execution_suite_id": 10, "status": "passed"}
+    ) is not None
+
     result = validate_agent_message(
         {"type": "execution_result", "execution_id": 7, "status": "passed"}
     )
@@ -57,7 +79,7 @@ def test_protocol_error_never_reaches_handlers():
     """路由层 try/except 语义：validate 抛错时合法消息之外一律不进入 handler。"""
     # 非法消息不应被进一步处理：valid=None / raise 即协议错误
     for bad in (
-        {"type": "step_result", "execution_id": 1},
+        {"type": "step_result"},  # 缺 execution_id（V2 亦强制）
         {"type": "log", "execution_id": "bad"},
         {"type": "execution_result", "status": "passed"},  # 缺 execution_id
         {"type": "register", "agent_key": "k"},  # 缺 agent_id

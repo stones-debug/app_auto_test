@@ -52,14 +52,26 @@ def test_build_agent_app_uses_install_identity_and_machine_psk():
     assert app.uploader._resolve_key() == "sk-machine"
 
 
-def _sleep_case(duration: float = 5) -> list[dict]:
+def _sleep_suite(duration: float = 5) -> list[dict]:
     return [
         {
-            "case_id": 1,
-            "case_name": "睡眠用例",
-            "steps_snapshot": [{"order": 1, "action": "sleep", "params": {"duration": duration}}],
-            "assertions_snapshot": [],
-            "elements_snapshot": {},
+            "execution_suite_id": 1001,
+            "suite_id": None,
+            "suite_name": "虚拟套件",
+            "suite_order": 1,
+            "is_virtual": True,
+            "setup_steps": [],
+            "cases": [
+                {
+                    "execution_case_id": 2001,
+                    "case_id": 1,
+                    "case_name": "睡眠用例",
+                    "steps_snapshot": [{"order": 1, "action": "sleep", "params": {"duration": duration}}],
+                    "assertions_snapshot": [],
+                    "elements_snapshot": {},
+                }
+            ],
+            "teardown_steps": [],
         }
     ]
 
@@ -75,7 +87,7 @@ async def test_start_test_runs_in_background_task():
             "session_token": "t-1",
             "parameters": {},
             "device": {"udid": "u-1", "platform": "android"},
-            "cases": _sleep_case(0.01),
+            "suites": _sleep_suite(0.01),
         }
     )
     assert 1 in app.runtimes
@@ -101,7 +113,7 @@ async def test_start_test_current_screen_mode_attaches_driver(monkeypatch):
             "session_token": "t-2",
             "parameters": {"attach_to_current_app": True},
             "device": {"udid": "u-2", "platform": "android"},
-            "cases": _sleep_case(0.01),
+            "suites": _sleep_suite(0.01),
         }
     )
 
@@ -123,7 +135,7 @@ async def test_stop_test_interrupts_blocking_execution():
             "session_token": "t-7",
             "parameters": {},
             "device": {"udid": "u-7", "platform": "android"},
-            "cases": _sleep_case(30),  # 长 sleep，等待 stop 打断
+            "suites": _sleep_suite(30),  # 长 sleep，等待 stop 打断
         }
     )
     await asyncio.sleep(0.05)
@@ -145,7 +157,7 @@ async def test_duplicate_start_test_ignored():
         "session_token": "t-9",
         "parameters": {},
         "device": {"udid": "u-9", "platform": "android"},
-        "cases": _sleep_case(0.01),
+        "suites": _sleep_suite(0.01),
     }
     await app.on_message(msg)
     task = app.runtimes[9].task
@@ -221,7 +233,7 @@ async def test_concurrent_appium_executions_start_stop_server_once():
                 "session_token": f"t-{eid}",
                 "parameters": {},
                 "device": {"udid": f"u-{eid}", "platform": "android"},
-                "cases": _sleep_case(duration),
+                "suites": _sleep_suite(duration),
             }
         )
 
@@ -255,7 +267,7 @@ async def test_ensure_appium_failure_recovers_refs_and_reports_error(monkeypatch
             "session_token": "t-3",
             "parameters": {},
             "device": {"udid": "u-3", "platform": "android"},
-            "cases": _sleep_case(0.01),
+            "suites": _sleep_suite(0.01),
         }
     )
     await asyncio.wait_for(app.runtimes[3].task, timeout=5)
@@ -280,7 +292,7 @@ async def test_create_driver_failure_reports_error_and_cleans(monkeypatch):
             "session_token": "t-4",
             "parameters": {},
             "device": {"udid": "u-4", "platform": "android"},
-            "cases": _sleep_case(0.01),
+            "suites": _sleep_suite(0.01),
         }
     )
     await asyncio.wait_for(app.runtimes[4].task, timeout=5)
@@ -304,7 +316,7 @@ async def test_tmpdir_failure_reports_error(monkeypatch):
             "session_token": "t-5",
             "parameters": {},
             "device": {"udid": "u-5", "platform": "android"},
-            "cases": _sleep_case(0.01),
+            "suites": _sleep_suite(0.01),
         }
     )
     await asyncio.wait_for(app.runtimes[5].task, timeout=5)
@@ -331,7 +343,7 @@ async def test_driver_quit_failure_does_not_hide_result(monkeypatch):
             "session_token": "t-6",
             "parameters": {},
             "device": {"udid": "u-6", "platform": "android"},
-            "cases": _sleep_case(0.01),
+            "suites": _sleep_suite(0.01),
         }
     )
     await asyncio.wait_for(app.runtimes[6].task, timeout=5)
@@ -355,7 +367,7 @@ async def test_ws_send_failure_does_not_crash_done_callback():
             "session_token": "t-8",
             "parameters": {},
             "device": {"udid": "u-8", "platform": "android"},
-            "cases": _sleep_case(0.01),
+            "suites": _sleep_suite(0.01),
         }
     )
     await asyncio.wait_for(app.runtimes[8].task, timeout=5)
@@ -373,7 +385,7 @@ async def test_stop_and_completion_race_sends_single_terminal_result():
             "session_token": "t-10",
             "parameters": {},
             "device": {"udid": "u-10", "platform": "android"},
-            "cases": _sleep_case(0.01),
+            "suites": _sleep_suite(0.01),
         }
     )
     await asyncio.sleep(0.001)
@@ -396,7 +408,7 @@ async def test_stop_all_executions_gathers_pending_tasks():
             "session_token": "t-11",
             "parameters": {},
             "device": {"udid": "u-11", "platform": "android"},
-            "cases": _sleep_case(60),
+            "suites": _sleep_suite(60),
         }
     )
     pending = app.runtimes[11].task
@@ -431,7 +443,7 @@ async def test_start_test_wrong_protocol_version_reports_error():
             "protocol_version": "999.0.0",
             "parameters": {},
             "device": {"udid": "u-31", "platform": "android"},
-            "cases": [],
+"suites": [],
         }
     )
     assert 31 not in app.runtimes  # 未创建运行时/任务
@@ -455,7 +467,7 @@ async def test_start_test_matching_protocol_version_runs():
             "protocol_version": protocol_version(),
             "parameters": {},
             "device": {"udid": "u-32", "platform": "android"},
-            "cases": _sleep_case(0.01),
+            "suites": _sleep_suite(0.01),
         }
     )
     assert 32 in app.runtimes

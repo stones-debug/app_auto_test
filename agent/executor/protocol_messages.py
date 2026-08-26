@@ -7,7 +7,10 @@ class StepResultMessage(TypedDict):
     type: str
     execution_id: int
     session_token: str | None
-    case_id: int
+    execution_suite_id: NotRequired[int | None]
+    execution_case_id: NotRequired[int | None]
+    execution_step_id: NotRequired[int | None]
+    phase: str
     step_order: int
     action: str
     status: str
@@ -18,6 +21,8 @@ class StepResultMessage(TypedDict):
 
 
 class AssertionItem(TypedDict):
+    execution_assertion_id: NotRequired[int | None]
+    assertion_order: NotRequired[int]
     type: str
     expected: str
     actual: str
@@ -29,8 +34,26 @@ class AssertionResultMessage(TypedDict):
     type: str
     execution_id: int
     session_token: str | None
-    case_id: int
+    execution_case_id: int
     assertions: list[AssertionItem]
+
+
+class SuiteStatusMessage(TypedDict):
+    type: str
+    execution_id: int
+    session_token: str | None
+    execution_suite_id: int
+    status: str
+    error_message: NotRequired[str]
+
+
+class CaseStatusMessage(TypedDict):
+    type: str
+    execution_id: int
+    session_token: str | None
+    execution_case_id: int
+    status: str
+    error_message: NotRequired[str]
 
 
 class ExecutionResultMessage(TypedDict):

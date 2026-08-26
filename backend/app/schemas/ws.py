@@ -34,7 +34,9 @@ class AgentLogIn(BaseModel):
 
 
 class AgentAssertionIn(BaseModel):
-    type: str
+    type: str = ""
+    execution_assertion_id: int | None = None
+    assertion_order: int | None = None
     expected: str | None = None
     actual: str | None = None
     status: str = "pass"
@@ -44,9 +46,13 @@ class AgentAssertionIn(BaseModel):
 class StepResultIn(BaseModel):
     type: Literal["step_result"]
     execution_id: int
-    case_id: int
-    step_order: int
     session_token: str | None = None
+    execution_suite_id: int | None = None
+    execution_case_id: int | None = None
+    execution_step_id: int | None = None
+    phase: str | None = None
+    case_id: int | None = None
+    step_order: int | None = None
     action: str = "unknown"
     status: str = "passed"
     duration: int | None = None
@@ -59,10 +65,30 @@ class StepResultIn(BaseModel):
 class AssertionResultIn(BaseModel):
     type: Literal["assertion_result"]
     execution_id: int
-    case_id: int
     session_token: str | None = None
+    execution_case_id: int | None = None
+    case_id: int | None = None
     step_order: int | None = None
     assertions: list[AgentAssertionIn] = Field(default_factory=list)
+
+
+class CaseStatusIn(BaseModel):
+    type: Literal["case_status"]
+    execution_id: int | None = None
+    session_token: str | None = None
+    execution_case_id: int | None = None
+    case_id: int | None = None
+    status: str = "running"
+    error_message: str | None = None
+
+
+class SuiteStatusIn(BaseModel):
+    type: Literal["suite_status"]
+    execution_id: int | None = None
+    session_token: str | None = None
+    execution_suite_id: int | None = None
+    status: str = "running"
+    error_message: str | None = None
 
 
 class ExecutionResultIn(BaseModel):
@@ -80,6 +106,8 @@ _AGENT_MODELS: dict[str, type[BaseModel]] = {
     "log": AgentLogIn,
     "step_result": StepResultIn,
     "assertion_result": AssertionResultIn,
+    "case_status": CaseStatusIn,
+    "suite_status": SuiteStatusIn,
     "execution_result": ExecutionResultIn,
 }
 

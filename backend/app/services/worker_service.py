@@ -49,6 +49,15 @@ def protocol_version() -> str:
         return "0.0.0"
 
 
+def min_agent_version() -> str:
+    """Agent 注册准入的语义化最低版本，来自 Registry 生成产物（单一来源）。"""
+    try:
+        with _PROTOCOL_JSON.open("r", encoding="utf-8") as fh:
+            return str(json.load(fh).get("min_agent_version", "0.0.0"))
+    except OSError:  # pragma: no cover
+        return "0.0.0"
+
+
 # ---------- 变量渲染（§10.6：优先级 执行参数 > 套件 > 用例 > 项目 > 全局） ----------
 
 
@@ -627,6 +636,105 @@ async def _default_agent_sender(agent_id: int, payload: dict) -> bool:
         return resp.status_code in (200, 202)
 
 
+async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[dict]:
+    """协议 V2：start_test 下发套件级结构（suites[] + execution_*_id）。
+
+    - 以固化的 ExecutionSuite / ExecutionCase 为单元下发（含 execution_suite_id/execution_case_id）；
+    - 套件前后置步骤读取已固化的 ExecutionStep（execution_suite_id 非空、phase 为
+      suite_setup/suite_teardown），携带 execution_step_id 供 Agent 精确回传；
+    - 用例的 steps_snapshot/assertions_snapshot 保留原始快照 dict，Agent 侧以
+      source_key/phase 映射回 execution_step_id/execution_assertion_id（缺行时后端幂等创建）。
+    """
+    suites = (
+        await db.execute(
+            select(ExecutionSuite)
+            .where(ExecutionSuite.execution_id == execution.id)
+            .order_by(ExecutionSuite.suite_order)
+        )
+    ).scalars().all()
+    if not suites:
+        return []
+    suite_ids = [s.id for s in suites]
+
+    cases = (
+        await db.execute(
+            select(ExecutionCase)
+            .where(ExecutionCase.execution_id == execution.id)
+            .order_by(ExecutionCase.execution_suite_id, ExecutionCase.case_order)
+        )
+    ).scalars().all()
+    cases_by_suite: dict[int, list[ExecutionCase]] = {}
+    for c in cases:
+        cases_by_suite.setdefault(c.execution_suite_id, []).append(c)
+
+    suite_steps = (
+        await db.execute(
+            select(ExecutionStep)
+            .where(
+                ExecutionStep.execution_suite_id.in_(suite_ids),
+                ExecutionStep.phase.in_(("suite_setup", "suite_teardown")),
+            )
+            .order_by(ExecutionStep.execution_suite_id, ExecutionStep.phase, ExecutionStep.step_order)
+        )
+    ).scalars().all()
+    steps_by_suite: dict[int, list[ExecutionStep]] = {}
+    for st in suite_steps:
+        steps_by_suite.setdefault(st.execution_suite_id, []).append(st)
+
+    payload_suites: list[dict] = []
+    for s in suites:
+        setup_steps = [
+            {
+                "execution_step_id": st.id,
+                "action": st.action,
+                "order": st.step_order,
+                "params": st.parameters or {},
+                "source_key": st.source_key,
+                "source_order": st.source_order,
+            }
+            for st in steps_by_suite.get(s.id, [])
+            if st.phase == "suite_setup"
+        ]
+        teardown_steps = [
+            {
+                "execution_step_id": st.id,
+                "action": st.action,
+                "order": st.step_order,
+                "params": st.parameters or {},
+                "source_key": st.source_key,
+                "source_order": st.source_order,
+            }
+            for st in steps_by_suite.get(s.id, [])
+            if st.phase == "suite_teardown"
+        ]
+        suite_cases = [
+            {
+                "execution_case_id": c.id,
+                "case_id": c.case_id,
+                "case_name": c.case_name,
+                "case_order": c.case_order,
+                "module_name": c.module_name,
+                "steps_snapshot": c.steps_snapshot,
+                "assertions_snapshot": c.assertions_snapshot,
+                "elements_snapshot": c.elements_snapshot,
+            }
+            for c in cases_by_suite.get(s.id, [])
+        ]
+        payload_suites.append(
+            {
+                "execution_suite_id": s.id,
+                "suite_id": s.suite_id,
+                "suite_name": s.suite_name,
+                "suite_order": s.suite_order,
+                "is_virtual": s.is_virtual,
+                "setup_steps": setup_steps,
+                "cases": suite_cases,
+                "teardown_steps": teardown_steps,
+            }
+        )
+    return payload_suites
+
+
 async def run_execution(
     db: AsyncSession,
     execution_id: int,
@@ -679,25 +787,7 @@ async def run_execution(
     await db.commit()
     logger.info("[%s] execution=%s 开始执行，设备=%s", worker_id, execution.id, device.name)
 
-    case_rows = (
-        await db.execute(
-            select(ExecutionCase)
-            .where(ExecutionCase.execution_id == execution.id)
-            .order_by(ExecutionCase.id)
-        )
-    ).scalars().all()
-    payload_cases = [
-        {
-            "execution_case_id": c.id,
-            "case_id": c.case_id,
-            "case_name": c.case_name,
-            "module_name": c.module_name,
-            "steps_snapshot": c.steps_snapshot,
-            "assertions_snapshot": c.assertions_snapshot,
-            "elements_snapshot": c.elements_snapshot,
-        }
-        for c in case_rows
-    ]
+    payload_suites = await _build_suites_payload(db, execution)
     ok = await agent_sender(
         device.agent_id,
         {
@@ -707,7 +797,7 @@ async def run_execution(
             "parameters": execution.parameters,
             "protocol_version": protocol_version(),
             "device": {"udid": device.udid, "platform": device.platform},
-            "cases": payload_cases,
+            "suites": payload_suites,
         },
     )
     if not ok:

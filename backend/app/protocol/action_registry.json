@@ -4,8 +4,8 @@
     "source": "agent/executor/protocol_manifest.yaml",
     "generator": "agent/scripts/generate_protocol.py"
   },
-  "protocol_version": "1.0.0",
-  "min_agent_version": "1.0.0",
+  "protocol_version": "2.0.0",
+  "min_agent_version": "2.0.0",
   "controls": {
     "step": [
       "continue_on_failure"

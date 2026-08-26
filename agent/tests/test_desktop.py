@@ -243,7 +243,7 @@ def test_desktop_shutdown_cancels_executions_and_joins_loop_thread(tmp_path):
                     "session_token": "t-21",
                     "parameters": {},
                     "device": {"udid": "u-21", "platform": "android"},
-                    "cases": [{"case_id": 1, "case_name": "长执行", "steps_snapshot": [{"order": 1, "action": "sleep", "params": {"duration": 60}}], "assertions_snapshot": [], "elements_snapshot": {}}],
+                    "suites": [{"execution_suite_id": 1001, "suite_id": None, "suite_name": "虚拟套件", "suite_order": 1, "is_virtual": True, "setup_steps": [], "cases": [{"execution_case_id": 2001, "case_id": 1, "case_name": "长执行", "steps_snapshot": [{"order": 1, "action": "sleep", "params": {"duration": 60}}], "assertions_snapshot": [], "elements_snapshot": {}}], "teardown_steps": []}],
                 }
             )
         )

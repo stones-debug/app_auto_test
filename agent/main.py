@@ -175,14 +175,19 @@ class AgentApp:
         execution_id = message["execution_id"]
         session_token = message.get("session_token")
         parameters = message.get("parameters") or {}
-        cases = message.get("cases") or []
+        suites = message.get("suites")
         mode = self.config.get("driver", "mock")
         runtime = self.runtimes[execution_id]
         cancel_event = runtime.cancel_event
         driver = None
+        runner = None
         tmpdir = None
+        completed_suite_ids: set[int] = set()
+        started_suite_ids: set[int] = set()
         # 最外层 try/except/finally 覆盖 _ensure_appium/create_driver/临时目录创建
         try:
+            if not isinstance(suites, list):
+                raise ValueError("start_test 缺少 suites 字段（协议 V2）")
             if mode == "appium":
                 # Windows 方案 §4.1：Appium 按需隐藏启动，执行结束后清理
                 await self._ensure_appium()
@@ -212,19 +217,32 @@ class AgentApp:
                 uploader=self.uploader,
             )
             overall = "passed"
-            for case in cases:
+            for suite in suites:
                 if cancel_event.is_set():
                     raise StopRequested("执行被用户停止")
-                status = await runner.run_case(case)
+                suite_id = int(suite.get("execution_suite_id") or 0)
+                started_suite_ids.add(suite_id)
+                status = await runner.run_suite(suite)
+                completed_suite_ids.add(suite_id)
                 if status == "failed":
                     overall = "failed"
+                elif status == "error":
+                    overall = "error"
+                elif status == "stopped":
+                    overall = "stopped"
             await self._send_execution_result_safe(execution_id, session_token, overall)
             logger.info("execution=%s 完成: %s", execution_id, overall)
         except asyncio.CancelledError:
-            # CR-06：stop_test 取消任务 → 立即上报 stopped（不重抛，任务正常结束）
+            # CR-06：stop_test 取消任务 → 立即收敛套件状态并上报 stopped（不重抛，任务正常结束）
+            await self._converge_stopped_suites(
+                runner, suites, completed_suite_ids, started_suite_ids
+            )
             await self._send_execution_result_safe(execution_id, session_token, "stopped")
             logger.info("execution=%s 被取消", execution_id)
         except StopRequested:
+            await self._converge_stopped_suites(
+                runner, suites, completed_suite_ids, started_suite_ids
+            )
             await self._send_execution_result_safe(execution_id, session_token, "stopped")
             logger.info("execution=%s 已停止", execution_id)
         except Exception as exc:
@@ -251,6 +269,30 @@ class AgentApp:
                     tmpdir.cleanup()
                 except Exception as exc:
                     logger.warning("execution=%s 临时目录清理失败: %s", execution_id, exc)
+
+    async def _converge_stopped_suites(
+        self,
+        runner,
+        suites,
+        completed_suite_ids: set[int],
+        started_suite_ids: set[int],
+    ) -> None:
+        """停止收敛：已在执行但未完成的套件 → stopped，未开始的套件 → skipped。
+
+        - 已正常完成（completed）的套件不动；
+        - 已进入执行（started）但因停止被打断的套件上报 stopped（用例终态由后端收敛）；
+        - 尚未开始的套件整体标记 skipped。
+        """
+        if runner is None or not suites:
+            return
+        for suite in suites:
+            suite_id = int(suite.get("execution_suite_id") or 0)
+            if suite_id in completed_suite_ids:
+                continue
+            if suite_id in started_suite_ids:
+                await runner.stop_suite(suite)
+            else:
+                await runner.skip_suite(suite)
 
     async def stop_all_executions(self) -> None:
         """取消全部执行并等待收敛（serve_agent / 桌面退出时调用）。"""

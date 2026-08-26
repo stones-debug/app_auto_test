@@ -10,13 +10,38 @@ from .driver import StopRequested
 from .protocol_messages import (
     AssertionItem,
     AssertionResultMessage,
+    CaseStatusMessage,
     ExecutionResultMessage,
     LogMessage,
     StepResultMessage,
+    SuiteStatusMessage,
 )
 
-Message = dict | StepResultMessage | AssertionResultMessage | ExecutionResultMessage | LogMessage
+Message = (
+    dict
+    | StepResultMessage
+    | AssertionResultMessage
+    | ExecutionResultMessage
+    | LogMessage
+    | SuiteStatusMessage
+    | CaseStatusMessage
+)
 SendFn = Callable[[Message], Awaitable[None]]
+
+
+def _aggregate_status(statuses: list[str]) -> str:
+    """优先级 error > failed > stopped > skipped > passed（与后端 _aggregate_status 一致）。"""
+    if "error" in statuses:
+        return "error"
+    if "failed" in statuses:
+        return "failed"
+    if "stopped" in statuses:
+        return "stopped"
+    if "skipped" in statuses:
+        return "skipped"
+    if statuses and all(s == "passed" for s in statuses):
+        return "passed"
+    return "skipped"
 
 
 def _run_action_in_thread(action_cls, driver, context, params: dict) -> dict:
@@ -57,8 +82,12 @@ class RunnerReporter:
 
     async def step_result(
         self,
-        case_id: int,
-        step_order: int,
+        *,
+        execution_case_id: int | None = None,
+        execution_suite_id: int | None = None,
+        execution_step_id: int | None = None,
+        phase: str,
+        step_order: int | None,
         action: str,
         status: str,
         duration: int,
@@ -70,7 +99,7 @@ class RunnerReporter:
             "type": "step_result",
             "execution_id": self.execution_id,
             "session_token": self.session_token,
-            "case_id": case_id,
+            "phase": phase,
             "step_order": step_order,
             "action": action,
             "status": status,
@@ -79,16 +108,50 @@ class RunnerReporter:
             "error_message": error_message,
             "screenshot_path": screenshot_path,
         }
+        if execution_case_id is not None:
+            msg["execution_case_id"] = execution_case_id
+        if execution_suite_id is not None:
+            msg["execution_suite_id"] = execution_suite_id
+        if execution_step_id is not None:
+            msg["execution_step_id"] = execution_step_id
         await self.send(msg)
 
-    async def assertion_result(self, case_id: int, assertions: list[AssertionItem]) -> None:
+    async def assertion_result(self, execution_case_id: int, assertions: list[AssertionItem]) -> None:
         msg: AssertionResultMessage = {
             "type": "assertion_result",
             "execution_id": self.execution_id,
             "session_token": self.session_token,
-            "case_id": case_id,
+            "execution_case_id": execution_case_id,
             "assertions": assertions,
         }
+        await self.send(msg)
+
+    async def suite_status(
+        self, execution_suite_id: int, status: str, error_message: str | None = None
+    ) -> None:
+        msg: SuiteStatusMessage = {
+            "type": "suite_status",
+            "execution_id": self.execution_id,
+            "session_token": self.session_token,
+            "execution_suite_id": execution_suite_id,
+            "status": status,
+        }
+        if error_message:
+            msg["error_message"] = error_message
+        await self.send(msg)
+
+    async def case_status(
+        self, execution_case_id: int, status: str, error_message: str | None = None
+    ) -> None:
+        msg: CaseStatusMessage = {
+            "type": "case_status",
+            "execution_id": self.execution_id,
+            "session_token": self.session_token,
+            "execution_case_id": execution_case_id,
+            "status": status,
+        }
+        if error_message:
+            msg["error_message"] = error_message
         await self.send(msg)
 
 
@@ -132,15 +195,22 @@ class TestRunner:
     async def _run_steps(
         self,
         steps: list[dict],
-        case_id: int,
         context: ExecutionContext,
         reporter: RunnerReporter,
         phase: str,
+        *,
+        execution_case_id: int | None = None,
+        execution_suite_id: int | None = None,
     ) -> tuple[bool, bool]:
         """执行一个阶段，返回 (阶段是否失败, 是否因失败中断阶段)。"""
         failed = False
         halted = False
-        phase_label = {"setup": "前置步骤", "teardown": "后置步骤"}.get(phase, "步骤")
+        phase_label = {
+            "setup": "前置步骤",
+            "teardown": "后置步骤",
+            "suite_setup": "套件前置步骤",
+            "suite_teardown": "套件后置步骤",
+        }.get(phase, "步骤")
         for step in steps:
             if self.should_stop():
                 raise StopRequested("执行被用户停止")
@@ -171,11 +241,14 @@ class TestRunner:
             duration = int((time.monotonic() - start) * 1000)
             await self._resolve_screenshot(result)
             await reporter.step_result(
-                case_id,
-                step_order,
-                action_name,
-                result.get("status", "passed"),
-                duration,
+                execution_case_id=execution_case_id,
+                execution_suite_id=execution_suite_id,
+                execution_step_id=step.get("execution_step_id"),
+                phase=phase,
+                step_order=step_order,
+                action=action_name,
+                status=result.get("status", "passed"),
+                duration=duration,
                 actual_value=result.get("actual_value"),
                 error_message=result.get("error_message"),
                 screenshot_path=result.get("screenshot_path"),
@@ -198,8 +271,8 @@ class TestRunner:
                     break
         return failed, halted
 
-    async def run_case(self, case: dict) -> str:
-        case_id = int(case.get("case_id") or 0)
+    async def run_case(self, case: dict, reporter: RunnerReporter | None = None) -> str:
+        execution_case_id = int(case.get("execution_case_id") or 0)
         context = ExecutionContext(
             self.driver,
             case,
@@ -207,7 +280,7 @@ class TestRunner:
             self.screenshots_dir,
             self.should_stop,
         )
-        reporter = RunnerReporter(self.send, self.execution_id, self.session_token)
+        reporter = reporter or RunnerReporter(self.send, self.execution_id, self.session_token)
         case_status = "passed"
 
         all_steps = case.get("steps_snapshot") or []
@@ -216,20 +289,20 @@ class TestRunner:
         teardown_steps = [s for s in all_steps if str(s.get("phase") or "main") == "teardown"]
 
         setup_failed, setup_halted = await self._run_steps(
-            setup_steps, case_id, context, reporter, "setup"
+            setup_steps, context, reporter, "setup", execution_case_id=execution_case_id
         )
         if setup_failed:
             case_status = "failed"
         if not setup_halted:
             main_failed, _main_halted = await self._run_steps(
-                main_steps, case_id, context, reporter, "main"
+                main_steps, context, reporter, "main", execution_case_id=execution_case_id
             )
             if main_failed:
                 case_status = "failed"
 
         assertion_results: list[AssertionItem] = []
         assertions = [] if setup_halted else (case.get("assertions_snapshot") or [])
-        for assertion in assertions:
+        for assertion_index, assertion in enumerate(assertions, start=1):
             try:
                 cls = ASSERTION_REGISTRY.get(assertion.get("type"))
                 if cls is None:
@@ -247,24 +320,95 @@ class TestRunner:
                     "actual": "",
                     "error_message": str(exc),
                 }
-            assertion_results.append(
-                {
-                    "type": str(assertion.get("type") or ""),
-                    "expected": str(res.get("expected") or ""),
-                    "actual": str(res.get("actual") or ""),
-                    "status": str(res.get("status") or "failed"),
-                    "error_message": (
-                        str(res["error_message"]) if res.get("error_message") else None
-                    ),
-                }
-            )
+            item: AssertionItem = {
+                "type": str(assertion.get("type") or ""),
+                "assertion_order": assertion_index,
+                "expected": str(res.get("expected") or ""),
+                "actual": str(res.get("actual") or ""),
+                "status": str(res.get("status") or "failed"),
+                "error_message": (
+                    str(res["error_message"]) if res.get("error_message") else None
+                ),
+            }
+            if assertion.get("execution_assertion_id") is not None:
+                item["execution_assertion_id"] = assertion["execution_assertion_id"]
+            assertion_results.append(item)
             if res.get("status") != "passed":
                 case_status = "failed"
-        await reporter.assertion_result(case_id, assertion_results)
+        await reporter.assertion_result(execution_case_id, assertion_results)
 
         teardown_failed, _teardown_halted = await self._run_steps(
-            teardown_steps, case_id, context, reporter, "teardown"
+            teardown_steps, context, reporter, "teardown", execution_case_id=execution_case_id
         )
         if teardown_failed:
             case_status = "failed"
         return case_status
+
+    async def run_suite(self, suite: dict) -> str:
+        """执行一个套件：套件前置 → 用例循环 → 套件后置，上报 suite_status 终态。
+
+        停止（StopRequested/CancelledError）不在此收敛，由上层 _run_execution
+        统一收敛当前/未开始套件（当前→stopped，未开始→skipped）后上报 execution_result。
+        """
+        reporter = RunnerReporter(self.send, self.execution_id, self.session_token)
+        suite_id = int(suite.get("execution_suite_id") or 0)
+        await reporter.suite_status(suite_id, "running")
+        context = ExecutionContext(
+            self.driver,
+            {"elements_snapshot": suite.get("elements_snapshot") or {}},
+            self.parameters.get("variables", {}),
+            self.screenshots_dir,
+            self.should_stop,
+        )
+        cases = suite.get("cases") or []
+        case_statuses: list[str] = []
+
+        setup_failed, _setup_halted = await self._run_steps(
+            suite.get("setup_steps") or [],
+            context,
+            reporter,
+            "suite_setup",
+            execution_suite_id=suite_id,
+        )
+        if setup_failed:
+            for case in cases:
+                case_id = int(case.get("execution_case_id") or 0)
+                await reporter.case_status(case_id, "skipped")
+                case_statuses.append("skipped")
+        else:
+            for case in cases:
+                case_id = int(case.get("execution_case_id") or 0)
+                await reporter.case_status(case_id, "running")
+                cstatus = await self.run_case(case, reporter)
+                await reporter.case_status(case_id, cstatus)
+                case_statuses.append(cstatus)
+
+        teardown_failed, _teardown_halted = await self._run_steps(
+            suite.get("teardown_steps") or [],
+            context,
+            reporter,
+            "suite_teardown",
+            execution_suite_id=suite_id,
+        )
+
+        statuses = list(case_statuses)
+        if setup_failed:
+            statuses.append("failed")
+        if teardown_failed:
+            statuses.append("failed")
+        terminal = _aggregate_status(statuses)
+        await reporter.suite_status(suite_id, terminal)
+        return terminal
+
+    async def skip_suite(self, suite: dict) -> None:
+        """停止收敛：未开始的套件整体标记 skipped（套件 + 其用例）。"""
+        reporter = RunnerReporter(self.send, self.execution_id, self.session_token)
+        suite_id = int(suite.get("execution_suite_id") or 0)
+        await reporter.suite_status(suite_id, "skipped")
+        for case in suite.get("cases") or []:
+            await reporter.case_status(int(case.get("execution_case_id") or 0), "skipped")
+
+    async def stop_suite(self, suite: dict) -> None:
+        """停止收敛：当前正在执行的套件标记 stopped（用例终态由后端收敛）。"""
+        reporter = RunnerReporter(self.send, self.execution_id, self.session_token)
+        await reporter.suite_status(int(suite.get("execution_suite_id") or 0), "stopped")

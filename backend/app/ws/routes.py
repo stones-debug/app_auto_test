@@ -10,12 +10,14 @@ from app.models import Execution, Project, ProjectMember, User
 from app.schemas.ws import validate_agent_message
 from app.ws.handlers import (
     handle_assertion_result,
+    handle_case_status,
     handle_device_list,
     handle_execution_result,
     handle_heartbeat,
     handle_log,
     handle_register,
     handle_step_result,
+    handle_suite_status,
     mark_agent_offline,
 )
 from app.ws.managers import agent_manager, execution_manager, profile_config_manager
@@ -186,6 +188,12 @@ async def agent_ws(websocket: WebSocket, db: AsyncSession = Depends(get_db)):
             elif msg_type == "assertion_result":
                 if current_agent_id is not None:
                     await handle_assertion_result(db, current_agent_id, valid)
+            elif msg_type == "case_status":
+                if current_agent_id is not None:
+                    await handle_case_status(db, current_agent_id, valid)
+            elif msg_type == "suite_status":
+                if current_agent_id is not None:
+                    await handle_suite_status(db, current_agent_id, valid)
             elif msg_type == "execution_result":
                 if current_agent_id is not None:
                     await handle_execution_result(db, current_agent_id, valid)

@@ -5,7 +5,6 @@ from fastapi import WebSocket
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.security import verify_psk
 from app.models import (
     Agent,
@@ -15,18 +14,20 @@ from app.models import (
     ExecutionCase,
     ExecutionLog,
     ExecutionStep,
+    ExecutionSuite,
     Report,
 )
 from app.services.screenshot_store import validate_object_key
+from app.services.worker_service import min_agent_version
 from app.ws.managers import agent_manager, execution_manager
 
 TERMINAL_STATES = {"passed", "failed", "error", "stopped", "cancelled"}
 WRITE_STATES = {"running", "stopping"}
 
 
-def _step_snapshot(execution_case: ExecutionCase, step_order: int) -> dict:
-    """从不可变用例快照取步骤，保证执行参数按实际下发值落库。"""
-    for item in execution_case.steps_snapshot or []:
+def _find_snapshot_step(steps_snapshot: list, step_order: int) -> dict:
+    """从不可变快照列表按 order/step_order 取步骤，保证执行参数按实际下发值落库。"""
+    for item in steps_snapshot or []:
         if not isinstance(item, dict):
             continue
         order = item.get("order") or item.get("step_order")
@@ -42,21 +43,130 @@ def _case_phase_to_exec(phase: str | None) -> str:
     return _CASE_PHASE_MAP.get(str(phase or "main"), "case_main")
 
 
+async def _resolve_case(db: AsyncSession, execution: Execution, payload: dict) -> ExecutionCase | None:
+    """按 execution_case_id 优先、fallback 旧协议 case_id（TestCase id）定位执行用例，并校验归属当前 execution。"""
+    case_pk = payload.get("execution_case_id")
+    if case_pk is not None:
+        case = await db.get(ExecutionCase, case_pk)
+        if case is not None and case.execution_id == execution.id:
+            return case
+    legacy_case_id = payload.get("case_id")
+    if legacy_case_id is not None:
+        # 同一 case_id 可在多套件出现，用 first() 避免歧义报错（V2 请携带 execution_case_id 精确匹配）
+        case = (
+            await db.execute(
+                select(ExecutionCase)
+                .where(
+                    ExecutionCase.execution_id == execution.id,
+                    ExecutionCase.case_id == legacy_case_id,
+                )
+                .limit(1)
+            )
+        ).scalars().first()
+        if case is not None:
+            return case
+    return None
+
+
+async def _resolve_suite(db: AsyncSession, execution: Execution, payload: dict) -> ExecutionSuite | None:
+    """按 execution_suite_id 定位执行套件，并校验归属当前 execution。"""
+    suite_pk = payload.get("execution_suite_id")
+    if suite_pk is None:
+        return None
+    suite = await db.get(ExecutionSuite, suite_pk)
+    if suite is not None and suite.execution_id == execution.id:
+        return suite
+    return None
+
+
+async def _step_belongs_to(db: AsyncSession, step: ExecutionStep, execution_id: int) -> bool:
+    """校验执行步骤的父节点（套件或用例）属于当前 execution，用于快照 ID 归属校验。"""
+    if step.execution_case_id is not None:
+        case = await db.get(ExecutionCase, step.execution_case_id)
+        return case is not None and case.execution_id == execution_id
+    if step.execution_suite_id is not None:
+        suite = await db.get(ExecutionSuite, step.execution_suite_id)
+        return suite is not None and suite.execution_id == execution_id
+    return False
+
+
+async def _locate_step(
+    db: AsyncSession,
+    execution: Execution,
+    payload: dict,
+    parent_case: ExecutionCase | None,
+    parent_suite: ExecutionSuite | None,
+) -> tuple[ExecutionStep | None, ExecutionCase | None, ExecutionSuite | None]:
+    """定位执行步骤：优先 execution_step_id 精确匹配（校验归属），
+    其次按 (父节点, step_order) 兼容定位。返回 (step, case, suite)。"""
+    step_id = payload.get("execution_step_id")
+    if step_id is not None:
+        step = await db.get(ExecutionStep, step_id)
+        if step is not None and await _step_belongs_to(db, step, execution.id):
+            if step.execution_case_id is not None:
+                return step, await db.get(ExecutionCase, step.execution_case_id), None
+            if step.execution_suite_id is not None:
+                return step, None, await db.get(ExecutionSuite, step.execution_suite_id)
+            return step, parent_case, parent_suite
+    step_order = payload.get("step_order")
+    if step_order is not None:
+        if parent_case is not None:
+            step = (
+                await db.execute(
+                    select(ExecutionStep).where(
+                        ExecutionStep.execution_case_id == parent_case.id,
+                        ExecutionStep.step_order == step_order,
+                    )
+                )
+            ).scalar_one_or_none()
+            return step, parent_case, None
+        if parent_suite is not None:
+            step = (
+                await db.execute(
+                    select(ExecutionStep).where(
+                        ExecutionStep.execution_suite_id == parent_suite.id,
+                        ExecutionStep.step_order == step_order,
+                    )
+                )
+            ).scalar_one_or_none()
+            return step, None, parent_suite
+    return None, parent_case, parent_suite
+
+
+def _parse_terminal_status(status: str | None) -> str | None:
+    """规范化状态：小写入态；terminal 才返回（供 case_status/suite_status 使用）。"""
+    raw = str(status or "").lower()
+    if raw in TERMINAL_STATES:
+        return raw
+    return None
+
+
 async def _upsert_assertion(
     db: AsyncSession, execution_case_id: int, assertion_order: int, data: dict
 ) -> None:
-    """按 (execution_case_id, assertion_order) 更新或创建执行断言。
+    """按 execution_assertion_id 优先、fallback (execution_case_id, assertion_order) 更新或创建执行断言。
 
-    §3.1：快照预建 pending，Agent 按 id 上报后更新；旧 Agent / 兼容路径无预建行时插入。
+    §3.1：快照预建 pending（S1 固化），Agent 按 execution_assertion_id 上报后更新；
+    旧 Agent / 兼容路径无预建行或未带 id 时，回退按 assertion_order 定位或插入。
     """
-    existing = (
-        await db.execute(
-            select(ExecutionAssertion).where(
-                ExecutionAssertion.execution_case_id == execution_case_id,
-                ExecutionAssertion.assertion_order == assertion_order,
+    assertion_id = data.get("execution_assertion_id")
+    existing: ExecutionAssertion | None = None
+    if assertion_id is not None:
+        candidate = await db.get(ExecutionAssertion, assertion_id)
+        # 归属校验：id 必须属于当前用例，否则视为不匹配（拒绝越权写入）
+        if candidate is not None and candidate.execution_case_id == execution_case_id:
+            existing = candidate
+            if assertion_order is None:
+                assertion_order = candidate.assertion_order
+    if existing is None and assertion_order is not None:
+        existing = (
+            await db.execute(
+                select(ExecutionAssertion).where(
+                    ExecutionAssertion.execution_case_id == execution_case_id,
+                    ExecutionAssertion.assertion_order == assertion_order,
+                )
             )
-        )
-    ).scalar_one_or_none()
+        ).scalar_one_or_none()
     if existing is not None:
         existing.assertion_type = data.get("type") or data.get("assertion_type") or existing.assertion_type
         expected = data.get("expected") if data.get("expected") is not None else data.get("expected_value")
@@ -75,7 +185,7 @@ async def _upsert_assertion(
     db.add(
         ExecutionAssertion(
             execution_case_id=execution_case_id,
-            assertion_order=assertion_order,
+            assertion_order=assertion_order or 1,
             assertion_type=data.get("type") or data.get("assertion_type") or "",
             expected_value=str(expected) if expected is not None else None,
             actual_value=str(actual) if actual is not None else None,
@@ -172,11 +282,12 @@ async def handle_register(db: AsyncSession, ws: WebSocket, payload: dict) -> dic
         # Step 6：软注销 Agent 不接受 WS 注册
         await ws.close(code=1008, reason="Agent 认证失败")
         return None
-    # CR-21：注册时语义化版本比较（min_agent_version）
-    if not version_supported(payload.get("version"), settings.min_agent_version):
+    # CR-21：注册时语义化版本比较（min_agent_version，来自 Registry 生成产物）
+    _min_agent = min_agent_version()
+    if not version_supported(payload.get("version"), _min_agent):
         await ws.close(
             code=1008,
-            reason=f"Agent 版本过低，最低要求 {settings.min_agent_version}",
+            reason=f"Agent 版本过低，最低要求 {_min_agent}",
         )
         return None
 
@@ -278,9 +389,7 @@ async def handle_log(db: AsyncSession, agent_id: int, payload: dict) -> None:
 
 async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> None:
     execution_id = payload.get("execution_id")
-    case_id = payload.get("case_id")
-    step_order = payload.get("step_order")
-    if execution_id is None or case_id is None or step_order is None:
+    if execution_id is None:
         return
     execution = await _bound_execution(db, agent_id, execution_id, payload.get("session_token"))
     if execution is None:
@@ -288,45 +397,73 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
     screenshot_path = payload.get("screenshot_path")
     if not validate_object_key(execution_id, screenshot_path):
         screenshot_path = None
-    execution_case = (
-        await db.execute(
-            select(ExecutionCase).where(
-                ExecutionCase.execution_id == execution_id,
-                ExecutionCase.case_id == case_id,
-            )
-        )
-    ).scalar_one_or_none()
-    if execution_case is None:
+    now = datetime.now(UTC)
+    step_order = payload.get("step_order")
+
+    # 协议 V2：按 execution_case_id / execution_suite_id 确定父节点（兼容旧 case_id）
+    parent_case = await _resolve_case(db, execution, payload)
+    parent_suite = None if parent_case is not None else await _resolve_suite(db, execution, payload)
+
+    # 定位执行步骤：优先 execution_step_id（S1 已预建 pending 行），其次 (父节点, step_order)
+    step, parent_case, parent_suite = await _locate_step(
+        db, execution, payload, parent_case, parent_suite
+    )
+
+    if parent_case is None and parent_suite is None:
         db.add(
             ExecutionLog(
                 execution_id=execution_id,
                 level="WARN",
-                message=f"step_result 未匹配 execution_case (case_id={case_id})",
+                message=f"step_result 未匹配执行节点 execution_id={execution_id}",
                 source="agent",
             )
         )
         await db.commit()
         return
 
-    step = (
-        await db.execute(
-            select(ExecutionStep).where(
-                ExecutionStep.execution_case_id == execution_case.id,
-                ExecutionStep.step_order == step_order,
-            )
+    # 确定执行阶段（套件步 / 用例步）：已定位到行则以行 phase 为准（S1 固化），否则按 payload 推断
+    if step is not None:
+        exec_phase = step.phase
+    elif parent_case is not None:
+        exec_phase = _case_phase_to_exec(payload.get("phase"))
+    else:
+        exec_phase = (
+            payload.get("phase")
+            if payload.get("phase") in ("suite_setup", "suite_teardown")
+            else "suite_setup"
         )
-    ).scalar_one_or_none()
-    now = datetime.now(UTC)
-    snapshot = _step_snapshot(execution_case, step_order)
-    snapshot_parameters = snapshot.get("params")
+
+    # 从快照取下发参数（用例 steps_snapshot 或套件 setup/teardown snapshot）
+    snapshot_parameters: dict = {}
+    if parent_case is not None:
+        snap = _find_snapshot_step(parent_case.steps_snapshot, step_order)
+        snapshot_parameters = snap.get("params")
+    else:
+        snap = _find_snapshot_step(parent_suite.setup_steps_snapshot, step_order)
+        if not snap:
+            snap = _find_snapshot_step(parent_suite.teardown_steps_snapshot, step_order)
+        snapshot_parameters = snap.get("params")
     if not isinstance(snapshot_parameters, dict):
         snapshot_parameters = {}
+
     if step is None:
+        if step_order is None:
+            db.add(
+                ExecutionLog(
+                    execution_id=execution_id,
+                    level="WARN",
+                    message=f"step_result 缺 step_order 无法创建步骤 execution_id={execution_id}",
+                    source="agent",
+                )
+            )
+            await db.commit()
+            return
         step = ExecutionStep(
-            execution_case_id=execution_case.id,
-            phase=_case_phase_to_exec(snapshot.get("phase") or "main"),
+            execution_case_id=parent_case.id if parent_case else None,
+            execution_suite_id=parent_suite.id if parent_suite else None,
+            phase=exec_phase,
             step_order=step_order,
-            action=payload.get("action") or snapshot.get("action") or "unknown",
+            action=payload.get("action") or snap.get("action") or "unknown",
             parameters=dict(snapshot_parameters),
             status=payload.get("status") or "passed",
             started_at=now,
@@ -348,16 +485,25 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
         step.screenshot_path = screenshot_path
     await db.flush()
 
-    if execution_case.started_at is None:
-        execution_case.started_at = now
-    if step.status == "failed":
-        execution_case.status = "failed"
-        execution_case.finished_at = now
-    elif execution_case.status != "failed":
-        execution_case.status = "running"
+    if parent_case is not None:
+        if parent_case.started_at is None:
+            parent_case.started_at = now
+        if step.status == "failed":
+            parent_case.status = "failed"
+            parent_case.finished_at = now
+        elif parent_case.status != "failed":
+            parent_case.status = "running"
+    else:
+        if parent_suite.started_at is None:
+            parent_suite.started_at = now
+        if step.status == "failed":
+            parent_suite.status = "failed"
+        elif parent_suite.status != "failed":
+            parent_suite.status = "running"
 
     for order, assertion in enumerate(payload.get("assertions") or [], start=1):
-        await _upsert_assertion(db, execution_case.id, order, assertion)
+        if parent_case is not None:
+            await _upsert_assertion(db, parent_case.id, order, assertion)
     await db.commit()
 
     await execution_manager.broadcast(
@@ -365,11 +511,14 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
         {
             "type": "step_result",
             "execution_id": execution_id,
-            "case_id": case_id,
+            "case_id": parent_case.case_id if parent_case else None,
+            "execution_case_id": parent_case.id if parent_case else None,
+            "execution_suite_id": parent_suite.id if parent_suite else None,
+            "execution_step_id": step.id,
             "step_order": step_order,
-            "phase": snapshot.get("phase") or "main",
+            "phase": exec_phase,
             "status": step.status,
-            "case_status": execution_case.status,
+            "case_status": parent_case.status if parent_case else parent_suite.status,
             "duration": step.duration,
             "screenshot_url": step.screenshot_path,
             "artifact_id": step.id if step.screenshot_path else None,
@@ -380,20 +529,12 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
 
 async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict) -> None:
     execution_id = payload.get("execution_id")
-    case_id = payload.get("case_id")
-    if execution_id is None or case_id is None:
+    if execution_id is None:
         return
     execution = await _bound_execution(db, agent_id, execution_id, payload.get("session_token"))
     if execution is None:
         return
-    execution_case = (
-        await db.execute(
-            select(ExecutionCase).where(
-                ExecutionCase.execution_id == execution_id,
-                ExecutionCase.case_id == case_id,
-            )
-        )
-    ).scalar_one_or_none()
+    execution_case = await _resolve_case(db, execution, payload)
     if execution_case is None:
         return
     normalized_assertions: list[dict] = []
@@ -405,7 +546,10 @@ async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict
             "status": "pass" if raw_status in {"pass", "passed"} else "fail",
         }
         normalized_assertions.append(normalized)
-        await _upsert_assertion(db, execution_case.id, order, normalized)
+        # 协议 V2：优先按 execution_assertion_id 更新（S1 已固化 pending），兼容按 assertion_order 定位
+        await _upsert_assertion(
+            db, execution_case.id, assertion.get("assertion_order") or order, normalized
+        )
     assertion_failed = any(item["status"] == "fail" for item in normalized_assertions)
     if execution_case.status != "failed":
         execution_case.status = "failed" if assertion_failed else "passed"
@@ -414,16 +558,99 @@ async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict
     if execution_case.started_at is not None:
         execution_case.duration = int((now - execution_case.started_at).total_seconds() * 1000)
     await db.commit()
-    # V2 §8.2：assertion 广播（前端按 execution_id+case_id+step_order+type 幂等合并）
+    # V2 §8.2：assertion 广播（前端按 execution_id+case_id+assertions 幂等合并）
     await execution_manager.broadcast(
         execution_id,
         {
             "type": "assertion_result",
             "execution_id": execution_id,
-            "case_id": case_id,
+            "case_id": execution_case.case_id,
+            "execution_case_id": execution_case.id,
             "step_order": payload.get("step_order"),
             "assertions": normalized_assertions,
             "case_status": execution_case.status,
+            "timestamp": now.isoformat(),
+        },
+    )
+
+
+async def handle_case_status(db: AsyncSession, agent_id: int, payload: dict) -> None:
+    """协议 V2：用例级状态更新（{execution_case_id, status: running/terminal, error_message?}）。"""
+    execution_id = payload.get("execution_id")
+    case_pk = payload.get("execution_case_id")
+    if execution_id is None and case_pk is None:
+        return
+    if execution_id is None:
+        case = await db.get(ExecutionCase, case_pk)
+        if case is None:
+            return
+        execution_id = case.execution_id
+    execution = await _bound_execution(db, agent_id, execution_id, payload.get("session_token"))
+    if execution is None:
+        return
+    parent_case = await _resolve_case(db, execution, payload)
+    if parent_case is None:
+        return
+    now = datetime.now(UTC)
+    terminal = _parse_terminal_status(payload.get("status"))
+    if terminal is not None:
+        parent_case.status = terminal
+        parent_case.finished_at = now
+        if parent_case.started_at is not None:
+            parent_case.duration = int((now - parent_case.started_at).total_seconds() * 1000)
+    else:
+        parent_case.status = "running"
+        if parent_case.started_at is None:
+            parent_case.started_at = now
+    if payload.get("error_message") is not None:
+        parent_case.error_message = payload["error_message"]
+    await db.commit()
+    await execution_manager.broadcast(
+        execution_id,
+        {
+            "type": "case_status",
+            "execution_id": execution_id,
+            "execution_case_id": parent_case.id,
+            "case_id": parent_case.case_id,
+            "status": parent_case.status,
+            "timestamp": now.isoformat(),
+        },
+    )
+
+
+async def handle_suite_status(db: AsyncSession, agent_id: int, payload: dict) -> None:
+    """协议 V2：套件级状态更新（{execution_suite_id, status, error_message?}）。"""
+    suite_pk = payload.get("execution_suite_id")
+    if suite_pk is None:
+        return
+    suite = await db.get(ExecutionSuite, suite_pk)
+    if suite is None:
+        return
+    execution = await _bound_execution(db, agent_id, suite.execution_id, payload.get("session_token"))
+    if execution is None:
+        return
+    now = datetime.now(UTC)
+    terminal = _parse_terminal_status(payload.get("status"))
+    if terminal is not None:
+        suite.status = terminal
+        suite.finished_at = now
+        if suite.started_at is not None:
+            suite.duration = int((now - suite.started_at).total_seconds() * 1000)
+    else:
+        suite.status = "running"
+        if suite.started_at is None:
+            suite.started_at = now
+    if payload.get("error_message") is not None:
+        suite.error_message = payload["error_message"]
+    await db.commit()
+    await execution_manager.broadcast(
+        suite.execution_id,
+        {
+            "type": "suite_status",
+            "execution_id": suite.execution_id,
+            "execution_suite_id": suite.id,
+            "suite_id": suite.suite_id,
+            "status": suite.status,
             "timestamp": now.isoformat(),
         },
     )

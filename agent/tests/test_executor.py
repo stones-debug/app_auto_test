@@ -15,6 +15,7 @@ from executor import (
 
 def _make_case(steps, assertions=None, elements=None) -> dict:
     return {
+        "execution_case_id": 2001,
         "case_id": 1,
         "case_name": "测试用例",
         "steps_snapshot": steps,
@@ -24,6 +25,19 @@ def _make_case(steps, assertions=None, elements=None) -> dict:
             "2": {"locator_type": "id", "locator_value": "login_btn"},
             "3": {"locator_type": "id", "locator_value": "welcome"},
         },
+    }
+
+
+def _make_suite(cases, setup_steps=None, teardown_steps=None, suite_id=None) -> dict:
+    return {
+        "execution_suite_id": 1001,
+        "suite_id": suite_id,
+        "suite_name": "基础功能",
+        "suite_order": 1,
+        "is_virtual": suite_id is None,
+        "setup_steps": setup_steps or [],
+        "cases": cases,
+        "teardown_steps": teardown_steps or [],
     }
 
 
@@ -1072,3 +1086,148 @@ async def test_swipe_to_find_step_through_runner():
     status, sent = await _run_and_capture(case, driver=_FoundAfterSwipesDriver(after=3))
     assert status == "passed"
     assert sent[0]["status"] == "passed"
+
+
+# ---------- Step 2：套件级执行（协议 V2） ----------
+
+
+async def _run_suite_and_capture(suite, parameters=None, driver=None):
+    sent: list[dict] = []
+
+    async def fake_send(payload: dict):
+        sent.append(payload)
+
+    driver = driver or MockDriver()
+    runner = TestRunner(driver, fake_send, 100, parameters)
+    status = await runner.run_suite(suite)
+    return status, sent
+
+
+def _suite_case(*, execution_case_id=2001, steps=None, assertions=None):
+    return {
+        "execution_case_id": execution_case_id,
+        "case_id": 1,
+        "case_name": "用例",
+        "case_order": 1,
+        "module_name": None,
+        "steps_snapshot": steps or [{"order": 1, "action": "sleep", "params": {"duration": 0.01}}],
+        "assertions_snapshot": assertions or [],
+        "elements_snapshot": {
+            "1": {"locator_type": "id", "locator_value": "username"},
+            "2": {"locator_type": "id", "locator_value": "login_btn"},
+        },
+    }
+
+
+async def test_run_suite_passing_reports_nested_structure():
+    """V2：run_suite 上报 suite_status(running/terminal)、case_status(running/terminal)。"""
+    suite = _make_suite([_suite_case()], setup_steps=[], teardown_steps=[])
+    status, sent = await _run_suite_and_capture(suite)
+    assert status == "passed"
+    suite_statuses = [m for m in sent if m["type"] == "suite_status"]
+    assert suite_statuses[0]["execution_suite_id"] == 1001
+    assert [m["status"] for m in suite_statuses] == ["running", "passed"]
+    case_statuses = [m for m in sent if m["type"] == "case_status"]
+    assert [m["status"] for m in case_statuses] == ["running", "passed"]
+    step_msg = next(m for m in sent if m["type"] == "step_result")
+    assert step_msg["execution_case_id"] == 2001
+    assert "execution_suite_id" not in step_msg
+
+
+async def test_run_suite_setup_failure_skips_cases_runs_teardown():
+    """V2：suite_setup 失败 → 用例 skipped，仍执行 suite_teardown，套件终态 failed。"""
+    driver = MockDriver()
+    suite = _make_suite(
+        [_suite_case()],
+        setup_steps=[
+            {"execution_step_id": 5001, "action": "no_such_action", "order": 1, "params": {}},
+        ],
+        teardown_steps=[
+            {"execution_step_id": 5009, "action": "sleep", "order": 1, "params": {"duration": 0.01}},
+        ],
+    )
+    status, sent = await _run_suite_and_capture(suite, driver=driver)
+    assert status == "failed"
+    suite_statuses = [m for m in sent if m["type"] == "suite_status"]
+    assert [m["status"] for m in suite_statuses] == ["running", "failed"]
+    case_statuses = [m for m in sent if m["type"] == "case_status"]
+    assert [m["status"] for m in case_statuses] == ["skipped"]
+    step_msgs = [m for m in sent if m["type"] == "step_result"]
+    # 套件前置 + 套件后置；用例步骤未执行
+    assert [m["execution_suite_id"] for m in step_msgs] == [1001, 1001]
+    assert [m["execution_step_id"] for m in step_msgs] == [5001, 5009]
+    assert [m["phase"] for m in step_msgs] == ["suite_setup", "suite_teardown"]
+    assert [m["action"] for m in step_msgs] == ["no_such_action", "sleep"]
+
+
+async def test_run_suite_step_result_carries_execution_step_id_for_suite_steps():
+    """V2：套件步上报携带 execution_step_id，且执行顺序为 setUp → cases → teardown。"""
+    suite = _make_suite(
+        [_suite_case()],
+        setup_steps=[
+            {"execution_step_id": 5001, "action": "launch_app", "order": 1, "params": {"package": "com.demo"}},
+        ],
+        teardown_steps=[
+            {"execution_step_id": 5009, "action": "close_app", "order": 1, "params": {}},
+        ],
+    )
+    status, sent = await _run_suite_and_capture(suite)
+    assert status == "passed"
+    step_msg = next(m for m in sent if m["type"] == "step_result" and m["phase"] == "suite_setup")
+    assert step_msg["execution_step_id"] == 5001
+    assert step_msg["execution_suite_id"] == 1001
+    assert "execution_case_id" not in step_msg
+    teardown_msg = next(m for m in sent if m["type"] == "step_result" and m["phase"] == "suite_teardown")
+    assert teardown_msg["execution_step_id"] == 5009
+
+
+async def test_run_suite_case_failure_makes_suite_failed():
+    """V2：任一名用例失败 → 套件终态 failed，但其余用例仍执行。"""
+    suite = _make_suite(
+        [
+            _suite_case(execution_case_id=2001, steps=[
+                {"order": 1, "action": "input", "element_id": 1, "params": {"value": "admin"}},
+            ], assertions=[
+                {"order": 1, "type": "text_equals", "element_id": 1, "params": {"expected": "wrong"}},
+            ]),
+            _suite_case(
+                execution_case_id=2002,
+                steps=[{"order": 1, "action": "sleep", "params": {"duration": 0.01}}],
+            ),
+        ],
+    )
+    status, sent = await _run_suite_and_capture(suite)
+    assert status == "failed"
+    assert [m["status"] for m in sent if m["type"] == "suite_status"] == ["running", "failed"]
+    case_statuses = [m for m in sent if m["type"] == "case_status"]
+    # 2001 → running, failed；2002 → running, passed
+    assert [(m["execution_case_id"], m["status"]) for m in case_statuses] == [
+        (2001, "running"),
+        (2001, "failed"),
+        (2002, "running"),
+        (2002, "passed"),
+    ]
+
+
+async def test_run_suite_empty_cases_terminates_skipped():
+    """V2：套件 entirely 无 cases（健壮性）→ 无失败时终态 skipped。"""
+    suite = _make_suite([], setup_steps=[], teardown_steps=[])
+    status, sent = await _run_suite_and_capture(suite)
+    assert status == "skipped"
+    assert [m["status"] for m in sent if m["type"] == "suite_status"] == ["running", "skipped"]
+
+
+async def test_run_suite_stop_raises_stop_requested():
+    """V2：套件执行中停止 → StopRequested 上抛（由 _run_execution 收敛）。"""
+    suite = _make_suite(
+        [_suite_case(steps=[{"order": 1, "action": "sleep", "params": {"duration": 0.01}}])],
+    )
+    sent: list[dict] = []
+
+    async def fake_send(payload: dict):
+        sent.append(payload)
+
+    runner = TestRunner(MockDriver(), fake_send, 100, should_stop=lambda: True)
+    with pytest.raises(StopRequested):
+        await runner.run_suite(suite)
+
