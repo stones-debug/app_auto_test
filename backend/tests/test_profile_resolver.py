@@ -184,6 +184,56 @@ async def test_step_skip_and_override(client):
     assert steps[0]["params"]["package"] == "patched_pkg"
 
 
+async def test_suite_step_override_applied_to_snapshot(client):
+    """套件步骤覆盖（target_type='suite_step'）必须加载并作用到套件前置步快照。
+
+    回归：解析器曾用 target_type == 'step' and case_id is None 判断套件步覆盖，
+    而 DB 保存的类型是 suite_step，导致 suite_step_overrides 永远为空，
+    覆盖的 params 不生效（现有测试仅覆盖保存/查询/恢复，未验证解析快照）。
+    """
+    base = await _base(client)
+    case_id = await _setup_case_with_steps(client, base, "套件步覆盖用例")
+    async with SessionLocal() as db:
+        profile_id = await _make_profile(db, base)
+        suite_setup_key = str(uuid.uuid4())
+        suite = SuiteModel(
+            project_id=base["project_id"],
+            name="套件步覆盖套件",
+            setup_steps=[{"order": 1, "key": suite_setup_key, "action": "sleep", "params": {"duration": 1}}],
+            teardown_steps=[],
+        )
+        db.add(suite)
+        await db.flush()
+        db.add(SuiteCaseModel(suite_id=suite.id, case_id=case_id, sort_order=1))
+        await db.flush()
+        # 保存的口径与 API 一致：target_type='suite_step'（case_id 恒空）
+        db.add(
+            AppProfileNodeOverride(
+                profile_id=profile_id,
+                target_type="suite_step",
+                suite_id=suite.id,
+                case_id=None,
+                node_key=suite_setup_key,
+                patch={"params": {"duration": 5}},
+            )
+        )
+        await db.commit()
+        result = await resolve_compat(
+            ResolutionRequest(
+                project_id=base["project_id"], profile_id=profile_id, release_id=await _release_id(db, profile_id),
+                target_type="suite", target_ids=[suite.id],
+                expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
+                run_options={"use_pre_steps": True},
+            ),
+            db,
+        )
+    assert len(result.suites) == 1
+    assert len(result.suites[0].setup_steps_snapshot) == 1
+    assert result.suites[0].setup_steps_snapshot[0]["source_key"] == suite_setup_key
+    # 覆盖必须生效（此前 suite_step_overrides 为空时保持 duration=1）
+    assert result.suites[0].setup_steps_snapshot[0]["params"]["duration"] == 5
+
+
 async def test_variable_override_priority(client):
     """变量优先级：执行参数 > APP档案 > 套件 > 用例。"""
     base = await _base(client)

@@ -308,7 +308,9 @@ async def _load_config(db: AsyncSession, profile_id: int) -> dict:
     assertion_overrides: dict[tuple[int | None, int], dict[str, dict[str, Any]]] = {}
     suite_step_overrides: dict[tuple[int, str], dict[str, Any]] = {}
     for ov in node_overrides:
-        if ov.target_type == "step" and ov.case_id is None:
+        # 套件步骤覆盖：DB 存 target_type='suite_step'（case_id 恒空），独立索引
+        # （旧口径曾用 'step'+case_id=None 判断，导致 suite_step_overrides 永远为空）。
+        if ov.target_type == "suite_step":
             if ov.suite_id is not None:
                 suite_step_overrides[(ov.suite_id, str(ov.node_key))] = deepcopy(ov.patch)
             continue
