@@ -304,8 +304,8 @@ async def _load_config(db: AsyncSession, profile_id: int) -> dict:
             bucket.setdefault((rule.suite_id, rule.case_id), {})[str(rule.node_key)] = rule
 
     # 节点覆盖键结构：(suite_id, case_id)；套件步骤覆盖（case_id 为空）单独索引
-    step_overrides: dict[tuple[int | None, int], dict[str, dict[str, Any]]] = {}
-    assertion_overrides: dict[tuple[int | None, int], dict[str, dict[str, Any]]] = {}
+    step_overrides: dict[tuple[int, int], dict[str, dict[str, Any]]] = {}
+    assertion_overrides: dict[tuple[int, int], dict[str, dict[str, Any]]] = {}
     suite_step_overrides: dict[tuple[int, str], dict[str, Any]] = {}
     for ov in node_overrides:
         # 套件步骤覆盖：DB 存 target_type='suite_step'（case_id 恒空），独立索引
@@ -314,8 +314,9 @@ async def _load_config(db: AsyncSession, profile_id: int) -> dict:
             if ov.suite_id is not None:
                 suite_step_overrides[(ov.suite_id, str(ov.node_key))] = deepcopy(ov.patch)
             continue
-        bucket = step_overrides if ov.target_type == "step" else assertion_overrides
-        bucket.setdefault((ov.suite_id, ov.case_id), {})[str(ov.node_key)] = deepcopy(ov.patch)
+        if ov.suite_id is not None and ov.case_id is not None:
+            bucket = step_overrides if ov.target_type == "step" else assertion_overrides
+            bucket.setdefault((ov.suite_id, ov.case_id), {})[str(ov.node_key)] = deepcopy(ov.patch)
 
     return {
         "skip_suite": skip_suite,
@@ -508,11 +509,11 @@ def _finalize_suite_step(node: dict, phase: str) -> dict:
 def _case_scoped(
     config: dict, suite_id: int | None, case_id: int, kind: str
 ) -> dict[str, dict[str, Any]]:
-    """合成用例步骤/断言的节点覆盖：语境无关(None, case_id) 作为回退，套件级(suite_id, case_id) 覆盖之。"""
+    """读取当前套件中的用例节点覆盖；共享用例的其他套件不受影响。"""
+    if suite_id is None:
+        return {}
     bucket = config["step_overrides"] if kind == "step" else config["assertion_overrides"]
-    merged = dict(bucket.get((None, case_id), {}))
-    merged.update(bucket.get((suite_id, case_id), {}))
-    return merged
+    return dict(bucket.get((suite_id, case_id), {}))
 
 
 # ---------- 主解析（方案 §3.2） ----------

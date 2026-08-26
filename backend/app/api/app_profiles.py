@@ -909,6 +909,7 @@ async def list_profile_overrides(
         ],
         "nodes": [
             {
+                "suite_id": row.suite_id,
                 "case_id": row.case_id,
                 "node_type": row.target_type,
                 "node_key": str(row.node_key),
@@ -1121,9 +1122,10 @@ async def restore_variable_override(
 
 
 # 节点参数覆盖
-@router.put("/app-profiles/{profile_id}/node-overrides/{case_id}/{node_type}/{node_key}", response_model=dict)
+@router.put("/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/{node_type}/{node_key}", response_model=dict)
 async def upsert_node_override(
     profile_id: int,
+    suite_id: int,
     case_id: int,
     node_type: str,
     node_key: str,
@@ -1146,6 +1148,20 @@ async def upsert_node_override(
     case = await db.get(TestCase, case_id)
     if case is None or case.deleted_at is not None or case.project_id != profile.project_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用例不存在或跨项目")
+    membership = await db.scalar(
+        select(TestSuiteCase.id).where(
+            TestSuiteCase.suite_id == suite_id,
+            TestSuiteCase.case_id == case_id,
+        )
+    )
+    suite = await db.get(TestSuite, suite_id)
+    if (
+        suite is None
+        or suite.deleted_at is not None
+        or suite.project_id != profile.project_id
+        or membership is None
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="套件用例关系不存在")
     found = _find_case_node(case, node_type, node_key)
     if found is None:
         raise HTTPException(
@@ -1177,6 +1193,7 @@ async def upsert_node_override(
         await db.execute(
             select(AppProfileNodeOverride).where(
                 AppProfileNodeOverride.profile_id == profile_id,
+                AppProfileNodeOverride.suite_id == suite_id,
                 AppProfileNodeOverride.target_type == node_type,
                 AppProfileNodeOverride.case_id == case_id,
                 AppProfileNodeOverride.node_key == normalized_key,
@@ -1187,6 +1204,7 @@ async def upsert_node_override(
     if existing is None:
         existing = AppProfileNodeOverride(
             profile_id=profile_id,
+            suite_id=suite_id,
             target_type=node_type,
             case_id=case_id,
             node_key=normalized_key,
@@ -1201,6 +1219,7 @@ async def upsert_node_override(
         existing.patch = body.patch
         existing.updated_by = user.id
     response_data = {
+        "suite_id": suite_id,
         "case_id": case_id,
         "node_type": node_type,
         "node_key": normalized_key,
@@ -1213,9 +1232,10 @@ async def upsert_node_override(
     return {"revision": new_revision, **response_data}
 
 
-@router.delete("/app-profiles/{profile_id}/node-overrides/{case_id}/{node_type}/{node_key}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/{node_type}/{node_key}", status_code=status.HTTP_204_NO_CONTENT)
 async def restore_node_override(
     profile_id: int,
+    suite_id: int,
     case_id: int,
     node_type: str,
     node_key: str,
@@ -1239,6 +1259,7 @@ async def restore_node_override(
         await db.execute(
             select(AppProfileNodeOverride).where(
                 AppProfileNodeOverride.profile_id == profile_id,
+                AppProfileNodeOverride.suite_id == suite_id,
                 AppProfileNodeOverride.target_type == node_type,
                 AppProfileNodeOverride.case_id == case_id,
                 AppProfileNodeOverride.node_key == normalized_key,
@@ -1490,7 +1511,7 @@ async def workspace_nodes(
         for case in rows:
             direct_rule = skip["case"].get((parent_id, case.id))
             rule = suite_rule or direct_rule
-            override_count = len(overrides["node"].get(case.id, {}))
+            override_count = len(overrides["node"].get((parent_id, case.id), {}))
             effective = "skipped" if rule else ("overridden" if override_count else "enabled")
             source = "inherited" if suite_rule else ("direct" if direct_rule else ("override" if override_count else "none"))
             reason = None
@@ -1531,12 +1552,12 @@ async def workspace_nodes(
         for node in (case.steps or []):
             node_key = str(node.get("key") or "")
             rule = skip["step"].get((ancestor_suite_id, case.id), {}).get(node_key)
-            overridden = overrides["node"].get(case.id, {}).get(node_key) == "step"
+            overridden = overrides["node"].get((ancestor_suite_id, case.id), {}).get(node_key) == "step"
             items.append(_node_item("step", case.id, node_key, node, rule, case_rule, overridden))
         for node in (case.assertions or []):
             node_key = str(node.get("key") or "")
             rule = skip["assertion"].get((ancestor_suite_id, case.id), {}).get(node_key)
-            overridden = overrides["node"].get(case.id, {}).get(node_key) == "assertion"
+            overridden = overrides["node"].get((ancestor_suite_id, case.id), {}).get(node_key) == "assertion"
             items.append(_node_item("assertion", case.id, node_key, node, rule, case_rule, overridden))
         start = (page - 1) * page_size
         return {"total": len(items), "page": page, "page_size": page_size, "items": items[start : start + page_size]}
@@ -1627,7 +1648,8 @@ async def differences(
     for sid, _nk in skip["suite_step"]:
         suite_ids.add(sid)
         step_suite_ids.add(sid)
-    for cid in overrides["node"]:
+    for sid, cid in overrides["node"]:
+        suite_ids.add(sid)
         case_ids.add(cid)
     for sid, _nk in overrides["suite_step"]:
         suite_ids.add(sid)
@@ -1676,13 +1698,14 @@ async def differences(
 
     # 覆盖项
     if type_ in ("all", "overridden"):
-        for cid, rules in overrides["node"].items():
+        for (sid, cid), rules in overrides["node"].items():
             for _k in rules:
                 rows.append(
                     {
                         "target_type": "node",
-                        "path": f"{_c(cid)} / 节点",
+                        "path": f"{_n(sid)} / {_c(cid)} / 节点",
                         "override": True,
+                        "suite_id": sid,
                         "case_id": cid,
                     }
                 )
@@ -1772,13 +1795,14 @@ async def _load_override_index(db: AsyncSession, profile_id: int) -> dict:
             .where(AppProfileNodeOverride.profile_id == profile_id, AppProfileNodeOverride.deleted_at.is_(None))
         )
     ).all()
-    node_idx: dict[int, dict[str, str]] = {}
+    node_idx: dict[tuple[int, int], dict[str, str]] = {}
     suite_step_idx: dict[tuple[int, str], dict] = {}
     for sid, cid, ttype, nkey, patch in node:
         if ttype == "suite_step" and sid is not None:
             suite_step_idx[(sid, str(nkey))] = patch
             continue
-        node_idx.setdefault(cid, {})[str(nkey)] = ttype
+        if sid is not None and cid is not None:
+            node_idx.setdefault((sid, cid), {})[str(nkey)] = ttype
     return {"element": list(el), "variable": list(var), "node": node_idx, "suite_step": suite_step_idx}
 
 
@@ -1816,19 +1840,14 @@ async def _override_counts(db: AsyncSession, project_id: int, profile_id: int) -
     """按套件聚合节点覆盖数量（用例维度 + 套件步骤维度），供工作台“已覆盖”状态筛选。"""
     rows = (
         await db.execute(
-            select(TestSuiteCase.suite_id, func.count(AppProfileNodeOverride.id))
-            .join(TestCase, TestCase.id == TestSuiteCase.case_id)
-            .join(
-                AppProfileNodeOverride,
-                AppProfileNodeOverride.case_id == TestCase.id,
-            )
+            select(AppProfileNodeOverride.suite_id, func.count(AppProfileNodeOverride.id))
             .where(
-                TestCase.project_id == project_id,
-                TestCase.deleted_at.is_(None),
                 AppProfileNodeOverride.profile_id == profile_id,
                 AppProfileNodeOverride.deleted_at.is_(None),
+                AppProfileNodeOverride.target_type.in_(("step", "assertion")),
+                AppProfileNodeOverride.suite_id.is_not(None),
             )
-            .group_by(TestSuiteCase.suite_id)
+            .group_by(AppProfileNodeOverride.suite_id)
         )
     ).all()
     counts = {suite_id: count for suite_id, count in rows}

@@ -247,18 +247,21 @@ class AppProfileNodeOverride(Base, TimestampMixin, SoftDeleteMixin):
             name="ck_profile_node_override_patch",
         ),
         CheckConstraint(
-            "(target_type IN ('step', 'assertion') AND suite_id IS NULL AND case_id IS NOT NULL)"
+            "(target_type IN ('step', 'assertion') AND suite_id IS NOT NULL AND case_id IS NOT NULL)"
             " OR (target_type = 'suite_step' AND suite_id IS NOT NULL AND case_id IS NULL)",
             name="ck_profile_node_override_shape",
         ),
         Index(
             "uq_profile_node_override_active",
             "profile_id",
+            "suite_id",
             "target_type",
             "case_id",
             "node_key",
             unique=True,
-            postgresql_where=text("deleted_at IS NULL AND suite_id IS NULL"),
+            postgresql_where=text(
+                "target_type IN ('step', 'assertion') AND deleted_at IS NULL"
+            ),
         ),
         Index(
             "uq_profile_node_override_suite_step_active",

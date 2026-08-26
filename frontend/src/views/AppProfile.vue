@@ -225,7 +225,8 @@ async function openNodeOverride(row: DisplayNode) {
   if (!row._caseId) return
   const data = await listProfileOverrides(store.selectedProfileId)
   const existing = data.nodes.find((item) => (
-    item.case_id === row._caseId && item.node_type === row.node_type && item.node_key === row.node_key
+    item.suite_id === row._suiteId && item.case_id === row._caseId
+      && item.node_type === row.node_type && item.node_key === row.node_key
   ))
   nodeOverrideDialog.row = row
   nodeOverrideDialog.patchText = JSON.stringify(existing?.patch ?? {}, null, 2)
@@ -253,6 +254,7 @@ async function saveNodeOverride() {
       )
     : await upsertNodeOverride(
         store.selectedProfileId,
+        row._suiteId!,
         row._caseId!,
         row.node_type as 'step' | 'assertion',
         row.node_key,
@@ -277,6 +279,7 @@ async function restoreNode() {
   } else {
     await restoreNodeOverride(
       store.selectedProfileId,
+      row._suiteId!,
       row._caseId!,
       row.node_type as 'step' | 'assertion',
       row.node_key,

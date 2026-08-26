@@ -194,6 +194,8 @@ async def test_overrides(client: AsyncClient):
     profile_id = (await client.post(f"/api/projects/{pid}/app-profiles", json={"name": "O", "code": code}, headers=h)).json()["id"]
     el_id = (await client.post(f"/api/projects/{pid}/elements", json={"name": "按钮", "locator_type": "id", "locator_value": "common"}, headers=h)).json()["id"]
     case_id = (await client.post(f"/api/projects/{pid}/cases", json={"name": "用B", "steps": [{"order": 1, "action": "click", "element_id": el_id, "params": {}}], "assertions": []}, headers=h)).json()["id"]
+    suite_id = (await client.post(f"/api/projects/{pid}/suites", json={"name": "覆盖套件"}, headers=h)).json()["id"]
+    await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)
     node_key = str(uuid.uuid4())
     # 给用例加一个含该 node_key 的步骤
     await client.put(f"/api/cases/{case_id}", json={"steps": [{"order": 1, "key": node_key, "action": "click", "element_id": el_id, "params": {}}]}, headers=h)
@@ -224,19 +226,20 @@ async def test_overrides(client: AsyncClient):
     assert r.status_code == 200
     assert r.json()["revision"] == 3
     # 节点覆盖
-    r = await client.put(f"/api/app-profiles/{profile_id}/node-overrides/{case_id}/step/{node_key}", json={"expected_revision": 3, "patch": {"params": {"wait_timeout": 20}}}, headers=h)
+    r = await client.put(f"/api/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/step/{node_key}", json={"expected_revision": 3, "patch": {"params": {"wait_timeout": 20}}}, headers=h)
     assert r.status_code == 200
     assert r.json()["revision"] == 4
     listed = await client.get(f"/api/app-profiles/{profile_id}/overrides", headers=h)
     assert listed.status_code == 200
     assert listed.json()["elements"][0]["locator_value"] == "dvr_id"
     assert listed.json()["variables"][0]["name"] == "PKG"
+    assert listed.json()["nodes"][0]["suite_id"] == suite_id
     assert listed.json()["nodes"][0]["node_key"] == node_key
     # 非法 patch（改 order）→ 422
-    bad = await client.put(f"/api/app-profiles/{profile_id}/node-overrides/{case_id}/step/{node_key}", json={"expected_revision": 4, "patch": {"order": 5}}, headers=h)
+    bad = await client.put(f"/api/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/step/{node_key}", json={"expected_revision": 4, "patch": {"order": 5}}, headers=h)
     assert bad.status_code == 422
     missing = await client.put(
-        f"/api/app-profiles/{profile_id}/node-overrides/{case_id}/step/{uuid.uuid4()}",
+        f"/api/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/step/{uuid.uuid4()}",
         json={"expected_revision": 4, "patch": {"params": {"wait_timeout": 10}}},
         headers=h,
     )

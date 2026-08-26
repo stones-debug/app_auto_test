@@ -102,7 +102,7 @@ async def test_profile_tables_cleaned_by_conftest(client: AsyncClient):
         )
         db.add(
             AppProfileNodeOverride(
-                profile_id=profile.id, target_type="step", case_id=case_id,
+                profile_id=profile.id, target_type="step", suite_id=suite_id, case_id=case_id,
                 node_key=uuid.UUID("a58047bb-4ed8-4c22-94d2-bef66fe8468a"),
                 patch={"timeout": 15}, created_by=user.id,
             )

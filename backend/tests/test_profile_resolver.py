@@ -156,7 +156,7 @@ async def test_case_skip_excluded(client):
 
 
 async def test_step_skip_and_override(client):
-    """步骤跳过 + 节点参数覆盖：被跳步骤移除，覆盖节点 params 生效。"""
+    """步骤跳过 + 节点参数覆盖仅作用于当前套件，共享用例的其他套件不受影响。"""
     base = await _base(client)
     case_id = await _setup_case_with_steps(client, base, "步骤跳过用例")
     async with SessionLocal() as db:
@@ -164,24 +164,30 @@ async def test_step_skip_and_override(client):
         suite_id = await _attach_case_to_suite(
             db, base["project_id"], case_id, "步骤跳过套件"
         )
+        other_suite_id = await _attach_case_to_suite(
+            db, base["project_id"], case_id, "共享用例的另一套件"
+        )
         db.add(AppProfileSkipRule(profile_id=profile_id, target_type="step", suite_id=suite_id, case_id=case_id, node_key=K2, reason_code="unsupported", reason_note="n"))
         # 覆盖 K1(setup launch_app) 的 params.package
-        db.add(AppProfileNodeOverride(profile_id=profile_id, target_type="step", case_id=case_id, node_key=K1, patch={"params": {"package": "patched_pkg"}}))
+        db.add(AppProfileNodeOverride(profile_id=profile_id, target_type="step", suite_id=suite_id, case_id=case_id, node_key=K1, patch={"params": {"package": "patched_pkg"}}))
         await db.commit()
         result = await resolve_compat(
             ResolutionRequest(
                 project_id=base["project_id"], profile_id=profile_id, release_id=await _release_id(db, profile_id),
-                target_type="suite", target_ids=[suite_id],
+                target_type="suite", target_ids=[suite_id, other_suite_id],
                 expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
                 run_options={"use_pre_steps": True},
             ),
             db,
         )
-    assert len(result.cases) == 1
-    steps = result.cases[0].steps_snapshot
+    assert len(result.suites) == 2
+    steps = result.suites[0].cases[0].steps_snapshot
     assert len(steps) == 1  # K2 被跳过
     assert steps[0]["source_key"] == K1
     assert steps[0]["params"]["package"] == "patched_pkg"
+    other_steps = result.suites[1].cases[0].steps_snapshot
+    assert [step["source_key"] for step in other_steps] == [K1, K2]
+    assert other_steps[0]["params"]["package"] == "com.v"
 
 
 async def test_suite_step_override_applied_to_snapshot(client):

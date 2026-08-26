@@ -127,7 +127,7 @@ export interface ProfileOverrides {
   revision: number
   elements: { element_id: number; locator_type: string; locator_value: string }[]
   variables: { name: string; value: string; description: string | null }[]
-  nodes: { case_id: number; node_type: 'step' | 'assertion'; node_key: string; patch: Record<string, unknown> }[]
+  nodes: { suite_id: number; case_id: number | null; node_type: 'step' | 'assertion' | 'suite_step'; node_key: string; patch: Record<string, unknown> }[]
 }
 
 // ---------- 档案 ----------
@@ -198,12 +198,12 @@ export function restoreVariableOverride(profileId: number, name: string, data: {
   return request.delete<void>(`/app-profiles/${profileId}/variable-overrides/${name}`, { data })
 }
 
-export function upsertNodeOverride(profileId: number, caseId: number, nodeType: 'step' | 'assertion', nodeKey: string, data: { request_id?: string; expected_revision: number; patch: Record<string, unknown> }) {
-  return request.put<{ revision: number }>(`/app-profiles/${profileId}/node-overrides/${caseId}/${nodeType}/${nodeKey}`, data)
+export function upsertNodeOverride(profileId: number, suiteId: number, caseId: number, nodeType: 'step' | 'assertion', nodeKey: string, data: { request_id?: string; expected_revision: number; patch: Record<string, unknown> }) {
+  return request.put<{ revision: number }>(`/app-profiles/${profileId}/node-overrides/${suiteId}/${caseId}/${nodeType}/${nodeKey}`, data)
 }
 
-export function restoreNodeOverride(profileId: number, caseId: number, nodeType: 'step' | 'assertion', nodeKey: string, data: { request_id?: string; expected_revision: number }) {
-  return request.delete<void>(`/app-profiles/${profileId}/node-overrides/${caseId}/${nodeType}/${nodeKey}`, { data })
+export function restoreNodeOverride(profileId: number, suiteId: number, caseId: number, nodeType: 'step' | 'assertion', nodeKey: string, data: { request_id?: string; expected_revision: number }) {
+  return request.delete<void>(`/app-profiles/${profileId}/node-overrides/${suiteId}/${caseId}/${nodeType}/${nodeKey}`, { data })
 }
 
 // ---------- 套件前后置步骤覆盖 ----------
