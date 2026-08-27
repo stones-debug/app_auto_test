@@ -53,3 +53,6 @@ frontend/src/components.d.ts
 # agent
 .opencode
 .omo
+# deepwork session state
+.slim/deepwork/
+.slim/

@@ -373,7 +373,7 @@ onMounted(() => {
       />
     </div>
 
-    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑元素' : '新建元素'" width="560px">
+    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑元素' : '新建元素'" width="800px">
       <el-form label-width="90px">
         <el-form-item label="项目" required>
           <el-select v-model="form.project_id" class="full" :disabled="isProjectMode">
