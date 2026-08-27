@@ -31,8 +31,9 @@ const newCount = ref(0)
 let lastHeight = 0
 
 const filtered = computed(() => {
-  if (levelFilter.value === 'ALL') return props.logs
-  return props.logs.filter((l) => l.level === levelFilter.value)
+  const source = levelFilter.value === 'ALL' ? props.logs : props.logs.filter((l) => l.level === levelFilter.value)
+  // 为每条日志生成稳定 `_key`，供 :key 使用（REST/live id 均唯一；缺省时回退索引）
+  return source.map((l, i) => ({ ...l, _key: l.id ?? i }))
 })
 
 const connectionState = computed(() => (
@@ -93,11 +94,17 @@ function scrollToBottom() {
       </el-button>
     </div>
     <div ref="container" class="log-body" @scroll="onScroll">
-      <div v-for="(log, i) in filtered" :key="log.id ?? i" class="log-line" :style="{ color: LEVEL_COLOR[log.level] ?? 'var(--text)' }">
-        <span class="log-time v2-aux">{{ formatDateTime(log.created_at) }}</span>
-        <span class="log-level">{{ log.level }}</span>
-        <span class="log-msg">{{ log.message }}</span>
-      </div>
+      <template v-for="log in filtered" :key="log._key">
+        <div
+          v-memo="[log.level, log.message, log.created_at]"
+          class="log-line"
+          :style="{ color: LEVEL_COLOR[log.level] ?? 'var(--text)' }"
+        >
+          <span class="log-time v2-aux">{{ formatDateTime(log.created_at) }}</span>
+          <span class="log-level">{{ log.level }}</span>
+          <span class="log-msg">{{ log.message }}</span>
+        </div>
+      </template>
     </div>
   </div>
 </template>

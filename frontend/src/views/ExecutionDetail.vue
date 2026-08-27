@@ -186,6 +186,8 @@ function subscribe(id: number) {
   socket.value = ws
 }
 
+const timelineRef = ref<InstanceType<typeof ExecutionTimeline> | null>(null)
+
 const { picker, retry: retryEntry, running: retrying } = useExecutionRetry()
 
 async function stop() {
@@ -268,8 +270,14 @@ onBeforeUnmount(() => socket.value?.close())
 
     <div class="detail-grid">
       <div class="content-card">
-        <div class="v2-card-title">套件、用例、步骤、断言</div>
-        <ExecutionTimeline v-if="detail" :suites="timelineSuites" />
+        <div class="card-head-row">
+          <div class="v2-card-title">套件、用例、步骤、断言</div>
+          <div class="card-actions">
+            <el-button size="small" text @click="timelineRef?.expandAll()">全部展开</el-button>
+            <el-button size="small" text @click="timelineRef?.collapseAll()">全部折叠</el-button>
+          </div>
+        </div>
+        <ExecutionTimeline ref="timelineRef" :key="executionId" :suites="timelineSuites" />
       </div>
       <div class="content-card log-card">
         <div class="v2-card-title">实时日志</div>
@@ -308,15 +316,37 @@ onBeforeUnmount(() => socket.value?.close())
 }
 .detail-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 16px;
+}
+/* grid 项允许收缩到内容最小宽度以下，避免长文本把相邻列挤扁 */
+.detail-grid > * {
+  min-width: 0;
+}
+.card-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.card-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 .log-card {
   height: 100%;
   max-height: 560px;
   min-height: 300px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+@media (max-width: 1023px) {
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

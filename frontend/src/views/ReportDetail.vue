@@ -24,6 +24,8 @@ const loading = ref(false)
 const detail = ref<ReportDetail | null>(null)
 // Step 7：activeSuites 存套件/用例的展示 key（el-collapse name 用 suite:<id>/case:<id> 双段）
 const activeSuites = ref<string[]>([])
+// 展开状态 O(1) 查询：el-collapse-item 的 body 用 v-if 真正卸载，避免大报告收起时仍持有大量 DOM
+const activeSet = computed(() => new Set(activeSuites.value))
 const onlyFailed = ref(false)
 let loadedReportId: number | null = null
 
@@ -344,59 +346,63 @@ function stepsAfterAssertions(steps: ReportStep[]) {
               <span class="case-dur">{{ durationText(s.duration) }}</span>
             </template>
 
-            <div v-if="s.error_message" class="error-box">{{ s.error_message }}</div>
+            <template v-if="activeSet.has(`suite:${s.id}`)">
+              <div v-if="s.error_message" class="error-box">{{ s.error_message }}</div>
 
-            <template v-if="s.setup_steps.length">
-              <div class="suite-phase">套件前置</div>
-              <ReportStepTable :steps="s.setup_steps" :report-id="reportId" />
-            </template>
+              <template v-if="s.setup_steps.length">
+                <div class="suite-phase">套件前置</div>
+                <ReportStepTable :steps="s.setup_steps" :report-id="reportId" />
+              </template>
 
-            <div v-for="c in s.cases" :key="c.id" class="case-wrap">
-              <el-collapse v-model="activeSuites" class="case-collapse">
-                <el-collapse-item :key="c.id" :name="`case:${c.id}`" class="case-card">
-                  <template #title>
-                    <span class="case-name">{{ c.case_name }}<span v-if="c.module_name" class="case-module">{{ c.module_name }}</span></span>
-                    <el-tag :type="statusMeta(c.status).type" size="small">{{ statusMeta(c.status).label }}</el-tag>
-                    <span class="case-dur">{{ durationText(c.duration) }}</span>
-                  </template>
-                  <div v-if="c.error_message" class="error-box">{{ c.error_message }}</div>
-                  <ReportStepTable
-                    v-if="stepsBeforeAssertions(c.steps).length"
-                    :steps="stepsBeforeAssertions(c.steps)"
-                    :report-id="reportId"
-                  />
-                  <el-empty v-else-if="!c.assertions.length && !stepsAfterAssertions(c.steps).length" description="无步骤" :image-size="60" />
-                  <el-table v-if="c.assertions.length" :data="c.assertions" size="small" class="mt8">
-                    <el-table-column label="#" width="50">
-                      <template #default="{ row }">{{ row.assertion_order ?? row.id }}</template>
-                    </el-table-column>
-                    <el-table-column prop="assertion_type" label="断言" width="150" />
-                    <el-table-column label="参数" min-width="120" show-overflow-tooltip>
-                      <template #default="{ row }">{{ formatParameters(row.params) || '-' }}</template>
-                    </el-table-column>
-                    <el-table-column prop="description" label="说明" min-width="120" show-overflow-tooltip />
-                    <el-table-column prop="expected_value" label="期望" min-width="100" show-overflow-tooltip />
-                    <el-table-column prop="actual_value" label="实际" min-width="100" show-overflow-tooltip />
-                    <el-table-column label="状态" width="90">
-                      <template #default="{ row }">
-                        <el-tag :type="['pass', 'passed'].includes(row.status) ? 'success' : 'danger'" size="small">{{ row.status }}</el-tag>
-                      </template>
-                    </el-table-column>
-                    <el-table-column prop="error_message" label="错误" min-width="140" show-overflow-tooltip />
-                  </el-table>
-                  <ReportStepTable
-                    v-if="stepsAfterAssertions(c.steps).length"
-                    :steps="stepsAfterAssertions(c.steps)"
-                    :report-id="reportId"
-                    class="mt8"
-                  />
-                </el-collapse-item>
-              </el-collapse>
-            </div>
+              <div v-for="c in s.cases" :key="c.id" class="case-wrap">
+                <el-collapse v-model="activeSuites" class="case-collapse">
+                  <el-collapse-item :key="c.id" :name="`case:${c.id}`" class="case-card">
+                    <template #title>
+                      <span class="case-name">{{ c.case_name }}<span v-if="c.module_name" class="case-module">{{ c.module_name }}</span></span>
+                      <el-tag :type="statusMeta(c.status).type" size="small">{{ statusMeta(c.status).label }}</el-tag>
+                      <span class="case-dur">{{ durationText(c.duration) }}</span>
+                    </template>
+                    <template v-if="activeSet.has(`case:${c.id}`)">
+                      <div v-if="c.error_message" class="error-box">{{ c.error_message }}</div>
+                      <ReportStepTable
+                        v-if="stepsBeforeAssertions(c.steps).length"
+                        :steps="stepsBeforeAssertions(c.steps)"
+                        :report-id="reportId"
+                      />
+                      <el-empty v-else-if="!c.assertions.length && !stepsAfterAssertions(c.steps).length" description="无步骤" :image-size="60" />
+                      <el-table v-if="c.assertions.length" :data="c.assertions" size="small" class="mt8">
+                        <el-table-column label="#" width="50">
+                          <template #default="{ row }">{{ row.assertion_order ?? row.id }}</template>
+                        </el-table-column>
+                        <el-table-column prop="assertion_type" label="断言" width="150" />
+                        <el-table-column label="参数" min-width="120" show-overflow-tooltip>
+                          <template #default="{ row }">{{ formatParameters(row.params) || '-' }}</template>
+                        </el-table-column>
+                        <el-table-column prop="description" label="说明" min-width="120" show-overflow-tooltip />
+                        <el-table-column prop="expected_value" label="期望" min-width="100" show-overflow-tooltip />
+                        <el-table-column prop="actual_value" label="实际" min-width="100" show-overflow-tooltip />
+                        <el-table-column label="状态" width="90">
+                          <template #default="{ row }">
+                            <el-tag :type="['pass', 'passed'].includes(row.status) ? 'success' : 'danger'" size="small">{{ row.status }}</el-tag>
+                          </template>
+                        </el-table-column>
+                        <el-table-column prop="error_message" label="错误" min-width="140" show-overflow-tooltip />
+                      </el-table>
+                      <ReportStepTable
+                        v-if="stepsAfterAssertions(c.steps).length"
+                        :steps="stepsAfterAssertions(c.steps)"
+                        :report-id="reportId"
+                        class="mt8"
+                      />
+                    </template>
+                  </el-collapse-item>
+                </el-collapse>
+              </div>
 
-            <template v-if="s.teardown_steps.length">
-              <div class="suite-phase">套件后置</div>
-              <ReportStepTable :steps="s.teardown_steps" :report-id="reportId" />
+              <template v-if="s.teardown_steps.length">
+                <div class="suite-phase">套件后置</div>
+                <ReportStepTable :steps="s.teardown_steps" :report-id="reportId" />
+              </template>
             </template>
           </el-collapse-item>
         </el-collapse>
@@ -409,37 +415,39 @@ function stepsAfterAssertions(steps: ReportStep[]) {
               <el-tag :type="statusMeta(c.status).type" size="small">{{ statusMeta(c.status).label }}</el-tag>
               <span class="case-dur">{{ durationText(c.duration) }}</span>
             </template>
-            <div v-if="c.error_message" class="error-box">{{ c.error_message }}</div>
-            <ReportStepTable
-              v-if="stepsBeforeAssertions(c.steps).length"
-              :steps="stepsBeforeAssertions(c.steps)"
-              :report-id="reportId"
-            />
-            <el-empty v-else-if="!c.assertions.length && !stepsAfterAssertions(c.steps).length" description="无步骤" :image-size="60" />
-            <el-table v-if="c.assertions.length" :data="c.assertions" size="small" class="mt8">
-              <el-table-column label="#" width="50">
-                <template #default="{ row }">{{ row.assertion_order ?? row.id }}</template>
-              </el-table-column>
-              <el-table-column prop="assertion_type" label="断言" width="150" />
-              <el-table-column label="参数" min-width="120" show-overflow-tooltip>
-                <template #default="{ row }">{{ formatParameters(row.params) || '-' }}</template>
-              </el-table-column>
-              <el-table-column prop="description" label="说明" min-width="120" show-overflow-tooltip />
-              <el-table-column prop="expected_value" label="期望" min-width="100" show-overflow-tooltip />
-              <el-table-column prop="actual_value" label="实际" min-width="100" show-overflow-tooltip />
-              <el-table-column label="状态" width="90">
-                <template #default="{ row }">
-                  <el-tag :type="['pass', 'passed'].includes(row.status) ? 'success' : 'danger'" size="small">{{ row.status }}</el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column prop="error_message" label="错误" min-width="140" show-overflow-tooltip />
-            </el-table>
-            <ReportStepTable
-              v-if="stepsAfterAssertions(c.steps).length"
-              :steps="stepsAfterAssertions(c.steps)"
-              :report-id="reportId"
-              class="mt8"
-            />
+            <template v-if="activeSet.has(`case:${c.id}`)">
+              <div v-if="c.error_message" class="error-box">{{ c.error_message }}</div>
+              <ReportStepTable
+                v-if="stepsBeforeAssertions(c.steps).length"
+                :steps="stepsBeforeAssertions(c.steps)"
+                :report-id="reportId"
+              />
+              <el-empty v-else-if="!c.assertions.length && !stepsAfterAssertions(c.steps).length" description="无步骤" :image-size="60" />
+              <el-table v-if="c.assertions.length" :data="c.assertions" size="small" class="mt8">
+                <el-table-column label="#" width="50">
+                  <template #default="{ row }">{{ row.assertion_order ?? row.id }}</template>
+                </el-table-column>
+                <el-table-column prop="assertion_type" label="断言" width="150" />
+                <el-table-column label="参数" min-width="120" show-overflow-tooltip>
+                  <template #default="{ row }">{{ formatParameters(row.params) || '-' }}</template>
+                </el-table-column>
+                <el-table-column prop="description" label="说明" min-width="120" show-overflow-tooltip />
+                <el-table-column prop="expected_value" label="期望" min-width="100" show-overflow-tooltip />
+                <el-table-column prop="actual_value" label="实际" min-width="100" show-overflow-tooltip />
+                <el-table-column label="状态" width="90">
+                  <template #default="{ row }">
+                    <el-tag :type="['pass', 'passed'].includes(row.status) ? 'success' : 'danger'" size="small">{{ row.status }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="error_message" label="错误" min-width="140" show-overflow-tooltip />
+              </el-table>
+              <ReportStepTable
+                v-if="stepsAfterAssertions(c.steps).length"
+                :steps="stepsAfterAssertions(c.steps)"
+                :report-id="reportId"
+                class="mt8"
+              />
+            </template>
           </el-collapse-item>
         </el-collapse>
       </div>
