@@ -1029,6 +1029,7 @@ def _element_snapshot(
         "name": el.name,
         "platform": el.platform,
         "locator_type": locator_type,
+        "locator_config": None,
         "locator_value": render_value(locator_value, variables),
     }
 

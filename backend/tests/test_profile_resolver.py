@@ -18,6 +18,7 @@ from app.models import (
     AppProfileRelease,
     AppProfileSkipRule,
     AppProfileVariableOverride,
+    Execution,
     Project,
     Variable,
 )
@@ -421,6 +422,37 @@ async def test_element_override_to_smart_keeps_config_raw(client):
     assert snap["locator_value"] is None
     assert snap["locator_config"] == smart_config
     assert snap["locator_config"]["alternatives"][0]["target"][0]["value"] == "${device_name}"
+
+    # 全链：materialize_snapshot 固化 → _build_suites_payload 下发，config 保持未渲染
+    from app.services import worker_service
+    from app.services.execution_snapshot import materialize_snapshot
+
+    async with SessionLocal() as db:
+        execution = Execution(
+            project_id=base["project_id"],
+            type="case",
+            case_id=case_id,
+            status="queued",
+            parameters={},
+            app_profile_id=profile_id,
+            profile_revision=result.profile_revision,
+            test_asset_revision=result.test_asset_revision,
+        )
+        db.add(execution)
+        await db.flush()
+        await materialize_snapshot(db, execution, result)
+        await db.commit()
+        await db.refresh(execution)
+        payload = await worker_service._build_suites_payload(db, execution)
+
+    assert len(payload) == 1
+    case_payload = payload[0]["cases"][0]
+    payload_snap = case_payload["elements_snapshot"][str(element_id)]
+    assert payload_snap["locator_type"] == "smart"
+    assert payload_snap["locator_value"] is None
+    assert payload_snap["platform"] == "both"
+    # 固化后的 payload 仍保持 ${device_name} 未渲染
+    assert payload_snap["locator_config"]["alternatives"][0]["target"][0]["value"] == "${device_name}"
 
 
 async def test_smart_element_passthrough_without_override(client):

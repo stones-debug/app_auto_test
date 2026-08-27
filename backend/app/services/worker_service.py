@@ -192,6 +192,7 @@ def _element_snapshot(el: TestElement, variables: dict) -> dict:
         "name": el.name,
         "platform": el.platform,
         "locator_type": el.locator_type,
+        "locator_config": None,
         "locator_value": render_value(el.locator_value, variables),
     }
 

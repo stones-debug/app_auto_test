@@ -521,6 +521,83 @@ async def test_build_case_snapshot_smart_element_config_raw(client: AsyncClient)
     assert snap["locator_config"]["alternatives"][0]["target"][0]["value"] == "${device_name}"
 
 
+async def test_smart_locator_payload_contains_raw_config(client: AsyncClient):
+    """协议 V2：_build_suites_payload 下发 start_test payload 时，
+    smart 元素 locator_config 保持 raw 透传（${device_name} 未渲染、locator_value 为 None），
+    普通元素 locator_value 已渲染为最终值、locator_config 为 None，条目均含 platform。"""
+    await client.post("/api/auth/register", json=REG)
+    login = await client.post(
+        "/api/auth/login", json={"username": REG["username"], "password": REG["password"]}
+    )
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    project = await client.post(
+        "/api/projects", headers=headers, json={"name": "Worker智能Payload项目", "visibility": "private"}
+    )
+    project_id = project.json()["id"]
+    smart_config = {
+        "version": 1,
+        "alternatives": [
+            {"target": [{"attribute": "text", "operator": "equals", "value": "${device_name}"}]}
+        ],
+    }
+    smart_el = await client.post(
+        f"/api/projects/{project_id}/elements",
+        headers=headers,
+        json={"name": "智能按钮", "locator_type": "smart", "locator_config": smart_config},
+    )
+    assert smart_el.status_code == 201, smart_el.text
+    smart_id = smart_el.json()["id"]
+    ordinary_el = await client.post(
+        f"/api/projects/{project_id}/elements",
+        headers=headers,
+        json={"name": "普通按钮", "locator_type": "id", "locator_value": "${btn_id}"},
+    )
+    assert ordinary_el.status_code == 201, ordinary_el.text
+    ordinary_id = ordinary_el.json()["id"]
+    case = await client.post(
+        f"/api/projects/{project_id}/cases",
+        headers=headers,
+        json={
+            "name": "混合元素用例",
+            "steps": [
+                {"order": 1, "action": "click", "element_id": smart_id, "params": {}},
+                {"order": 2, "action": "click", "element_id": ordinary_id, "params": {}},
+            ],
+        },
+    )
+    assert case.status_code == 201, case.text
+
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(
+        client, token, case.json()["id"], {"variables": {"btn_id": "admin"}}, device_id
+    )
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        await db.commit()
+        payload = await worker_service._build_suites_payload(db, execution)
+
+    assert len(payload) == 1
+    elements = payload[0]["cases"][0]["elements_snapshot"]
+
+    smart_snap = elements[str(smart_id)]
+    assert smart_snap["locator_type"] == "smart"
+    assert smart_snap["locator_value"] is None
+    assert isinstance(smart_snap["locator_config"], dict)
+    # ${device_name} 原样未渲染
+    assert smart_snap["locator_config"]["alternatives"][0]["target"][0]["value"] == "${device_name}"
+    assert smart_snap["platform"] == "both"
+
+    ordinary_snap = elements[str(ordinary_id)]
+    assert ordinary_snap["locator_type"] == "id"
+    # 普通元素变量已渲染为最终值
+    assert ordinary_snap["locator_value"] == "admin"
+    assert ordinary_snap["locator_config"] is None
+    assert ordinary_snap["platform"] == "both"
+
+
 # ---------- 扫描任务 ----------
 
 

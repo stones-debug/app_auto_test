@@ -746,3 +746,138 @@ async def test_scroll_action_wrapped_in_stale_retry():
     )
     result = await ScrollAction().execute(driver, context, {"element_id": 1})
     assert result["status"] == "passed"
+
+
+# ---------- Step 4 全链路：执行快照端到端消费（TestRunner 级） ----------
+
+
+def _make_e2e_case(steps, elements, assertions=None, case_id=7001) -> dict:
+    """构造协议 V2 形态的 case dict（与 test_executor._make_case 风格一致）。"""
+    normalized_steps = [
+        {"execution_step_id": 7000 + index, **step} for index, step in enumerate(steps, start=1)
+    ]
+    normalized_assertions = [
+        {"execution_assertion_id": 8000 + index, **assertion}
+        for index, assertion in enumerate(assertions or [], start=1)
+    ]
+    return {
+        "execution_case_id": case_id,
+        "case_id": 11,
+        "case_name": "智能定位端到端",
+        "steps_snapshot": normalized_steps,
+        "assertions_snapshot": normalized_assertions,
+        "elements_snapshot": elements,
+    }
+
+
+class _RecordingSmartDriver(MockDriver):
+    """记录点击到的元素 locator_value，用于断言 smart 解析结果。"""
+
+    def __init__(self):
+        super().__init__()
+        self.clicked: list[str] = []
+
+    def click(self, element):
+        self.clicked.append(element.locator_value)
+        super().click(element)
+
+
+async def _run_case(case, driver, parameters=None, should_stop=None):
+    sent: list[dict] = []
+
+    async def fake_send(payload: dict):
+        sent.append(payload)
+
+    runner = TestRunner(driver, fake_send, 100, parameters, should_stop)
+    status = await runner.run_case(case)
+    return status, sent
+
+
+def _smart_device_config() -> dict:
+    return _config([{"attribute": "text", "operator": "equals", "value": "${device_name}"}])
+
+
+async def test_runner_e2e_smart_snapshot_full_chain():
+    """smart + 普通快照混合：click/get_text/input/断言 全链消费，smart 按渲染后值定位。"""
+    driver = _RecordingSmartDriver()
+    driver.set_screen(
+        [
+            _node(text="测试设备B", id="device-b"),
+            _node(resource_id="com.demo:id/save_btn", id="save-btn"),
+        ]
+    )
+    elements = {
+        "1": _smart_snapshot(_smart_device_config()),  # smart：text equals ${device_name}
+        "2": {"locator_type": "resource_id", "locator_value": "com.demo:id/save_btn"},
+        "3": {"locator_type": "resource_id", "locator_value": "com.demo:id/name_field"},
+    }
+    case = _make_e2e_case(
+        steps=[
+            {"order": 1, "action": "click", "element_id": 1, "params": {}},
+            {"order": 2, "action": "get_text", "element_id": 1, "params": {"variable_name": "device_text"}},
+            {"order": 3, "action": "input", "element_id": 3, "params": {"value": "admin"}},
+            {"order": 4, "action": "click", "element_id": 2, "params": {}},
+        ],
+        elements=elements,
+        assertions=[
+            {"order": 1, "type": "text_equals", "element_id": 1, "params": {"expected": "测试设备B"}},
+        ],
+    )
+    status, sent = await _run_case(case, driver, parameters={"variables": {"device_name": "测试设备B"}})
+
+    assert status == "passed"
+    # smart 元素最终匹配的是「变量渲染后」的值，而非 "${device_name}" 字面量
+    assert driver.clicked == ["device-b", "com.demo:id/save_btn"]
+    # get_text(smart) 命中渲染后的节点文本
+    get_text_msg = next(m for m in sent if m["type"] == "step_result" and m["action"] == "get_text")
+    assert get_text_msg["actual_value"] == "测试设备B"
+    # 普通 input（resource_id → EditText 后缀）写入 state
+    assert driver.state["com.demo:id/name_field//android.widget.EditText"] == "admin"
+    # 断言走统一 resolver 链
+    assertion_msg = next(m for m in sent if m["type"] == "assertion_result")
+    assert assertion_msg["assertions"][0]["status"] == "passed"
+    assert all(m["status"] == "passed" for m in sent if m["type"] == "step_result")
+
+
+async def test_runner_e2e_smart_payload_locator_value_none():
+    """后端下发形态：smart 条目 locator_value=None + locator_config 即可定位，不依赖普通字段。"""
+    driver = _RecordingSmartDriver()
+    driver.set_screen([_node(text="设备B", id="device-b")])
+    entry = _smart_snapshot(_config([{"attribute": "text", "operator": "equals", "value": "设备B"}]))
+    entry["platform"] = "android"  # 模拟后端携带平台字段
+    assert entry["locator_value"] is None  # 明确不依赖普通定位值
+    assert "locator_name" not in entry
+    case = _make_e2e_case(
+        steps=[{"order": 1, "action": "click", "element_id": 1, "params": {}}],
+        elements={"1": entry},
+    )
+    status, sent = await _run_case(case, driver)
+    assert status == "passed"
+    assert driver.clicked == ["device-b"]
+    assert sent[0]["status"] == "passed"
+
+
+async def test_runner_e2e_undefined_variable_fails_and_continues():
+    """config 引用未定义变量 → 步骤 failed（错误含变量说明），不崩溃后续步骤。"""
+    driver = _RecordingSmartDriver()
+    driver.set_screen([_node(text="正常按钮", id="ok")])
+    elements = {
+        "1": _smart_snapshot(
+            _config([{"attribute": "text", "operator": "equals", "value": "${nonexistent}"}])
+        ),
+        "2": _smart_snapshot(_config([{"attribute": "text", "operator": "equals", "value": "正常按钮"}])),
+    }
+    case = _make_e2e_case(
+        steps=[
+            {"order": 1, "action": "click", "element_id": 1, "params": {}, "continue_on_failure": True},
+            {"order": 2, "action": "click", "element_id": 2, "params": {}},
+        ],
+        elements=elements,
+    )
+    status, sent = await _run_case(case, driver)
+    assert status == "failed"
+    step_msgs = [m for m in sent if m["type"] == "step_result"]
+    assert step_msgs[0]["status"] == "failed"
+    assert "未定义变量" in (step_msgs[0]["error_message"] or "")
+    assert step_msgs[1]["status"] == "passed"
+    assert driver.clicked == ["ok"]  # 仅第二步成功点击
