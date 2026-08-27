@@ -18,6 +18,8 @@ export interface TestElement {
   name: string
   page_name?: string | null
   platform?: string | null
+  /** 适用范围：自由文本；all 表示所有；空/不填由服务端兜底为 all */
+  scope: string
   locator_type: string
   locator_value: string
   description?: string | null

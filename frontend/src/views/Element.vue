@@ -46,6 +46,7 @@ const form = ref<{
   name: string
   page_name: string
   platform: string
+  scope: string
   locator_type: string
   locator_value: string
   description: string
@@ -54,6 +55,7 @@ const form = ref<{
   name: '',
   page_name: '',
   platform: 'both',
+  scope: 'all',
   locator_type: 'id',
   locator_value: '',
   description: '',
@@ -123,6 +125,7 @@ function openCreate() {
     name: '',
     page_name: '',
     platform: 'both',
+    scope: 'all',
     locator_type: 'id',
     locator_value: '',
     description: '',
@@ -137,6 +140,7 @@ function openEdit(row: TestElement) {
     name: row.name,
     page_name: row.page_name ?? '',
     platform: row.platform ?? 'both',
+    scope: row.scope ?? 'all',
     locator_type: row.locator_type,
     locator_value: row.locator_value,
     description: row.description ?? '',
@@ -154,7 +158,12 @@ async function save() {
     return
   }
   const isCreate = !editingId.value
-  const payload = { ...form.value, project_id: form.value.project_id, page_name: form.value.page_name || null }
+  const payload = {
+    ...form.value,
+    project_id: form.value.project_id,
+    page_name: form.value.page_name || null,
+    scope: form.value.scope.trim() || 'all',
+  }
   if (editingId.value) {
     await updateElement(editingId.value, payload)
     ElMessage.success('已更新')
@@ -298,6 +307,7 @@ onMounted(() => {
             <el-tag :type="platformType(row.platform)" size="small">{{ platformLabel(row.platform) }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column prop="scope" label="适用范围" width="110" show-overflow-tooltip />
         <el-table-column label="定位方式" width="150">
           <template #default="{ row }">{{ locatorLabel(row.locator_type) }}</template>
         </el-table-column>
@@ -356,6 +366,9 @@ onMounted(() => {
             <el-radio value="ios">iOS</el-radio>
             <el-radio value="both">通用</el-radio>
           </el-radio-group>
+        </el-form-item>
+        <el-form-item label="适用范围">
+          <el-input v-model="form.scope" placeholder="不填默认为 all（所有）" />
         </el-form-item>
         <el-form-item label="定位方式">
           <el-select v-model="form.locator_type" class="full">

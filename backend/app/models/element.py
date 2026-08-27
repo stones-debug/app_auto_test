@@ -23,6 +23,8 @@ class TestElement(Base, TimestampMixin, SoftDeleteMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     page_name: Mapped[str | None] = mapped_column(String(255))
     platform: Mapped[str | None] = mapped_column(String(20), default="both")  # android / ios / both
+    # 适用范围（自由文本，默认 all 表示所有；创建时未填由服务端兜底 all）
+    scope: Mapped[str] = mapped_column(String(100), default="all", nullable=False)
     locator_type: Mapped[str] = mapped_column(
         String(50), nullable=False
     )  # id / resource_id / xpath / accessibility_id / ...

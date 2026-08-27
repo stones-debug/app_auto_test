@@ -242,6 +242,7 @@ async def create_element(
         name=body.name,
         page_name=body.page_name,
         platform=body.platform,
+        scope=body.scope,
         locator_type=body.locator_type,
         locator_value=body.locator_value,
         description=body.description,
@@ -353,7 +354,7 @@ async def update_element(
     # page_name 允许显式 null/空白来清除分组；不能沿用“value is not None”判断。
     if "page_name" in body.model_fields_set:
         element.page_name = body.page_name
-    for field in ("name", "platform", "locator_type", "locator_value", "description"):
+    for field in ("name", "platform", "scope", "locator_type", "locator_value", "description"):
         value = getattr(body, field)
         if value is not None:
             setattr(element, field, value)
@@ -394,6 +395,7 @@ async def copy_element(
         name=source.name,
         page_name=source.page_name,
         platform=source.platform,
+        scope=source.scope,
         locator_type=source.locator_type,
         locator_value=source.locator_value,
         description=source.description,
@@ -502,6 +504,7 @@ async def create_element_legacy(
         name=body.name,
         page_name=body.page_name,
         platform=body.platform,
+        scope=body.scope,
         locator_type=body.locator_type,
         locator_value=body.locator_value,
         description=body.description,

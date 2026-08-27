@@ -504,3 +504,64 @@ async def test_global_ungrouped_handles_null_blank_and_whitespace(client: AsyncC
         "历史空格元素",
         "可清空元素",
     }
+
+
+async def test_element_scope_default_and_edit(client: AsyncClient):
+    """适用范围：不填默认 all；创建可填自定义；编辑可修改；空白归为 all。"""
+    headers, project_id = await _setup(client)
+
+    # 不填 scope → 默认 all
+    default_el = await client.post(
+        f"/api/projects/{project_id}/elements",
+        json={
+            "name": "默认范围元素",
+            "locator_type": "id",
+            "locator_value": "default_scope",
+        },
+        headers=headers,
+    )
+    assert default_el.status_code == 201
+    assert default_el.json()["scope"] == "all"
+
+    # 显式填自定义范围
+    scoped = await client.post(
+        f"/api/projects/{project_id}/elements",
+        json={
+            "name": "DVR范围元素",
+            "locator_type": "id",
+            "locator_value": "dvr_scope",
+            "scope": "DVR",
+        },
+        headers=headers,
+    )
+    assert scoped.status_code == 201
+    assert scoped.json()["scope"] == "DVR"
+    scoped_id = scoped.json()["id"]
+
+    # 编辑修改适用范围
+    updated = await client.put(
+        f"/api/elements/{scoped_id}",
+        json={"scope": "网约车"},
+        headers=headers,
+    )
+    assert updated.status_code == 200
+    assert updated.json()["scope"] == "网约车"
+
+    # 编辑空白 → 兜底 all
+    cleared = await client.put(
+        f"/api/elements/{scoped_id}",
+        json={"scope": "   "},
+        headers=headers,
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["scope"] == "all"
+
+    # 列表与详情均返回 scope
+    listing = await client.get(
+        f"/api/projects/{project_id}/elements?keyword=默认范围元素", headers=headers
+    )
+    assert listing.json()["total"] == 1
+    assert listing.json()["items"][0]["scope"] == "all"
+
+    detail = await client.get(f"/api/elements/{default_el.json()['id']}", headers=headers)
+    assert detail.json()["scope"] == "all"
