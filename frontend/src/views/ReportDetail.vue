@@ -12,6 +12,7 @@ import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { buildExclusionTree, flattenTreeKeys, type ExclusionTreeNode } from '@/utils/exclusionTree'
 import { splitExecutionSteps } from '@/utils/executionOrder'
 import { formatDateTime } from '@/utils/format'
+import { formatParameters } from '@/utils/parameters'
 
 const route = useRoute()
 const router = useRouter()
@@ -352,9 +353,16 @@ function stepsAfterAssertions(steps: ReportStep[]) {
                   />
                   <el-empty v-else-if="!c.assertions.length && !stepsAfterAssertions(c.steps).length" description="无步骤" :image-size="60" />
                   <el-table v-if="c.assertions.length" :data="c.assertions" size="small" class="mt8">
+                    <el-table-column label="#" width="50">
+                      <template #default="{ row }">{{ row.assertion_order ?? row.id }}</template>
+                    </el-table-column>
                     <el-table-column prop="assertion_type" label="断言" width="150" />
-                    <el-table-column prop="expected_value" label="期望" min-width="120" show-overflow-tooltip />
-                    <el-table-column prop="actual_value" label="实际" min-width="120" show-overflow-tooltip />
+                    <el-table-column label="参数" min-width="120" show-overflow-tooltip>
+                      <template #default="{ row }">{{ formatParameters(row.params) || '-' }}</template>
+                    </el-table-column>
+                    <el-table-column prop="description" label="说明" min-width="120" show-overflow-tooltip />
+                    <el-table-column prop="expected_value" label="期望" min-width="100" show-overflow-tooltip />
+                    <el-table-column prop="actual_value" label="实际" min-width="100" show-overflow-tooltip />
                     <el-table-column label="状态" width="90">
                       <template #default="{ row }">
                         <el-tag :type="['pass', 'passed'].includes(row.status) ? 'success' : 'danger'" size="small">{{ row.status }}</el-tag>
@@ -395,9 +403,16 @@ function stepsAfterAssertions(steps: ReportStep[]) {
             />
             <el-empty v-else-if="!c.assertions.length && !stepsAfterAssertions(c.steps).length" description="无步骤" :image-size="60" />
             <el-table v-if="c.assertions.length" :data="c.assertions" size="small" class="mt8">
+              <el-table-column label="#" width="50">
+                <template #default="{ row }">{{ row.assertion_order ?? row.id }}</template>
+              </el-table-column>
               <el-table-column prop="assertion_type" label="断言" width="150" />
-              <el-table-column prop="expected_value" label="期望" min-width="120" show-overflow-tooltip />
-              <el-table-column prop="actual_value" label="实际" min-width="120" show-overflow-tooltip />
+              <el-table-column label="参数" min-width="120" show-overflow-tooltip>
+                <template #default="{ row }">{{ formatParameters(row.params) || '-' }}</template>
+              </el-table-column>
+              <el-table-column prop="description" label="说明" min-width="120" show-overflow-tooltip />
+              <el-table-column prop="expected_value" label="期望" min-width="100" show-overflow-tooltip />
+              <el-table-column prop="actual_value" label="实际" min-width="100" show-overflow-tooltip />
               <el-table-column label="状态" width="90">
                 <template #default="{ row }">
                   <el-tag :type="['pass', 'passed'].includes(row.status) ? 'success' : 'danger'" size="small">{{ row.status }}</el-tag>

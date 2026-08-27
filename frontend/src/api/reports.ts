@@ -77,11 +77,14 @@ export interface ReportStep {
 
 export interface ReportAssertion {
   id: number
+  assertion_order?: number | null
   assertion_type: string
   expected_value: string | null
   actual_value: string | null
   status: string
   error_message: string | null
+  params?: Record<string, unknown> | null
+  description?: string | null
 }
 
 export interface ReportCase {

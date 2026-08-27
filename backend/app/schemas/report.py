@@ -55,11 +55,15 @@ class ReportStepOut(BaseModel):
 
 class ReportAssertionOut(BaseModel):
     id: int
+    assertion_order: int | None = None
     assertion_type: str
     expected_value: str | None
     actual_value: str | None
     status: str
     error_message: str | None
+    # 快照携带的说明/参数（断言行本身不落库，从 assertions_snapshot 补）
+    params: dict[str, Any] | None = None
+    description: str | None = None
 
 
 class ReportCaseOut(BaseModel):

@@ -87,11 +87,14 @@ async def get_report_detail(db: AsyncSession, execution_id: int) -> dict:
                 "assertions": [
                     {
                         "id": a["id"],
+                        "assertion_order": a.get("assertion_order"),
                         "assertion_type": a["assertion_type"],
                         "expected_value": a["expected_value"],
                         "actual_value": a["actual_value"],
                         "status": a["status"],
                         "error_message": a["error_message"],
+                        "params": a.get("params"),
+                        "description": a.get("description"),
                     }
                     for a in c["assertions"]
                 ],
@@ -153,11 +156,14 @@ async def get_report_detail(db: AsyncSession, execution_id: int) -> dict:
                         "assertions": [
                             {
                                 "id": a["id"],
+                                "assertion_order": a.get("assertion_order"),
                                 "assertion_type": a["assertion_type"],
                                 "expected_value": a["expected_value"],
                                 "actual_value": a["actual_value"],
                                 "status": a["status"],
                                 "error_message": a["error_message"],
+                                "params": a.get("params"),
+                                "description": a.get("description"),
                             }
                             for a in c["assertions"]
                         ],

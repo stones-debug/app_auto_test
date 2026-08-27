@@ -46,6 +46,8 @@ async def load_case_tree(db: AsyncSession, execution_id: int) -> list[dict]:
     step_by_case: dict[int, list[dict]] = {}
     snapshot_parameters: dict[tuple[int, int], dict] = {}
     snapshot_phases: dict[tuple[int, int], str] = {}
+    # 断言快照：按 (case_id, order) 携带 params / description（断言行本身不落库这些字段）
+    snapshot_assertion_info: dict[tuple[int, int], dict] = {}
     for case in case_rows:
         for item in case.steps_snapshot or []:
             if not isinstance(item, dict):
@@ -56,6 +58,20 @@ async def load_case_tree(db: AsyncSession, execution_id: int) -> list[dict]:
                 snapshot_parameters[(case.id, order)] = params
             if isinstance(order, int):
                 snapshot_phases[(case.id, order)] = str(item.get("phase") or "main")
+        for item in case.assertions_snapshot or []:
+            if not isinstance(item, dict):
+                continue
+            order = item.get("order")
+            if not isinstance(order, int):
+                continue
+            info: dict = {}
+            if isinstance(item.get("params"), dict):
+                info["params"] = item["params"]
+            description = item.get("description")
+            if isinstance(description, str) and description.strip():
+                info["description"] = description.strip()
+            if info:
+                snapshot_assertion_info[(case.id, order)] = info
     for s in steps:
         case_steps = step_by_case.setdefault(s.execution_case_id, [])
         case_steps.append(
@@ -87,6 +103,7 @@ async def load_case_tree(db: AsyncSession, execution_id: int) -> list[dict]:
                 "actual_value": a.actual_value,
                 "status": a.status,
                 "error_message": a.error_message,
+                **snapshot_assertion_info.get((a.execution_case_id, a.assertion_order), {}),
             }
         )
 
@@ -176,6 +193,8 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
 
     snapshot_parameters: dict[tuple[int, int], dict] = {}
     snapshot_phases: dict[tuple[int, int], str] = {}
+    # 断言快照：按 (case_id, order) 携带 params / description
+    snapshot_assertion_info: dict[tuple[int, int], dict] = {}
     for c in cases:
         for item in c.steps_snapshot or []:
             if not isinstance(item, dict):
@@ -186,6 +205,20 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
                 snapshot_parameters[(c.id, order)] = params
             if isinstance(order, int):
                 snapshot_phases[(c.id, order)] = str(item.get("phase") or "main")
+        for item in c.assertions_snapshot or []:
+            if not isinstance(item, dict):
+                continue
+            order = item.get("order")
+            if not isinstance(order, int):
+                continue
+            info: dict = {}
+            if isinstance(item.get("params"), dict):
+                info["params"] = item["params"]
+            description = item.get("description")
+            if isinstance(description, str) and description.strip():
+                info["description"] = description.strip()
+            if info:
+                snapshot_assertion_info[(c.id, order)] = info
     suite_snapshot_parameters: dict[tuple[int, str, int], dict] = {}
     for s in suite_rows:
         for item in [*(s.setup_steps_snapshot or []), *(s.teardown_steps_snapshot or [])]:
@@ -250,6 +283,7 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
                     "actual_value": a.actual_value,
                     "status": a.status,
                     "error_message": a.error_message,
+                    **snapshot_assertion_info.get((c.id, a.assertion_order), {}),
                 }
                 for a in assertions_by_case.get(c.id, [])
             ],

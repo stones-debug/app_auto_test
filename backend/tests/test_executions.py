@@ -55,7 +55,13 @@ async def _create_case(client: AsyncClient, token: str, project_id: int, element
                 {"order": 2, "action": "sleep", "params": {"duration": 1}},
             ],
             "assertions": [
-                {"order": 1, "type": "element_exists", "element_id": element_id, "params": {}}
+                {
+                    "order": 1,
+                    "type": "element_exists",
+                    "element_id": element_id,
+                    "params": {"expected": "exists"},
+                    "description": "断言说明",
+                }
             ],
         },
     )
@@ -615,3 +621,7 @@ async def test_execution_detail_aggregates_steps_assertions(client: AsyncClient)
     assert case["steps"][0]["status"] == "passed"
     assert case["assertions"][0]["assertion_type"] == "text_equals"
     assert case["assertions"][0]["status"] == "pass"
+    # 断言行需携带序号与快照说明/参数（回归：只显示断言操作无序号/说明/参数）
+    assert case["assertions"][0]["assertion_order"] == 1
+    assert case["assertions"][0]["description"] == "断言说明"
+    assert case["assertions"][0]["params"] is not None

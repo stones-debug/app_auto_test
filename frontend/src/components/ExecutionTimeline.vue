@@ -32,11 +32,14 @@ export interface TimelineStep {
 }
 
 export interface TimelineAssertion {
+  assertion_order: number
   assertion_type: string
   expected_value?: string | null
   actual_value?: string | null
   status: string
   error_message?: string | null
+  params?: Record<string, unknown> | null
+  description?: string | null
 }
 
 export interface TimelineCase {
@@ -160,8 +163,17 @@ function phaseLabel(phase?: TimelineStepPhase | string): { text: string; type: '
             <span class="step-icon" :class="assertionPassed(item.value.status) ? 'passed' : 'failed'">
               {{ assertionPassed(item.value.status) ? '✓' : '✕' }}
             </span>
+            <span class="step-order">#{{ item.value.assertion_order }}</span>
             <span class="step-action">{{ item.value.assertion_type }}</span>
+            <span
+              v-if="formatParameters(item.value.params)"
+              class="step-parameters v2-aux"
+              :title="formatParameters(item.value.params, true)"
+            >参数：{{ formatParameters(item.value.params) }}</span>
+            <span v-if="item.value.description" class="assertion-desc v2-aux">{{ item.value.description }}</span>
+            <span v-if="item.value.expected_value != null" class="v2-aux">期望：{{ item.value.expected_value }}</span>
             <span v-if="item.value.actual_value != null" class="v2-aux">= {{ item.value.actual_value }}</span>
+            <span v-if="item.value.error_message" class="step-error v2-aux" :title="item.value.error_message">{{ item.value.error_message }}</span>
           </div>
         </template>
       </div>
@@ -264,6 +276,17 @@ function phaseLabel(phase?: TimelineStepPhase | string): { text: string; type: '
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.assertion-row {
+  flex-wrap: wrap;
+  column-gap: 8px;
+}
+.assertion-desc {
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 30%;
 }
 .step-duration {
   margin-left: auto;
