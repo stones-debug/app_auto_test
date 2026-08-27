@@ -197,7 +197,7 @@ function summary(): string {
                 <el-select v-model="cond.operator" class="w-op" :disabled="isBool(String(cond.attribute))">
                   <el-option v-for="o in SMART_OPERATORS" :key="o.value" :label="o.label" :value="o.value" />
                 </el-select>
-                <el-switch v-if="isBool(String(cond.attribute))" :model-value="Boolean(cond.value)" class="w-val" @change="setConditionBool(ai, 'anchor', ci, $event)" />
+                <el-switch v-if="isBool(String(cond.attribute))" :model-value="Boolean(cond.value)" class="w-switch" @change="setConditionBool(ai, 'anchor', ci, $event)" />
                 <el-input v-else :model-value="String(cond.value ?? '')" class="w-val" placeholder="匹配取值" @update:model-value="setConditionValue(ai, 'anchor', ci, String($event))" />
                 <span class="cond-ops">
                   <el-button size="small" text :disabled="ci === 0" @click="onMoveCondition(ai, 'anchor', ci, -1)">↑</el-button>
@@ -243,7 +243,7 @@ function summary(): string {
                 <el-select v-model="cond.operator" class="w-op" :disabled="isBool(String(cond.attribute))">
                   <el-option v-for="o in SMART_OPERATORS" :key="o.value" :label="o.label" :value="o.value" />
                 </el-select>
-                <el-switch v-if="isBool(String(cond.attribute))" :model-value="Boolean(cond.value)" class="w-val" @change="setConditionBool(ai, 'target', ci, $event)" />
+                <el-switch v-if="isBool(String(cond.attribute))" :model-value="Boolean(cond.value)" class="w-switch" @change="setConditionBool(ai, 'target', ci, $event)" />
                 <el-input v-else :model-value="String(cond.value ?? '')" class="w-val" placeholder="匹配取值" @update:model-value="setConditionValue(ai, 'target', ci, String($event))" />
                 <span class="cond-ops">
                   <el-button size="small" text :disabled="ci === 0" @click="onMoveCondition(ai, 'target', ci, -1)">↑</el-button>
@@ -391,16 +391,21 @@ function summary(): string {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 .w-attr {
-  width: 130px;
+  width: 120px;
 }
 .w-op {
-  width: 110px;
+  width: 96px;
 }
 .w-val {
-  flex: 1;
-  min-width: 0;
+  /* 保底可输入：任何容器宽度下至少 160px；flex-wrap 时掉到下一行仍占满剩余宽度 */
+  flex: 1 1 160px;
+  min-width: 160px;
+}
+.w-switch {
+  flex-shrink: 0;
 }
 .w-depth {
   width: 80px;
@@ -414,9 +419,11 @@ function summary(): string {
 .depth-label {
   font-size: 12px;
   color: var(--text-2);
+  white-space: nowrap;
 }
 .depth-hint {
-  flex: 1;
+  flex: 1 1 120px;
+  min-width: 120px;
   font-size: 12px;
 }
 .cond-ops {
