@@ -1,18 +1,26 @@
 ﻿<script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { executionStatusMeta } from '@/api/executions'
-import { downloadReport, getReportDetail, type ReportCase, type ReportDetail, type ReportExclusion, type ReportStep, type ReportSuite } from '@/api/reports'
+import { downloadReport, getReportDetail, type ReportDetail, type ReportExclusion } from '@/api/reports'
 import DevicePicker from '@/components/DevicePicker.vue'
 import ExecutionParameters from '@/components/ExecutionParameters.vue'
+import ReportCaseCard from '@/components/ReportCaseCard.vue'
 import ReportStepTable from '@/components/ReportStepTable.vue'
 import { useExecutionRetry } from '@/composables/useExecutionRetry'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { buildExclusionTree, flattenTreeKeys, type ExclusionTreeNode } from '@/utils/exclusionTree'
-import { splitExecutionSteps } from '@/utils/executionOrder'
 import { formatDateTime } from '@/utils/format'
-import { formatParameters } from '@/utils/parameters'
+import {
+  emptyDisclosureState,
+  initialDisclosureState,
+  prepareReportCases,
+  prepareReportSuites,
+  toggleDisclosureId,
+  visibleDisclosureState,
+  type ReportDisclosureState,
+} from '@/utils/reportDisclosure'
 
 const route = useRoute()
 const router = useRouter()
@@ -22,30 +30,33 @@ const reportId = computed(() => Number(route.params.reportId ?? route.params.id)
 
 const loading = ref(false)
 const detail = ref<ReportDetail | null>(null)
-// Step 7：activeSuites 存套件/用例的展示 key（el-collapse name 用 suite:<id>/case:<id> 双段）
-const activeSuites = ref<string[]>([])
-// 展开状态 O(1) 查询：el-collapse-item 的 body 用 v-if 真正卸载，避免大报告收起时仍持有大量 DOM
-const activeSet = computed(() => new Set(activeSuites.value))
+// 套件与用例各自维护 O(1) 的展开集合，避免每个 el-collapse 深度监听同一个数组。
+const expandedSuites = shallowRef<Set<number>>(new Set())
+const expandedCases = shallowRef<Set<number>>(new Set())
 const onlyFailed = ref(false)
 let loadedReportId: number | null = null
 
 const { picker, retry: retryEntry, running: retrying } = useExecutionRetry()
 
-// 方案 §4.4：按 suites 分层；single-failed 时每个套件内仅保失败用例
+// 步骤在报告数据变化时只拆分一次，展开/收起不再重复过滤步骤数组。
+const preparedSuites = computed(() => prepareReportSuites(detail.value?.suites ?? []))
+const preparedCases = computed(() => (
+  detail.value?.suites?.length ? [] : prepareReportCases(detail.value?.cases ?? [])
+))
+
+// 方案 §4.4：按 suites 分层；只看失败时每个套件内仅保失败用例。
 const displaySuites = computed(() => {
-  if (!detail.value?.suites) return []
-  if (!onlyFailed.value) return detail.value.suites
-  return detail.value.suites
+  if (!onlyFailed.value) return preparedSuites.value
+  return preparedSuites.value
     .map((s) => ({ ...s, cases: s.cases.filter((c) => ['failed', 'error'].includes(c.status)) }))
     .filter((s) => s.cases.length > 0)
 })
 
 // 单用例/历史兼容：无 suites 时回退扁平 cases
 const displayCases = computed(() => {
-  if (detail.value?.suites?.length) return []
-  if (!detail.value?.cases) return []
-  if (!onlyFailed.value) return detail.value.cases
-  return detail.value.cases.filter((c) => ['failed', 'error'].includes(c.status))
+  if (preparedSuites.value.length) return []
+  if (!onlyFailed.value) return preparedCases.value
+  return preparedCases.value.filter((c) => ['failed', 'error'].includes(c.status))
 })
 
 // 方案 §7.2：不适用内容清单——套件→用例→步骤 独立层级树（builder 在 utils/exclusionTree.ts，可测试）
@@ -96,48 +107,30 @@ function statusMeta(s: unknown) {
   return executionStatusMeta(String(s))
 }
 
+function applyDisclosureState(state: ReportDisclosureState) {
+  expandedSuites.value = state.expandedSuites
+  expandedCases.value = state.expandedCases
+}
+
+function toggleSuite(id: number) {
+  expandedSuites.value = toggleDisclosureId(expandedSuites.value, id)
+}
+
+function toggleCase(id: number) {
+  expandedCases.value = toggleDisclosureId(expandedCases.value, id)
+}
+
 function expandAll() {
-  activeSuites.value = flattenFailKeys(displaySuites.value, displayCases.value, false)
+  applyDisclosureState(visibleDisclosureState(displaySuites.value, displayCases.value))
 }
 
 function collapseAll() {
-  activeSuites.value = []
+  applyDisclosureState(emptyDisclosureState())
 }
 
-// 计算应展开/收起的 key 集合：
-// - suites 模式：每套件展开其 id，失败用例展开其 id 前缀；key 形如 suite:<id>、case:<id>
-// - cases 回退模式：仅展开失败用例 case:<id>
-function flattenFailKeys(suites: ReportSuite[], cases: ReportCase[], onlyFailed: boolean): string[] {
-  if (!suites.length) {
-    return cases.map((c) => (onlyFailed || ['failed', 'error'].includes(c.status) ? `case:${c.id}` : '')).filter(Boolean)
-  }
-  return suites.flatMap((s) => {
-    const keys = [`suite:${s.id}`]
-    for (const c of s.cases) {
-      const fail = ['failed', 'error'].includes(c.status)
-      if (onlyFailed) {
-        if (fail) keys.push(`case:${c.id}`)
-      } else if (fail) {
-        keys.push(`case:${c.id}`)
-      }
-    }
-    return keys
-  })
-}
-
-// 默认展开：与 HTML 报告初始状态保持一致——套件/用例默认收起；仅含失败/异常用例的套件与其失败用例自动展开
-// （无需任务 2 的手工逐层点开即可看到问题用例）
-function autoExpandFailKeys(suites: ReportSuite[]): string[] {
-  return suites.flatMap((s) => {
-    const fails = s.cases.filter((c) => ['failed', 'error'].includes(c.status))
-    if (!fails.length) return []
-    return [`suite:${s.id}`, ...fails.map((c) => `case:${c.id}`)]
-  })
-}
-
-// Step 7：checkbox 只使用 v-model；handler 接收新 boolean，刷新 activeSuites
-function onOnlyFailedChange(value: string | number | boolean) {
-  activeSuites.value = flattenFailKeys(displaySuites.value, displayCases.value, Boolean(value))
+// checkbox 只使用 v-model；切换筛选后按当前可见内容恢复原有自动展开口径。
+function onOnlyFailedChange() {
+  applyDisclosureState(visibleDisclosureState(displaySuites.value, displayCases.value))
 }
 
 async function load() {
@@ -150,9 +143,7 @@ async function load() {
     await navigation.normalizeProjectDetail('report', id, data.execution.project_id)
     detail.value = data
     // 首次加载：默认收起；仅含失败/异常用例的套件与其失败用例自动展开（与 HTML 报告初始状态一致）
-    activeSuites.value = data.suites?.length
-      ? autoExpandFailKeys(data.suites)
-      : data.cases.map((c) => (['failed', 'error'].includes(c.status) ? `case:${c.id}` : '')).filter(Boolean)
+    applyDisclosureState(initialDisclosureState(data.suites ?? [], data.cases ?? []))
     activeExclusions.value = []
   } finally {
     loading.value = false
@@ -180,14 +171,6 @@ async function retryThis() {
 function viewExecution() {
   const execId = Number(detail.value?.execution.id)
   if (execId) void router.push(navigation.executionDetail(execId))
-}
-
-function stepsBeforeAssertions(steps: ReportStep[]) {
-  return splitExecutionSteps(steps).beforeAssertions
-}
-
-function stepsAfterAssertions(steps: ReportStep[]) {
-  return splitExecutionSteps(steps).afterAssertions
 }
 </script>
 
@@ -336,17 +319,24 @@ function stepsAfterAssertions(steps: ReportStep[]) {
           </div>
         </div>
 
-        <!-- 方案 §4.4：按套件分层——套件卡片内嵌用例卡片（与 HTML 报告卡片层级一致，el-collapse 承载展开收起） -->
-        <el-collapse v-if="detail.suites?.length" v-model="activeSuites" class="suite-collapse">
-          <el-collapse-item v-for="s in displaySuites" :key="s.id" :name="`suite:${s.id}`" class="suite-card">
-            <template #title>
+        <!-- 轻量级分层折叠：只挂载已展开的套件/用例内容，不使用高度动画。 -->
+        <div v-if="detail.suites?.length" class="report-tree">
+          <section v-for="s in displaySuites" :key="s.id" class="suite-card">
+            <button
+              type="button"
+              class="disclosure-header suite-header"
+              :class="{ 'is-active': expandedSuites.has(s.id) }"
+              :aria-expanded="expandedSuites.has(s.id)"
+              @click="toggleSuite(s.id)"
+            >
+              <span class="disclosure-caret" :class="{ 'is-open': expandedSuites.has(s.id) }" aria-hidden="true">▸</span>
               <span class="case-name">{{ s.suite_name }}</span>
               <el-tag :type="statusMeta(s.status).type" size="small">{{ statusMeta(s.status).label }}</el-tag>
               <span v-if="s.suite_id" class="case-dur">#{{ s.suite_id }}</span>
               <span class="case-dur">{{ durationText(s.duration) }}</span>
-            </template>
+            </button>
 
-            <template v-if="activeSet.has(`suite:${s.id}`)">
+            <div v-if="expandedSuites.has(s.id)" class="suite-body">
               <div v-if="s.error_message" class="error-box">{{ s.error_message }}</div>
 
               <template v-if="s.setup_steps.length">
@@ -354,102 +344,34 @@ function stepsAfterAssertions(steps: ReportStep[]) {
                 <ReportStepTable :steps="s.setup_steps" :report-id="reportId" />
               </template>
 
-              <div v-for="c in s.cases" :key="c.id" class="case-wrap">
-                <el-collapse v-model="activeSuites" class="case-collapse">
-                  <el-collapse-item :key="c.id" :name="`case:${c.id}`" class="case-card">
-                    <template #title>
-                      <span class="case-name">{{ c.case_name }}<span v-if="c.module_name" class="case-module">{{ c.module_name }}</span></span>
-                      <el-tag :type="statusMeta(c.status).type" size="small">{{ statusMeta(c.status).label }}</el-tag>
-                      <span class="case-dur">{{ durationText(c.duration) }}</span>
-                    </template>
-                    <template v-if="activeSet.has(`case:${c.id}`)">
-                      <div v-if="c.error_message" class="error-box">{{ c.error_message }}</div>
-                      <ReportStepTable
-                        v-if="stepsBeforeAssertions(c.steps).length"
-                        :steps="stepsBeforeAssertions(c.steps)"
-                        :report-id="reportId"
-                      />
-                      <el-empty v-else-if="!c.assertions.length && !stepsAfterAssertions(c.steps).length" description="无步骤" :image-size="60" />
-                      <el-table v-if="c.assertions.length" :data="c.assertions" size="small" class="mt8">
-                        <el-table-column label="#" width="50">
-                          <template #default="{ row }">{{ row.assertion_order ?? row.id }}</template>
-                        </el-table-column>
-                        <el-table-column prop="assertion_type" label="断言" width="150" />
-                        <el-table-column label="参数" min-width="120" show-overflow-tooltip>
-                          <template #default="{ row }">{{ formatParameters(row.params) || '-' }}</template>
-                        </el-table-column>
-                        <el-table-column prop="description" label="说明" min-width="120" show-overflow-tooltip />
-                        <el-table-column prop="expected_value" label="期望" min-width="100" show-overflow-tooltip />
-                        <el-table-column prop="actual_value" label="实际" min-width="100" show-overflow-tooltip />
-                        <el-table-column label="状态" width="90">
-                          <template #default="{ row }">
-                            <el-tag :type="['pass', 'passed'].includes(row.status) ? 'success' : 'danger'" size="small">{{ row.status }}</el-tag>
-                          </template>
-                        </el-table-column>
-                        <el-table-column prop="error_message" label="错误" min-width="140" show-overflow-tooltip />
-                      </el-table>
-                      <ReportStepTable
-                        v-if="stepsAfterAssertions(c.steps).length"
-                        :steps="stepsAfterAssertions(c.steps)"
-                        :report-id="reportId"
-                        class="mt8"
-                      />
-                    </template>
-                  </el-collapse-item>
-                </el-collapse>
-              </div>
+              <ReportCaseCard
+                v-for="c in s.cases"
+                :key="c.id"
+                :case-item="c"
+                :report-id="reportId"
+                :expanded="expandedCases.has(c.id)"
+                @toggle="toggleCase(c.id)"
+              />
 
               <template v-if="s.teardown_steps.length">
                 <div class="suite-phase">套件后置</div>
                 <ReportStepTable :steps="s.teardown_steps" :report-id="reportId" />
               </template>
-            </template>
-          </el-collapse-item>
-        </el-collapse>
+            </div>
+          </section>
+        </div>
 
-        <!-- 单用例/历史兼容：无套件时回退扁平 cases -->
-        <el-collapse v-else v-model="activeSuites" class="case-collapse">
-          <el-collapse-item v-for="c in displayCases" :key="c.id" :name="`case:${c.id}`" class="case-card">
-            <template #title>
-              <span class="case-name">{{ c.case_name }}<span v-if="c.module_name" class="case-module">{{ c.module_name }}</span></span>
-              <el-tag :type="statusMeta(c.status).type" size="small">{{ statusMeta(c.status).label }}</el-tag>
-              <span class="case-dur">{{ durationText(c.duration) }}</span>
-            </template>
-            <template v-if="activeSet.has(`case:${c.id}`)">
-              <div v-if="c.error_message" class="error-box">{{ c.error_message }}</div>
-              <ReportStepTable
-                v-if="stepsBeforeAssertions(c.steps).length"
-                :steps="stepsBeforeAssertions(c.steps)"
-                :report-id="reportId"
-              />
-              <el-empty v-else-if="!c.assertions.length && !stepsAfterAssertions(c.steps).length" description="无步骤" :image-size="60" />
-              <el-table v-if="c.assertions.length" :data="c.assertions" size="small" class="mt8">
-                <el-table-column label="#" width="50">
-                  <template #default="{ row }">{{ row.assertion_order ?? row.id }}</template>
-                </el-table-column>
-                <el-table-column prop="assertion_type" label="断言" width="150" />
-                <el-table-column label="参数" min-width="120" show-overflow-tooltip>
-                  <template #default="{ row }">{{ formatParameters(row.params) || '-' }}</template>
-                </el-table-column>
-                <el-table-column prop="description" label="说明" min-width="120" show-overflow-tooltip />
-                <el-table-column prop="expected_value" label="期望" min-width="100" show-overflow-tooltip />
-                <el-table-column prop="actual_value" label="实际" min-width="100" show-overflow-tooltip />
-                <el-table-column label="状态" width="90">
-                  <template #default="{ row }">
-                    <el-tag :type="['pass', 'passed'].includes(row.status) ? 'success' : 'danger'" size="small">{{ row.status }}</el-tag>
-                  </template>
-                </el-table-column>
-                <el-table-column prop="error_message" label="错误" min-width="140" show-overflow-tooltip />
-              </el-table>
-              <ReportStepTable
-                v-if="stepsAfterAssertions(c.steps).length"
-                :steps="stepsAfterAssertions(c.steps)"
-                :report-id="reportId"
-                class="mt8"
-              />
-            </template>
-          </el-collapse-item>
-        </el-collapse>
+        <!-- 单用例/无套件上下文时回退扁平 cases，并复用完全相同的用例卡片。 -->
+        <div v-else class="report-tree">
+          <ReportCaseCard
+            v-for="c in displayCases"
+            :key="c.id"
+            :case-item="c"
+            :report-id="reportId"
+            :expanded="expandedCases.has(c.id)"
+            @toggle="toggleCase(c.id)"
+          />
+        </div>
       </div>
 
       <div class="card">
@@ -592,15 +514,10 @@ function stepsAfterAssertions(steps: ReportStep[]) {
   font-size: 12px;
   margin-left: 10px;
 }
-.case-wrap {
-  margin-bottom: 10px;
-}
-/* 套件/用例折叠容器：去掉默认边框，白卡片由内部 item 承担 */
-.suite-collapse.el-collapse,
-.case-collapse.el-collapse {
+/* 套件与用例使用轻量级 disclosure，不触发 Element Plus 的深监听和高度测量。 */
+.report-tree {
   border: none;
 }
-/* 套件卡片（白底圆角边框 + 大数字灰标签，与 HTML 报告卡片一致） */
 .suite-card {
   background: #fff;
   border: 1px solid var(--el-border-color-lighter);
@@ -608,53 +525,42 @@ function stepsAfterAssertions(steps: ReportStep[]) {
   margin-bottom: 14px;
   overflow: hidden;
 }
-.suite-card :deep(.el-collapse-item__header) {
-  height: auto;
-  min-height: auto;
-  line-height: 1.5;
+.disclosure-header {
+  width: 100%;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.suite-header {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
   padding: 12px 16px;
   background: #fff;
   border-bottom: 1px solid transparent;
 }
-.suite-card :deep(.el-collapse-item__header.is-active) {
+.suite-header.is-active {
   border-bottom-color: var(--el-border-color-lighter);
 }
-.suite-card :deep(.el-collapse-item__header:hover) {
+.suite-header:hover {
   background: var(--el-fill-color-light);
 }
-.suite-card :deep(.el-collapse-item__wrap) {
-  border-bottom: none;
-  background: #fff;
+.suite-header:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: -2px;
 }
-.suite-card :deep(.el-collapse-item__content) {
-  padding: 12px 16px;
+.disclosure-caret {
+  flex: none;
+  margin-right: 8px;
+  color: var(--el-text-color-secondary);
+  transition: transform 0.12s ease;
 }
-/* 用例卡片（内嵌于套件 body，层层展开） */
-.case-card {
-  background: #fff;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 10px;
-  overflow: hidden;
+.disclosure-caret.is-open {
+  transform: rotate(90deg);
 }
-.case-card :deep(.el-collapse-item__header) {
-  height: auto;
-  min-height: auto;
-  line-height: 1.5;
-  padding: 10px 16px;
-  background: #fff;
-  border-bottom: 1px solid transparent;
-}
-.case-card :deep(.el-collapse-item__header.is-active) {
-  border-bottom-color: var(--el-border-color-lighter);
-}
-.case-card :deep(.el-collapse-item__header:hover) {
-  background: var(--el-fill-color-light);
-}
-.case-card :deep(.el-collapse-item__wrap) {
-  border-bottom: none;
-  background: #fff;
-}
-.case-card :deep(.el-collapse-item__content) {
+.suite-body {
   padding: 12px 16px;
 }
 .suite-phase {
