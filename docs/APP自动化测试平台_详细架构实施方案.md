@@ -1983,4 +1983,34 @@ RUNNING ←── Worker 认领后经内部接口通知 FastAPI 更新
 
 ---
 
+### 10.13 Android 动态元素智能定位（V1.4 增量）
+
+> 本节为智能定位（smart locator）最终口径；与前文 §3.6 元素定位、§10.3 元素快照冲突时以本节为准。
+> 涉及：`test_elements.locator_config`、`app_profile_element_overrides.locator_config`、执行快照 `elements_snapshot`、Agent `ElementResolver`、前端智能定位编辑器。
+> 范围：仅 Android/Appium UiAutomator2；不实现 iOS、OCR、图像识别与实时设备“测试定位”接口。保留既有 id/resource_id/xpath/accessibility_id 等普通定位能力。
+
+1. **元素模型**：`test_elements` 与 `app_profile_element_overrides` 各新增 `locator_config JSONB`（可空）；`locator_value` 改为可空。DB CHECK 约束固化判别关系（`ck_test_elements_locator_mode` / `ck_profile_element_locator_mode`）：
+   `(locator_type='smart' AND locator_config IS NOT NULL AND locator_value IS NULL) OR (locator_type<>'smart' AND locator_config IS NULL AND locator_value IS NOT NULL)`。
+   覆盖语义为**整体替换** locator_type/locator_value/locator_config 三字段。
+2. **配置协议**：`locator_config` 为强类型 JSON（后端 Pydantic + Agent 自校验双保险）：
+   - `version: 1`
+   - `alternatives: 1..10`，按顺序执行；每项含 可选 `anchor`（锚点条件，1..20 条）、可选 `path`（相对路径，1..3 段）、必填 `target`（匹配条件，1..20 条，同为 AND）
+   - 条件 `{attribute, operator, value}`：attribute 白名单 `text/content_desc/resource_id/class_name/package/clickable/enabled/selected/displayed`；operator `equals/contains/starts_with/ends_with/regex`；布尔属性（clickable/enabled/selected/displayed）value 必须为 bool 且 operator 仅 `equals`；字符串值 1..200 字符，regex 必须可编译
+   - 相对路径段 `{axis, depth?}`：axis `parent/ancestor/child/descendant/following_sibling/preceding_sibling`；`ancestor/parent` 必须显式 depth（1..5，第 N 级祖先；depth≥2 按 `ancestor::*[N]` 生成），其余轴不得设置 depth
+   - `search`：`scroll: true`、`direction: up|down`、`max_swipes: 1..20`（全部候选共享预算）、`duration_ms: 100..2000`、`settle_ms: 0..2000`；滚动为**全屏滑动**（`driver.swipe`），不支持指定滚动容器
+   - `selection`：默认 `policy='unique'`（匹配>1 立即失败，禁止自动退化为第一个）；`policy='index'` 必须显式 `index ≥ 1`（1 基：index=1 即第 1 个匹配；越界即失败）
+   - 安全：协议结构不接受任何原始 XPath / UiAutomator 表达式；组合/相对定位由 Agent 经安全转义后生成。正则仅校验可编译与长度上限，**不设复杂度/ReDoS 防护**，生产使用需注意
+3. **变量与快照**：`locator_config` 内 `${variable}` **保留原样写入快照**（后端 profile_resolver/worker_service 不渲染），由 Agent 执行时用执行参数 `variables` 渲染；渲染后 Agent 重新校验长度/正则。普通元素 `locator_value` 仍由后端渲染。快照元素条目统一结构：`{name, platform, locator_type, locator_value, locator_config}`，`platform` 供 Agent 平台守卫使用。
+4. **Agent 解析语义**：
+   - 自校验 → 渲染变量 → 逐候选：0 匹配→滚动循环后仍 0→下一候选；1 匹配→按 selection 返回；>1 且 unique→立即 `ElementNotUnique`（不试后续候选）；index 显式取第 N 个，匹配数不足→失败
+   - 选择器双策略：无 anchor/path 的普通候选用 UiAutomator `UiSelector` 链（可含 regex）；含相对定位/ends_with/displayed 等无法用 UiSelector 表达的用 XPath（字面量安全转义）；regex 出现在 anchor/path 场景→`InvalidSmartLocator`，regex 亦不得与 ends_with/displayed 等需 XPath 表达的条件组合
+   - 滚动：每次滑动后等待 `settle_ms` 再查询；页面指纹（page_source 摘要哈希，不记录完整源码）连续两次不变→提前停止；预算耗尽→`ScrollLimitReached`；全程 60s 总超时；每次查询/滑动前检查用户停止信号
+   - 平台守卫：非 Android（ios 等）`platform` 直接拒绝（`InvalidSmartLocator`，消息明确“仅支持 Android”）
+5. **统一操作接线**：click/input/clear/get_text/get_attribute 与全部元素断言统一经 `with_stale_retry`：遇 Stale 异常→丢弃旧元素→按原智能规则重新定位→重试，最多 2 次，耗尽→`ElementStaleRetryExhausted`；不新增 find_and_click 等孤立动作。
+6. **错误类型**：Agent 异常类 `InvalidSmartLocator / ElementNotFound / ElementNotUnique / ScrollLimitReached / ElementStaleRetryExhausted`（无机器错误码，经 `step_result.error_message` 中文文本上报落库）；日志含候选规则序号、匹配数量、滚动次数、失败原因，不记录完整页面源码。
+7. **前端**：元素库「智能定位（Android）」可视化编辑器（候选规则/锚点/相对路径/滚动/匹配策略，实时校验，索引策略带风险提示）；APP 档案覆盖抽屉复用同一编辑器组件；列表展示规则摘要（如「文字等于 ${device_name} + 类名等于TextView + 向上滑动8次」）。前端校验覆盖面为结构与数值上限；组合语义限制（regex 与 anchor/path 及需 XPath 表达的条件互斥、path 须带 anchor）由 Agent 运行时校验。
+8. **协议版本**：elements_snapshot 经 start_test 载荷下发（非 WS 入站消息），无新增 action/assertion Registry 项，`protocol_version` 不提升，协议产物无需重新生成（`generate_protocol.py --check` 通过）。
+
+---
+
 > **文档结束**。本方案基于原始设计进行了系统性修订，重点解决了执行引擎耦合、Agent 落地性、执行可靠性、报告可追溯性等核心问题，并经由 V1.1 评审补齐执行职责划分、Worker↔Agent 通信中转、元素快照、停止机制、设备原子锁、变量系统等缺口，可直接作为项目启动的技术基线。
