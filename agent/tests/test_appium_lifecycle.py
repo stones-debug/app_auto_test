@@ -35,9 +35,25 @@ def test_command_resolution(monkeypatch):
 
     # 都没有且 PATH 无 appium → 明确错误
     monkeypatch.setattr("appium_lifecycle.shutil.which", lambda name: None)
+    monkeypatch.setattr("appium_lifecycle.bundled_appium", lambda: None)
+    monkeypatch.setattr("appium_lifecycle.dev_bundled_appium", lambda: None)
     server = AppiumServer()
     with pytest.raises(AppiumError, match="未找到 appium"):
         server._command()
+
+
+def test_command_resolution_dev_vendor(monkeypatch):
+    """源码/调试模式：仓库 vendor/appium 兜底（无需显式配置）。"""
+    node = Path("D:/vendor/appium/node/node.exe")
+    main_js = Path("D:/vendor/appium/appium/node_modules/appium/build/lib/main.js")
+    monkeypatch.setattr(
+        "appium_lifecycle.dev_bundled_appium",
+        lambda: (node, main_js, None),
+    )
+    server = AppiumServer(port=4730)
+    cmd = server._command()
+    assert cmd[:2] == [str(node), str(main_js)]
+    assert "--port" in cmd and cmd[cmd.index("--port") + 1] == "4730"
 
 
 async def test_start_stop_lifecycle(sleepy_script):

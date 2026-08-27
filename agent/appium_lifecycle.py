@@ -21,18 +21,39 @@ logger = logging.getLogger("agent.appium")
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
+def _scan_appium_dir(base: Path) -> tuple[Path, Path, Path | None] | None:
+    """扫描一个「便携 Appium 目录」（node + appium main.js + appium-home）是否齐全。
+
+    base 下期望布局（与 publish.ps1 生成/拷贝结构一致）：
+      base/node/node.exe
+      base/appium/node_modules/appium/build/lib/main.js
+      base/appium-home/（驱动目录，可选）
+    """
+    node = base / "node" / "node.exe"
+    main_js = base / "appium" / "node_modules" / "appium" / "build" / "lib" / "main.js"
+    if not (node.is_file() and main_js.is_file()):
+        return None
+    home = base / "appium-home"
+    return node, main_js, home if home.is_dir() else None
+
+
 def bundled_appium() -> tuple[Path, Path, Path | None] | None:
     """打包安装版随附的便携 Node + Appium + 驱动目录（exe 旁 appium/，publish.ps1 生成）。
 
     返回 (node.exe, appium main.js, APPIUM_HOME 驱动目录)；未随包时返回 None。
     """
     root = Path(sys.executable).resolve().parent
-    node = root / "appium" / "node" / "node.exe"
-    main_js = root / "appium" / "appium" / "node_modules" / "appium" / "build" / "lib" / "main.js"
-    if node.is_file() and main_js.is_file():
-        home = root / "appium" / "appium-home"
-        return node, main_js, home if home.is_dir() else None
-    return None
+    return _scan_appium_dir(root / "appium")
+
+
+def dev_bundled_appium() -> tuple[Path, Path, Path | None] | None:
+    """源码/调试模式：仓库 agent/vendor/appium/（与 publish.ps1 打包目录同构）。
+
+    与 devices/adb.py 的「开发目录 vendor 兜底」保持一致，使
+    `uv run python main.py --config config.yaml` 无需额外配置即可自启 Appium。
+    """
+    repo = Path(__file__).resolve().parents[1] / "vendor" / "appium"
+    return _scan_appium_dir(repo)
 
 
 class AppiumError(Exception):
@@ -78,7 +99,7 @@ class AppiumServer:
             return [self.appium_bin, "--port", str(self.port), "--address", self.host]
         if self.node_bin and self.appium_js:
             return [self.node_bin, str(self.appium_js), "--port", str(self.port), "--address", self.host]
-        bundled = bundled_appium()
+        bundled = bundled_appium() or dev_bundled_appium()
         if bundled:
             node_bin, main_js, _ = bundled
             return [str(node_bin), str(main_js), "--port", str(self.port), "--address", self.host]
@@ -99,16 +120,19 @@ class AppiumServer:
         kwargs: dict = {}
         if os.name == "nt":
             kwargs["creationflags"] = CREATE_NO_WINDOW
-        bundled = bundled_appium()
-        if bundled:
-            _, _, home = bundled
+        packed = bundled_appium()
+        dev = packed or dev_bundled_appium()
+        if dev:
+            _, _, home = dev
             env = os.environ.copy()
             if home is not None:
                 env["APPIUM_HOME"] = str(home)
-            # uiautomator2 驱动需要 ANDROID_HOME 定位 platform-tools/adb（随包在 exe 同级）
-            root = Path(sys.executable).resolve().parent
-            env["ANDROID_HOME"] = str(root)
-            env["ANDROID_SDK_ROOT"] = str(root)
+            # 打包安装：uiautomator2 驱动需要 ANDROID_HOME 定位 platform-tools/adb（随包在 exe 同级）；
+            # dev vendor 模式不覆盖，继承调用方环境（与 devices/adb.py 的 adb 定位一致）。
+            if packed:
+                root = Path(sys.executable).resolve().parent
+                env["ANDROID_HOME"] = str(root)
+                env["ANDROID_SDK_ROOT"] = str(root)
             kwargs["env"] = env
         self.process = subprocess.Popen(
             command,
