@@ -161,9 +161,10 @@ function phaseLabel(phase?: TimelineStepPhase | string): { text: string; type: '
           </div>
           <div v-else class="assertion-row">
             <span class="step-icon" :class="assertionPassed(item.value.status) ? 'passed' : 'failed'">
-              {{ assertionPassed(item.value.status) ? '✓' : '✕' }}
+              {{ assertionPassed(item.value.status) ? '✓' : 'x' }}
             </span>
             <span class="step-order">#{{ item.value.assertion_order }}</span>
+            <el-tag size="small" type="primary">断言</el-tag>
             <span class="step-action">{{ item.value.assertion_type }}</span>
             <span
               v-if="formatParameters(item.value.params)"
