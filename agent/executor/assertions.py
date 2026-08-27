@@ -1,5 +1,8 @@
 import re
 
+from .driver import StopRequested
+from .stale_guard import with_stale_retry
+
 
 class BaseAssertion:
     async def verify(self, driver, context, params: dict) -> dict:
@@ -22,8 +25,17 @@ class ElementExistsAssertion(BaseAssertion):
     async def verify(self, driver, context, params: dict) -> dict:
         expected = params.get("expected", "exists")
         try:
-            context.find_element(params.get("element_id"))
+            await with_stale_retry(
+                driver,
+                context,
+                params.get("element_id"),
+                lambda element: None,
+                label="存在性检查",
+            )
             found = True
+        except StopRequested:
+            # 停止信号不能被存在性检查吞掉，必须上抛（由 Runner 收敛为 stopped）
+            raise
         except Exception:
             found = False
         passed = found if expected == "exists" else not found
@@ -37,8 +49,13 @@ class ElementExistsAssertion(BaseAssertion):
 @register_assertion("text_equals")
 class TextEqualsAssertion(BaseAssertion):
     async def verify(self, driver, context, params: dict) -> dict:
-        element = context.find_element(params.get("element_id"))
-        actual = driver.get_text(element)
+        actual = await with_stale_retry(
+            driver,
+            context,
+            params.get("element_id"),
+            lambda element: driver.get_text(element),
+            label="断言-读取文本",
+        )
         if params.get("trim"):
             actual = actual.strip()
         expected = str(params.get("expected", ""))
@@ -49,8 +66,13 @@ class TextEqualsAssertion(BaseAssertion):
 @register_assertion("text_contains")
 class TextContainsAssertion(BaseAssertion):
     async def verify(self, driver, context, params: dict) -> dict:
-        element = context.find_element(params.get("element_id"))
-        actual = driver.get_text(element)
+        actual = await with_stale_retry(
+            driver,
+            context,
+            params.get("element_id"),
+            lambda element: driver.get_text(element),
+            label="断言-读取文本",
+        )
         expected = str(params.get("expected", ""))
         passed = expected in actual
         return {"status": "passed" if passed else "failed", "expected": expected, "actual": actual}
@@ -59,8 +81,13 @@ class TextContainsAssertion(BaseAssertion):
 @register_assertion("text_not_contains")
 class TextNotContainsAssertion(BaseAssertion):
     async def verify(self, driver, context, params: dict) -> dict:
-        element = context.find_element(params.get("element_id"))
-        actual = driver.get_text(element)
+        actual = await with_stale_retry(
+            driver,
+            context,
+            params.get("element_id"),
+            lambda element: driver.get_text(element),
+            label="断言-读取文本",
+        )
         expected = str(params.get("expected", ""))
         passed = expected not in actual
         return {"status": "passed" if passed else "failed", "expected": expected, "actual": actual}
@@ -69,8 +96,14 @@ class TextNotContainsAssertion(BaseAssertion):
 @register_assertion("attribute_equals")
 class AttributeEqualsAssertion(BaseAssertion):
     async def verify(self, driver, context, params: dict) -> dict:
-        element = context.find_element(params.get("element_id"))
-        actual = driver.get_attribute(element, params.get("attribute", ""))
+        attribute = params.get("attribute", "")
+        actual = await with_stale_retry(
+            driver,
+            context,
+            params.get("element_id"),
+            lambda element: driver.get_attribute(element, attribute),
+            label="断言-读取属性",
+        )
         expected = str(params.get("expected", ""))
         passed = actual == expected
         return {"status": "passed" if passed else "failed", "expected": expected, "actual": actual}
@@ -79,8 +112,14 @@ class AttributeEqualsAssertion(BaseAssertion):
 @register_assertion("attribute_contains")
 class AttributeContainsAssertion(BaseAssertion):
     async def verify(self, driver, context, params: dict) -> dict:
-        element = context.find_element(params.get("element_id"))
-        actual = driver.get_attribute(element, params.get("attribute", ""))
+        attribute = params.get("attribute", "")
+        actual = await with_stale_retry(
+            driver,
+            context,
+            params.get("element_id"),
+            lambda element: driver.get_attribute(element, attribute),
+            label="断言-读取属性",
+        )
         expected = str(params.get("expected", ""))
         passed = expected in actual
         return {"status": "passed" if passed else "failed", "expected": expected, "actual": actual}
@@ -89,8 +128,13 @@ class AttributeContainsAssertion(BaseAssertion):
 @register_assertion("value_equals")
 class ValueEqualsAssertion(BaseAssertion):
     async def verify(self, driver, context, params: dict) -> dict:
-        element = context.find_element(params.get("element_id"))
-        actual = driver.get_text(element)
+        actual = await with_stale_retry(
+            driver,
+            context,
+            params.get("element_id"),
+            lambda element: driver.get_text(element),
+            label="断言-读取文本",
+        )
         expected = str(params.get("expected", ""))
         passed = actual == expected
         return {"status": "passed" if passed else "failed", "expected": expected, "actual": actual}
@@ -99,8 +143,13 @@ class ValueEqualsAssertion(BaseAssertion):
 @register_assertion("regex_match")
 class RegexMatchAssertion(BaseAssertion):
     async def verify(self, driver, context, params: dict) -> dict:
-        element = context.find_element(params.get("element_id"))
-        actual = driver.get_text(element)
+        actual = await with_stale_retry(
+            driver,
+            context,
+            params.get("element_id"),
+            lambda element: driver.get_text(element),
+            label="断言-读取文本",
+        )
         pattern = str(params.get("pattern", ""))
         passed = re.search(pattern, actual) is not None
         return {"status": "passed" if passed else "failed", "expected": pattern, "actual": actual}

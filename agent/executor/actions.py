@@ -1,36 +1,7 @@
 import asyncio
-import logging
 
-from .driver import DriverError, ElementNotFound, StopRequested
-
-logger = logging.getLogger("agent.executor.actions")
-
-_STALE_EXCEPTION_NAMES = frozenset(
-    {
-        "StaleElementReferenceException",
-        "StaleObjectException",
-    }
-)
-_STALE_MESSAGE_MARKERS = (
-    "stale element reference",
-    "staleelementreferenceexception",
-    "staleobjectexception",
-)
-
-
-def _is_stale_element_error(error: BaseException) -> bool:
-    """识别 Selenium/Appium 直接抛出或包装后的元素失效异常。"""
-    current: BaseException | None = error
-    visited: set[int] = set()
-    while current is not None and id(current) not in visited:
-        visited.add(id(current))
-        if current.__class__.__name__ in _STALE_EXCEPTION_NAMES:
-            return True
-        message = str(current).lower()
-        if any(marker in message for marker in _STALE_MESSAGE_MARKERS):
-            return True
-        current = current.__cause__ or current.__context__
-    return False
+from .driver import ElementNotFound, StopRequested
+from .stale_guard import with_stale_retry
 
 
 class BaseAction:
@@ -73,60 +44,47 @@ class ClickAction(BaseAction):
     # 重试必须回到元素快照重新定位，不能复用已经 stale 的 WebElement。
     _STALE_RETRY_DELAYS = (0.2, 0.5)
 
-    @staticmethod
-    def _raise_if_stopped(context) -> None:
-        stop = getattr(context, "should_stop", None)
-        if stop is not None and stop():
-            raise StopRequested("执行被用户停止")
-
     async def execute(self, driver, context, params: dict) -> dict:
-        wait_timeout = params.get("wait_timeout")
-        element_id = params.get("element_id")
-        for attempt in range(len(self._STALE_RETRY_DELAYS) + 1):
-            self._raise_if_stopped(context)
-            try:
-                element = context.find_element(element_id, wait_timeout=wait_timeout)
-                driver.click(element)
-                return {"status": "passed"}
-            except Exception as exc:
-                if not _is_stale_element_error(exc):
-                    raise
-                if attempt >= len(self._STALE_RETRY_DELAYS):
-                    logger.error(
-                        "click 元素连续失效，重新定位重试仍失败: element_id=%s",
-                        element_id,
-                        exc_info=True,
-                    )
-                    raise DriverError(
-                        "点击失败：页面持续刷新导致元素失效，重新定位并重试 2 次后仍未成功"
-                    ) from exc
-                delay = self._STALE_RETRY_DELAYS[attempt]
-                logger.warning(
-                    "click 遇到失效元素，将在 %.1fs 后重新定位（第 %s/%s 次重试）: element_id=%s",
-                    delay,
-                    attempt + 1,
-                    len(self._STALE_RETRY_DELAYS),
-                    element_id,
-                )
-                await asyncio.sleep(delay)
-                self._raise_if_stopped(context)
-
-        raise AssertionError("click stale 重试状态异常")
+        await with_stale_retry(
+            driver,
+            context,
+            params.get("element_id"),
+            lambda element: driver.click(element),
+            wait_timeout=params.get("wait_timeout"),
+            retries=len(self._STALE_RETRY_DELAYS),
+            delays=self._STALE_RETRY_DELAYS,
+            label="点击",
+        )
+        return {"status": "passed"}
 
 
 @register_action("input")
 class InputAction(BaseAction):
     async def execute(self, driver, context, params: dict) -> dict:
-        element = context.find_element(params.get("element_id"), editable=True)
-        driver.input(element, str(params.get("value", "")), clear_first=params.get("clear_first", True))
+        value = str(params.get("value", ""))
+        clear_first = params.get("clear_first", True)
+        await with_stale_retry(
+            driver,
+            context,
+            params.get("element_id"),
+            lambda element: driver.input(element, value, clear_first=clear_first),
+            editable=True,
+            label="输入",
+        )
         return {"status": "passed"}
 
 
 @register_action("clear")
 class ClearAction(BaseAction):
     async def execute(self, driver, context, params: dict) -> dict:
-        element = context.find_element(params.get("element_id"), editable=True)
-        driver.clear(element)
+        await with_stale_retry(
+            driver,
+            context,
+            params.get("element_id"),
+            lambda element: driver.clear(element),
+            editable=True,
+            label="清空",
+        )
         return {"status": "passed"}
 
 
@@ -168,8 +126,13 @@ class SwipeToFindAction(BaseAction):
 @register_action("scroll")
 class ScrollAction(BaseAction):
     async def execute(self, driver, context, params: dict) -> dict:
-        element = context.find_element(params.get("element_id"))
-        driver.scroll_to(element)
+        await with_stale_retry(
+            driver,
+            context,
+            params.get("element_id"),
+            lambda element: driver.scroll_to(element),
+            label="滚动到元素",
+        )
         return {"status": "passed"}
 
 
@@ -210,8 +173,13 @@ class ScreenshotAction(BaseAction):
 @register_action("get_text")
 class GetTextAction(BaseAction):
     async def execute(self, driver, context, params: dict) -> dict:
-        element = context.find_element(params.get("element_id"))
-        value = driver.get_text(element)
+        value = await with_stale_retry(
+            driver,
+            context,
+            params.get("element_id"),
+            lambda element: driver.get_text(element),
+            label="读取文本",
+        )
         variable_name = params.get("variable_name")
         if variable_name:
             context.variables[variable_name] = value
@@ -221,8 +189,14 @@ class GetTextAction(BaseAction):
 @register_action("get_attribute")
 class GetAttributeAction(BaseAction):
     async def execute(self, driver, context, params: dict) -> dict:
-        element = context.find_element(params.get("element_id"))
-        value = driver.get_attribute(element, params.get("attribute", ""))
+        attribute = params.get("attribute", "")
+        value = await with_stale_retry(
+            driver,
+            context,
+            params.get("element_id"),
+            lambda element: driver.get_attribute(element, attribute),
+            label="读取属性",
+        )
         variable_name = params.get("variable_name")
         if variable_name:
             context.variables[variable_name] = value

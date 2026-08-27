@@ -1,3 +1,4 @@
+import hashlib
 import logging
 from typing import TYPE_CHECKING
 
@@ -254,6 +255,33 @@ class AppiumDriver(BaseDriver):
             raise ElementNotFound(
                 f"元素等待超时: {normalized_type}={normalized_value} ({timeout}s)"
             ) from None
+
+    def find_elements(self, locator_type: str, locator_value: str, wait_timeout: int = 10):
+        """多匹配查询（智能定位用）：返回当前页面全部匹配元素。
+
+        与 find_element 的单元素等待不同，本方法为快照式多匹配查询，
+        滚动/重试节奏由智能定位解析器自行控制。
+        """
+        from appium.webdriver.common.appiumby import AppiumBy
+        from selenium.webdriver.common.by import By
+
+        driver = self._ensure()
+        normalized_type = str(locator_type or "").strip().lower()
+        normalized_value = str(locator_value or "").strip()
+        if normalized_type == "uiautomator":
+            by = AppiumBy.ANDROID_UIAUTOMATOR
+        elif normalized_type == "resource_id":
+            by = AppiumBy.XPATH
+            normalized_value = _resource_id_xpath(normalized_value)
+        else:
+            by = getattr(AppiumBy, normalized_type.upper(), None) or By.XPATH
+        return driver.find_elements(by, normalized_value)
+
+    def page_signature(self) -> str:
+        """当前页面指纹：page_source 的 sha256 前 16 位 + 长度（绝不回传完整源码）。"""
+        driver = self._ensure()
+        source = driver.page_source or ""
+        return f"{hashlib.sha256(source.encode('utf-8')).hexdigest()[:16]}:{len(source)}"
 
     def click(self, element) -> None:
         self._ensure()
