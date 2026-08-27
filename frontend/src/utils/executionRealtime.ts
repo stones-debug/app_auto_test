@@ -14,25 +14,45 @@ interface RealtimeStep {
 }
 
 interface RealtimeAssertion {
+  id?: number
+  assertion_order?: number | null
   assertion_type: string
   expected_value?: string | null
   actual_value?: string | null
   status: string
   error_message?: string | null
+  params?: Record<string, unknown> | null
+  description?: string | null
 }
 
 interface RealtimeCase {
   id?: number
   case_id: number
   status: string
+  duration?: number | null
+  error_message?: string | null
   steps?: RealtimeStep[]
   assertions?: RealtimeAssertion[]
+}
+
+function findSuite(suites: RealtimeSuite[], message: RealtimeMessage): RealtimeSuite | null {
+  const executionSuiteId = message.execution_suite_id
+  if (executionSuiteId != null) {
+    const numeric = Number(executionSuiteId)
+    return suites.find((suite) => suite.id != null && suite.id === numeric) ?? null
+  }
+  const legacySuiteId = message.suite_id
+  if (legacySuiteId == null) return null
+  const numeric = Number(legacySuiteId)
+  return suites.find((suite) => suite.suite_id === numeric) ?? null
 }
 
 interface RealtimeSuite {
   id?: number
   suite_id: number | null
   status: string
+  duration?: number | null
+  error_message?: string | null
   setup_steps?: RealtimeStep[]
   cases: RealtimeCase[]
   teardown_steps?: RealtimeStep[]
@@ -135,7 +155,16 @@ export function applyStepResult(suites: RealtimeSuite[], message: RealtimeMessag
     step.artifact_id = message.artifact_id == null ? step.artifact_id : Number(message.artifact_id)
   }
 
-  if (!caseRow) return
+  if (!caseRow) {
+    const suiteRow = findSuite(suites, message)
+    if (suiteRow) {
+      const suiteStatus = message.case_status
+      if (typeof suiteStatus === 'string' && suiteStatus) suiteRow.status = suiteStatus
+      else if (message.status === 'failed') suiteRow.status = 'failed'
+      else suiteRow.status = 'running'
+    }
+    return
+  }
   const caseStatus = message.case_status
   if (typeof caseStatus === 'string' && caseStatus) {
     caseRow.status = caseStatus
@@ -144,6 +173,30 @@ export function applyStepResult(suites: RealtimeSuite[], message: RealtimeMessag
   } else {
     caseRow.status = 'running'
   }
+}
+
+export function applyCaseStatus(suites: RealtimeSuite[], message: RealtimeMessage): void {
+  const executionCase = findCase(suites, message)
+  if (!executionCase) return
+  executionCase.status = String(message.status ?? executionCase.status)
+  executionCase.duration = message.duration == null
+    ? executionCase.duration
+    : Number(message.duration)
+  executionCase.error_message = message.error_message == null
+    ? executionCase.error_message
+    : String(message.error_message)
+}
+
+export function applySuiteStatus(suites: RealtimeSuite[], message: RealtimeMessage): void {
+  const executionSuite = findSuite(suites, message)
+  if (!executionSuite) return
+  executionSuite.status = String(message.status ?? executionSuite.status)
+  executionSuite.duration = message.duration == null
+    ? executionSuite.duration
+    : Number(message.duration)
+  executionSuite.error_message = message.error_message == null
+    ? executionSuite.error_message
+    : String(message.error_message)
 }
 
 export function applyAssertionResult(suites: RealtimeSuite[], message: RealtimeMessage): void {
@@ -156,8 +209,28 @@ export function applyAssertionResult(suites: RealtimeSuite[], message: RealtimeM
     : []
   executionCase.assertions ??= []
   incoming.forEach((assertion, index) => {
-    const current = executionCase.assertions?.[index]
+    const executionAssertionId = assertion.execution_assertion_id == null
+      ? null
+      : Number(assertion.execution_assertion_id)
+    const assertionOrder = assertion.assertion_order == null
+      ? null
+      : Number(assertion.assertion_order)
+    let targetIndex = executionAssertionId == null
+      ? -1
+      : executionCase.assertions!.findIndex((item) => item.id === executionAssertionId)
+    if (targetIndex < 0 && assertionOrder != null) {
+      targetIndex = executionCase.assertions!.findIndex(
+        (item) => item.assertion_order === assertionOrder,
+      )
+    }
+    if (targetIndex < 0 && executionAssertionId == null && assertionOrder == null) {
+      targetIndex = index < executionCase.assertions!.length ? index : -1
+    }
+    const current = targetIndex >= 0 ? executionCase.assertions?.[targetIndex] : undefined
     const next: RealtimeAssertion = {
+      ...current,
+      id: current?.id ?? executionAssertionId ?? undefined,
+      assertion_order: assertionOrder ?? current?.assertion_order ?? index + 1,
       assertion_type: String(assertion.type ?? current?.assertion_type ?? ''),
       expected_value: assertion.expected == null
         ? current?.expected_value ?? null
@@ -169,8 +242,14 @@ export function applyAssertionResult(suites: RealtimeSuite[], message: RealtimeM
       error_message: assertion.error_message == null
         ? current?.error_message ?? null
         : String(assertion.error_message),
+      params: assertion.params == null
+        ? current?.params ?? null
+        : assertion.params as Record<string, unknown>,
+      description: assertion.description == null
+        ? current?.description ?? null
+        : String(assertion.description),
     }
-    if (current) executionCase.assertions?.splice(index, 1, next)
+    if (current) Object.assign(current, next)
     else executionCase.assertions?.push(next)
   })
 

@@ -179,10 +179,15 @@ async def test_report_logs_truncated_returns_last_n():
         assert detail["logs"][-1]["message"] == f"msg-{total_logs - 1}"
 
 
-async def test_small_report_keeps_compatible_shape():
+async def test_small_report_keeps_compatible_shape(monkeypatch):
     """小报告响应字段与现有格式兼容（logs_total/logs_truncated 追加，不破坏原字段）。"""
     execution_id = await _project_and_execution()
     await _seed_tree(execution_id, 3)
+
+    async def _unexpected_case_tree(*_args, **_kwargs):
+        raise AssertionError("存在 suite tree 时不应再次加载扁平 case tree")
+
+    monkeypatch.setattr(report_service, "load_case_tree", _unexpected_case_tree)
     async with SessionLocal() as db:
         db.add(ExecutionLog(execution_id=execution_id, level="INFO", message="hi", source="worker"))
         await db.commit()

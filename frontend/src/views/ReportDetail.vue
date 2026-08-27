@@ -12,6 +12,7 @@ import { useExecutionRetry } from '@/composables/useExecutionRetry'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { buildExclusionTree, flattenTreeKeys, type ExclusionTreeNode } from '@/utils/exclusionTree'
 import { formatDateTime } from '@/utils/format'
+import { REPORT_LOG_PAGE_SIZE, visibleReportLogs } from '@/utils/reportLogs'
 import {
   emptyDisclosureState,
   initialDisclosureState,
@@ -29,11 +30,14 @@ const navigation = useWorkspaceNavigation()
 const reportId = computed(() => Number(route.params.reportId ?? route.params.id))
 
 const loading = ref(false)
-const detail = ref<ReportDetail | null>(null)
+// 报告数据只读，避免 Vue 为大型套件/步骤树创建深层响应式代理。
+const detail = shallowRef<ReportDetail | null>(null)
 // 套件与用例各自维护 O(1) 的展开集合，避免每个 el-collapse 深度监听同一个数组。
 const expandedSuites = shallowRef<Set<number>>(new Set())
 const expandedCases = shallowRef<Set<number>>(new Set())
 const onlyFailed = ref(false)
+const logsExpanded = ref(false)
+const visibleLogLimit = ref(REPORT_LOG_PAGE_SIZE)
 let loadedReportId: number | null = null
 
 const { picker, retry: retryEntry, running: retrying } = useExecutionRetry()
@@ -58,6 +62,15 @@ const displayCases = computed(() => {
   if (!onlyFailed.value) return preparedCases.value
   return preparedCases.value.filter((c) => ['failed', 'error'].includes(c.status))
 })
+
+const visibleLogs = computed(() => visibleReportLogs(
+  detail.value?.logs ?? [],
+  visibleLogLimit.value,
+))
+
+const hasEarlierLogs = computed(() => (
+  visibleLogs.value.length < (detail.value?.logs.length ?? 0)
+))
 
 // 方案 §7.2：不适用内容清单——套件→用例→步骤 独立层级树（builder 在 utils/exclusionTree.ts，可测试）
 const activeExclusions = ref<string[]>([])
@@ -145,6 +158,8 @@ async function load() {
     // 首次加载：默认收起；仅含失败/异常用例的套件与其失败用例自动展开（与 HTML 报告初始状态一致）
     applyDisclosureState(initialDisclosureState(data.suites ?? [], data.cases ?? []))
     activeExclusions.value = []
+    logsExpanded.value = false
+    visibleLogLimit.value = REPORT_LOG_PAGE_SIZE
   } finally {
     loading.value = false
   }
@@ -375,11 +390,26 @@ function viewExecution() {
       </div>
 
       <div class="card">
-        <h2>执行日志</h2>
-        <div v-if="detail.logs_truncated" class="truncate-note v2-aux">
-          日志总量 {{ detail.logs_total }} 条，仅展示最后 {{ detail.logs.length }} 条
+        <div class="log-toolbar">
+          <h2>执行日志（{{ detail.logs_total ?? detail.logs.length }}）</h2>
+          <el-button
+            v-if="detail.logs.length"
+            size="small"
+            text
+            :aria-expanded="logsExpanded"
+            @click="logsExpanded = !logsExpanded"
+          >{{ logsExpanded ? '收起日志' : '展开日志' }}</el-button>
         </div>
-        <el-table v-if="detail.logs.length" :data="detail.logs" size="small">
+        <template v-if="logsExpanded">
+          <div v-if="detail.logs_truncated" class="truncate-note v2-aux">
+            日志总量 {{ detail.logs_total }} 条，服务端仅保留最后 {{ detail.logs.length }} 条用于展示
+          </div>
+          <div v-if="hasEarlierLogs" class="log-load-more">
+            <el-button size="small" @click="visibleLogLimit += REPORT_LOG_PAGE_SIZE">
+              加载更早日志（当前 {{ visibleLogs.length }}/{{ detail.logs.length }}）
+            </el-button>
+          </div>
+          <el-table v-if="visibleLogs.length" :data="visibleLogs" size="small">
           <el-table-column prop="level" label="级别" width="80">
             <template #default="{ row }">
               <el-tag :type="levelType(row.level)" size="small">{{ row.level }}</el-tag>
@@ -390,8 +420,9 @@ function viewExecution() {
           <el-table-column label="时间" width="180">
             <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
           </el-table-column>
-        </el-table>
-        <el-empty v-else description="暂无日志" :image-size="60" />
+          </el-table>
+        </template>
+        <el-empty v-else-if="!detail.logs.length" description="暂无日志" :image-size="60" />
       </div>
     </div>
 
@@ -517,6 +548,20 @@ function viewExecution() {
 /* 套件与用例使用轻量级 disclosure，不触发 Element Plus 的深监听和高度测量。 */
 .report-tree {
   border: none;
+}
+.log-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.log-toolbar h2 {
+  margin: 0;
+}
+.log-load-more {
+  display: flex;
+  justify-content: center;
+  margin: 8px 0;
 }
 .suite-card {
   background: #fff;

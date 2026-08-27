@@ -22,6 +22,7 @@ export type TimelineStepPhase =
   | 'suite_teardown'
 
 export interface TimelineStep {
+  id?: number
   step_order: number
   action: string
   phase?: TimelineStepPhase
@@ -34,6 +35,7 @@ export interface TimelineStep {
 }
 
 export interface TimelineAssertion {
+  id?: number
   assertion_order: number
   assertion_type: string
   expected_value?: string | null
@@ -45,14 +47,18 @@ export interface TimelineAssertion {
 }
 
 export interface TimelineCase {
+  id?: number
   case_id: number
   case_name: string
   status: string
+  duration?: number | null
+  error_message?: string | null
   steps: TimelineStep[]
   assertions: TimelineAssertion[]
 }
 
 export interface TimelineSuite {
+  id?: number
   suite_id: number | null
   suite_name: string
   status: string
@@ -71,14 +77,14 @@ const executionId = computed(() => Number(route.params.executionId))
 const expandedSuites = ref<Set<string>>(new Set())
 const expandedCases = ref<Set<string>>(new Set())
 let seeded = false
+let userControlled = false
 
 // 默认展开策略：套件默认收起；仅展开「含失败/error 用例的套件 + 其失败用例」以及「running 状态」的套件，
 // running 套件内的 running 用例一并展开以便实时查看当前进度。用户点击后不再自动改状态。
 watch(
   () => props.suites,
   (suites) => {
-    if (seeded || !suites.length) return
-    seeded = true
+    if (!suites.length || (seeded && userControlled)) return
     const es = new Set<string>()
     const ec = new Set<string>()
     suites.forEach((s, si) => {
@@ -92,13 +98,21 @@ watch(
         })
       }
     })
-    expandedSuites.value = es
-    expandedCases.value = ec
+    if (!seeded) {
+      seeded = true
+      expandedSuites.value = es
+      expandedCases.value = ec
+      return
+    }
+    // 用户尚未手动控制折叠时，执行开始后自动展开新进入 running/失败的节点。
+    expandedSuites.value = new Set([...expandedSuites.value, ...es])
+    expandedCases.value = new Set([...expandedCases.value, ...ec])
   },
   { immediate: true },
 )
 
 function toggleSuite(si: number) {
+  userControlled = true
   const k = String(si)
   const next = new Set(expandedSuites.value)
   if (next.has(k)) next.delete(k)
@@ -107,6 +121,7 @@ function toggleSuite(si: number) {
 }
 
 function toggleCase(si: number, ci: number) {
+  userControlled = true
   const k = `${si}:${ci}`
   const next = new Set(expandedCases.value)
   if (next.has(k)) next.delete(k)
@@ -115,6 +130,7 @@ function toggleCase(si: number, ci: number) {
 }
 
 function expandAll() {
+  userControlled = true
   const es = new Set<string>()
   const ec = new Set<string>()
   props.suites.forEach((s, si) => {
@@ -126,6 +142,7 @@ function expandAll() {
 }
 
 function collapseAll() {
+  userControlled = true
   expandedSuites.value = new Set()
   expandedCases.value = new Set()
 }
@@ -173,7 +190,7 @@ function phaseLabel(phase?: TimelineStepPhase | string): { text: string; type: '
 
 <template>
   <div class="exec-timeline">
-    <div v-for="(s, si) in suites" :key="s.suite_id ?? si" class="suite-block">
+    <div v-for="(s, si) in suites" :key="s.id ?? s.suite_id ?? si" class="suite-block">
       <div class="suite-head" @click="toggleSuite(si)">
         <span class="caret" :class="{ 'is-open': expandedSuites.has(String(si)) }">▸</span>
         <span class="suite-name v2-card-title">{{ s.suite_name }}</span>
@@ -205,7 +222,7 @@ function phaseLabel(phase?: TimelineStepPhase | string): { text: string; type: '
           </template>
         </div>
 
-        <div v-for="(c, ci) in s.cases" :key="c.case_id ?? ci" class="case-block">
+        <div v-for="(c, ci) in s.cases" :key="c.id ?? c.case_id ?? ci" class="case-block">
           <div class="case-head" @click="toggleCase(si, ci)">
             <span class="caret" :class="{ 'is-open': expandedCases.has(`${si}:${ci}`) }">▸</span>
             <span class="case-name v2-card-title">{{ c.case_name }}</span>

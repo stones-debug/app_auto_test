@@ -47,59 +47,59 @@ def _execution_dict(execution: Execution) -> dict:
     }
 
 
+def _report_step(execution_id: int, step: dict) -> dict:
+    return {
+        "id": step["id"],
+        "step_order": step["step_order"],
+        "action": step["action"],
+        "phase": step["phase"],
+        "parameters": step["parameters"],
+        "status": step["status"],
+        "duration": step["duration"],
+        "actual_value": step["actual_value"],
+        "error_message": step["error_message"],
+        "screenshot": _rel_screenshot(execution_id, step["screenshot_path"]),
+    }
+
+
+def _report_case(execution_id: int, case: dict) -> dict:
+    return {
+        "id": case["id"],
+        "case_id": case["case_id"],
+        "case_name": case["case_name"],
+        "module_name": case["module_name"],
+        "status": case["status"],
+        "duration": case["duration"],
+        "error_message": case["error_message"],
+        "elements": case["elements"],
+        "steps": [_report_step(execution_id, step) for step in case["steps"]],
+        "assertions": [
+            {
+                "id": assertion["id"],
+                "assertion_order": assertion.get("assertion_order"),
+                "assertion_type": assertion["assertion_type"],
+                "expected_value": assertion["expected_value"],
+                "actual_value": assertion["actual_value"],
+                "status": assertion["status"],
+                "error_message": assertion["error_message"],
+                "params": assertion.get("params"),
+                "description": assertion.get("description"),
+            }
+            for assertion in case["assertions"]
+        ],
+    }
+
+
 async def get_report_detail(db: AsyncSession, execution_id: int) -> dict:
     """聚合执行结果：execution + cases(steps/assertions) + logs，供前端渲染与 HTML 生成。
 
-    Step 8：case tree 复用 load_case_tree（常数级查询）；日志先 count，
-    超限时只返回最后 report_max_logs 条并保持正序。
+    优先只加载一次 suite tree，并从其中复用用例数据。只有不存在套件树时才
+    回退 load_case_tree，避免套件执行重复查询、组装和序列化全部用例。
+    日志先 count，超限时只返回最后 report_max_logs 条并保持正序。
     """
     execution = await db.get(Execution, execution_id)
     if execution is None:
         raise LookupError(f"执行不存在: {execution_id}")
-
-    cases: list[dict] = []
-    for c in await load_case_tree(db, execution_id):
-        cases.append(
-            {
-                "id": c["id"],
-                "case_id": c["case_id"],
-                "case_name": c["case_name"],
-                "module_name": c["module_name"],
-                "status": c["status"],
-                "duration": c["duration"],
-                "error_message": c["error_message"],
-                "elements": c["elements"],
-                "steps": [
-                    {
-                        "id": s["id"],
-                        "step_order": s["step_order"],
-                        "action": s["action"],
-                        "phase": s["phase"],
-                        "parameters": s["parameters"],
-                        "status": s["status"],
-                        "duration": s["duration"],
-                        "actual_value": s["actual_value"],
-                        "error_message": s["error_message"],
-                        "screenshot": _rel_screenshot(execution_id, s["screenshot_path"]),
-                    }
-                    for s in c["steps"]
-                ],
-                "assertions": [
-                    {
-                        "id": a["id"],
-                        "assertion_order": a.get("assertion_order"),
-                        "assertion_type": a["assertion_type"],
-                        "expected_value": a["expected_value"],
-                        "actual_value": a["actual_value"],
-                        "status": a["status"],
-                        "error_message": a["error_message"],
-                        "params": a.get("params"),
-                        "description": a.get("description"),
-                    }
-                    for a in c["assertions"]
-                ],
-            }
-        )
 
     # 方案 §2：套件树（套件→用例→步骤/前后置），供报告分层展示
     suites: list[dict] = []
@@ -113,80 +113,22 @@ async def get_report_detail(db: AsyncSession, execution_id: int) -> dict:
                 "status": s["status"],
                 "duration": s["duration"],
                 "error_message": s["error_message"],
-                "setup_steps": [
-                    {
-                        "id": st["id"],
-                        "step_order": st["step_order"],
-                        "action": st["action"],
-                        "phase": st["phase"],
-                        "parameters": st["parameters"],
-                        "status": st["status"],
-                        "duration": st["duration"],
-                        "actual_value": st["actual_value"],
-                        "error_message": st["error_message"],
-                        "screenshot": _rel_screenshot(execution_id, st["screenshot_path"]),
-                    }
-                    for st in s["setup_steps"]
-                ],
-                "cases": [
-                    {
-                        "id": c["id"],
-                        "case_id": c["case_id"],
-                        "case_name": c["case_name"],
-                        "module_name": c["module_name"],
-                        "status": c["status"],
-                        "duration": c["duration"],
-                        "error_message": c["error_message"],
-                        "elements": c["elements"],
-                        "steps": [
-                            {
-                                "id": st["id"],
-                                "step_order": st["step_order"],
-                                "action": st["action"],
-                                "phase": st["phase"],
-                                "parameters": st["parameters"],
-                                "status": st["status"],
-                                "duration": st["duration"],
-                                "actual_value": st["actual_value"],
-                                "error_message": st["error_message"],
-                                "screenshot": _rel_screenshot(execution_id, st["screenshot_path"]),
-                            }
-                            for st in c["steps"]
-                        ],
-                        "assertions": [
-                            {
-                                "id": a["id"],
-                                "assertion_order": a.get("assertion_order"),
-                                "assertion_type": a["assertion_type"],
-                                "expected_value": a["expected_value"],
-                                "actual_value": a["actual_value"],
-                                "status": a["status"],
-                                "error_message": a["error_message"],
-                                "params": a.get("params"),
-                                "description": a.get("description"),
-                            }
-                            for a in c["assertions"]
-                        ],
-                    }
-                    for c in s["cases"]
-                ],
+                "setup_steps": [_report_step(execution_id, step) for step in s["setup_steps"]],
+                "cases": [_report_case(execution_id, case) for case in s["cases"]],
                 "teardown_steps": [
-                    {
-                        "id": st["id"],
-                        "step_order": st["step_order"],
-                        "action": st["action"],
-                        "phase": st["phase"],
-                        "parameters": st["parameters"],
-                        "status": st["status"],
-                        "duration": st["duration"],
-                        "actual_value": st["actual_value"],
-                        "error_message": st["error_message"],
-                        "screenshot": _rel_screenshot(execution_id, st["screenshot_path"]),
-                    }
-                    for st in s["teardown_steps"]
+                    _report_step(execution_id, step) for step in s["teardown_steps"]
                 ],
             }
         )
+
+    if suites:
+        # 内部 HTML 生成仍保留扁平 cases 入口，但直接复用 suite tree 中的对象。
+        cases = [case for suite in suites for case in suite["cases"]]
+    else:
+        cases = [
+            _report_case(execution_id, case)
+            for case in await load_case_tree(db, execution_id)
+        ]
 
     # Step 8：报告日志上限——先 count，超限取最后 N 条保持正序
     logs_total = (
@@ -309,12 +251,14 @@ def _embed_screenshots(detail: dict) -> None:
             except OSError:
                 step["screenshot_base64"] = None
 
-    for case in detail["cases"]:
-        _embed(case["steps"])
-    for suite in detail.get("suites", []):
+    suites = detail.get("suites", [])
+    for suite in suites:
         _embed(suite["setup_steps"])
         _embed(suite["teardown_steps"])
         for case in suite["cases"]:
+            _embed(case["steps"])
+    if not suites:
+        for case in detail["cases"]:
             _embed(case["steps"])
 
 

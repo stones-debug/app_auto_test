@@ -21,7 +21,13 @@ import { useExecutionSocket } from '@/composables/useExecutionSocket'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { getToken } from '@/utils/request'
 import { liveLogKey, mergeExecutionLogs, type LogLike } from '@/utils/executionLogs'
-import { applyAssertionResult, applyStepResult, settleExecutionSuites } from '@/utils/executionRealtime'
+import {
+  applyAssertionResult,
+  applyCaseStatus,
+  applyStepResult,
+  applySuiteStatus,
+  settleExecutionSuites,
+} from '@/utils/executionRealtime'
 import { formatDateTime } from '@/utils/format'
 
 const route = useRoute()
@@ -31,7 +37,8 @@ const navigation = useWorkspaceNavigation()
 const executionId = computed(() => Number(route.params.executionId))
 
 const loading = ref(false)
-const detail = ref<ExecutionDetail | null>(null)
+// 执行快照体积可能很大；时间线使用独立浅引用，只在收到消息时显式换引用刷新。
+const detail = shallowRef<ExecutionDetail | null>(null)
 const stopping = ref(false)
 const reportId = ref<number | null>(null)
 
@@ -41,12 +48,16 @@ const liveLogs = ref<LogEntry[]>([])
 let liveIdCounter = 0
 let logKeys = new Set<string>()
 let completedPulled = false
+let realtimeVersion = 0
 
 const socket = shallowRef<ReturnType<typeof useExecutionSocket> | null>(null)
 let staleId = 0 // loadAll 的异步完成检查：只允许当前路由的请求生效
 
-const timelineSuites = computed<TimelineSuite[]>(() => {
-  return (detail.value?.suites ?? []).map((s) => ({
+const timelineSuites = shallowRef<TimelineSuite[]>([])
+
+function toTimelineSuites(suites: ExecutionDetail['suites']): TimelineSuite[] {
+  return (suites ?? []).map((s) => ({
+    id: s.id,
     suite_id: s.suite_id,
     suite_name: s.suite_name,
     status: s.status,
@@ -54,11 +65,15 @@ const timelineSuites = computed<TimelineSuite[]>(() => {
     error_message: s.error_message,
     setup_steps: (s.setup_steps ?? []).map(toTimelineStep),
     cases: (s.cases ?? []).map((c) => ({
+      id: c.id,
       case_id: c.case_id,
       case_name: c.case_name,
       status: c.status,
+      duration: c.duration,
+      error_message: c.error_message,
       steps: (c.steps ?? []).map(toTimelineStep),
       assertions: (c.assertions ?? []).map((a) => ({
+        id: a.id,
         assertion_order: a.assertion_order ?? a.id,
         assertion_type: a.assertion_type,
         expected_value: a.expected_value,
@@ -71,9 +86,10 @@ const timelineSuites = computed<TimelineSuite[]>(() => {
     })),
     teardown_steps: (s.teardown_steps ?? []).map(toTimelineStep),
   }))
-})
+}
 
 function toTimelineStep(s: {
+  id: number
   step_order: number
   action: string
   phase?: string
@@ -85,6 +101,7 @@ function toTimelineStep(s: {
   artifact_id?: number | null
 }) {
   return {
+    id: s.id,
     step_order: s.step_order,
     action: s.action,
     phase: s.phase as never,
@@ -95,6 +112,16 @@ function toTimelineStep(s: {
     error_message: s.error_message,
     artifact_id: s.artifact_id ?? null,
   }
+}
+
+function updateExecutionStatus(status: ExecutionStatus) {
+  if (!detail.value || detail.value.status === status) return
+  detail.value = { ...detail.value, status }
+}
+
+function notifyTimelineChanged() {
+  // 仅复制套件顶层数组，不重新映射整棵用例/步骤树。
+  timelineSuites.value = [...timelineSuites.value]
 }
 
 const logEntries = computed<LogEntry[]>(() => {
@@ -129,6 +156,7 @@ async function loadAll(id: number) {
     await navigation.normalizeProjectDetail('execution', id, data.project_id)
     if (staleId !== myStale) return
     detail.value = data
+    timelineSuites.value = toTimelineSuites(data.suites)
     resetLogs()
     const logData = await getExecutionLogs(id, { page_size: 200 })
     if (staleId !== myStale) return
@@ -148,15 +176,35 @@ async function loadAll(id: number) {
   }
 }
 
+async function resyncAfterConnect(id: number) {
+  const myStale = staleId
+  const versionAtStart = realtimeVersion
+  try {
+    const data = await getExecution(id)
+    // 请求期间若已有实时增量到达，旧 REST 快照不得覆盖新状态。
+    if (staleId !== myStale || executionId.value !== id || realtimeVersion !== versionAtStart) return
+    detail.value = data
+    timelineSuites.value = toTimelineSuites(data.suites)
+    if (isTerminal(data.status)) {
+      socket.value?.close()
+      const rid = await findReportByExecution(id)
+      if (staleId === myStale && executionId.value === id) reportId.value = rid
+    }
+  } catch {
+    // 初始 loadAll 已有可展示数据；重连补拉失败时继续依赖后续 WS 增量。
+  }
+}
+
 function subscribe(id: number) {
   const token = getToken() ?? ''
   // Step 7：subscribe 前强制关闭旧 socket（防止新老执行串流）
   socket.value?.close()
   const ws = useExecutionSocket(id, token, (msg) => {
+    if (msg.execution_id != null && Number(msg.execution_id) !== id) return
     const type = msg.type as string
     if (type === 'status') {
-      if (detail.value) detail.value.status = (msg.status as ExecutionStatus) ?? detail.value.status
-    } else if (type === 'log' && msg.execution_id === id) {
+      updateExecutionStatus((msg.status as ExecutionStatus) ?? detail.value?.status ?? 'queued')
+    } else if (type === 'log') {
       const key = liveLogKey(String(msg.level ?? ''), String(msg.message ?? ''), String(msg.timestamp ?? ''))
       if (logKeys.has(key)) return
       logKeys.add(key)
@@ -168,21 +216,36 @@ function subscribe(id: number) {
         created_at: (msg.timestamp as string) ?? new Date().toISOString(),
       })
     } else if (type === 'step_result') {
-      if (detail.value) applyStepResult(detail.value.suites ?? [], msg)
+      realtimeVersion += 1
+      applyStepResult(timelineSuites.value, msg)
+      notifyTimelineChanged()
     } else if (type === 'assertion_result') {
-      if (detail.value) applyAssertionResult(detail.value.suites ?? [], msg)
+      realtimeVersion += 1
+      applyAssertionResult(timelineSuites.value, msg)
+      notifyTimelineChanged()
+    } else if (type === 'case_status') {
+      realtimeVersion += 1
+      applyCaseStatus(timelineSuites.value, msg)
+      notifyTimelineChanged()
+    } else if (type === 'suite_status') {
+      realtimeVersion += 1
+      applySuiteStatus(timelineSuites.value, msg)
+      notifyTimelineChanged()
     } else if (type === 'completed') {
       // Step 7：completed 只触发一次 REST 补拉并关闭 socket
       if (completedPulled) return
       completedPulled = true
+      realtimeVersion += 1
       if (detail.value) {
-        detail.value.status = (msg.status as ExecutionStatus) ?? detail.value.status
-        settleExecutionSuites(detail.value.suites ?? [], detail.value.status)
+        const status = (msg.status as ExecutionStatus) ?? detail.value.status
+        updateExecutionStatus(status)
+        settleExecutionSuites(timelineSuites.value, status)
+        notifyTimelineChanged()
       }
       ws.close()
       void loadAll(id)
     }
-  })
+  }, () => void resyncAfterConnect(id))
   socket.value = ws
 }
 
@@ -195,7 +258,7 @@ async function stop() {
   try {
     await stopExecution(executionId.value)
     ElMessage.success('已请求停止')
-    if (detail.value) detail.value.status = 'stopping'
+    updateExecutionStatus('stopping')
   } finally {
     stopping.value = false
   }
@@ -223,10 +286,12 @@ watch(
     socket.value?.close()
     socket.value = null
     detail.value = null
+    timelineSuites.value = []
     logs.value = []
     liveLogs.value = []
     reportId.value = null
     completedPulled = false
+    realtimeVersion = 0
     if (Number.isFinite(id)) void loadAll(id)
   },
   { immediate: true },

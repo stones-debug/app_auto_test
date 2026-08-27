@@ -303,6 +303,8 @@ async def test_handle_log_step_result_execution_result(client: AsyncClient):
     step_msg = next(m for m in front.sent if m["type"] == "step_result")
     assert "artifact_id" in step_msg
     assert step_msg["case_status"] == "running"
+    assert step_msg["actual_value"] == "OK"
+    assert step_msg["error_message"] is None
     async with SessionLocal() as db:
         settled_case = (
             await db.execute(
@@ -574,7 +576,57 @@ async def test_handle_assertion_result(client: AsyncClient):
     assert len(assertion_msgs) == 1
     assert assertion_msgs[0]["case_id"] == case_id
     assert assertion_msgs[0]["assertions"][0]["status"] == "pass"
+    assert assertion_msgs[0]["assertions"][0]["assertion_order"] == 1
+    assert assertion_msgs[0]["assertions"][0]["execution_assertion_id"] == execution_assertions[0].id
     assert assertion_msgs[0]["case_status"] == "passed"
+    await execution_manager.disconnect(execution_id, front)
+
+
+async def test_case_and_suite_status_broadcast_full_realtime_fields(client: AsyncClient):
+    _token, _case_id, execution_id = await _setup_case_execution(client)
+    async with SessionLocal() as db:
+        agent_id = await _create_agent()
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        await _bind_execution_to_agent(db, execution_id, agent_id)
+        execution_case, _steps, _assertions = await _snapshot_ids(db, execution_id)
+        execution_suite_id = execution_case.execution_suite_id
+
+    front = FakeWebSocket()
+    await execution_manager.connect(execution_id, front)
+    async with SessionLocal() as db:
+        await handlers.handle_case_status(
+            db,
+            agent_id,
+            {
+                "execution_id": execution_id,
+                "session_token": "sess-token",
+                "execution_case_id": execution_case.id,
+                "status": "failed",
+                "error_message": "用例失败",
+            },
+        )
+        await handlers.handle_suite_status(
+            db,
+            agent_id,
+            {
+                "session_token": "sess-token",
+                "execution_suite_id": execution_suite_id,
+                "status": "failed",
+                "error_message": "套件失败",
+            },
+        )
+
+    case_message = next(message for message in front.sent if message["type"] == "case_status")
+    assert case_message["execution_case_id"] == execution_case.id
+    assert case_message["status"] == "failed"
+    assert case_message["error_message"] == "用例失败"
+    assert case_message["duration"] is None
+    suite_message = next(message for message in front.sent if message["type"] == "suite_status")
+    assert suite_message["execution_suite_id"] == execution_suite_id
+    assert suite_message["status"] == "failed"
+    assert suite_message["error_message"] == "套件失败"
+    assert suite_message["duration"] is None
     await execution_manager.disconnect(execution_id, front)
 
 

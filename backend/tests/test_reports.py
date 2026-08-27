@@ -327,13 +327,16 @@ async def test_report_list_and_detail(client: AsyncClient):
     assert body["execution"]["app_release_version"] == "1.0"
     assert body["execution"]["parameters"] == {"variables": {"account": "admin"}}
     assert body["report"]["passed"] == 1
-    assert body["cases"][0]["case_name"] == "报告用例"
-    assert [s["action"] for s in body["cases"][0]["steps"]] == ["input", "click"]
-    assert body["cases"][0]["steps"][0]["parameters"]["value"] == "admin"
-    assert body["cases"][0]["steps"][0]["parameters"]["clear_first"] is True
-    assert body["cases"][0]["steps"][0]["actual_value"] == "admin"
-    assert body["cases"][0]["assertions"][0]["assertion_type"] == "text_equals"
-    assert body["cases"][0]["assertions"][0]["status"] == "pass"
+    # 套件执行的用例仅通过 suites 返回，避免重复发送整棵用例/步骤树。
+    assert body["cases"] == []
+    report_case = body["suites"][0]["cases"][0]
+    assert report_case["case_name"] == "报告用例"
+    assert [s["action"] for s in report_case["steps"]] == ["input", "click"]
+    assert report_case["steps"][0]["parameters"]["value"] == "admin"
+    assert report_case["steps"][0]["parameters"]["clear_first"] is True
+    assert report_case["steps"][0]["actual_value"] == "admin"
+    assert report_case["assertions"][0]["assertion_type"] == "text_equals"
+    assert report_case["assertions"][0]["status"] == "pass"
     assert body["exclusions"][0]["path"] == "报告用例/不支持步骤"
     assert body["logs"][0]["message"] == "步骤 1 input 执行通过"
 

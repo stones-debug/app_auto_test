@@ -158,11 +158,13 @@ async def get_report(
 
 async def _build_detail(db: AsyncSession, execution_id: int) -> ReportDetailOut:
     detail = await report_service.get_report_detail(db, execution_id)
+    suites = [ReportSuiteOut(**s) for s in detail["suites"]]
     return ReportDetailOut(
         execution=detail["execution"],
         report=ReportSummaryOut(**detail["report"]),
-        suites=[ReportSuiteOut(**s) for s in detail["suites"]],
-        cases=[ReportCaseOut(**c) for c in detail["cases"]],
+        suites=suites,
+        # suites 已完整包含用例树时不再通过 API 重复发送同一批步骤/断言。
+        cases=[] if suites else [ReportCaseOut(**c) for c in detail["cases"]],
         exclusions=[ReportExclusionOut(**item) for item in detail["exclusions"]],
         logs=[ReportLogOut(**log_item) for log_item in detail["logs"]],
         logs_total=detail["logs_total"],

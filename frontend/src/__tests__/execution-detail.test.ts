@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest'
 import { liveLogKey, mergeExecutionLogs } from '@/utils/executionLogs'
 import {
   applyAssertionResult,
+  applyCaseStatus,
   applyStepResult,
+  applySuiteStatus,
   executionConnectionState,
   settleExecutionSuites,
 } from '@/utils/executionRealtime'
@@ -11,6 +13,7 @@ import { applyOnlyFailed } from '@/utils/reportFilter'
 import { assertionPassed, orderExecutionItems } from '@/utils/executionOrder'
 import { executionWsUrl } from '@/composables/useExecutionSocket'
 import { formatParameters, hasParameters } from '@/utils/parameters'
+import { REPORT_LOG_PAGE_SIZE, visibleReportLogs } from '@/utils/reportLogs'
 
 // node 环境无 location，executionWsUrl 依赖
 ;(globalThis as Record<string, unknown>).location = { protocol: 'http:', host: 'test.local' }
@@ -155,11 +158,15 @@ describe('Step 7 执行详情：日志去重与 WS 状态', () => {
     })
 
     expect(suites[0].cases[0].assertions).toEqual([{
+      id: undefined,
+      assertion_order: 1,
       assertion_type: 'text_equals',
       expected_value: 'wrong',
       actual_value: 'admin',
       status: 'fail',
       error_message: null,
+      params: null,
+      description: null,
     }])
     expect(suites[0].cases[0].status).toBe('failed')
     expect(assertionPassed('pass')).toBe(true)
@@ -201,6 +208,94 @@ describe('Step 7 执行详情：日志去重与 WS 状态', () => {
     settleExecutionSuites(suites, 'failed')
     expect(suites[0].status).toBe('failed')
     expect(suites[0].cases.map((item) => item.status)).toEqual(['failed', 'skipped'])
+  })
+
+  it('用例与套件状态消息按执行实例 ID 更新，并保留错误与耗时', () => {
+    const suites = [{
+      id: 21,
+      suite_id: 7,
+      suite_name: '套件',
+      status: 'pending',
+      duration: null,
+      error_message: null,
+      setup_steps: [],
+      cases: [{
+        id: 31,
+        case_id: 9,
+        case_name: '用例',
+        status: 'pending',
+        duration: null,
+        error_message: null,
+        steps: [],
+        assertions: [],
+      }],
+      teardown_steps: [],
+    }]
+
+    applyCaseStatus(suites, {
+      execution_case_id: 31,
+      status: 'failed',
+      duration: 234,
+      error_message: '用例失败',
+    })
+    applySuiteStatus(suites, {
+      execution_suite_id: 21,
+      status: 'failed',
+      duration: 345,
+      error_message: '套件失败',
+    })
+
+    expect(suites[0].cases[0]).toMatchObject({
+      status: 'failed', duration: 234, error_message: '用例失败',
+    })
+    expect(suites[0]).toMatchObject({
+      status: 'failed', duration: 345, error_message: '套件失败',
+    })
+  })
+
+  it('断言实时更新按实例 ID 合并且不丢失 REST 元数据', () => {
+    const suites = [{
+      id: 1, suite_id: null, suite_name: '套件', status: 'running', setup_steps: [], teardown_steps: [],
+      cases: [{
+        id: 2,
+        case_id: 3,
+        case_name: '用例',
+        status: 'running',
+        steps: [],
+        assertions: [{
+          id: 41,
+          assertion_order: 2,
+          assertion_type: 'text_equals',
+          expected_value: '旧值',
+          actual_value: null,
+          status: 'pending',
+          error_message: null,
+          params: { locator: 'title' },
+          description: '标题检查',
+        }],
+      }],
+    }]
+
+    applyAssertionResult(suites, {
+      execution_case_id: 2,
+      assertions: [{
+        execution_assertion_id: 41,
+        assertion_order: 2,
+        type: 'text_equals',
+        actual: '新值',
+        status: 'pass',
+      }],
+    })
+
+    expect(suites[0].cases[0].assertions[0]).toMatchObject({
+      id: 41,
+      assertion_order: 2,
+      expected_value: '旧值',
+      actual_value: '新值',
+      params: { locator: 'title' },
+      description: '标题检查',
+      status: 'pass',
+    })
   })
 
   it('执行终态优先显示已结束，不再显示连接中', () => {
@@ -298,5 +393,16 @@ describe('Step 7 报告详情：失败过滤开关往返与展开项稳定', () 
     expect(active.some((id) => id === 2)).toBe(true)
     const afterFilter = applyOnlyFailed(active, true, cases)
     expect(afterFilter).not.toContain(1) // passed 用例不应被错误展开
+  })
+})
+
+describe('报告日志按需渲染', () => {
+  it('默认只挂载最后一页日志，并可逐页向前扩展', () => {
+    const logs = Array.from({ length: 550 }, (_, index) => index + 1)
+    expect(visibleReportLogs(logs, REPORT_LOG_PAGE_SIZE)).toEqual(
+      Array.from({ length: 200 }, (_, index) => index + 351),
+    )
+    expect(visibleReportLogs(logs, REPORT_LOG_PAGE_SIZE * 2)[0]).toBe(151)
+    expect(visibleReportLogs(logs, 1)).toEqual([550])
   })
 })

@@ -403,6 +403,8 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
             "status": step.status,
             "case_status": parent_case.status if parent_case else parent_suite.status,
             "duration": step.duration,
+            "actual_value": step.actual_value,
+            "error_message": step.error_message,
             "screenshot_url": step.screenshot_path,
             "artifact_id": step.id if step.screenshot_path else None,
             "timestamp": now.isoformat(),
@@ -422,14 +424,16 @@ async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict
         return
     normalized_assertions: list[dict] = []
     for order, assertion in enumerate(payload.get("assertions") or [], start=1):
+        assertion_order = assertion.get("assertion_order") or order
         raw_status = str(assertion.get("status") or "fail").lower()
         normalized = {
             **assertion,
+            "assertion_order": assertion_order,
             # DB/前端协议统一使用 pass/fail；兼容旧 Agent 的 passed/failed。
             "status": "pass" if raw_status in {"pass", "passed"} else "fail",
         }
         matched = await _upsert_assertion(
-            db, execution_case.id, assertion.get("assertion_order") or order, normalized
+            db, execution_case.id, assertion_order, normalized
         )
         if not matched:
             db.add(
@@ -511,6 +515,8 @@ async def handle_case_status(db: AsyncSession, agent_id: int, payload: dict) -> 
             "execution_case_id": parent_case.id,
             "case_id": parent_case.case_id,
             "status": parent_case.status,
+            "duration": parent_case.duration,
+            "error_message": parent_case.error_message,
             "timestamp": now.isoformat(),
         },
     )
@@ -549,6 +555,8 @@ async def handle_suite_status(db: AsyncSession, agent_id: int, payload: dict) ->
             "execution_suite_id": suite.id,
             "suite_id": suite.suite_id,
             "status": suite.status,
+            "duration": suite.duration,
+            "error_message": suite.error_message,
             "timestamp": now.isoformat(),
         },
     )

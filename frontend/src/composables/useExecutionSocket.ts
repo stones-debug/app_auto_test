@@ -7,11 +7,17 @@ export function executionWsUrl(executionId: number, token: string): string {
 }
 
 // Step 7：统一维护 connected/connecting/error 状态（页面不再本地复制一份）
-export function useExecutionSocket(executionId: number, token: string, onMessage: (msg: Record<string, unknown>) => void) {
+export function useExecutionSocket(
+  executionId: number,
+  token: string,
+  onMessage: (msg: Record<string, unknown>) => void,
+  onConnected?: () => void,
+) {
   const connected = ref(false)
   const connecting = ref(true)
   const error = ref<string | null>(null)
   const url = ref(executionWsUrl(executionId, token))
+  let manuallyClosed = false
   const ws = useWebSocket(url, {
     autoReconnect: {
       retries: 10,
@@ -31,14 +37,16 @@ export function useExecutionSocket(executionId: number, token: string, onMessage
       connected.value = true
       connecting.value = false
       error.value = null
+      onConnected?.()
     },
     onDisconnected: () => {
       connected.value = false
+      connecting.value = !manuallyClosed
       error.value = null
     },
     onError: (_ws, event) => {
       connected.value = false
-      connecting.value = false
+      connecting.value = !manuallyClosed
       error.value = (event as Event)?.type ?? '连接错误'
     },
     onMessage: (_ws, event) => {
@@ -51,6 +59,7 @@ export function useExecutionSocket(executionId: number, token: string, onMessage
   })
 
   function close() {
+    manuallyClosed = true
     connected.value = false
     connecting.value = false
     ws.close()

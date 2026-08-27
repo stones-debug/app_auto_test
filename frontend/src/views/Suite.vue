@@ -462,7 +462,7 @@ onMounted(loadSuites)
               </span>
               <span class="suite-actions" @click.stop>
                 <RunButton :type="'suite'" :id="s.id" :name="s.name" />
-                <el-dropdown trigger="click" @command="(cmd) => onItemMenu(cmd, s)">
+                <el-dropdown trigger="click" @command="onItemMenu($event, s)">
                   <el-button :icon="MoreFilled" text size="small" class="item-more" aria-label="更多操作" />
                   <template #dropdown>
                     <el-dropdown-menu>
