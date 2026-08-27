@@ -245,6 +245,7 @@ async def create_element(
         scope=body.scope,
         locator_type=body.locator_type,
         locator_value=body.locator_value,
+        locator_config=body.locator_config.model_dump() if body.locator_config else None,
         description=body.description,
         created_by=user.id,
         updated_by=user.id,
@@ -354,10 +355,20 @@ async def update_element(
     # page_name 允许显式 null/空白来清除分组；不能沿用“value is not None”判断。
     if "page_name" in body.model_fields_set:
         element.page_name = body.page_name
-    for field in ("name", "platform", "scope", "locator_type", "locator_value", "description"):
+    for field in ("name", "platform", "scope", "locator_type", "locator_value", "locator_config", "description"):
         value = getattr(body, field)
         if value is not None:
+            # locator_config 是 SmartLocatorConfig 对象，落库前转纯 dict（None 表示不修改）
+            if field == "locator_config":
+                value = value.model_dump()
             setattr(element, field, value)
+    # 按最终 locator_type 归一化：满足 DB CHECK 约束并避免前端回显残留。
+    # smart 定位 locator_value 必须为 NULL；普通定位 locator_config 必须为 NULL。
+    # 这些赋值发生在 session flush 前，直接改 ORM 属性即可。
+    if element.locator_type == "smart":
+        element.locator_value = None
+    else:
+        element.locator_config = None
     element.updated_by = user.id
     await touch_project_asset_revision(db, original_project_id)
     if element.project_id != original_project_id:
@@ -398,6 +409,7 @@ async def copy_element(
         scope=source.scope,
         locator_type=source.locator_type,
         locator_value=source.locator_value,
+        locator_config=source.locator_config,
         description=source.description,
         created_by=user.id,
         updated_by=user.id,
@@ -507,6 +519,7 @@ async def create_element_legacy(
         scope=body.scope,
         locator_type=body.locator_type,
         locator_value=body.locator_value,
+        locator_config=body.locator_config.model_dump() if body.locator_config else None,
         description=body.description,
         created_by=user.id,
         updated_by=user.id,

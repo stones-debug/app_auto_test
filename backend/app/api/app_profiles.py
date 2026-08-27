@@ -900,6 +900,7 @@ async def list_profile_overrides(
                 "element_id": row.element_id,
                 "locator_type": row.locator_type,
                 "locator_value": row.locator_value,
+                "locator_config": row.locator_config,
             }
             for row in element_rows
         ],
@@ -988,6 +989,7 @@ async def upsert_element_override(
             element_id=element_id,
             locator_type=body.locator_type,
             locator_value=body.locator_value,
+            locator_config=body.locator_config.model_dump() if body.locator_config else None,
             created_by=user.id,
             updated_by=user.id,
         )
@@ -997,6 +999,7 @@ async def upsert_element_override(
         existing.deleted_at = None
         existing.locator_type = body.locator_type
         existing.locator_value = body.locator_value
+        existing.locator_config = body.locator_config.model_dump() if body.locator_config else None
         existing.updated_by = user.id
     response_data = {
         "element_id": element_id,

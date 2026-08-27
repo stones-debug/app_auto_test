@@ -374,6 +374,93 @@ async def test_element_override(client):
     assert elements[str(element_id)]["locator_value"] == "dvr_id"
 
 
+async def test_element_override_to_smart_keeps_config_raw(client):
+    """普通元素被档案覆盖为 smart：快照写 locator_type='smart'+locator_config，
+    ${device_name} 保持未渲染（raw 透传，不在后端求值）。"""
+    base = await _base(client)
+    el = await client.post(
+        f"/api/projects/{base['project_id']}/elements",
+        headers=base["headers"],
+        json={"name": "按钮", "locator_type": "id", "locator_value": "common_id"},
+    )
+    element_id = el.json()["id"]
+    resp = await client.post(
+        f"/api/projects/{base['project_id']}/cases",
+        headers=base["headers"],
+        json={"name": "覆盖为智能用例", "steps": [{"key": str(uuid.uuid4()), "order": 1, "action": "click", "element_id": element_id, "params": {"wait_timeout": 5}}]},
+    )
+    case_id = resp.json()["id"]
+    smart_config = {
+        "version": 1,
+        "alternatives": [
+            {"target": [{"attribute": "text", "operator": "equals", "value": "${device_name}"}]}
+        ],
+    }
+    async with SessionLocal() as db:
+        profile_id = await _make_profile(db, base)
+        db.add(
+            AppProfileElementOverride(
+                profile_id=profile_id,
+                element_id=element_id,
+                locator_type="smart",
+                locator_value=None,
+                locator_config=smart_config,
+            )
+        )
+        await db.commit()
+        result = await resolve_compat(
+            ResolutionRequest(
+                project_id=base["project_id"], profile_id=profile_id, release_id=await _release_id(db, profile_id),
+                target_type="case", target_ids=[case_id],
+                expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
+            ),
+            db,
+        )
+    snap = result.cases[0].elements_snapshot[str(element_id)]
+    assert snap["locator_type"] == "smart"
+    assert snap["locator_value"] is None
+    assert snap["locator_config"] == smart_config
+    assert snap["locator_config"]["alternatives"][0]["target"][0]["value"] == "${device_name}"
+
+
+async def test_smart_element_passthrough_without_override(client):
+    """元素本身 smart、无覆盖：快照同样原样透传 locator_config，不渲染变量。"""
+    base = await _base(client)
+    smart_config = {
+        "version": 1,
+        "alternatives": [
+            {"target": [{"attribute": "text", "operator": "equals", "value": "${device_name}"}]}
+        ],
+    }
+    el = await client.post(
+        f"/api/projects/{base['project_id']}/elements",
+        headers=base["headers"],
+        json={"name": "智能按钮", "locator_type": "smart", "locator_config": smart_config},
+    )
+    assert el.status_code == 201, el.text
+    element_id = el.json()["id"]
+    resp = await client.post(
+        f"/api/projects/{base['project_id']}/cases",
+        headers=base["headers"],
+        json={"name": "智能元素用例", "steps": [{"key": str(uuid.uuid4()), "order": 1, "action": "click", "element_id": element_id, "params": {"wait_timeout": 5}}]},
+    )
+    case_id = resp.json()["id"]
+    async with SessionLocal() as db:
+        profile_id = await _make_profile(db, base)
+        result = await resolve_compat(
+            ResolutionRequest(
+                project_id=base["project_id"], profile_id=profile_id, release_id=await _release_id(db, profile_id),
+                target_type="case", target_ids=[case_id],
+                expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
+            ),
+            db,
+        )
+    snap = result.cases[0].elements_snapshot[str(element_id)]
+    assert snap["locator_type"] == "smart"
+    assert snap["locator_value"] is None
+    assert snap["locator_config"]["alternatives"][0]["target"][0]["value"] == "${device_name}"
+
+
 # ---- 兼容封装：让 resolve_compat 指向模块内 resolve ----
 
 from app.services import profile_resolver as _pr  # noqa: E402

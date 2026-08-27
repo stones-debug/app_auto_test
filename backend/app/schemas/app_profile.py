@@ -3,7 +3,10 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from app.schemas.element import LOCATOR_TYPE_RE, _validate_locator
+from app.schemas.smart_locator import SmartLocatorConfig
 
 _REASON_CODES = {"unsupported", "not_adapted", "deprecated", "environment_limit", "other"}
 
@@ -166,8 +169,14 @@ class SkipBatchResponse(BaseModel):
 class ElementOverrideUpsert(BaseModel):
     request_id: str | None = None
     expected_revision: int = Field(ge=1)
-    locator_type: str = Field(min_length=1, max_length=50)
-    locator_value: str = Field(min_length=1)
+    locator_type: str = Field(min_length=1, max_length=50, pattern=LOCATOR_TYPE_RE)
+    locator_value: str | None = None
+    locator_config: SmartLocatorConfig | None = None
+
+    @model_validator(mode="after")
+    def _validate_locator(self):
+        _validate_locator(self.locator_type, self.locator_value, self.locator_config)
+        return self
 
 
 class ElementOverrideDelete(BaseModel):

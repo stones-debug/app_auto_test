@@ -16,6 +16,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import INET, JSONB
+from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -184,7 +185,12 @@ class AppProfileElementOverride(Base, TimestampMixin, SoftDeleteMixin):
 
     __tablename__ = "app_profile_element_overrides"
     __table_args__ = (
-        CheckConstraint("length(btrim(locator_value)) > 0", name="ck_profile_element_locator_value"),
+        # 定位模式一致性：smart 必须有 config 且无 value；普通必须无 config 且有 value
+        CheckConstraint(
+            "(locator_type = 'smart' AND locator_config IS NOT NULL AND locator_value IS NULL) "
+            "OR (locator_type <> 'smart' AND locator_config IS NULL AND locator_value IS NOT NULL)",
+            name="ck_profile_element_locator_mode",
+        ),
         Index(
             "uq_profile_element_override_active",
             "profile_id",
@@ -203,7 +209,10 @@ class AppProfileElementOverride(Base, TimestampMixin, SoftDeleteMixin):
     profile_id: Mapped[int] = mapped_column(ForeignKey("app_profiles.id"), nullable=False)
     element_id: Mapped[int] = mapped_column(ForeignKey("test_elements.id"), nullable=False)
     locator_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    locator_value: Mapped[str] = mapped_column(Text, nullable=False)
+    # 普通定位必须非空 locator_value；smart 定位必须合法 locator_config，规则由 schema 层校验
+    # none_as_null=True：Python None 落库为 SQL NULL（而非 JSON null），配合 ck_profile_element_locator_mode
+    locator_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    locator_config: Mapped[MutableDict[str, Any] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
 

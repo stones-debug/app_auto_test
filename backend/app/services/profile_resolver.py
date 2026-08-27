@@ -1000,15 +1000,37 @@ async def _resolve_element_snapshots(
     elements: dict[str, dict[str, Any]] = {}
     for el in rows:
         override = element_overrides.get(el.id)
-        locator_value = override.locator_value if override else el.locator_value
-        locator_type = override.locator_type if override else el.locator_type
-        elements[str(el.id)] = {
+        elements[str(el.id)] = _element_snapshot(el, override, variables)
+    return elements
+
+
+def _element_snapshot(
+    el: TestElement,
+    override: AppProfileElementOverride | None,
+    variables: dict,
+) -> dict[str, Any]:
+    """构造单个元素的执行快照（普通定位渲染变量；smart 定位原样透传 config）。
+
+    smart 定位的 locator_config 不能调用 render_value：其中可能包含 ${device_name}
+    等运行时才可求值的占位符，后端求值会报未定义变量，必须 raw 透传给 Agent。
+    """
+    locator_type = override.locator_type if override else el.locator_type
+    if locator_type == "smart":
+        locator_config = override.locator_config if override else el.locator_config
+        return {
             "name": el.name,
             "platform": el.platform,
-            "locator_type": locator_type,
-            "locator_value": render_value(locator_value, variables),
+            "locator_type": "smart",
+            "locator_config": locator_config or None,
+            "locator_value": None,
         }
-    return elements
+    locator_value = override.locator_value if override else el.locator_value
+    return {
+        "name": el.name,
+        "platform": el.platform,
+        "locator_type": locator_type,
+        "locator_value": render_value(locator_value, variables),
+    }
 
 
 def _is_uuid(value: str) -> bool:

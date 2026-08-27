@@ -565,3 +565,223 @@ async def test_element_scope_default_and_edit(client: AsyncClient):
 
     detail = await client.get(f"/api/elements/{default_el.json()['id']}", headers=headers)
     assert detail.json()["scope"] == "all"
+
+
+# ---------- 智能元素定位（smart locator） ----------
+
+SMART_CONFIG = {
+    "version": 1,
+    "alternatives": [
+        {
+            "anchor": [{"attribute": "text", "operator": "equals", "value": "登录"}],
+            "path": [{"axis": "parent", "depth": 1}],
+            "target": [{"attribute": "resource_id", "operator": "contains", "value": "btn"}],
+        }
+    ],
+    "search": {"scroll": True, "direction": "up", "max_swipes": 8, "duration_ms": 500, "settle_ms": 300},
+    # model_dump 会显式序列化默认 None 字段（index），此处与其保持一致
+    "selection": {"policy": "unique", "index": None},
+}
+
+
+async def test_element_create_smart(client: AsyncClient):
+    """创建 smart 元素成功：合法 locator_config，locator_value 不传/null，返回 config 完整。"""
+    headers, project_id = await _setup(client)
+    created = await client.post(
+        "/api/elements",
+        headers=headers,
+        json={"project_id": project_id, "name": "智能定位按钮", "locator_type": "smart", "locator_config": SMART_CONFIG},
+    )
+    assert created.status_code == 201
+    data = created.json()
+    assert data["locator_type"] == "smart"
+    assert data["locator_value"] is None
+    assert data["locator_config"] == SMART_CONFIG
+
+    # 显式传 locator_value=null 同样合法
+    created2 = await client.post(
+        "/api/elements",
+        headers=headers,
+        json={"project_id": project_id, "name": "智能定位按钮2", "locator_type": "smart", "locator_value": None, "locator_config": SMART_CONFIG},
+    )
+    assert created2.status_code == 201
+    assert created2.json()["locator_value"] is None
+
+
+async def test_element_create_smart_validation(client: AsyncClient):
+    """smart 缺 locator_config → 422；smart 传非空 locator_value → 422。"""
+    headers, project_id = await _setup(client)
+    missing = await client.post(
+        "/api/elements",
+        headers=headers,
+        json={"project_id": project_id, "name": "缺配置", "locator_type": "smart"},
+    )
+    assert missing.status_code == 422
+
+    with_value = await client.post(
+        "/api/elements",
+        headers=headers,
+        json={
+            "project_id": project_id,
+            "name": "带值",
+            "locator_type": "smart",
+            "locator_value": "x",
+            "locator_config": SMART_CONFIG,
+        },
+    )
+    assert with_value.status_code == 422
+
+
+async def test_element_create_smart_invalid_configs(client: AsyncClient):
+    """非法 config 系列全部 422：未知 attribute/operator、布尔属性非 equals、无效 regex、超限结构。"""
+    headers, project_id = await _setup(client)
+
+    def _body(config):
+        return {"project_id": project_id, "name": "非法", "locator_type": "smart", "locator_config": config}
+
+    bad_configs = [
+        # 未知 attribute
+        {"version": 1, "alternatives": [{"target": [{"attribute": "foo", "operator": "equals", "value": "x"}]}]},
+        # 未知 operator
+        {"version": 1, "alternatives": [{"target": [{"attribute": "text", "operator": "frobnicate", "value": "x"}]}]},
+        # 布尔属性用 contains
+        {"version": 1, "alternatives": [{"target": [{"attribute": "clickable", "operator": "contains", "value": True}]}]},
+        # 无效正则 "["
+        {"version": 1, "alternatives": [{"target": [{"attribute": "text", "operator": "regex", "value": "["}]}]},
+        # path 4 段（上限 3）
+        {
+            "version": 1,
+            "alternatives": [
+                {
+                    "target": [{"attribute": "text", "operator": "equals", "value": "x"}],
+                    "path": [
+                        {"axis": "parent", "depth": 1},
+                        {"axis": "parent", "depth": 1},
+                        {"axis": "parent", "depth": 1},
+                        {"axis": "parent", "depth": 1},
+                    ],
+                }
+            ],
+        },
+        # ancestor depth 6（上限 5）
+        {
+            "version": 1,
+            "alternatives": [
+                {
+                    "target": [{"attribute": "text", "operator": "equals", "value": "x"}],
+                    "path": [{"axis": "ancestor", "depth": 6}],
+                }
+            ],
+        },
+        # alternatives 11 个（上限 10）
+        {
+            "version": 1,
+            "alternatives": [
+                {"target": [{"attribute": "text", "operator": "equals", "value": f"x{i}"}]} for i in range(11)
+            ],
+        },
+        # max_swipes 30（上限 20）
+        {
+            "version": 1,
+            "alternatives": [{"target": [{"attribute": "text", "operator": "equals", "value": "x"}]}],
+            "search": {"max_swipes": 30},
+        },
+    ]
+    for config in bad_configs:
+        resp = await client.post("/api/elements", headers=headers, json=_body(config))
+        assert resp.status_code == 422, f"config {config} should be rejected"
+
+
+async def test_element_create_ordinary_still_requires_value(client: AsyncClient):
+    """普通元素（id）创建仍必须非空 locator_value，传 locator_config → 422。"""
+    headers, project_id = await _setup(client)
+    with_config = await client.post(
+        "/api/elements",
+        headers=headers,
+        json={
+            "project_id": project_id,
+            "name": "普通带配置",
+            "locator_type": "id",
+            "locator_value": "x",
+            "locator_config": SMART_CONFIG,
+        },
+    )
+    assert with_config.status_code == 422
+
+    missing = await client.post(
+        "/api/elements",
+        headers=headers,
+        json={"project_id": project_id, "name": "普通缺值", "locator_type": "id"},
+    )
+    assert missing.status_code == 422
+
+
+async def test_element_update_smart_roundtrip(client: AsyncClient):
+    """更新元素 id→smart（携 config）成功；smart→id（携 value）成功。"""
+    headers, project_id = await _setup(client)
+    el = (
+        await client.post(
+            "/api/elements",
+            headers=headers,
+            json={"project_id": project_id, "name": "可切换", "locator_type": "id", "locator_value": "old_id"},
+        )
+    ).json()
+    el_id = el["id"]
+
+    to_smart = await client.put(
+        f"/api/elements/{el_id}",
+        headers=headers,
+        json={"locator_type": "smart", "locator_config": SMART_CONFIG},
+    )
+    assert to_smart.status_code == 200
+    assert to_smart.json()["locator_type"] == "smart"
+    assert to_smart.json()["locator_config"] == SMART_CONFIG
+    # 归一化：改 smart 后旧 locator_value 自动清空为 null（满足 CHECK 约束、避免回显残留）
+    assert to_smart.json()["locator_value"] is None
+
+    to_id = await client.put(
+        f"/api/elements/{el_id}",
+        headers=headers,
+        json={"locator_type": "id", "locator_value": "new_id"},
+    )
+    assert to_id.status_code == 200
+    assert to_id.json()["locator_type"] == "id"
+    assert to_id.json()["locator_value"] == "new_id"
+    # 归一化：改回普通后旧 locator_config 自动清空为 null
+    assert to_id.json()["locator_config"] is None
+
+
+async def test_element_copy_smart_preserves_config(client: AsyncClient):
+    """复制 smart 元素保留 locator_config。"""
+    h_owner, p1 = await _setup(client)
+    el = (
+        await client.post(
+            "/api/elements",
+            headers=h_owner,
+            json={"project_id": p1, "name": "被复制智能", "locator_type": "smart", "locator_config": SMART_CONFIG},
+        )
+    ).json()
+    copied = (await client.post(f"/api/elements/{el['id']}/copy", headers=h_owner)).json()
+    assert copied["id"] != el["id"]
+    assert copied["locator_type"] == "smart"
+    assert copied["locator_config"] == SMART_CONFIG
+
+
+async def test_element_list_detail_returns_locator_config(client: AsyncClient):
+    """列表/详情均返回 locator_config。"""
+    headers, project_id = await _setup(client)
+    el = (
+        await client.post(
+            "/api/elements",
+            headers=headers,
+            json={"project_id": project_id, "name": "列表智能", "locator_type": "smart", "locator_config": SMART_CONFIG},
+        )
+    ).json()
+    el_id = el["id"]
+
+    listing = (await client.get("/api/elements?keyword=列表智能", headers=headers)).json()
+    assert listing["total"] == 1
+    assert listing["items"][0]["locator_config"] == SMART_CONFIG
+
+    detail = (await client.get(f"/api/elements/{el_id}", headers=headers)).json()
+    assert detail["locator_config"] == SMART_CONFIG

@@ -20,6 +20,7 @@ from app.models import (
     ExecutionSuite,
     Report,
 )
+from app.models import TestCase as CaseModel
 from app.services import worker_service
 from app.services.worker_runtime import WorkerRuntime
 from tests.helpers import create_bound_agent_device
@@ -469,6 +470,55 @@ async def test_suites_payload_carries_suite_step_continue_on_failure(client: Asy
         setup_steps = payload[0]["setup_steps"]
         assert len(setup_steps) == 1
         assert setup_steps[0]["continue_on_failure"] is True
+
+
+# ---------- 智能元素定位（无档案 build_case_snapshot） ----------
+
+
+async def test_build_case_snapshot_smart_element_config_raw(client: AsyncClient):
+    """无档案路径 build_case_snapshot：smart 元素写 locator_config raw，不渲染 ${...} 变量。"""
+    await client.post("/api/auth/register", json=REG)
+    login = await client.post(
+        "/api/auth/login", json={"username": REG["username"], "password": REG["password"]}
+    )
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    project = await client.post(
+        "/api/projects", headers=headers, json={"name": "Worker智能定位项目", "visibility": "private"}
+    )
+    project_id = project.json()["id"]
+    smart_config = {
+        "version": 1,
+        "alternatives": [
+            {"target": [{"attribute": "text", "operator": "equals", "value": "${device_name}"}]}
+        ],
+    }
+    el = await client.post(
+        f"/api/projects/{project_id}/elements",
+        headers=headers,
+        json={"name": "智能按钮", "locator_type": "smart", "locator_config": smart_config},
+    )
+    assert el.status_code == 201, el.text
+    element_id = el.json()["id"]
+    case = await client.post(
+        f"/api/projects/{project_id}/cases",
+        headers=headers,
+        json={
+            "name": "智能元素用例",
+            "steps": [{"order": 1, "action": "click", "element_id": element_id, "params": {}}],
+        },
+    )
+    assert case.status_code == 201, case.text
+
+    async with SessionLocal() as db:
+        case_model = await db.get(CaseModel, case.json()["id"])
+        snapshot = await worker_service.build_case_snapshot(db, case_model, {})
+
+    snap = snapshot["elements"][str(element_id)]
+    assert snap["locator_type"] == "smart"
+    assert snap["locator_value"] is None
+    # ${device_name} 保持未渲染（raw 透传，后端不因未定义变量报错）
+    assert snap["locator_config"]["alternatives"][0]["target"][0]["value"] == "${device_name}"
 
 
 # ---------- 扫描任务 ----------

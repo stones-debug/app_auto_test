@@ -170,13 +170,30 @@ async def build_case_snapshot(
             await db.execute(select(TestElement).where(TestElement.id.in_(element_ids)))
         ).scalars().all()
         for el in rows:
-            elements[str(el.id)] = {
-                "name": el.name,
-                "platform": el.platform,
-                "locator_type": el.locator_type,
-                "locator_value": render_value(el.locator_value, variable_map),
-            }
+            elements[str(el.id)] = _element_snapshot(el, variable_map)
     return {"steps": steps, "assertions": assertions, "elements": elements}
+
+
+def _element_snapshot(el: TestElement, variables: dict) -> dict:
+    """构造单元素执行快照：普通定位渲染变量；smart 定位 locator_config 原样透传。
+
+    smart 定位的 locator_config 不能调用 render_value：其中可能包含 ${device_name}
+    等运行时占位符，后端求值会报未定义变量，必须 raw 透传给 Agent。
+    """
+    if el.locator_type == "smart":
+        return {
+            "name": el.name,
+            "platform": el.platform,
+            "locator_type": "smart",
+            "locator_config": el.locator_config or None,
+            "locator_value": None,
+        }
+    return {
+        "name": el.name,
+        "platform": el.platform,
+        "locator_type": el.locator_type,
+        "locator_value": render_value(el.locator_value, variables),
+    }
 
 
 async def _resolve_cases(db: AsyncSession, execution: Execution) -> list[TestCase]:

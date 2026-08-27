@@ -262,6 +262,72 @@ async def test_overrides(client: AsyncClient):
     assert got.json()["revision"] == 5
 
 
+async def test_element_override_smart(client: AsyncClient):
+    """smart 元素覆盖 upsert 成功返回完整 config；缺 config/普通带 config 被拒。
+
+    model_dump 会显式序列化默认 None 字段（index），SMART_OVERRIDE_CONFIG 与其一致以便精确断言。
+    """
+    token = await _register(client, OWNER)
+    h = {"Authorization": f"Bearer {token}"}
+    pid = (await client.post("/api/projects", json={"name": "智能覆盖项目"}, headers=h)).json()["id"]
+    code = f"sm{uuid.uuid4().hex[:6]}"
+    profile_id = (await client.post(f"/api/projects/{pid}/app-profiles", json={"name": "SM", "code": code}, headers=h)).json()["id"]
+    el_id = (await client.post(f"/api/projects/{pid}/elements", json={"name": "按钮", "locator_type": "id", "locator_value": "common"}, headers=h)).json()["id"]
+
+    smart_config = {
+        "version": 1,
+        "alternatives": [
+            {
+                "anchor": [{"attribute": "text", "operator": "equals", "value": "登录"}],
+                "path": [{"axis": "parent", "depth": 1}],
+                "target": [{"attribute": "resource_id", "operator": "contains", "value": "btn"}],
+            }
+        ],
+        "search": {"scroll": True, "direction": "up", "max_swipes": 8, "duration_ms": 500, "settle_ms": 300},
+        "selection": {"policy": "unique", "index": None},
+    }
+
+    # 合法 smart 覆盖
+    r = await client.put(
+        f"/api/app-profiles/{profile_id}/element-overrides/{el_id}",
+        json={"request_id": str(uuid.uuid4()), "expected_revision": 1, "locator_type": "smart", "locator_config": smart_config},
+        headers=h,
+    )
+    assert r.status_code == 200
+    assert r.json()["revision"] == 2
+    assert r.json()["locator_type"] == "smart"
+
+    # 列表返回的覆盖含完整 locator_config
+    listed = await client.get(f"/api/app-profiles/{profile_id}/overrides", headers=h)
+    assert listed.status_code == 200
+    override = listed.json()["elements"][0]
+    assert override["locator_type"] == "smart"
+    assert override["locator_value"] is None
+    assert override["locator_config"] == smart_config
+
+    # smart 缺 locator_config → 422
+    missing = await client.put(
+        f"/api/app-profiles/{profile_id}/element-overrides/{el_id}",
+        json={"request_id": str(uuid.uuid4()), "expected_revision": 2, "locator_type": "smart"},
+        headers=h,
+    )
+    assert missing.status_code == 422
+
+    # 普通覆盖携带 locator_config → 422
+    bad = await client.put(
+        f"/api/app-profiles/{profile_id}/element-overrides/{el_id}",
+        json={
+            "request_id": str(uuid.uuid4()),
+            "expected_revision": 2,
+            "locator_type": "resource_id",
+            "locator_value": "dvr_id",
+            "locator_config": smart_config,
+        },
+        headers=h,
+    )
+    assert bad.status_code == 422
+
+
 async def test_workspace_and_nodes(client: AsyncClient):
     """工作台套件分页 + 用例懒加载 + 差异扁平列表。"""
     token = await _register(client, OWNER)
