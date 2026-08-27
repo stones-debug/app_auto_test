@@ -39,11 +39,12 @@ const connectionState = computed(() => (
   executionConnectionState(props.terminal, props.connected, props.connecting)
 ))
 
+// 深色背景语义色：主题变量（--text/--text-2）是浅色背景定义的深色值，此处须用深底浅色
 const LEVEL_COLOR: Record<string, string> = {
-  DEBUG: 'var(--text-2)',
-  INFO: 'var(--text)',
-  WARN: 'var(--warning)',
-  ERROR: 'var(--danger)',
+  DEBUG: '#94a3b8',
+  INFO: '#e2e8f0',
+  WARN: '#fbbf24',
+  ERROR: '#f87171',
 }
 
 watch(
@@ -105,8 +106,8 @@ function scrollToBottom() {
 .live-log {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  min-height: 240px;
+  flex: 1;
+  min-height: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   overflow: hidden;
@@ -145,6 +146,7 @@ function scrollToBottom() {
 }
 .log-body {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 8px 12px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
@@ -156,9 +158,12 @@ function scrollToBottom() {
   gap: 8px;
   white-space: pre-wrap;
   word-break: break-all;
+  overflow-wrap: anywhere;
 }
 .log-time {
-  color: #64748b;
+  color: #94a3b8;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .log-level {
   width: 44px;

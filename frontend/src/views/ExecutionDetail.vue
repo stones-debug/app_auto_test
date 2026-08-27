@@ -312,6 +312,11 @@ onBeforeUnmount(() => socket.value?.close())
   gap: 16px;
 }
 .log-card {
+  height: 100%;
+  max-height: 560px;
   min-height: 300px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 </style>
