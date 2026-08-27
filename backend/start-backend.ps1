@@ -17,7 +17,7 @@
 
 param(
     [int]$Port = 8001,
-    [string]$ListenHost = "127.0.0.1",
+    [string]$ListenHost = "0.0.0.0",
     [switch]$Migrate,
     [switch]$Seed,
     [switch]$NoReload

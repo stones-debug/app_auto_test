@@ -142,6 +142,8 @@ async function onDelete(p: AppProfileSummary) {
   padding: 8px 12px;
   border-radius: 6px;
   cursor: pointer;
+  border: 1px solid var(--border);
+  margin-right: 12px;
 }
 .tree-item:hover {
   background: var(--el-fill-color-light);
