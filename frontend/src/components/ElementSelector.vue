@@ -45,7 +45,7 @@ onMounted(load)
       v-for="e in elements"
       :key="e.id"
       :value="e.id"
-      :label="`[${e.project_name ?? '?'}] ${e.name} (${e.locator_type}: ${e.locator_value})`"
+      :label="`[${e.project_name ?? '?'}] ${e.name} (${e.locator_type === 'smart' ? '智能定位' : `${e.locator_type}: ${e.locator_value}`})`"
     />
   </el-select>
 </template>

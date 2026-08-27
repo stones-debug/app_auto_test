@@ -1,5 +1,6 @@
 import request from '@/utils/request'
 
+import type { SmartLocatorConfig } from '@/utils/smartLocator'
 import type { PageData } from './projects'
 
 export interface AppProfileSummary {
@@ -125,7 +126,7 @@ export interface ProfileRunParams {
 
 export interface ProfileOverrides {
   revision: number
-  elements: { element_id: number; locator_type: string; locator_value: string }[]
+  elements: { element_id: number; locator_type: string; locator_value: string | null; locator_config?: SmartLocatorConfig | null }[]
   variables: { name: string; value: string; description: string | null }[]
   nodes: { suite_id: number; case_id: number | null; node_type: 'step' | 'assertion' | 'suite_step'; node_key: string; patch: Record<string, unknown> }[]
 }
@@ -182,7 +183,7 @@ export function listProfileOverrides(profileId: number) {
   return request.get<ProfileOverrides>(`/app-profiles/${profileId}/overrides`)
 }
 
-export function upsertElementOverride(profileId: number, elementId: number, data: { request_id?: string; expected_revision: number; locator_type: string; locator_value: string }) {
+export function upsertElementOverride(profileId: number, elementId: number, data: { request_id?: string; expected_revision: number; locator_type: string; locator_value: string | null; locator_config?: SmartLocatorConfig | null }) {
   return request.put<{ revision: number }>(`/app-profiles/${profileId}/element-overrides/${elementId}`, data)
 }
 

@@ -11,6 +11,8 @@ import {
 } from '@/api/appProfiles'
 import { listElements, LOCATOR_TYPES, type TestElement } from '@/api/elements'
 import { listVariables, type Variable } from '@/api/suites'
+import SmartLocatorEditor from '@/components/SmartLocatorEditor.vue'
+import { buildLocatorPayload, cloneSmartConfig, createDefaultConfig, smartLocatorSummary, validateSmartConfig, type SmartLocatorConfig } from '@/utils/smartLocator'
 
 const props = defineProps<{ profileId: number; projectId: number; revision: number }>()
 const emit = defineEmits<{ revisionChange: [revision: number] }>()
@@ -19,13 +21,18 @@ const visible = defineModel<boolean>('modelValue')
 const tab = ref<'element' | 'variable'>('element')
 const elements = ref<TestElement[]>([])
 const variables = ref<Variable[]>([])
-const elementDrafts = ref<Record<number, { locator_type: string; locator_value: string }>>({})
+const elementDrafts = ref<Record<number, { locator_type: string; locator_value: string; locator_config: SmartLocatorConfig | null }>>({})
 const variableDrafts = ref<Record<string, { value: string; description: string }>>({})
 const overriddenElements = ref<Set<number>>(new Set())
 const overriddenVariables = ref<Set<string>>(new Set())
 const currentRevision = ref(props.revision)
 const loading = ref(false)
 const savingKey = ref('')
+
+// 智能定位配置子编辑弹窗
+const configDialogVisible = ref(false)
+const configDialogElementId = ref<number | null>(null)
+const configDraft = ref<SmartLocatorConfig | null>(null)
 
 async function load() {
   if (!visible.value) return
@@ -47,7 +54,8 @@ async function load() {
       const value = elementMap.get(element.id)
       return [element.id, {
         locator_type: value?.locator_type ?? element.locator_type,
-        locator_value: value?.locator_value ?? element.locator_value,
+        locator_value: value?.locator_value ?? element.locator_value ?? '',
+        locator_config: value?.locator_config ?? element.locator_config ?? null,
       }]
     }))
     overriddenElements.value = new Set(overrides.elements.map((item) => item.element_id))
@@ -76,7 +84,21 @@ async function saveElement(elementId: number) {
   const element = elements.value.find((item) => item.id === elementId)
   if (!element) return
   const draft = elementDrafts.value[element.id]
-  if (!draft?.locator_type || !draft.locator_value.trim()) {
+  if (!draft?.locator_type) {
+    ElMessage.warning('请选择定位类型')
+    return
+  }
+  if (draft.locator_type === 'smart') {
+    if (!draft.locator_config) {
+      ElMessage.warning('请完成智能定位配置')
+      return
+    }
+    const errors = validateSmartConfig(draft.locator_config)
+    if (errors.length) {
+      ElMessage.error('智能定位配置有误：' + errors[0])
+      return
+    }
+  } else if (!draft.locator_value.trim()) {
     ElMessage.warning('定位类型和定位值不能为空')
     return
   }
@@ -84,8 +106,7 @@ async function saveElement(elementId: number) {
   try {
     const result = await upsertElementOverride(props.profileId, element.id, {
       expected_revision: currentRevision.value,
-      locator_type: draft.locator_type,
-      locator_value: draft.locator_value,
+      ...buildLocatorPayload(draft.locator_type, draft.locator_value, draft.locator_config),
     })
     overriddenElements.value = new Set(overriddenElements.value).add(element.id)
     revisionChanged(result.revision)
@@ -93,6 +114,43 @@ async function saveElement(elementId: number) {
   } finally {
     savingKey.value = ''
   }
+}
+
+function onLocatorTypeChange(elementId: number) {
+  const draft = elementDrafts.value[elementId]
+  if (!draft) return
+  // 切到 smart 时若无配置则播种默认骨架；切走时「保留」locator_config，
+  // 与 Element 编辑行为一致，避免再切回 smart 生成默认骨架导致已配置内容静默丢失。
+  if (draft.locator_type === 'smart' && !draft.locator_config) {
+    draft.locator_config = createDefaultConfig()
+  }
+}
+
+function draftSummary(row: TestElement): string {
+  const draft = elementDrafts.value[row.id]
+  if (!draft) return ''
+  if (draft.locator_type === 'smart') return smartLocatorSummary(draft.locator_config)
+  return draft.locator_value || ''
+}
+
+function openConfigDialog(elementId: number) {
+  configDialogElementId.value = elementId
+  const draft = elementDrafts.value[elementId]
+  configDraft.value = draft?.locator_config ? cloneSmartConfig(draft.locator_config) : createDefaultConfig()
+  configDialogVisible.value = true
+}
+
+function saveConfigDialog() {
+  const elementId = configDialogElementId.value
+  if (elementId == null) return
+  const errors = validateSmartConfig(configDraft.value)
+  if (errors.length) {
+    ElMessage.error('智能定位配置有误：' + errors[0])
+    return
+  }
+  elementDrafts.value[elementId].locator_config = configDraft.value
+  elementDrafts.value[elementId].locator_value = ''
+  configDialogVisible.value = false
 }
 
 async function restoreElement(elementId: number) {
@@ -156,13 +214,19 @@ watch(() => props.revision, (revision) => { currentRevision.value = revision })
           <el-table-column prop="name" label="元素" min-width="110" />
           <el-table-column label="定位类型" width="160">
             <template #default="{ row }">
-              <el-select v-model="elementDrafts[row.id].locator_type" size="small" filterable allow-create>
+              <el-select v-model="elementDrafts[row.id].locator_type" size="small" filterable allow-create @change="onLocatorTypeChange(row.id)">
                 <el-option v-for="item in LOCATOR_TYPES" :key="item.value" :label="item.label" :value="item.value" />
               </el-select>
             </template>
           </el-table-column>
           <el-table-column label="定位值" min-width="210">
-            <template #default="{ row }"><el-input v-model="elementDrafts[row.id].locator_value" size="small" /></template>
+            <template #default="{ row }">
+              <template v-if="elementDrafts[row.id].locator_type === 'smart'">
+                <el-tag size="small" type="primary" class="smart-tag" :title="draftSummary(row as TestElement)">{{ draftSummary(row as TestElement) }}</el-tag>
+                <el-button size="small" text type="primary" @click="openConfigDialog(row.id)">编辑配置</el-button>
+              </template>
+              <el-input v-else v-model="elementDrafts[row.id].locator_value" size="small" />
+            </template>
           </el-table-column>
           <el-table-column label="操作" width="125" align="right">
             <template #default="{ row }">
@@ -189,9 +253,26 @@ watch(() => props.revision, (revision) => { currentRevision.value = revision })
         </el-table>
       </el-tab-pane>
     </el-tabs>
+
+    <el-dialog v-model="configDialogVisible" title="编辑智能定位配置" width="560px">
+      <SmartLocatorEditor v-model="configDraft" />
+      <template #footer>
+        <el-button @click="configDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveConfigDialog">保存</el-button>
+      </template>
+    </el-dialog>
   </el-drawer>
 </template>
 
 <style scoped>
 .override-tabs { margin-top: 12px; }
+.smart-tag {
+  display: inline-block;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+  margin-right: 4px;
+}
 </style>

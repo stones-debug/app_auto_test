@@ -1,4 +1,5 @@
 import request from '@/utils/request'
+import type { SmartLocatorConfig } from '@/utils/smartLocator'
 import type { PageData } from './projects'
 
 export interface TestModule {
@@ -21,7 +22,9 @@ export interface TestElement {
   /** 适用范围：自由文本；all 表示所有；空/不填由服务端兜底为 all */
   scope: string
   locator_type: string
-  locator_value: string
+  locator_value: string | null
+  /** 智能定位（locator_type='smart'）专用 JSON 配置；普通类型为 null/缺省。 */
+  locator_config?: SmartLocatorConfig | null
   description?: string | null
   created_by?: number | null
   created_by_name?: string | null
@@ -45,6 +48,7 @@ export const LOCATOR_TYPES = [
   { value: 'uiautomator', label: 'UI Automator (Android)' },
   { value: 'predicate', label: 'Predicate (iOS)' },
   { value: 'coordinate', label: '坐标' },
+  { value: 'smart', label: '智能定位（Android）' },
   { value: 'custom', label: '自定义' },
 ]
 

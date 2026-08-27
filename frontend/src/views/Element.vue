@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 
 import { useAuthStore } from '@/stores/auth'
 import { listProjects } from '@/api/projects'
+import SmartLocatorEditor from '@/components/SmartLocatorEditor.vue'
 import {
   LOCATOR_TYPES,
   copyElement,
@@ -20,6 +21,7 @@ import {
   type ElementPageCount,
   type TestElement,
 } from '@/api/elements'
+import { buildLocatorPayload, cloneSmartConfig, smartLocatorSummary, validateSmartConfig, type SmartLocatorConfig } from '@/utils/smartLocator'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -49,6 +51,7 @@ const form = ref<{
   scope: string
   locator_type: string
   locator_value: string
+  locator_config: SmartLocatorConfig | null
   description: string
 }>({
   project_id: undefined,
@@ -58,6 +61,7 @@ const form = ref<{
   scope: 'all',
   locator_type: 'id',
   locator_value: '',
+  locator_config: null,
   description: '',
 })
 
@@ -128,6 +132,7 @@ function openCreate() {
     scope: 'all',
     locator_type: 'id',
     locator_value: '',
+    locator_config: null,
     description: '',
   }
   dialogVisible.value = true
@@ -142,7 +147,10 @@ function openEdit(row: TestElement) {
     platform: row.platform ?? 'both',
     scope: row.scope ?? 'all',
     locator_type: row.locator_type,
-    locator_value: row.locator_value,
+    locator_value: row.locator_value ?? '',
+    locator_config: row.locator_type === 'smart'
+      ? cloneSmartConfig(row.locator_config)
+      : null,
     description: row.description ?? '',
   }
   dialogVisible.value = true
@@ -153,8 +161,23 @@ async function save() {
     ElMessage.warning('请选择项目')
     return
   }
-  if (!form.value.name || !form.value.locator_value) {
-    ElMessage.warning('名称和定位值必填')
+  if (!form.value.name) {
+    ElMessage.warning('请填写名称')
+    return
+  }
+  if (form.value.locator_type === 'smart') {
+    const config = form.value.locator_config
+    if (!config) {
+      ElMessage.warning('请完成智能定位配置')
+      return
+    }
+    const errors = validateSmartConfig(config)
+    if (errors.length) {
+      ElMessage.error('智能定位配置有误：' + errors[0])
+      return
+    }
+  } else if (!form.value.locator_value) {
+    ElMessage.warning('请填写定位值')
     return
   }
   const isCreate = !editingId.value
@@ -163,6 +186,7 @@ async function save() {
     project_id: form.value.project_id,
     page_name: form.value.page_name || null,
     scope: form.value.scope.trim() || 'all',
+    ...buildLocatorPayload(form.value.locator_type, form.value.locator_value, form.value.locator_config),
   }
   if (editingId.value) {
     await updateElement(editingId.value, payload)
@@ -239,6 +263,11 @@ function locatorValuePlaceholder(type: string) {
   return "如 com.demo:id/btn_login / //*[@text='登录']"
 }
 
+function smartSummary(row: TestElement): string {
+  if (row.locator_type === 'smart') return smartLocatorSummary(row.locator_config)
+  return row.locator_value ?? ''
+}
+
 type TagType = 'primary' | 'success' | 'info' | 'warning' | 'danger'
 
 function platformType(p: string): TagType {
@@ -311,7 +340,14 @@ onMounted(() => {
         <el-table-column label="定位方式" width="150">
           <template #default="{ row }">{{ locatorLabel(row.locator_type) }}</template>
         </el-table-column>
-        <el-table-column prop="locator_value" label="定位值" min-width="170" show-overflow-tooltip />
+        <el-table-column prop="locator_value" label="定位值" min-width="170">
+          <template #default="{ row }">
+            <el-tag v-if="row.locator_type === 'smart'" size="small" type="primary" class="smart-tag" :title="smartSummary(row as TestElement)">
+              {{ smartSummary(row as TestElement) }}
+            </el-tag>
+            <span v-else class="locator-cell">{{ smartSummary(row as TestElement) || '—' }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="创建者" width="110">
           <template #default="{ row }">{{ row.created_by_name ?? '—' }}</template>
         </el-table-column>
@@ -375,11 +411,14 @@ onMounted(() => {
             <el-option v-for="t in LOCATOR_TYPES" :key="t.value" :label="t.label" :value="t.value" />
           </el-select>
         </el-form-item>
-        <el-form-item label="定位值" required>
-          <el-input v-model="form.locator_value" :placeholder="locatorValuePlaceholder(form.locator_type)" />
-          <div v-if="form.locator_type === 'resource_id'" class="field-help">
-            输入和清空动作会自动定位其下的 android.widget.EditText。
-          </div>
+        <el-form-item :label="form.locator_type === 'smart' ? '定位配置' : '定位值'" required>
+          <SmartLocatorEditor v-if="form.locator_type === 'smart'" v-model="form.locator_config" class="full" />
+          <template v-else>
+            <el-input v-model="form.locator_value" :placeholder="locatorValuePlaceholder(form.locator_type)" />
+            <div v-if="form.locator_type === 'resource_id'" class="field-help">
+              输入和清空动作会自动定位其下的 android.widget.EditText。
+            </div>
+          </template>
         </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="form.description" type="textarea" :rows="2" />
@@ -488,5 +527,21 @@ onMounted(() => {
   color: var(--text-2);
   font-size: 12px;
   line-height: 20px;
+}
+.smart-tag {
+  display: inline-block;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.locator-cell {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 </style>
