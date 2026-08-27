@@ -6,12 +6,21 @@ import { apiErrorCode, buildRunParameters, useDeviceSelect, type ProfileRunConte
 import { getAppProfile, listReleases, previewExecution, type ExecutionPreview } from '@/api/appProfiles'
 import { useAppProfileStore } from '@/stores/appProfile'
 import { ElMessage } from 'element-plus'
+import type { Device } from '@/api/agents'
 
 // V2 §5.12：统一设备选择器（所有运行入口复用，含重试入口）。
 // 方案 §4.8/§5.7：公共库运行必须选档案+版本；档案视图带入则只读显示。选择后调用预检展示摘要。
 const emit = defineEmits<{ created: [execution: Execution] }>()
 
 const props = defineProps<{ projectId?: number }>()
+
+/** 设备选项文本：名称 + 平台 + 序列号/地址，同一电脑多设备可区分。 */
+function deviceOptionLabel(d: Device): string {
+  const ident = d.udid || d.address
+  const parts = [`${d.name} (${d.platform})`]
+  if (ident) parts.push(ident)
+  return parts.join(' · ')
+}
 
 const timeout = ref(1800)
 const usePreSteps = ref(false)
@@ -277,7 +286,12 @@ watch([selectedId, usePreSteps, usePostSteps, attachToCurrentApp], () => {
       </el-form-item>
       <el-form-item label="设备">
         <el-select v-model="selectedId" placeholder="选择设备" class="w-full">
-          <el-option v-for="d in devices" :key="d.id" :label="`${d.name} (${d.platform})`" :value="d.id" />
+          <el-option
+            v-for="d in devices"
+            :key="d.id"
+            :label="deviceOptionLabel(d)"
+            :value="d.id"
+          />
         </el-select>
         <div v-if="reason" class="tip warn">{{ reason }}</div>
         <div v-if="!devices.length" class="tip">
