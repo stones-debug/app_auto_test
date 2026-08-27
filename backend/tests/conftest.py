@@ -8,6 +8,7 @@ Windows 方案 §2：测试强制使用独立 `test_platform_test` 数据库—�
 
 import asyncio
 import os
+import shutil
 from pathlib import Path
 
 from sqlalchemy.engine import make_url
@@ -18,6 +19,12 @@ _TEST_URL = os.environ.get(
     "postgresql+asyncpg://dev:dev123@127.0.0.1:5432/test_platform_test",
 )
 os.environ["DATABASE_URL"] = _TEST_URL
+
+# 测试隔离：报告缓存目录独立于开发目录（.env 的 data/reports），
+# 否则测试库 TRUNCATE RESTART IDENTITY 后执行 ID 从低值重启，会撞上
+# dev 环境同级执行 ID 生成的陈旧缓存 HTML（版本标记相同即命中），导致断言读到 dev 报告
+_test_reports_dir = Path(__file__).resolve().parents[1] / "data" / "reports_test"
+os.environ["REPORTS_BASE_PATH"] = str(_test_reports_dir)
 
 import pytest  # noqa: E402
 from sqlalchemy import delete, select, text, update  # noqa: E402
@@ -111,6 +118,9 @@ def _run_migrations() -> None:
 async def _prepare_test_database():
     await _ensure_test_database()
     await asyncio.to_thread(_run_migrations)
+    # 测试报告缓存目录独立且每次会话清空，避免跨会话/dev 缓存污染
+    if _test_reports_dir.exists():
+        shutil.rmtree(_test_reports_dir)
     # Windows 方案 §2：测试库专用，每次会话开始时全量清空（含历史遗留的非 pytest_% 测试数据：
     # 绑定产生的 Agent/Key/默认设备等），保证结果确定性；alembic_version 保留以免迁移状态错乱
     from app.models import Base

@@ -123,6 +123,16 @@ function flattenFailKeys(suites: ReportSuite[], cases: ReportCase[], onlyFailed:
   })
 }
 
+// 默认展开：与 HTML 报告初始状态保持一致——套件/用例默认收起；仅含失败/异常用例的套件与其失败用例自动展开
+// （无需任务 2 的手工逐层点开即可看到问题用例）
+function autoExpandFailKeys(suites: ReportSuite[]): string[] {
+  return suites.flatMap((s) => {
+    const fails = s.cases.filter((c) => ['failed', 'error'].includes(c.status))
+    if (!fails.length) return []
+    return [`suite:${s.id}`, ...fails.map((c) => `case:${c.id}`)]
+  })
+}
+
 // Step 7：checkbox 只使用 v-model；handler 接收新 boolean，刷新 activeSuites
 function onOnlyFailedChange(value: string | number | boolean) {
   activeSuites.value = flattenFailKeys(displaySuites.value, displayCases.value, Boolean(value))
@@ -137,9 +147,9 @@ async function load() {
     const data = await getReportDetail(id)
     await navigation.normalizeProjectDetail('report', id, data.execution.project_id)
     detail.value = data
-    // 首次加载：套件全部展开；失败/异常用例自动展开
+    // 首次加载：默认收起；仅含失败/异常用例的套件与其失败用例自动展开（与 HTML 报告初始状态一致）
     activeSuites.value = data.suites?.length
-      ? flattenFailKeys(data.suites, [], false)
+      ? autoExpandFailKeys(data.suites)
       : data.cases.map((c) => (['failed', 'error'].includes(c.status) ? `case:${c.id}` : '')).filter(Boolean)
     activeExclusions.value = []
   } finally {
@@ -216,38 +226,41 @@ function stepsAfterAssertions(steps: ReportStep[]) {
         </div>
       </div>
 
-      <div class="card">
+      <div class="stat-group">
+        <div class="stat-title">用例统计</div>
         <div class="stats">
-          <div class="stat"><div class="num blue">{{ detail.report.total }}</div><div class="label">总用例</div></div>
-          <div class="stat"><div class="num green">{{ detail.report.passed }}</div><div class="label">通过</div></div>
-          <div class="stat"><div class="num red">{{ detail.report.failed }}</div><div class="label">失败</div></div>
-          <div class="stat"><div class="num orange">{{ detail.report.error_count }}</div><div class="label">异常</div></div>
-          <div class="stat"><div class="num gray">{{ detail.report.skipped }}</div><div class="label">跳过</div></div>
-          <div class="stat"><div class="num blue">{{ detail.report.success_rate }}%</div><div class="label">成功率</div></div>
-          <div class="stat"><div class="num gray">{{ detail.report.not_applicable ?? 0 }}</div><div class="label">不适用</div></div>
+          <div class="stat-card"><div class="num blue">{{ detail.report.total }}</div><div class="label">用例总数</div></div>
+          <div class="stat-card"><div class="num green">{{ detail.report.passed }}</div><div class="label">通过</div></div>
+          <div class="stat-card"><div class="num red">{{ detail.report.failed }}</div><div class="label">失败</div></div>
+          <div class="stat-card"><div class="num orange">{{ detail.report.error_count }}</div><div class="label">异常</div></div>
+          <div class="stat-card"><div class="num gray">{{ detail.report.skipped }}</div><div class="label">跳过</div></div>
+          <div class="stat-card"><div class="num blue">{{ detail.report.success_rate }}%</div><div class="label">成功率</div></div>
+          <div class="stat-card"><div class="num gray">{{ detail.report.not_applicable ?? 0 }}</div><div class="label">不适用</div></div>
         </div>
       </div>
 
-      <div v-if="detail.report.suite_total != null" class="card">
+      <div v-if="detail.report.suite_total != null" class="stat-group">
+        <div class="stat-title">套件统计</div>
         <div class="stats">
-          <div class="stat"><div class="num blue">{{ detail.report.suite_total }}</div><div class="label">套件总数</div></div>
-          <div class="stat"><div class="num green">{{ detail.report.suite_passed }}</div><div class="label">套件通过</div></div>
-          <div class="stat"><div class="num red">{{ detail.report.suite_failed }}</div><div class="label">套件失败</div></div>
-          <div class="stat"><div class="num orange">{{ detail.report.suite_error_count }}</div><div class="label">套件异常</div></div>
-          <div class="stat"><div class="num gray">{{ detail.report.suite_skipped }}</div><div class="label">套件跳过</div></div>
-          <div class="stat"><div class="num blue">{{ detail.report.suite_success_rate }}%</div><div class="label">套件成功率</div></div>
-          <div class="stat"><div class="num gray">{{ detail.report.not_applicable_suites ?? 0 }}</div><div class="label">不适用套件</div></div>
+          <div class="stat-card"><div class="num blue">{{ detail.report.suite_total }}</div><div class="label">套件总数</div></div>
+          <div class="stat-card"><div class="num green">{{ detail.report.suite_passed }}</div><div class="label">套件通过</div></div>
+          <div class="stat-card"><div class="num red">{{ detail.report.suite_failed }}</div><div class="label">套件失败</div></div>
+          <div class="stat-card"><div class="num orange">{{ detail.report.suite_error_count }}</div><div class="label">套件异常</div></div>
+          <div class="stat-card"><div class="num gray">{{ detail.report.suite_skipped }}</div><div class="label">套件跳过</div></div>
+          <div class="stat-card"><div class="num blue">{{ detail.report.suite_success_rate }}%</div><div class="label">套件成功率</div></div>
+          <div class="stat-card"><div class="num gray">{{ detail.report.not_applicable_suites ?? 0 }}</div><div class="label">不适用套件</div></div>
         </div>
       </div>
 
-      <div v-if="detail.report.step_total != null" class="card">
+      <div v-if="detail.report.step_total != null" class="stat-group">
+        <div class="stat-title">步骤统计</div>
         <div class="stats">
-          <div class="stat"><div class="num blue">{{ detail.report.step_total }}</div><div class="label">步骤总数</div></div>
-          <div class="stat"><div class="num green">{{ detail.report.step_passed }}</div><div class="label">步骤通过</div></div>
-          <div class="stat"><div class="num red">{{ detail.report.step_failed }}</div><div class="label">步骤失败</div></div>
-          <div class="stat"><div class="num orange">{{ detail.report.step_error_count }}</div><div class="label">步骤异常</div></div>
-          <div class="stat"><div class="num gray">{{ detail.report.step_skipped }}</div><div class="label">步骤跳过</div></div>
-          <div class="stat"><div class="num blue">{{ detail.report.step_success_rate }}%</div><div class="label">步骤成功率</div></div>
+          <div class="stat-card"><div class="num blue">{{ detail.report.step_total }}</div><div class="label">步骤总数</div></div>
+          <div class="stat-card"><div class="num green">{{ detail.report.step_passed }}</div><div class="label">步骤通过</div></div>
+          <div class="stat-card"><div class="num red">{{ detail.report.step_failed }}</div><div class="label">步骤失败</div></div>
+          <div class="stat-card"><div class="num orange">{{ detail.report.step_error_count }}</div><div class="label">步骤异常</div></div>
+          <div class="stat-card"><div class="num gray">{{ detail.report.step_skipped }}</div><div class="label">步骤跳过</div></div>
+          <div class="stat-card"><div class="num blue">{{ detail.report.step_success_rate }}%</div><div class="label">步骤成功率</div></div>
         </div>
       </div>
 
@@ -321,31 +334,32 @@ function stepsAfterAssertions(steps: ReportStep[]) {
           </div>
         </div>
 
-        <!-- 方案 §4.4：按套件分层（套件头 + 套件前置 + 套件内用例 + 套件后置） -->
-        <el-collapse v-if="detail.suites?.length" v-model="activeSuites">
-          <el-collapse-item v-for="s in displaySuites" :key="s.id" :name="`suite:${s.id}`">
+        <!-- 方案 §4.4：按套件分层——套件卡片内嵌用例卡片（与 HTML 报告卡片层级一致，el-collapse 承载展开收起） -->
+        <el-collapse v-if="detail.suites?.length" v-model="activeSuites" class="suite-collapse">
+          <el-collapse-item v-for="s in displaySuites" :key="s.id" :name="`suite:${s.id}`" class="suite-card">
             <template #title>
               <span class="case-name">{{ s.suite_name }}</span>
               <el-tag :type="statusMeta(s.status).type" size="small">{{ statusMeta(s.status).label }}</el-tag>
               <span v-if="s.suite_id" class="case-dur">#{{ s.suite_id }}</span>
               <span class="case-dur">{{ durationText(s.duration) }}</span>
             </template>
-            <div v-if="s.error_message" class="error-text">{{ s.error_message }}</div>
+
+            <div v-if="s.error_message" class="error-box">{{ s.error_message }}</div>
 
             <template v-if="s.setup_steps.length">
               <div class="suite-phase">套件前置</div>
               <ReportStepTable :steps="s.setup_steps" :report-id="reportId" />
             </template>
 
-            <div v-for="c in s.cases" :key="c.id" class="suite-case">
-              <el-collapse v-model="activeSuites" :class="{ 'suite-collapse': true }">
-                <el-collapse-item :key="c.id" :name="`case:${c.id}`">
+            <div v-for="c in s.cases" :key="c.id" class="case-wrap">
+              <el-collapse v-model="activeSuites" class="case-collapse">
+                <el-collapse-item :key="c.id" :name="`case:${c.id}`" class="case-card">
                   <template #title>
-                    <span class="case-name">{{ c.case_name }}</span>
+                    <span class="case-name">{{ c.case_name }}<span v-if="c.module_name" class="case-module">{{ c.module_name }}</span></span>
                     <el-tag :type="statusMeta(c.status).type" size="small">{{ statusMeta(c.status).label }}</el-tag>
                     <span class="case-dur">{{ durationText(c.duration) }}</span>
                   </template>
-                  <div v-if="c.error_message" class="error-text">{{ c.error_message }}</div>
+                  <div v-if="c.error_message" class="error-box">{{ c.error_message }}</div>
                   <ReportStepTable
                     v-if="stepsBeforeAssertions(c.steps).length"
                     :steps="stepsBeforeAssertions(c.steps)"
@@ -388,14 +402,14 @@ function stepsAfterAssertions(steps: ReportStep[]) {
         </el-collapse>
 
         <!-- 单用例/历史兼容：无套件时回退扁平 cases -->
-        <el-collapse v-else v-model="activeSuites">
-          <el-collapse-item v-for="c in displayCases" :key="c.id" :name="`case:${c.id}`">
+        <el-collapse v-else v-model="activeSuites" class="case-collapse">
+          <el-collapse-item v-for="c in displayCases" :key="c.id" :name="`case:${c.id}`" class="case-card">
             <template #title>
-              <span class="case-name">{{ c.case_name }}</span>
+              <span class="case-name">{{ c.case_name }}<span v-if="c.module_name" class="case-module">{{ c.module_name }}</span></span>
               <el-tag :type="statusMeta(c.status).type" size="small">{{ statusMeta(c.status).label }}</el-tag>
               <span class="case-dur">{{ durationText(c.duration) }}</span>
             </template>
-            <div v-if="c.error_message" class="error-text">{{ c.error_message }}</div>
+            <div v-if="c.error_message" class="error-box">{{ c.error_message }}</div>
             <ReportStepTable
               v-if="stepsBeforeAssertions(c.steps).length"
               :steps="stepsBeforeAssertions(c.steps)"
@@ -497,37 +511,62 @@ function stepsAfterAssertions(steps: ReportStep[]) {
   color: #909399;
   font-size: 12px;
 }
+.stat-group {
+  margin-bottom: 2px;
+}
+.stat-title {
+  color: #909399;
+  font-size: 13px;
+  font-weight: 600;
+  margin: 4px 0 10px;
+}
 .stats {
   display: flex;
-  gap: 28px;
+  gap: 12px;
   flex-wrap: wrap;
 }
-.stat .num {
-  font-size: 24px;
-  font-weight: 700;
+.stat-card {
+  min-width: 110px;
+  background: #fff;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px;
+  padding: 12px 18px;
 }
-.stat .num.green {
+.stat-card .num {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.stat-card .num.green {
   color: #67c23a;
 }
-.stat .num.red {
+.stat-card .num.red {
   color: #f56c6c;
 }
-.stat .num.orange {
+.stat-card .num.orange {
   color: #e6a23c;
 }
-.stat .num.gray {
+.stat-card .num.gray {
   color: #909399;
 }
-.stat .num.blue {
+.stat-card .num.blue {
   color: #409eff;
 }
-.stat .label {
+.stat-card .label {
   color: #909399;
   font-size: 12px;
 }
 .case-name {
+  flex: 1;
+  min-width: 0;
   font-weight: 600;
   margin-right: 10px;
+}
+.case-module {
+  color: #909399;
+  font-size: 12px;
+  font-weight: 400;
+  margin-left: 8px;
 }
 .case-toolbar {
   display: flex;
@@ -545,11 +584,70 @@ function stepsAfterAssertions(steps: ReportStep[]) {
   font-size: 12px;
   margin-left: 10px;
 }
-.suite-case {
-  margin: 6px 0 6px 12px;
+.case-wrap {
+  margin-bottom: 10px;
 }
-.suite-collapse {
+/* 套件/用例折叠容器：去掉默认边框，白卡片由内部 item 承担 */
+.suite-collapse.el-collapse,
+.case-collapse.el-collapse {
   border: none;
+}
+/* 套件卡片（白底圆角边框 + 大数字灰标签，与 HTML 报告卡片一致） */
+.suite-card {
+  background: #fff;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px;
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+.suite-card :deep(.el-collapse-item__header) {
+  height: auto;
+  min-height: auto;
+  line-height: 1.5;
+  padding: 12px 16px;
+  background: #fff;
+  border-bottom: 1px solid transparent;
+}
+.suite-card :deep(.el-collapse-item__header.is-active) {
+  border-bottom-color: var(--el-border-color-lighter);
+}
+.suite-card :deep(.el-collapse-item__header:hover) {
+  background: var(--el-fill-color-light);
+}
+.suite-card :deep(.el-collapse-item__wrap) {
+  border-bottom: none;
+  background: #fff;
+}
+.suite-card :deep(.el-collapse-item__content) {
+  padding: 12px 16px;
+}
+/* 用例卡片（内嵌于套件 body，层层展开） */
+.case-card {
+  background: #fff;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.case-card :deep(.el-collapse-item__header) {
+  height: auto;
+  min-height: auto;
+  line-height: 1.5;
+  padding: 10px 16px;
+  background: #fff;
+  border-bottom: 1px solid transparent;
+}
+.case-card :deep(.el-collapse-item__header.is-active) {
+  border-bottom-color: var(--el-border-color-lighter);
+}
+.case-card :deep(.el-collapse-item__header:hover) {
+  background: var(--el-fill-color-light);
+}
+.case-card :deep(.el-collapse-item__wrap) {
+  border-bottom: none;
+  background: #fff;
+}
+.case-card :deep(.el-collapse-item__content) {
+  padding: 12px 16px;
 }
 .suite-phase {
   color: #909399;
@@ -557,9 +655,14 @@ function stepsAfterAssertions(steps: ReportStep[]) {
   font-weight: 600;
   margin: 8px 0 4px;
 }
-.error-text {
+.error-box {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
   color: #f56c6c;
-  margin-bottom: 8px;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  margin: 8px 0;
 }
 .truncate-note {
   color: #e6a23c;
