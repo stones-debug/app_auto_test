@@ -221,14 +221,18 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
                 snapshot_assertion_info[(c.id, order)] = info
     suite_snapshot_parameters: dict[tuple[int, str, int], dict] = {}
     for s in suite_rows:
-        for item in [*(s.setup_steps_snapshot or []), *(s.teardown_steps_snapshot or [])]:
-            if not isinstance(item, dict):
-                continue
-            order = item.get("order") or item.get("step_order")
-            params = item.get("params")
-            phase = str(item.get("phase") or "suite_setup")
-            if isinstance(order, int) and isinstance(params, dict):
-                suite_snapshot_parameters[(s.id, phase, order)] = params
+        for src, default_phase in (
+            (s.setup_steps_snapshot or [], "suite_setup"),
+            (s.teardown_steps_snapshot or [], "suite_teardown"),
+        ):
+            for item in src:
+                if not isinstance(item, dict):
+                    continue
+                order = item.get("order") or item.get("step_order")
+                params = item.get("params")
+                phase = str(item.get("phase") or default_phase)
+                if isinstance(order, int) and isinstance(params, dict):
+                    suite_snapshot_parameters[(s.id, phase, order)] = params
 
     steps_by_case: dict[int, list] = {}
     for s in case_step_rows:

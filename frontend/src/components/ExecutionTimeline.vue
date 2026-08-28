@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // V2 §5.14：执行时间线——套件/用例/步骤/断言实时状态（幂等合并 case_id+step_order）
 // 方案 §4.3：嵌套 suites（套件卡片 = 套件头 + 套件前置 + 套件内用例 + 套件后置）
-// 按需展开：套件/用例默认收起，点击头部逐层展开；收起内容用 v-if 真正卸载 + 步骤/断言行 v-memo，
-// 优化大规模执行的首屏渲染与实时 WS 更新开销。
+// 按需展开：套件/用例默认收起，点击头部逐层展开；收起内容用 v-if 真正卸载。
+// 步骤/断言行使用稳定 id 作 key（不用数组下标），避免实时 WS 插入/更新时
+// keyed patch 误复用组件实例（el-popover/el-button）导致 emitsOptions null 崩溃。
 import { computed, ref, watch } from 'vue'
 
 import { useRoute } from 'vue-router'
@@ -61,6 +62,8 @@ export interface TimelineSuite {
   id?: number
   suite_id: number | null
   suite_name: string
+  suite_order?: number
+  is_virtual?: boolean
   status: string
   duration?: number | null
   error_message?: string | null
@@ -153,13 +156,29 @@ function artifactUrl(artifactId: number): string {
   return `/api/executions/${executionId.value}/artifacts/${artifactId}`
 }
 
-function executionItems(c: TimelineCase) {
-  return orderExecutionItems(c.steps, c.assertions)
-}
+// 稳定 key：步骤/断言优先用后端 id；缺 id（实时推送尚未回填）时回退 位置+序号。
+// 严禁用数组下标作 key——实时更新会让下标位移，导致组件 VNode 被按 index 误复用。
+// key 随 item 一并生成（模板只读 item.key），避免模板 :key 中调用 script 函数
+// （vue-tsc 对特殊绑定位的函数调用 usage 检测不可靠，会误报 TS6133）。
+type KeyedExecutionItem<TStep, TAssertion> = OrderedExecutionItem<TStep, TAssertion> & { key: string }
 
 // 套件前后置步骤：纯步骤（无断言），按 step_order 顺序渲染
-function suiteItems(steps: TimelineStep[]): OrderedExecutionItem<TimelineStep, never>[] {
-  return steps.map((step, index) => ({ kind: 'step' as const, index, value: step }))
+function suiteItems(s: TimelineSuite, steps: TimelineStep[], prefix: string): KeyedExecutionItem<TimelineStep, never>[] {
+  return steps.map((step, index) => ({
+    kind: 'step' as const,
+    index,
+    value: step,
+    key: `${prefix}-${s.id ?? s.suite_id ?? 'x'}-${step.id ?? `${step.phase ?? 'main'}-${step.step_order}`}`,
+  }))
+}
+
+function executionItems(c: TimelineCase): KeyedExecutionItem<TimelineStep, TimelineAssertion>[] {
+  return orderExecutionItems(c.steps, c.assertions).map((item) => ({
+    ...item,
+    key: item.kind === 'step'
+      ? `step-${item.value.id ?? `${c.case_id}-${item.value.phase ?? 'main'}-${item.value.step_order}`}`
+      : `assert-${item.value.id ?? `${c.case_id}-${item.value.assertion_order}`}`,
+  }))
 }
 
 function fmtDuration(ms: number | null | undefined) {
@@ -194,6 +213,7 @@ function phaseLabel(phase?: TimelineStepPhase | string): { text: string; type: '
       <div class="suite-head" @click="toggleSuite(si)">
         <span class="caret" :class="{ 'is-open': expandedSuites.has(String(si)) }">▸</span>
         <span class="suite-name v2-card-title">{{ s.suite_name }}</span>
+        <span v-if="s.is_virtual" class="v2-aux">虚拟套件</span>
         <StatusBadge :status="s.status" />
         <span v-if="s.duration != null" class="suite-dur v2-aux">{{ fmtDuration(s.duration) }}</span>
       </div>
@@ -202,11 +222,8 @@ function phaseLabel(phase?: TimelineStepPhase | string): { text: string; type: '
       <template v-if="expandedSuites.has(String(si))">
         <div v-if="s.setup_steps.length" class="phase-group">
           <div class="phase-label v2-aux">套件前置</div>
-          <template v-for="item in suiteItems(s.setup_steps)" :key="`su-${s.suite_id}-${item.index}`">
-            <div
-              v-memo="[item.value.status, item.value.duration, item.value.actual_value, item.value.error_message, item.value.artifact_id]"
-              class="step-row"
-            >
+          <template v-for="item in suiteItems(s, s.setup_steps, 'su')" :key="item.key">
+            <div class="step-row">
               <span class="step-icon" :class="item.value.status">{{ item.value.status === 'passed' ? '✓' : item.value.status === 'failed' ? '✕' : '○' }}</span>
               <span class="step-order">#{{ item.value.step_order }}</span>
               <el-tag v-if="item.value.phase" size="small" :type="phaseLabel(item.value.phase).type">{{ phaseLabel(item.value.phase).text }}</el-tag>
@@ -229,12 +246,8 @@ function phaseLabel(phase?: TimelineStepPhase | string): { text: string; type: '
             <StatusBadge :status="c.status" />
           </div>
           <template v-if="expandedCases.has(`${si}:${ci}`)">
-            <template v-for="item in executionItems(c)" :key="`${c.case_id}-${item.kind}-${item.index}`">
-              <div
-                v-if="item.kind === 'step'"
-                v-memo="[item.value.status, item.value.duration, item.value.actual_value, item.value.error_message, item.value.artifact_id]"
-                class="step-row"
-              >
+            <template v-for="item in executionItems(c)" :key="item.key">
+              <div v-if="item.kind === 'step'" class="step-row">
                 <span class="step-icon" :class="item.value.status">{{ item.value.status === 'passed' ? '✓' : item.value.status === 'failed' ? '✕' : '○' }}</span>
                 <span class="step-order">#{{ item.value.step_order }}</span>
                 <el-tag v-if="item.value.phase" size="small" :type="phaseLabel(item.value.phase).type">{{ phaseLabel(item.value.phase).text }}</el-tag>
@@ -255,11 +268,7 @@ function phaseLabel(phase?: TimelineStepPhase | string): { text: string; type: '
                 </el-popover>
                 <span v-if="item.value.error_message" class="step-error v2-aux" :title="item.value.error_message">{{ item.value.error_message }}</span>
               </div>
-              <div
-                v-else
-                v-memo="[item.value.status, item.value.actual_value, item.value.error_message]"
-                class="assertion-row"
-              >
+              <div v-else class="assertion-row">
                 <span class="step-icon" :class="assertionPassed(item.value.status) ? 'passed' : 'failed'">
                   {{ assertionPassed(item.value.status) ? '✓' : 'x' }}
                 </span>
@@ -282,11 +291,8 @@ function phaseLabel(phase?: TimelineStepPhase | string): { text: string; type: '
 
         <div v-if="s.teardown_steps.length" class="phase-group">
           <div class="phase-label v2-aux">套件后置</div>
-          <template v-for="item in suiteItems(s.teardown_steps)" :key="`st-${s.suite_id}-${item.index}`">
-            <div
-              v-memo="[item.value.status, item.value.duration, item.value.actual_value, item.value.error_message, item.value.artifact_id]"
-              class="step-row"
-            >
+          <template v-for="item in suiteItems(s, s.teardown_steps, 'st')" :key="item.key">
+            <div class="step-row">
               <span class="step-icon" :class="item.value.status">{{ item.value.status === 'passed' ? '✓' : item.value.status === 'failed' ? '✕' : '○' }}</span>
               <span class="step-order">#{{ item.value.step_order }}</span>
               <el-tag v-if="item.value.phase" size="small" :type="phaseLabel(item.value.phase).type">{{ phaseLabel(item.value.phase).text }}</el-tag>

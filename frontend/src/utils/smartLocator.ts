@@ -120,6 +120,17 @@ export function isBooleanAttribute(attr: string): boolean {
   return BOOLEAN_ATTRIBUTES.includes(attr as SmartConditionAttribute)
 }
 
+/** 该条件是否可用 UiAutomator UiSelector 链表达（否则需回退 Strategy X / XPath）。
+ * 与后端/Agent 的 _uiautomator_expressible 同规则。 */
+export function isUiautomatorExpressible(c: SmartCondition): boolean {
+  if (c.attribute === 'displayed') return false
+  if (c.attribute === 'text' || c.attribute === 'content_desc') return c.operator !== 'ends_with'
+  if (c.attribute === 'resource_id' || c.attribute === 'class_name' || c.attribute === 'package') {
+    return c.operator === 'equals' || c.operator === 'regex'
+  }
+  return c.operator === 'equals'
+}
+
 export function attributeLabel(attr: string): string {
   return SMART_ATTRIBUTES.find((a) => a.value === attr)?.label ?? attr
 }
@@ -218,6 +229,21 @@ export function validateSmartConfig(config: SmartLocatorConfig | null | undefine
         errors.push(`${label}的匹配条件不能为空`)
       } else {
         validateConditions(alt.target, `${label}的匹配条件`, errors)
+      }
+
+      const anchor = alt.anchor ?? []
+      const path = alt.path ?? []
+      if (path.length && !anchor.length) {
+        errors.push(`${label}：相对路径必须同时提供锚点`)
+      }
+      if (anchor.length || path.length) {
+        if (alt.target.some((c) => c.operator === 'regex') || anchor.some((c) => c.operator === 'regex')) {
+          errors.push(`${label}：锚点/相对路径定位不支持正则匹配（正则仅支持普通匹配条件）`)
+        }
+      } else if (alt.target.some((c) => c.operator === 'regex')) {
+        if (alt.target.some((c) => c.operator === 'ends_with' || !isUiautomatorExpressible(c))) {
+          errors.push(`${label}：正则匹配不能与「以…结尾」/显示中（displayed）等需 XPath 表达的条件组合`)
+        }
       }
     })
   }

@@ -256,7 +256,8 @@ function summary(): string {
               </el-button>
             </div>
 
-            <el-button v-if="(draft.alternatives ?? []).length === 1" size="small" text type="primary" class="add-alt" @click="onAddAlt">+ 添加备用规则</el-button>
+            <el-button v-if="draft.alternatives.length < SMART_LIMITS.alternativesMax" size="small" text type="primary" class="add-alt" @click="onAddAlt">+ 添加备用规则</el-button>
+            <div v-else class="v2-aux">候选规则已达 {{ SMART_LIMITS.alternativesMax }} 条上限</div>
           </div>
         </div>
       </div>
@@ -299,7 +300,7 @@ function summary(): string {
         class="index-alert"
         title="仅当页面元素顺序绝对稳定时使用；顺序变化会误定位或越界失败。"
       />
-      <div v-else class="v2-aux">按唯一匹配定位元素；同屏存在多个匹配时将继续向下查找。</div>
+      <div v-else class="v2-aux">按唯一匹配定位元素；同屏存在多个匹配时判定为「不唯一」并报错，不会继续滚动或查找。</div>
     </div>
 
     <div v-if="validateErrors.length" class="errors">

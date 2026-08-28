@@ -20,7 +20,13 @@ import { useExecutionRetry } from '@/composables/useExecutionRetry'
 import { useExecutionSocket } from '@/composables/useExecutionSocket'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { getToken } from '@/utils/request'
-import { liveLogKey, mergeExecutionLogs, type LogLike } from '@/utils/executionLogs'
+import {
+  appendLogs,
+  liveLogKey,
+  mergeExecutionLogs,
+  nextLogCursor,
+  type LogLike,
+} from '@/utils/executionLogs'
 import {
   applyAssertionResult,
   applyCaseStatus,
@@ -60,6 +66,8 @@ function toTimelineSuites(suites: ExecutionDetail['suites']): TimelineSuite[] {
     id: s.id,
     suite_id: s.suite_id,
     suite_name: s.suite_name,
+    suite_order: s.suite_order,
+    is_virtual: s.is_virtual ?? false,
     status: s.status,
     duration: s.duration,
     error_message: s.error_message,
@@ -147,6 +155,19 @@ function resetLogs() {
   logKeys = new Set()
 }
 
+// 全量分页拉取执行日志：循环翻页直到累计 ≥ total 或空页；页数上限 50（=10000 条），超过则不再分页（极端场景保护）。
+async function fetchAllLogs(id: number): Promise<ExecutionLog[]> {
+  const pageSize = 200
+  const maxPages = 50
+  let all: ExecutionLog[] = []
+  for (let page = 1; page <= maxPages; page++) {
+    const data = await getExecutionLogs(id, { page, page_size: pageSize })
+    all = [...all, ...data.items]
+    if (data.items.length === 0 || all.length >= data.total) break
+  }
+  return all
+}
+
 async function loadAll(id: number) {
   const myStale = ++staleId
   loading.value = true
@@ -158,9 +179,9 @@ async function loadAll(id: number) {
     detail.value = data
     timelineSuites.value = toTimelineSuites(data.suites)
     resetLogs()
-    const logData = await getExecutionLogs(id, { page_size: 200 })
+    const allLogs = await fetchAllLogs(id)
     if (staleId !== myStale) return
-    logs.value = logData.items
+    logs.value = allLogs
     reportId.value = null
     completedPulled = false
     if (isTerminal(data.status)) {
@@ -185,6 +206,15 @@ async function resyncAfterConnect(id: number) {
     if (staleId !== myStale || executionId.value !== id || realtimeVersion !== versionAtStart) return
     detail.value = data
     timelineSuites.value = toTimelineSuites(data.suites)
+    // 断线窗口补拉日志：以当前已显示日志（含 live，即 logEntries）的最大时间为游标，
+    // 把新的 REST 行并入 logs.value（appendLogs 按 id 去重、live 容差去重交给 logEntries computed）。
+    const cursor = nextLogCursor(logEntries.value)
+    if (cursor) {
+      const page = await getExecutionLogs(id, { after_timestamp: cursor, page_size: 200 })
+      if (staleId === myStale && executionId.value === id && realtimeVersion === versionAtStart) {
+        logs.value = appendLogs(logs.value, page.items) as ExecutionLog[]
+      }
+    }
     if (isTerminal(data.status)) {
       socket.value?.close()
       const rid = await findReportByExecution(id)

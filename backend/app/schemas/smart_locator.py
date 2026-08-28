@@ -22,6 +22,19 @@ _OPERATORS = {"equals", "contains", "starts_with", "ends_with", "regex"}
 _DEPTH_AXES = {"ancestor", "parent"}
 
 
+def _uiautomator_expressible(cond: "SmartCondition") -> bool:
+    """该条件是否可用 UiAutomator UiSelector 链表达（否则回退 Strategy X）。"""
+    attribute = cond.attribute
+    operator = cond.operator
+    if attribute == "displayed":
+        return False
+    if attribute in ("text", "content_desc"):
+        return operator != "ends_with"
+    if attribute in ("resource_id", "class_name", "package"):
+        return operator in ("equals", "regex")
+    return operator == "equals"
+
+
 class SmartCondition(BaseModel):
     attribute: Literal["text", "content_desc", "resource_id", "class_name", "package",
                        "clickable", "enabled", "selected", "displayed"]
@@ -79,6 +92,33 @@ class SmartAlternative(BaseModel):
     anchor: list[SmartCondition] | None = Field(default=None, min_length=1, max_length=20)
     path: list[SmartPathSegment] | None = Field(default=None, min_length=1, max_length=3)
     target: list[SmartCondition] = Field(min_length=1, max_length=20)  # 必填，同为 AND
+
+    @model_validator(mode="after")
+    def _validate_combinations(self):
+        # 与 agent/executor/smart_locator.py `_validate_alternative` 一致的组合规则
+        anchor = self.anchor or []
+        path = self.path or []
+        # 1) path 相对定位必须同时提供 anchor
+        if path and not anchor:
+            raise ValueError("path 相对定位必须同时提供 anchor")
+        # 2) anchor/path 相对定位不支持 regex（XPath 无法表达 regex）
+        if anchor or path:
+            for cond in [*self.target, *anchor]:
+                if cond.operator == "regex":
+                    raise ValueError(
+                        "anchor/path 相对定位不支持 regex 条件（XPath 无法表达 regex，"
+                        "regex 仅支持普通 target 的 Strategy U）"
+                    )
+        else:
+            # 3) 普通 target：regex 需走 Strategy U，不能与需 XPath 表达的条件共存
+            has_regex = any(cond.operator == "regex" for cond in self.target)
+            needs_xpath = any(
+                cond.operator == "ends_with" or not _uiautomator_expressible(cond)
+                for cond in self.target
+            )
+            if has_regex and needs_xpath:
+                raise ValueError("regex 条件不能与 ends_with/displayed 等需 XPath 表达的条件组合")
+        return self
 
 
 class SmartSearchConfig(BaseModel):

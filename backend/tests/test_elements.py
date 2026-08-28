@@ -632,6 +632,32 @@ async def test_element_create_smart_validation(client: AsyncClient):
     assert with_value.status_code == 422
 
 
+async def test_element_create_smart_combo_positive_cases(client: AsyncClient):
+    """合法组合不被误杀：纯 regex target（Strategy U）、regex+equals（均可 UiAutomator）、
+    anchor-only（无 path）、anchor+path 含 contains（XPath 可表达）。"""
+    headers, project_id = await _setup(client)
+
+    def _body(config):
+        return {"project_id": project_id, "name": "合法组合", "locator_type": "smart", "locator_config": config}
+
+    positive = [
+        # 纯 regex（Strategy U）
+        {"version": 1, "alternatives": [{"target": [{"attribute": "text", "operator": "regex", "value": "\\d+"}]}]},
+        # regex + equals（均可 UiAutomator 表达）
+        {"version": 1, "alternatives": [{"target": [
+            {"attribute": "text", "operator": "regex", "value": "^\\d+$"},
+            {"attribute": "text", "operator": "equals", "value": "登录"},
+        ]}]},
+        # anchor-only（无 path）
+        {"version": 1, "alternatives": [{"anchor": [{"attribute": "text", "operator": "equals", "value": "登录"}], "target": [{"attribute": "resource_id", "operator": "contains", "value": "btn"}]}]},
+        # anchor+path 含 contains target（XPath 表达，无 regex）
+        SMART_CONFIG,
+    ]
+    for config in positive:
+        resp = await client.post("/api/elements", headers=headers, json=_body(config))
+        assert resp.status_code == 201, f"config {config} should be accepted"
+
+
 async def test_element_create_smart_invalid_configs(client: AsyncClient):
     """非法 config 系列全部 422：未知 attribute/operator、布尔属性非 equals、无效 regex、超限结构。"""
     headers, project_id = await _setup(client)
@@ -686,6 +712,12 @@ async def test_element_create_smart_invalid_configs(client: AsyncClient):
             "alternatives": [{"target": [{"attribute": "text", "operator": "equals", "value": "x"}]}],
             "search": {"max_swipes": 30},
         },
+        # path 无 anchor（组合规则）
+        {"version": 1, "alternatives": [{"target": [{"attribute": "text", "operator": "equals", "value": "x"}], "path": [{"axis": "child"}]}]},
+        # anchor/path 相对定位禁用 regex
+        {"version": 1, "alternatives": [{"anchor": [{"attribute": "text", "operator": "equals", "value": "锚点"}], "path": [{"axis": "child"}], "target": [{"attribute": "text", "operator": "regex", "value": "\\d+"}]}]},
+        # regex 与需 XPath 表达的条件混用
+        {"version": 1, "alternatives": [{"target": [{"attribute": "text", "operator": "regex", "value": "\\d+"}, {"attribute": "text", "operator": "ends_with", "value": "页"}]}]},
     ]
     for config in bad_configs:
         resp = await client.post("/api/elements", headers=headers, json=_body(config))

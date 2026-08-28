@@ -73,6 +73,7 @@ export interface ExecutionSuite {
   suite_id: number | null
   suite_name: string
   suite_order: number
+  is_virtual: boolean
   status: string
   duration: number | null
   error_message: string | null

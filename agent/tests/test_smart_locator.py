@@ -215,6 +215,51 @@ async def test_smart_scroll_finds_offscreen_element():
     assert driver.swipe_count == 1
 
 
+# ---------- P1 修复：滚动不得破坏备用规则回退 ----------
+
+
+async def test_smart_scroll_checks_all_alternatives_on_each_page():
+    """BUG 修复回归：候选1 耗尽滚动前，候选2 在首页就应被查过并命中。
+
+    旧实现：候选1 先耗尽全部滚动预算，候选2 只在最后一页才被检查；
+    候选2 位于首页时会被滚动永久错过（ScrollLimitReached）。
+    """
+    driver = MockDriver()
+    driver.set_screen([_node(text="备用按钮", id="fallback")])
+    driver.set_scroll_callback(lambda count: [_node(text=f"第{count}屏")])
+    config = _config(
+        [],
+        alternatives=[
+            {"target": [{"attribute": "text", "operator": "equals", "value": "永远不存在"}]},
+            {"target": [{"attribute": "text", "operator": "equals", "value": "备用按钮"}]},
+        ],
+        search=_scroll_search(max_swipes=5),
+    )
+    element = _context(driver, config).find_element("1")
+    assert element.locator_value == "fallback"
+    assert driver.swipe_count == 0  # 首页直接命中，无需滚动
+
+
+async def test_smart_scroll_rechecks_all_alternatives_on_new_page():
+    """新页面重新检查全部候选：候选2 在第 1 次滚动后的页面命中。"""
+    driver = MockDriver()
+    driver.set_screen([_node(text="第一屏")])
+    driver.set_scroll_callback(
+        lambda count: [_node(text="第二屏目标", id="target2")] if count >= 1 else None
+    )
+    config = _config(
+        [],
+        alternatives=[
+            {"target": [{"attribute": "text", "operator": "equals", "value": "永远不存在"}]},
+            {"target": [{"attribute": "text", "operator": "equals", "value": "第二屏目标"}]},
+        ],
+        search=_scroll_search(max_swipes=5),
+    )
+    element = _context(driver, config).find_element("1")
+    assert element.locator_value == "target2"
+    assert driver.swipe_count == 1
+
+
 # ---------- 场景 7：滚动到底（指纹连续两次不变提前停止） ----------
 
 
@@ -734,6 +779,51 @@ async def test_element_exists_re_raises_stop_requested():
     )
     with pytest.raises(StopRequested):
         await ElementExistsAssertion().verify(driver, context, {"element_id": 1, "expected": "exists"})
+
+
+async def test_element_exists_only_elementnotfound_counts_as_not_exists():
+    """BUG 修复回归：只把明确的 ElementNotFound 识别为不存在。
+
+    配置非法（InvalidSmartLocator）、匹配不唯一（ElementNotUnique）、
+    滚动超限（ScrollLimitReached）在 expected=not_exists 时必须上抛，
+    不得被吞掉误判为不存在。
+    """
+    from executor.assertions import ElementExistsAssertion
+
+    assertion = ElementExistsAssertion()
+    params = {"element_id": "1", "expected": "not_exists"}
+
+    # 1) 明确不存在 → not_exists 通过
+    driver = MockDriver()
+    context = _context(driver, _config([{"attribute": "text", "operator": "equals", "value": "缺失按钮"}]))
+    result = await assertion.verify(driver, context, params)
+    assert result["status"] == "passed"
+    assert result["actual"] == "not_found"
+
+    # 2) 配置非法 → 上抛
+    driver = MockDriver()
+    context = _context(driver, _config([{"attribute": "text", "operator": "equals", "value": ""}]))
+    with pytest.raises(InvalidSmartLocator):
+        await assertion.verify(driver, context, params)
+
+    # 3) 匹配不唯一 → 上抛
+    driver = MockDriver()
+    driver.set_screen([_node(text="重复", id="a"), _node(text="重复", id="b")])
+    context = _context(driver, _config([{"attribute": "text", "operator": "equals", "value": "重复"}]))
+    with pytest.raises(ElementNotUnique):
+        await assertion.verify(driver, context, params)
+
+    # 4) 滚动超限 → 上抛
+    driver = MockDriver()
+    context = _context(
+        driver,
+        _config(
+            [{"attribute": "text", "operator": "equals", "value": "缺失按钮"}],
+            search=_scroll_search(max_swipes=2),
+        ),
+    )
+    with pytest.raises(ScrollLimitReached):
+        await assertion.verify(driver, context, params)
 
 
 async def test_scroll_action_wrapped_in_stale_retry():

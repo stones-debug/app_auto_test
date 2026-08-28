@@ -1,6 +1,6 @@
 import re
 
-from .driver import StopRequested
+from .driver import ElementNotFound, StopRequested
 from .stale_guard import with_stale_retry
 
 
@@ -36,7 +36,11 @@ class ElementExistsAssertion(BaseAssertion):
         except StopRequested:
             # 停止信号不能被存在性检查吞掉，必须上抛（由 Runner 收敛为 stopped）
             raise
-        except Exception:
+        except ElementNotFound:
+            # 仅将明确的元素不存在识别为 not_found；
+            # 其余异常（配置非法 InvalidSmartLocator / 匹配不唯一 ElementNotUnique /
+            # 滚动超限 ScrollLimitReached / Appium 故障 / stale 重试耗尽）一律上抛，
+            # 避免 expected=not_exists 时错误通过。
             found = False
         passed = found if expected == "exists" else not found
         return {

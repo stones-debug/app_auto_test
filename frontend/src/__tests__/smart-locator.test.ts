@@ -161,6 +161,7 @@ describe('相对路径', () => {
   it('ancestor depth 5 合法，6 越界报错', () => {
     const ok = createDefaultConfig()
     ok.alternatives[0].target[0].value = 'x'
+    ok.alternatives[0].anchor = [{ attribute: 'text', operator: 'equals', value: '锚点' }]
     ok.alternatives[0].path = [{ axis: 'ancestor', depth: 5 }]
     expect(validateSmartConfig(ok)).toHaveLength(0)
 
@@ -177,6 +178,60 @@ describe('相对路径', () => {
     expect(cfg.alternatives[0].path!.map((p) => p.axis)).toEqual(['ancestor', 'child', 'following_sibling'])
     cfg = removePathSegment(cfg, 0, 0)
     expect(cfg.alternatives[0].path!.map((p) => p.axis)).toEqual(['child', 'following_sibling'])
+  })
+})
+
+describe('组合校验（与 Agent 运行时一致）', () => {
+  it('path 无 anchor → 拦截', () => {
+    const cfg = createDefaultConfig()
+    cfg.alternatives[0].target[0].value = 'x'
+    cfg.alternatives[0].path = [{ axis: 'child' }]
+    expect(validateSmartConfig(cfg).some((e) => e.includes('锚点'))).toBe(true)
+  })
+
+  it('anchor+path 相对定位禁用 regex（target 与 anchor 均不得用）', () => {
+    const inTarget = createDefaultConfig()
+    inTarget.alternatives[0].target[0].value = 'x'
+    inTarget.alternatives[0].anchor = [{ attribute: 'text', operator: 'equals', value: '锚点' }]
+    inTarget.alternatives[0].path = [{ axis: 'child' }]
+    inTarget.alternatives[0].target.push({ attribute: 'text', operator: 'regex', value: '\\d+' })
+    expect(validateSmartConfig(inTarget).some((e) => e.includes('正则'))).toBe(true)
+
+    const inAnchor = createDefaultConfig()
+    inAnchor.alternatives[0].target[0].value = 'x'
+    inAnchor.alternatives[0].anchor = [{ attribute: 'text', operator: 'regex', value: '\\d+' }]
+    inAnchor.alternatives[0].path = [{ axis: 'child' }]
+    expect(validateSmartConfig(inAnchor).some((e) => e.includes('正则'))).toBe(true)
+  })
+
+  it('普通目标：regex 与 ends_with/displayed 混用 → 拦截', () => {
+    const endWith = setTarget({ operator: 'regex', value: '\\d+' })
+    endWith.alternatives[0].target.push({ attribute: 'text', operator: 'ends_with', value: '页' })
+    expect(validateSmartConfig(endWith).some((e) => e.includes('正则匹配'))).toBe(true)
+
+    const displayed = setTarget({ operator: 'regex', value: '\\d+' })
+    displayed.alternatives[0].target.push({ attribute: 'displayed', operator: 'equals', value: true })
+    expect(validateSmartConfig(displayed).some((e) => e.includes('正则匹配'))).toBe(true)
+  })
+
+  it('普通目标：regex + equals/contains（均可 UiAutomator）→ 合法', () => {
+    const cfg = setTarget({ operator: 'regex', value: '\\d+' })
+    cfg.alternatives[0].target.push({ attribute: 'text', operator: 'equals', value: '登录' })
+    cfg.alternatives[0].target.push({ attribute: 'content_desc', operator: 'contains', value: '设置' })
+    expect(validateSmartConfig(cfg)).toHaveLength(0)
+  })
+
+  it('anchor-only（无 path）→ 合法；path+anchor+contains → 合法', () => {
+    const anchorOnly = createDefaultConfig()
+    anchorOnly.alternatives[0].target[0].value = 'x'
+    anchorOnly.alternatives[0].anchor = [{ attribute: 'text', operator: 'equals', value: '锚点' }]
+    expect(validateSmartConfig(anchorOnly)).toHaveLength(0)
+
+    const anchorPath = createDefaultConfig()
+    anchorPath.alternatives[0].target[0] = { attribute: 'resource_id', operator: 'contains', value: 'btn' }
+    anchorPath.alternatives[0].anchor = [{ attribute: 'text', operator: 'equals', value: '登录' }]
+    anchorPath.alternatives[0].path = [{ axis: 'parent', depth: 1 }]
+    expect(validateSmartConfig(anchorPath)).toHaveLength(0)
   })
 })
 

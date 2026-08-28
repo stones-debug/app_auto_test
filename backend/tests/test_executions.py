@@ -625,3 +625,66 @@ async def test_execution_detail_aggregates_steps_assertions(client: AsyncClient)
     assert case["assertions"][0]["assertion_order"] == 1
     assert case["assertions"][0]["description"] == "断言说明"
     assert case["assertions"][0]["params"] is not None
+
+
+async def test_execution_detail_suite_snapshot_phase_merge(client: AsyncClient):
+    """回归：套件 setup/teardown 快照参数按各自 phase 合并。
+
+    teardown 快照项通常不带 phase 字段（位置即语义），旧实现一律默认成
+    "suite_setup" 键，导致：teardown 步骤参数查不到（显示为空），且当
+    setup/teardown 含相同 step_order 时 teardown 项覆盖 setup 项参数。
+    """
+    from app.core.database import SessionLocal
+    from app.models import Execution, ExecutionStep, ExecutionSuite
+
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    async with SessionLocal() as db:
+        execution = Execution(project_id=project_id, type="case", status="passed")
+        db.add(execution)
+        await db.commit()
+        await db.refresh(execution)
+        execution_id = execution.id
+
+        suite = ExecutionSuite(
+            execution_id=execution_id,
+            suite_id=None,
+            suite_name="快照合并套件",
+            suite_order=1,
+            is_virtual=True,
+            status="passed",
+            setup_steps_snapshot=[{"order": 1, "params": {"action": "setup1"}}],
+            teardown_steps_snapshot=[{"order": 1, "params": {"action": "teardown1"}}],
+            elements_snapshot={},
+        )
+        db.add(suite)
+        await db.flush()
+        # 套件步骤行参数列留空，模拟快照回填路径（parameters or snapshot）
+        db.add(
+            ExecutionStep(
+                execution_suite_id=suite.id,
+                step_order=1,
+                action="准备环境",
+                phase="suite_setup",
+                status="passed",
+            )
+        )
+        db.add(
+            ExecutionStep(
+                execution_suite_id=suite.id,
+                step_order=1,
+                action="清理环境",
+                phase="suite_teardown",
+                status="passed",
+            )
+        )
+        await db.commit()
+
+    detail = (await client.get(f"/api/executions/{execution_id}", headers=headers)).json()
+    suites = detail["suites"]
+    assert len(suites) == 1
+    suite = suites[0]
+    assert suite["setup_steps"][0]["parameters"] == {"action": "setup1"}
+    assert suite["teardown_steps"][0]["parameters"] == {"action": "teardown1"}

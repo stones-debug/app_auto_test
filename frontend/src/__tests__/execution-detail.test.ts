@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { liveLogKey, mergeExecutionLogs } from '@/utils/executionLogs'
+import { appendLogs, liveLogKey, mergeExecutionLogs, nextLogCursor } from '@/utils/executionLogs'
 import {
   applyAssertionResult,
   applyCaseStatus,
@@ -345,6 +345,70 @@ describe('Step 7 执行详情：日志去重与 WS 状态', () => {
     const key1 = liveLogKey('INFO', 'x', 't1')
     const key2 = liveLogKey('INFO', 'x', 't1')
     expect(key1).toBe(key2)
+  })
+
+  it('REST 与 live 时间差 ≤1s 且 level+message 相同 → 只保留一条（容差去重）', () => {
+    const rest = [{ id: 7, level: 'INFO', message: '启动', created_at: '2026-08-27T10:00:00.500000' }]
+    // live 版微秒时间戳不同（差 200ms），level+message 相同 → 视为同一行，丢弃 live 版
+    const live = [{ id: -1, level: 'INFO', message: '启动', created_at: '2026-08-27T10:00:00.300000' }]
+    const merged = mergeExecutionLogs(rest, live)
+    expect(merged).toHaveLength(1)
+    expect(merged[0].id).toBe(7) // 保留 REST 版本
+  })
+
+  it('REST 与 live 时间差 >1s 且 level+message 相同 → 两条都保留', () => {
+    const rest = [{ id: 7, level: 'INFO', message: '启动', created_at: '2026-08-27T10:00:00.500000' }]
+    // 差 1500ms，超出容差 → 视为不同日志，均保留
+    const live = [{ id: -1, level: 'INFO', message: '启动', created_at: '2026-08-27T10:00:02.000000' }]
+    const merged = mergeExecutionLogs(rest, live)
+    expect(merged).toHaveLength(2)
+  })
+
+  it('REST 行按 id 去重（保留后出现的）', () => {
+    const rest = [
+      { id: 3, level: 'INFO', message: '旧', created_at: '2026-08-27T10:00:01Z' },
+      { id: 3, level: 'INFO', message: '旧', created_at: '2026-08-27T10:00:01Z' },
+    ]
+    const merged = mergeExecutionLogs(rest, [])
+    expect(merged).toHaveLength(1)
+  })
+
+  it('nextLogCursor：空数组返回 null；有行返回时间最大行的原始字符串', () => {
+    expect(nextLogCursor([])).toBeNull()
+    const rows = [
+      { id: 1, level: 'INFO', message: 'a', created_at: '2026-08-27T10:00:01Z' },
+      { id: 2, level: 'INFO', message: 'b', created_at: '2026-08-27T10:00:03+00:00' },
+      { id: 3, level: 'INFO', message: 'c', created_at: '2026-08-27T10:00:02Z' },
+    ]
+    expect(nextLogCursor(rows)).toBe('2026-08-27T10:00:03+00:00')
+    // 混合 +00:00 / Z / naive 排序正确（按时间数值）
+    const mixed = [
+      { id: 1, level: 'INFO', message: 'a', created_at: '2026-08-27T10:00:00' },
+      { id: 2, level: 'INFO', message: 'b', created_at: '2026-08-27T10:00:01Z' },
+      { id: 3, level: 'INFO', message: 'c', created_at: '2026-08-27T10:00:02+00:00' },
+    ]
+    expect(nextLogCursor(mixed)).toBe('2026-08-27T10:00:02+00:00')
+  })
+
+  it('appendLogs 增量合并：batch REST 按 id 去重、命中容差的 live 被丢弃、最终排序', () => {
+    const existing = [
+      // REST 行（id>0）与 live 行（id<0）混合（均用 UTC 后缀，避免 naive 按本地时区解析打乱排序）
+      { id: 10, level: 'INFO', message: 'a', created_at: '2026-08-27T10:00:00Z' },
+      { id: -1, level: 'INFO', message: 'b', created_at: '2026-08-27T10:00:01.100000+00:00' },
+    ]
+    const batch = [
+      // 新 REST：与 existing 中 live 'b' 同内容且时间差 100ms → 丢弃 live 版
+      { id: 11, level: 'INFO', message: 'b', created_at: '2026-08-27T10:00:01.200000+00:00' },
+      // 重复 id → 与 existing id=10 相同 id，保留后出现的（batch 在后）
+      { id: 10, level: 'INFO', message: 'a', created_at: '2026-08-27T10:00:00Z' },
+      { id: 12, level: 'WARN', message: 'c', created_at: '2026-08-27T10:00:03Z' },
+    ]
+    const merged = appendLogs(existing, batch)
+    // a(10)、b(11)、c(12) 三条；live 'b'(-1) 被容差去重
+    expect(merged.map((l) => Number(l.id ?? 0)).sort((x, y) => x - y)).toEqual([10, 11, 12])
+    expect(merged.filter((l) => l.message === 'b')).toHaveLength(1)
+    // 排序按时间升序：a(00:00:00) < b(00:00:01) < c(00:00:03)
+    expect(merged.map((l) => l.message)).toEqual(['a', 'b', 'c'])
   })
 
   it('executionWsUrl 不把 token 以明文拼进 URL 之外的任何 header（token 走 query 参数）', () => {

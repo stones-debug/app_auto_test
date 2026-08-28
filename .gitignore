@@ -56,3 +56,5 @@ frontend/src/components.d.ts
 # deepwork session state
 .slim/deepwork/
 .slim/
+.reasonix/*
+reasonix.toml
