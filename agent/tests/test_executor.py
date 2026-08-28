@@ -1562,9 +1562,32 @@ async def test_find_text_click_scroll_preferred_fails_reverse_crosses_start():
     action, context = _run_find_text(driver, _find_text_params())
     result = await action.execute(driver, context, _find_text_params())
     assert result["status"] == "passed"
-    assert result["found_after_swipes"] == 4  # 1 成功上滑 + 3 下滑（2 返起点 + 1 越过）；边界上滑不计
+    assert result["found_after_swipes"] == 5  # 2 上滑（含边界）+ 3 下滑（2 返起点 + 1 越过）
     assert driver.up_count == 2
     assert driver.down_count == 3
+
+
+async def test_find_text_click_reverse_boundary_last_screen_still_queried():
+    """回归：反向最后一次滚动返回 False（到达边界）但滚动确实发生了。
+
+    此时新页面已经出现且含目标，旧实现滚动后直接 break 会漏查这一屏；
+    修复后应先查询新页面，再根据 canContinue 决定是否结束。
+    """
+    driver = _ListScrollDriver(_FULL_SCREEN)
+    driver.set_screen([{"id": "i0", "text": "项目一", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
+    # 首选方向首次上滑即到边界，无目标
+    driver.up_boundary_at = 1
+    # 反向首次下滑返回 False（边界），但该次滚动后目标出现在最后一屏
+    target_page = [{"id": "t1", "text": "系统时间", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}]
+    driver.down_pages = lambda count: target_page if count >= 1 else None
+    driver.down_boundary_at = 1
+    action, context = _run_find_text(driver, _find_text_params())
+    result = await action.execute(driver, context, _find_text_params())
+    assert result["status"] == "passed"
+    assert result["found_after_swipes"] == 2  # 1 上滑（边界）+ 1 下滑（边界）后命中最后一屏
+    assert driver.up_count == 1
+    assert driver.down_count == 1
+    assert driver.clicked == ["系统时间"]
 
 
 async def test_find_text_click_preferred_boundary_switches_to_reverse():

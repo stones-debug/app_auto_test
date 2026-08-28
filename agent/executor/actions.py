@@ -210,10 +210,14 @@ class SwipeInElementFindTextClickAction(BaseAction):
 
         done_swipes = 0
         preferred_swipes = 0
+        reverse_swipes = 0
         last_click_error: BaseException | None = None
 
-        # 阶段 1：首选方向，最多 max_swipes 次
-        for i in range(max_swipes + 1):
+        # 阶段 1：首选方向，最多 max_swipes 次。
+        # 滚动后必须先查询新页面，再依据 scrollGesture 的 canContinue 决定是否结束：
+        # 返回 False 仅表示“本次滚动后不能再继续”，不代表本次滚动没有发生，
+        # 因此最后一次滚动产生的新页面必须在结束前排查，否则会漏查最后一屏。
+        while True:
             found, error = await self._try_find_and_click(
                 driver, context, element_id, selector, container_wait_timeout,
             )
@@ -221,18 +225,14 @@ class SwipeInElementFindTextClickAction(BaseAction):
                 return self._make_result(done_swipes, target_text)
             if error is not None:
                 last_click_error = error
-            if i >= max_swipes:
+            if preferred_swipes >= max_swipes:
                 break
-            if not await self._scroll_dir(
+            can_continue = await self._scroll_dir(
                 driver, context, element_id, preferred, percent,
                 container_wait_timeout, settle_ms,
-            ):
-                break
+            )
             done_swipes += 1
             preferred_swipes += 1
-
-        # 阶段 2：反向，预算 = 首选实际滑动次数 + max_swipes（前半返回起点，后半探索另一侧）
-        for i in range(preferred_swipes + max_swipes + 1):
             found, error = await self._try_find_and_click(
                 driver, context, element_id, selector, container_wait_timeout,
             )
@@ -240,14 +240,36 @@ class SwipeInElementFindTextClickAction(BaseAction):
                 return self._make_result(done_swipes, target_text)
             if error is not None:
                 last_click_error = error
-            if i >= preferred_swipes + max_swipes:
+            if not can_continue:
                 break
-            if not await self._scroll_dir(
+
+        # 阶段 2：反向，预算 = 首选实际滑动次数 + max_swipes（前半返回起点，后半探索另一侧）
+        reverse_budget = preferred_swipes + max_swipes
+        while True:
+            found, error = await self._try_find_and_click(
+                driver, context, element_id, selector, container_wait_timeout,
+            )
+            if found:
+                return self._make_result(done_swipes, target_text)
+            if error is not None:
+                last_click_error = error
+            if reverse_swipes >= reverse_budget:
+                break
+            can_continue = await self._scroll_dir(
                 driver, context, element_id, opposite, percent,
                 container_wait_timeout, settle_ms,
-            ):
-                break
+            )
             done_swipes += 1
+            reverse_swipes += 1
+            found, error = await self._try_find_and_click(
+                driver, context, element_id, selector, container_wait_timeout,
+            )
+            if found:
+                return self._make_result(done_swipes, target_text)
+            if error is not None:
+                last_click_error = error
+            if not can_continue:
+                break
 
         raise ElementNotFound(self._failure_reason(
             element_id, target_text, match_mode, preferred, opposite,
