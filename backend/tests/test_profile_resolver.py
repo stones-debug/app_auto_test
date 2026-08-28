@@ -350,6 +350,44 @@ async def test_revision_conflict(client):
             await resolve_compat(request, db)
 
 
+async def test_preview_allows_soft_deleted_element_referenced_by_case(client):
+    """设计 §10.3：快照补全含已逻辑删除元素——已保存用例引用被删元素仍可预览。
+
+    校验仅要求元素存在且属于本项目；元素被软删除不应让预览报 PROFILE_ELEMENT_MISSING。
+    """
+    base = await _base(client)
+    el = await client.post(
+        f"/api/projects/{base['project_id']}/elements",
+        headers=base["headers"],
+        json={"name": "登录按钮", "locator_type": "resource_id", "locator_value": "login_btn"},
+    )
+    element_id = el.json()["id"]
+    resp = await client.post(
+        f"/api/projects/{base['project_id']}/cases",
+        headers=base["headers"],
+        json={"name": "引用已删元素", "steps": [{"key": str(uuid.uuid4()), "order": 1, "action": "click", "element_id": element_id, "params": {"wait_timeout": 5}}]},
+    )
+    assert resp.status_code == 201
+    case_id = resp.json()["id"]
+    # 软删除元素
+    deleted = await client.delete(f"/api/elements/{element_id}", headers=base["headers"])
+    assert deleted.status_code == 204
+    async with SessionLocal() as db:
+        profile_id = await _make_profile(db, base)
+        result = await resolve_compat(
+            ResolutionRequest(
+                project_id=base["project_id"], profile_id=profile_id, release_id=await _release_id(db, profile_id),
+                target_type="case", target_ids=[case_id],
+                expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
+            ),
+            db,
+        )
+    assert result.cases[0].steps_snapshot[0]["element_id"] == element_id
+    snap = result.cases[0].elements_snapshot[str(element_id)]
+    assert snap["locator_type"] == "resource_id"
+    assert snap["locator_value"] == "login_btn"
+
+
 async def test_element_override(client):
     """元素覆盖：快照定位器使用档案覆盖值。"""
     base = await _base(client)

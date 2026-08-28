@@ -1012,7 +1012,9 @@ async def _resolve_element_snapshots(
         await db.execute(
             select(TestElement).where(
                 TestElement.id.in_(ids),
-                TestElement.deleted_at.is_(None),
+                # 设计 §10.3：快照补全按 element_id 直接查询（含已逻辑删除记录），
+                # 避免已保存用例引用元素被删除后无法预览/执行。此处仅校验元素
+                # 存在且属于本项目；「不存在/跨项目」仍算缺失。
                 TestElement.project_id == project_id,
             )
         )
