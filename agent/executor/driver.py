@@ -34,6 +34,8 @@ class MockElement:
         self._generation = generation
         self.children: list[MockElement] = []
         self.parent: MockElement | None = None
+        # 节点几何信息（bounds/rect 由 _build_mock_node 从快照字段提取）
+        self._bounds: dict[str, int] | None = None
 
     def get_attribute(self, name: str) -> str:
         return str(self._attributes.get(name, ""))
@@ -110,6 +112,18 @@ class BaseDriver:
     def scroll_to(self, element) -> None:
         raise NotImplementedError
 
+    def scroll_in_element(self, element, direction: str, percent: float) -> bool:
+        """在元素边界内滚动，返回当前方向是否还能继续滚动。
+
+        Appium mock 实现为 UiAutomator2 mobile: scrollGesture 的结果；
+        Mock 走确定性回退（可编程 scroll_can_continue）。
+        """
+        raise NotImplementedError
+
+    def get_element_rect(self, element) -> dict[str, int]:
+        """返回元素矩形 x、y、width、height（像素）。"""
+        raise NotImplementedError
+
     def back(self) -> None:
         raise NotImplementedError
 
@@ -154,6 +168,8 @@ class MockDriver(BaseDriver):
         self.swipes: list[tuple[str, int]] = []
         self.element_swipes: list[tuple[str, str, float]] = []
         self.region_swipes: list[tuple[int, int, int, int, str, float]] = []
+        self.element_scrolls: list[tuple[str, str, float, bool]] = []
+        self.scroll_can_continue = True
         self.swipe_count = 0
 
     def attach_to_current_app(self) -> None:
@@ -199,11 +215,18 @@ class MockDriver(BaseDriver):
         self._scroll_callback = callback
 
     def _build_mock_node(self, item: dict, generation: int) -> MockElement:
-        attrs = {key: value for key, value in item.items() if key not in ("children", "id")}
+        attrs = {key: value for key, value in item.items() if key not in ("children", "id", "bounds", "rect")}
         node_id = str(item.get("id") or f"mock-node-{self._next_node_id}")
         if "id" not in item:
             self._next_node_id += 1
         node = MockElement(node_id, attrs, generation)
+        bounds = item.get("bounds") or item.get("rect")
+        if isinstance(bounds, dict):
+            node._bounds = {
+                key: int(bounds[key])
+                for key in ("x", "y", "width", "height")
+                if key in bounds
+            }
         for child_item in item.get("children") or []:
             child = self._build_mock_node(child_item, generation)
             child.parent = node
@@ -268,6 +291,21 @@ class MockDriver(BaseDriver):
 
     def scroll_to(self, element) -> None:
         pass
+
+    def scroll_in_element(self, element, direction: str, percent: float) -> bool:
+        self._assert_fresh(element)
+        result = self.scroll_can_continue
+        self.element_scrolls.append((element.locator_value, direction, percent, result))
+        self.swipe(direction)
+        return result
+
+    def get_element_rect(self, element) -> dict[str, int]:
+        self._assert_fresh(element)
+        if element._bounds is not None:
+            return dict(element._bounds)
+        # 未声明几何信息时回退到窗口尺寸的容器默认矩形，保证可确定性断言。
+        size = self.get_window_size()
+        return {"x": 0, "y": 0, "width": size["width"], "height": size["height"]}
 
     def back(self) -> None:
         pass

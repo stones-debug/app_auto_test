@@ -4,8 +4,8 @@
     "source": "agent/executor/protocol_manifest.yaml",
     "generator": "agent/scripts/generate_protocol.py"
   },
-  "protocol_version": "2.1.0",
-  "min_agent_version": "2.1.0",
+  "protocol_version": "2.2.0",
+  "min_agent_version": "2.2.0",
   "controls": {
     "step": [
       "continue_on_failure"
@@ -309,6 +309,87 @@
           "min": 0.05,
           "max": 0.95,
           "label": "滑动比例（0.05～0.95）"
+        }
+      ]
+    },
+    {
+      "name": "swipe_in_element_find_text_click",
+      "label": "列表内滑动查找文字并点击",
+      "version": 1,
+      "needs_element": true,
+      "element_label": "列表控件",
+      "params": [
+        {
+          "name": "target_text",
+          "type": "string",
+          "required": true,
+          "min_length": 1,
+          "label": "目标文字",
+          "placeholder": "如 系统时间 或 ${date}"
+        },
+        {
+          "name": "match_mode",
+          "type": "select",
+          "default": "equals",
+          "label": "匹配方式",
+          "options": [
+            {
+              "value": "equals",
+              "label": "精确匹配"
+            },
+            {
+              "value": "contains",
+              "label": "包含匹配"
+            }
+          ]
+        },
+        {
+          "name": "preferred_direction",
+          "type": "select",
+          "default": "up",
+          "label": "首选方向",
+          "options": [
+            {
+              "value": "up",
+              "label": "上滑"
+            },
+            {
+              "value": "down",
+              "label": "下滑"
+            }
+          ]
+        },
+        {
+          "name": "max_swipes_per_direction",
+          "type": "integer",
+          "default": 8,
+          "min": 1,
+          "max": 50,
+          "label": "每方向最大滑动次数"
+        },
+        {
+          "name": "percent",
+          "type": "number",
+          "default": 0.3,
+          "min": 0.05,
+          "max": 0.95,
+          "label": "滑动比例（0.05～0.95）"
+        },
+        {
+          "name": "container_wait_timeout",
+          "type": "integer",
+          "default": 10,
+          "min": 0,
+          "max": 60,
+          "label": "列表等待秒数"
+        },
+        {
+          "name": "settle_ms",
+          "type": "integer",
+          "default": 300,
+          "min": 0,
+          "max": 2000,
+          "label": "稳定等待(ms)"
         }
       ]
     },

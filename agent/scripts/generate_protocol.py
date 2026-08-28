@@ -80,6 +80,8 @@ def _py_field_snippet(param: dict) -> str:
         kwargs.append(f"ge={param['min']}")
     if "max" in param:
         kwargs.append(f"le={param['max']}")
+    if "min_length" in param and type_ == "str":
+        kwargs.append(f"min_length={param['min_length']}")
     if param.get("required"):
         if kwargs:
             return f"    {name}: {type_} = Field(..., {', '.join(kwargs)})\n"
@@ -168,6 +170,18 @@ def _render_py(manifest: dict) -> str:
     lines.append("")
     lines.append(f"PROTOCOL_VERSION = {manifest['protocol_version']!r}")
     lines.append("")
+    lines.append("STEP_NEEDS_ELEMENT = frozenset({")
+    for item in manifest["actions"]:
+        if item["needs_element"]:
+            lines.append(f"    {item['name']!r},")
+    lines.append("})")
+    lines.append("")
+    lines.append("ELEMENT_LABELS: dict[str, str] = {")
+    for item in manifest["actions"]:
+        if item.get("element_label"):
+            lines.append(f"    {item['name']!r}: {item['element_label']!r},")
+    lines.append("}")
+    lines.append("")
     if kind == "?":  # never used
         return "\n".join(lines)  # pragma: no cover
     return "\n".join(lines)
@@ -203,6 +217,8 @@ def _ts_field_snippet(param: dict, indent: str) -> str:
         extras.append(f"min: {param['min']}")
     if "max" in param:
         extras.append(f"max: {param['max']}")
+    if "min_length" in param:
+        extras.append(f"minLength: {param['min_length']}")
     if param.get("placeholder"):
         extras.append(f"placeholder: {json.dumps(param['placeholder'], ensure_ascii=False)}")
     if param["type"] == "select":
@@ -233,12 +249,14 @@ def _render_ts(manifest: dict) -> str:
         "  required?: boolean",
         "  min?: number",
         "  max?: number",
+        "  minLength?: number",
         "}",
         "",
         "export interface ActionMeta {",
         "  value: string",
         "  label: string",
         "  needsElement: boolean",
+        "  elementLabel?: string",
         "  fields: ParamField[]",
         "  constraints?: ActionConstraint[]",
         "}",
@@ -263,7 +281,10 @@ def _render_ts(manifest: dict) -> str:
     lines.append("")
     lines.append("export const ACTIONS: ActionMeta[] = [")
     for item in manifest["actions"]:
-        lines.append(f"  {{ value: {item['name']!r}, label: {item['label']!r}, needsElement: {str(item['needs_element']).lower()}, fields: [")
+        label_part = ""
+        if item.get("element_label"):
+            label_part = f"elementLabel: {item['element_label']!r}, "
+        lines.append(f"  {{ value: {item['name']!r}, label: {item['label']!r}, needsElement: {str(item['needs_element']).lower()}, {label_part}fields: [")
         for param in item["params"]:
             lines.append(_ts_field_snippet(param, "    ") + ",")
         constraints = item.get("constraints")

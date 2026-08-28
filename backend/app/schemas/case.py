@@ -7,8 +7,10 @@ from pydantic import BaseModel, Field, model_validator
 # ---------- CR-09/Step 10：协议参数模型来自 Registry 单一来源（generated） ----------
 from app.schemas.generated_case_params import (  # noqa: F401  (ParamsBase 由生成模块提供)
     ASSERTION_PARAM_MODELS,
+    ELEMENT_LABELS,
     KNOWN_ACTIONS,
     KNOWN_ASSERTIONS,
+    STEP_NEEDS_ELEMENT,
     STEP_PARAM_MODELS,
 )
 
@@ -40,6 +42,15 @@ class StepCreate(BaseModel):
             raise ValueError(f"未知动作: {self.action}")
         model = STEP_PARAM_MODELS[self.action]
         self.params = model(**self.params).model_dump(exclude_none=False)
+        # Step 12：需要元素的动作必须提供 element_id（统一拒绝，覆盖所有 needs_element 动作）
+        if self.action in STEP_NEEDS_ELEMENT and self.element_id is None:
+            label = ELEMENT_LABELS.get(self.action, "元素")
+            raise ValueError(f"动作 {self.action} 需要元素（{label}）")
+        # Step 12：目标文字去除首尾空格后不能为空
+        if self.action == "swipe_in_element_find_text_click":
+            target_text = self.params.get("target_text")
+            if not isinstance(target_text, str) or not target_text.strip():
+                raise ValueError("目标文字不能为空")
         self.key = _ensure_node_key(self.key)
         return self
 

@@ -59,6 +59,13 @@ async def _setup_case_with_steps(client: AsyncClient, base: dict, name: str) -> 
 
     K1(setup launch_app package=${pkg}) / K2(main click) / K3(断言 element_exists)。
     """
+    el = await client.post(
+        f"/api/projects/{base['project_id']}/elements",
+        headers=base["headers"],
+        json={"name": "目标按钮", "locator_type": "id", "locator_value": "btn_go"},
+    )
+    assert el.status_code == 201
+    element_id = el.json()["id"]
     resp = await client.post(
         f"/api/projects/{base['project_id']}/cases",
         headers=base["headers"],
@@ -66,10 +73,10 @@ async def _setup_case_with_steps(client: AsyncClient, base: dict, name: str) -> 
             "name": name,
             "steps": [
                 {"key": K1, "order": 1, "phase": "setup", "action": "launch_app", "params": {"package": "${pkg}"}},
-                {"key": K2, "order": 2, "phase": "main", "action": "click", "element_id": None, "params": {"wait_timeout": 5}},
+                {"key": K2, "order": 2, "phase": "main", "action": "click", "element_id": element_id, "params": {"wait_timeout": 5}},
             ],
             "assertions": [
-                {"key": K3, "order": 1, "type": "element_exists", "element_id": None, "params": {}}
+                {"key": K3, "order": 1, "type": "element_exists", "element_id": element_id, "params": {}}
             ],
             "variables": {"pkg": "com.v"},
         },

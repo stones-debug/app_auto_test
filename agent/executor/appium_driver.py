@@ -340,6 +340,27 @@ class AppiumDriver(BaseDriver):
             {"elementId": element.id, "direction": direction, "percent": percent},
         )
 
+    def scroll_in_element(self, element, direction: str, percent: float) -> bool:
+        """UiAutomator2 mobile: scrollGesture，在元素边界内滚动并返回是否还能继续滚动。"""
+        self._ensure_android_gesture()
+        driver = self._ensure()
+        result = driver.execute_script(
+            "mobile: scrollGesture",
+            {"elementId": element.id, "direction": direction, "percent": percent},
+        )
+        return bool(result)
+
+    def get_element_rect(self, element) -> dict[str, int]:
+        """返回元素矩形 x、y、width、height（W3C rect）。"""
+        self._ensure()
+        rect = element.rect or {}
+        return {
+            "x": int(rect.get("x", 0)),
+            "y": int(rect.get("y", 0)),
+            "width": int(rect.get("width", 0)),
+            "height": int(rect.get("height", 0)),
+        }
+
     def swipe_in_region(
         self,
         left: int,

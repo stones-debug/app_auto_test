@@ -163,7 +163,7 @@ function onDragEnd() {
           </div>
           <div v-show="!isStepCollapsed(element)" class="step-body">
             <div v-if="actionMeta(element.action).needsElement" class="step-row">
-              <span class="field-label">元素</span>
+              <span class="field-label">{{ actionMeta(element.action).elementLabel ?? '元素' }}</span>
               <ElementSelector v-model="element.element_id" />
             </div>
             <div v-for="field in actionMeta(element.action).fields" :key="field.key" class="step-row">

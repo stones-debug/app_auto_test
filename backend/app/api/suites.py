@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.cases import _check_elements_belong
 from app.api.deps import get_current_user, get_editable_project, get_project_permission
 from app.core.database import get_db
 from app.models import Project, TestCase, TestModule, TestSuite, TestSuiteCase, User
@@ -84,6 +85,7 @@ async def create_suite(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await _check_elements_belong(project_id, body.setup_steps, body.teardown_steps, db)
     suite = TestSuite(
         project_id=project_id,
         name=body.name,
@@ -127,6 +129,8 @@ async def update_suite(
     if role not in ("owner", "admin", "member"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
     # CR-25：model_fields_set 区分“未提交”与“显式 null”，支持清空可选字段
+    if body.setup_steps is not None or body.teardown_steps is not None:
+        await _check_elements_belong(suite.project_id, body.setup_steps, body.teardown_steps, db)
     for field in ("name", "description", "status"):
         if field in body.model_fields_set:
             setattr(suite, field, getattr(body, field))

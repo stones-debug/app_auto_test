@@ -1,7 +1,12 @@
 import asyncio
 
-from .driver import ElementNotFound, StopRequested
-from .stale_guard import with_stale_retry
+from .driver import (
+    ElementNotFound,
+    ElementStaleRetryExhausted,
+    StopRequested,
+)
+from .smart_locator import _java_string_escape
+from .stale_guard import is_stale_element_error, with_stale_retry
 
 
 class BaseAction:
@@ -171,6 +176,180 @@ class SwipeInRegionAction(BaseAction):
         return {"status": "passed"}
 
 
+@register_action("swipe_in_element_find_text_click")
+class SwipeInElementFindTextClickAction(BaseAction):
+    """在列表控件内双向滑动查找文字并点击（Step 12）。
+
+    目标文字直接写在动作参数（支持 ${变量}），不进入元素库。
+    匹配方式 equals/contains；先按首选方向查找，未找到再反向跨过起点继续。
+    只接受中心点落在列表控件可见矩形内的匹配，点击距离列表中心最近的匹配项。
+    找到后立即点击；如遇 stale，重新定位列表和目标重试，不能复用旧句柄。
+    """
+
+    _CLICK_STALE_RETRY_DELAYS = (0.2, 0.5)
+
+    async def execute(self, driver, context, params: dict) -> dict:
+        element_id = params.get("element_id")
+        if element_id is None:
+            raise ElementNotFound("缺少列表控件 element_id")
+        target_text = params.get("target_text") or ""
+        target_text = context.render(target_text).strip()
+        if not target_text:
+            raise ElementNotFound("目标文字不能为空")
+        match_mode = params.get("match_mode") or "equals"
+        preferred = params.get("preferred_direction") or "up"
+        opposite = "down" if preferred == "up" else "up"
+        max_swipes = int(params.get("max_swipes_per_direction", 8))
+        percent = float(params.get("percent", 0.3))
+        container_wait_timeout = params.get("container_wait_timeout", 10)
+        settle_ms = int(params.get("settle_ms", 300))
+
+        # UiAutomator selector，转义防注入
+        method = "text" if match_mode == "equals" else "textContains"
+        selector = f"new UiSelector().{method}(\"{_java_string_escape(target_text)}\")"
+
+        done_swipes = 0
+        preferred_swipes = 0
+        last_click_error: BaseException | None = None
+
+        # 阶段 1：首选方向，最多 max_swipes 次
+        for i in range(max_swipes + 1):
+            found, error = await self._try_find_and_click(
+                driver, context, element_id, selector, container_wait_timeout,
+            )
+            if found:
+                return self._make_result(done_swipes, target_text)
+            if error is not None:
+                last_click_error = error
+            if i >= max_swipes:
+                break
+            if not await self._scroll_dir(
+                driver, context, element_id, preferred, percent,
+                container_wait_timeout, settle_ms,
+            ):
+                break
+            done_swipes += 1
+            preferred_swipes += 1
+
+        # 阶段 2：反向，预算 = 首选实际滑动次数 + max_swipes（前半返回起点，后半探索另一侧）
+        for i in range(preferred_swipes + max_swipes + 1):
+            found, error = await self._try_find_and_click(
+                driver, context, element_id, selector, container_wait_timeout,
+            )
+            if found:
+                return self._make_result(done_swipes, target_text)
+            if error is not None:
+                last_click_error = error
+            if i >= preferred_swipes + max_swipes:
+                break
+            if not await self._scroll_dir(
+                driver, context, element_id, opposite, percent,
+                container_wait_timeout, settle_ms,
+            ):
+                break
+            done_swipes += 1
+
+        raise ElementNotFound(self._failure_reason(
+            element_id, target_text, match_mode, preferred, opposite,
+            done_swipes, last_click_error,
+        ))
+
+    async def _try_find_and_click(
+        self, driver, context, element_id, selector, container_wait_timeout,
+    ) -> tuple[bool, BaseException | None]:
+        """当前页面查找并点击目标；返回 (是否命中, 点击失败错误或 None)。"""
+        stop = getattr(context, "should_stop", None)
+        if stop is not None and stop():
+            raise StopRequested("执行被用户停止")
+        # 重新定位列表控件（智能定位临时禁滚）
+        try:
+            container = context.find_element(
+                element_id, wait_timeout=container_wait_timeout, disable_smart_scroll=True
+            )
+        except ElementNotFound:
+            return False, None
+        target = self._find_target_in_container(driver, container, selector)
+        if target is None:
+            return False, None
+        try:
+            await self._click_with_stale_retry(driver, context, element_id, target, container_wait_timeout, selector)
+        except ElementStaleRetryExhausted:
+            # 点击 stale 重试耗尽：直接失败，不再继续滑动寻找其他同文字元素
+            raise
+        except Exception as exc:
+            if is_stale_element_error(exc):
+                return False, exc
+            # 非 stale 的点击失败直接上抛（不继续寻找其他同文字元素）
+            raise
+        return True, None
+
+    def _find_target_in_container(self, driver, container, selector):
+        rect = driver.get_element_rect(container)
+        size = driver.get_window_size()
+        vis = _clip_rect(rect, size)
+        matches = driver.find_elements("uiautomator", selector, wait_timeout=0)
+        candidates = [m for m in matches if _center_in_rect(driver.get_element_rect(m), vis)]
+        if not candidates:
+            return None
+        cx = vis["x"] + vis["width"] / 2
+        cy = vis["y"] + vis["height"] / 2
+        return min(candidates, key=lambda m: _center_distance(driver.get_element_rect(m), cx, cy))
+
+    async def _click_with_stale_retry(self, driver, context, element_id, target, container_wait_timeout, selector):
+        """点击目标；stale 时重新定位列表与目标后重试，耗尽抛 ElementStaleRetryExhausted。"""
+        for attempt in range(len(self._CLICK_STALE_RETRY_DELAYS) + 1):
+            stop = getattr(context, "should_stop", None)
+            if stop is not None and stop():
+                raise StopRequested("执行被用户停止")
+            try:
+                # 每次点击都用最新句柄（target 本身是本次查询结果，stale 后需重新查找）
+                driver.click(target)
+                return
+            except Exception as exc:
+                if not is_stale_element_error(exc):
+                    raise
+                if attempt >= len(self._CLICK_STALE_RETRY_DELAYS):
+                    raise ElementStaleRetryExhausted(
+                        f"点击失败：页面持续刷新导致目标元素失效，重新定位并重试 {len(self._CLICK_STALE_RETRY_DELAYS)} 次后仍未成功"
+                    ) from exc
+                delay = self._CLICK_STALE_RETRY_DELAYS[attempt]
+                # 重新定位列表与目标
+                container = context.find_element(
+                    element_id, wait_timeout=container_wait_timeout, disable_smart_scroll=True
+                )
+                new_target = self._find_target_in_container(driver, container, selector)
+                if new_target is None:
+                    raise ElementNotFound("点击失败后重新定位目标文字未找到") from exc
+                target = new_target
+                await asyncio.sleep(delay)
+        raise AssertionError("点击 stale 重试状态异常")
+
+    async def _scroll_dir(self, driver, context, element_id, direction, percent, container_wait_timeout, settle_ms):
+        stop = getattr(context, "should_stop", None)
+        if stop is not None and stop():
+            raise StopRequested("执行被用户停止")
+        container = context.find_element(element_id, wait_timeout=container_wait_timeout, disable_smart_scroll=True)
+        can_continue = driver.scroll_in_element(container, direction, percent)
+        if settle_ms > 0:
+            await asyncio.sleep(settle_ms / 1000.0)
+        return can_continue
+
+    def _make_result(self, done_swipes, target_text):
+        return {
+            "status": "passed",
+            "found_after_swipes": done_swipes,
+            "actual_value": f"在列表内滑动 {done_swipes} 次后找到并点击文字“{target_text}”",
+        }
+
+    def _failure_reason(self, element_id, target_text, match_mode, preferred, opposite, done_swipes, last_click_error):
+        mode = "精确匹配" if match_mode == "equals" else "包含匹配"
+        msg = f"目标文字“{target_text}”（{mode}）未在列表控件 {element_id} 中找到"
+        msg += f"，首选方向 {preferred} 实际滑动、反方向 {opposite} 实际滑动合计 {done_swipes} 次"
+        if last_click_error is not None:
+            msg += f"，最后点击失败: {last_click_error}"
+        return msg
+
+
 @register_action("scroll")
 class ScrollAction(BaseAction):
     async def execute(self, driver, context, params: dict) -> dict:
@@ -256,3 +435,40 @@ class TapCoordinateAction(BaseAction):
     async def execute(self, driver, context, params: dict) -> dict:
         driver.tap_coordinate(int(params.get("x", 0)), int(params.get("y", 0)))
         return {"status": "passed"}
+
+
+# ---------- Step 12：列表内查找文字并点击的几何工具 ----------
+
+
+def _clip_rect(rect: dict[str, int], size: dict[str, int]) -> dict[str, int]:
+    """把控件矩形裁剪到当前屏幕可见区域，返回等宽/高矩形。"""
+    screen_w = int(size.get("width", 0))
+    screen_h = int(size.get("height", 0))
+    x = max(0, int(rect.get("x", 0)))
+    y = max(0, int(rect.get("y", 0)))
+    right = min(int(rect.get("x", 0)) + int(rect.get("width", 0)), screen_w)
+    bottom = min(int(rect.get("y", 0)) + int(rect.get("height", 0)), screen_h)
+    width = max(0, right - x)
+    height = max(0, bottom - y)
+    return {"x": x, "y": y, "width": width, "height": height}
+
+
+def _rect_center(rect: dict[str, int]) -> tuple[float, float]:
+    return (
+        int(rect.get("x", 0)) + int(rect.get("width", 0)) / 2,
+        int(rect.get("y", 0)) + int(rect.get("height", 0)) / 2,
+    )
+
+
+def _center_in_rect(rect: dict[str, int], visible: dict[str, int]) -> bool:
+    """目标中心点是否落在列表可见矩形内。"""
+    cx, cy = _rect_center(rect)
+    return (
+        int(visible.get("x", 0)) <= cx <= int(visible.get("x", 0)) + int(visible.get("width", 0))
+        and int(visible.get("y", 0)) <= cy <= int(visible.get("y", 0)) + int(visible.get("height", 0))
+    )
+
+
+def _center_distance(rect: dict[str, int], cx: float, cy: float) -> float:
+    mx, my = _rect_center(rect)
+    return (mx - cx) ** 2 + (my - cy) ** 2

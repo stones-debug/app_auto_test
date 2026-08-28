@@ -395,9 +395,10 @@ async def test_unknown_params_rejected_422(client: AsyncClient):
 async def test_wait_timeout_range_enforced(client: AsyncClient):
     """Step 4：click wait_timeout 范围 0..300（默认 10）。"""
     headers, project_id = await _setup(client)
+    element_id = await _create_element(client, headers, project_id)
     ok = await client.post(
         f"/api/projects/{project_id}/cases",
-        json={"name": "等待0秒", "steps": [{"order": 1, "action": "click", "params": {"wait_timeout": 0}}]},
+        json={"name": "等待0秒", "steps": [{"order": 1, "action": "click", "element_id": element_id, "params": {"wait_timeout": 0}}]},
         headers=headers,
     )
     assert ok.status_code == 201
@@ -405,14 +406,14 @@ async def test_wait_timeout_range_enforced(client: AsyncClient):
 
     over = await client.post(
         f"/api/projects/{project_id}/cases",
-        json={"name": "等待超限", "steps": [{"order": 1, "action": "click", "params": {"wait_timeout": 301}}]},
+        json={"name": "等待超限", "steps": [{"order": 1, "action": "click", "element_id": element_id, "params": {"wait_timeout": 301}}]},
         headers=headers,
     )
     assert over.status_code == 422
 
     defaulted = await client.post(
         f"/api/projects/{project_id}/cases",
-        json={"name": "默认等待", "steps": [{"order": 1, "action": "click", "params": {}}]},
+        json={"name": "默认等待", "steps": [{"order": 1, "action": "click", "element_id": element_id, "params": {}}]},
         headers=headers,
     )
     assert defaulted.status_code == 201
@@ -501,3 +502,125 @@ async def test_duplicate_orders_rejected(client: AsyncClient):
     )
     assert resp2.status_code == 400
     assert "order 不得重复" in resp2.json()["detail"]
+
+
+async def test_find_text_click_step_crud(client: AsyncClient):
+    """Step 12：新动作可保存、加载并再次编辑。"""
+    headers, project_id = await _setup(client)
+    element_id = await _create_element(client, headers, project_id)
+    created = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "列表内查找",
+            "steps": [
+                {
+                    "order": 1,
+                    "action": "swipe_in_element_find_text_click",
+                    "element_id": element_id,
+                    "params": {
+                        "target_text": "系统时间",
+                        "match_mode": "contains",
+                        "preferred_direction": "down",
+                        "max_swipes_per_direction": 6,
+                        "percent": 0.4,
+                        "container_wait_timeout": 5,
+                        "settle_ms": 200,
+                    },
+                },
+            ],
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201
+    case_id = created.json()["id"]
+    step = created.json()["steps"][0]
+    assert step["action"] == "swipe_in_element_find_text_click"
+    assert step["params"]["target_text"] == "系统时间"
+    assert step["params"]["preferred_direction"] == "down"
+
+    got = await client.get(f"/api/cases/{case_id}", headers=headers)
+    assert got.status_code == 200
+    assert got.json()["steps"][0]["params"]["match_mode"] == "contains"
+
+    updated = await client.put(
+        f"/api/cases/{case_id}",
+        json={
+            "name": "列表内查找改",
+            "steps": [
+                {
+                    "order": 1,
+                    "action": "swipe_in_element_find_text_click",
+                    "element_id": element_id,
+                    "params": {"target_text": "日期", "match_mode": "equals"},
+                },
+            ],
+        },
+        headers=headers,
+    )
+    assert updated.status_code == 200
+    assert updated.json()["steps"][0]["params"]["target_text"] == "日期"
+
+
+async def test_find_text_click_requires_element_and_valid_params(client: AsyncClient):
+    """Step 12：缺少列表控件/目标文字为空/参数越界均拒绝保存。"""
+    headers, project_id = await _setup(client)
+    element_id = await _create_element(client, headers, project_id)
+
+    no_element = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "缺列表",
+            "steps": [{"order": 1, "action": "swipe_in_element_find_text_click", "params": {"target_text": "x"}}],
+        },
+        headers=headers,
+    )
+    assert no_element.status_code == 422
+
+    empty_text = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "空文字",
+            "steps": [{"order": 1, "action": "swipe_in_element_find_text_click", "element_id": element_id, "params": {"target_text": "  "}}],
+        },
+        headers=headers,
+    )
+    assert empty_text.status_code == 422
+
+    too_many_swipes = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "滑动超限",
+            "steps": [{"order": 1, "action": "swipe_in_element_find_text_click", "element_id": element_id, "params": {"target_text": "x", "max_swipes_per_direction": 51}}],
+        },
+        headers=headers,
+    )
+    assert too_many_swipes.status_code == 422
+
+    bad_percent = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "比例越界",
+            "steps": [{"order": 1, "action": "swipe_in_element_find_text_click", "element_id": element_id, "params": {"target_text": "x", "percent": 0.04}}],
+        },
+        headers=headers,
+    )
+    assert bad_percent.status_code == 422
+
+
+async def test_find_text_click_cross_project_element_rejected(client: AsyncClient):
+    """Step 12：列表控件属于其他项目时后端拒绝。"""
+    headers, project_id = await _setup(client)
+    element_id = await _create_element(client, headers, project_id)
+
+    p2 = await client.post("/api/projects", json={"name": "另一项目2"}, headers=headers)
+    project2_id = p2.json()["id"]
+    resp = await client.post(
+        f"/api/projects/{project2_id}/cases",
+        json={
+            "name": "跨项目列表用例",
+            "steps": [{"order": 1, "action": "swipe_in_element_find_text_click", "element_id": element_id, "params": {"target_text": "x"}}],
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 400
+    assert "元素不属于该项目" in resp.json()["detail"]

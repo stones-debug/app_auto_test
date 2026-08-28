@@ -14,7 +14,7 @@ import {
   normalizeAssertion,
   normalizeStep,
   updateCase,
-  validateActionParams,
+  validateStep,
   type Assertion,
   type Step,
   type StepPhase,
@@ -162,7 +162,7 @@ async function save() {
     return
   }
   const invalidStep = (form.steps as Step[])
-    .map((step, index) => ({ index, message: validateActionParams(step.action, step.params) }))
+    .map((step, index) => ({ index, message: validateStep(step) }))
     .find((item) => item.message)
   if (invalidStep?.message) {
     ElMessage.warning(`第 ${invalidStep.index + 1} 步：${invalidStep.message}`)

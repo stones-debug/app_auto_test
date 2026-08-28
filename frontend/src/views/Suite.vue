@@ -21,7 +21,7 @@ import {
   type SuiteCase,
   type Variable,
 } from '@/api/suites'
-import { listCases, normalizeStep, type Step } from '@/api/cases'
+import { listCases, normalizeStep, validateStep, type Step } from '@/api/cases'
 import CaseStepEditor from '@/components/CaseStepEditor.vue'
 import RunButton from '@/components/RunButton.vue'
 import EmptyState from '@/components/EmptyState.vue'
@@ -245,6 +245,14 @@ async function save() {
 
 async function saveSuiteSteps() {
   if (!activeSuite.value || !suiteDetail.value) return
+  const allSteps = [...setupSteps.value, ...teardownSteps.value]
+  for (const step of allSteps) {
+    const msg = validateStep(step)
+    if (msg) {
+      ElMessage.warning(`套件步骤：${msg}`)
+      return
+    }
+  }
   savingSteps.value = true
   try {
     const updated = await updateSuite(activeSuite.value, {

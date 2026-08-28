@@ -336,7 +336,8 @@ async def test_workspace_and_nodes(client: AsyncClient):
     code = f"w{uuid.uuid4().hex[:6]}"
     profile_id = (await client.post(f"/api/projects/{pid}/app-profiles", json={"name": "W", "code": code}, headers=h)).json()["id"]
     suite_id = (await client.post(f"/api/projects/{pid}/suites", json={"name": "套件W"}, headers=h)).json()["id"]
-    case_id = (await client.post(f"/api/projects/{pid}/cases", json={"name": "用W", "steps": [{"order": 1, "key": str(uuid.uuid4()), "action": "click", "params": {}}], "assertions": []}, headers=h)).json()["id"]
+    el_id = (await client.post(f"/api/projects/{pid}/elements", json={"name": "按钮W", "locator_type": "id", "locator_value": "btn_w"}, headers=h)).json()["id"]
+    case_id = (await client.post(f"/api/projects/{pid}/cases", json={"name": "用W", "steps": [{"order": 1, "key": str(uuid.uuid4()), "action": "click", "element_id": el_id, "params": {}}], "assertions": []}, headers=h)).json()["id"]
     await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)
 
     ws = await client.get(f"/api/app-profiles/{profile_id}/workspace", headers=h)

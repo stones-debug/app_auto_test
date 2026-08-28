@@ -34,8 +34,10 @@ from app.models import (
 )
 from app.schemas.generated_case_params import (
     ASSERTION_PARAM_MODELS,
+    ELEMENT_LABELS,
     KNOWN_ACTIONS,
     KNOWN_ASSERTIONS,
+    STEP_NEEDS_ELEMENT,
     STEP_PARAM_MODELS,
 )
 
@@ -448,6 +450,15 @@ def _registry_validate_step(step: dict) -> dict:
     model = STEP_PARAM_MODELS[action]
     params = deepcopy(step.get("params") or {})
     step["params"] = model(**params).model_dump(exclude_none=False)
+    # Step 12：需要元素的动作必须提供 element_id（覆盖档案/覆盖节点场景）
+    if action in STEP_NEEDS_ELEMENT and step.get("element_id") is None:
+        label = ELEMENT_LABELS.get(action, "元素")
+        raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", f"动作 {action} 需要元素（{label}）")
+    # Step 12：目标文字去除首尾空格后不能为空
+    if action == "swipe_in_element_find_text_click":
+        target_text = step["params"].get("target_text")
+        if not isinstance(target_text, str) or not target_text.strip():
+            raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", "目标文字不能为空")
     return step
 
 
@@ -830,7 +841,7 @@ async def _resolve_case(
         )
         return None, exclusions, override_count
 
-    elements = await _resolve_element_snapshots(db, steps, assertions, config["element_overrides"], variables)
+    elements = await _resolve_element_snapshots(db, request.project_id, steps, assertions, config["element_overrides"], variables)
     override_count += sum(1 for element_id in elements if int(element_id) in config["element_overrides"])
 
     return (
@@ -883,7 +894,7 @@ async def _parse_suite_steps(
     teardown_snapshot, teardown_ex = _process(teardown_nodes, "suite_teardown")
     exclusions = [*setup_ex, *teardown_ex]
     elements = await _resolve_element_snapshots(
-        db, [*setup_snapshot, *teardown_snapshot], [], config["element_overrides"], variables
+        db, project_id, [*setup_snapshot, *teardown_snapshot], [], config["element_overrides"], variables
     )
     override_count += sum(1 for element_id in elements if int(element_id) in config["element_overrides"])
     return setup_snapshot, teardown_snapshot, elements, exclusions, override_count
@@ -981,6 +992,7 @@ async def _merge_suite_variables(
 
 async def _resolve_element_snapshots(
     db: AsyncSession,
+    project_id: int,
     steps: list[dict],
     assertions: list[dict],
     element_overrides: dict[int, AppProfileElementOverride],
@@ -996,7 +1008,22 @@ async def _resolve_element_snapshots(
                 continue
     if not ids:
         return {}
-    rows = (await db.execute(select(TestElement).where(TestElement.id.in_(ids)))).scalars().all()
+    rows = (
+        await db.execute(
+            select(TestElement).where(
+                TestElement.id.in_(ids),
+                TestElement.deleted_at.is_(None),
+                TestElement.project_id == project_id,
+            )
+        )
+    ).scalars().all()
+    found = {r.id for r in rows}
+    if found != ids:
+        missing = ids - found
+        raise ProfileRuleError(
+            "PROFILE_ELEMENT_MISSING",
+            f"步骤/断言引用的元素不存在、已删除或不属于该项目: {sorted(missing)}",
+        )
     elements: dict[str, dict[str, Any]] = {}
     for el in rows:
         override = element_overrides.get(el.id)

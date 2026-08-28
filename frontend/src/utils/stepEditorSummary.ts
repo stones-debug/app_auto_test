@@ -24,6 +24,26 @@ export function stepSummaryText(step: Step, elementNames?: ElementNameMap): stri
 
   if (step.continue_on_failure) details.push('失败后继续')
 
+  // Step 12：列表内滑动查找文字并点击 使用特化摘要，便于一眼看清目标与双向策略
+  if (step.action === 'swipe_in_element_find_text_click') {
+    const elementLabel = '列表'
+    if (step.element_id == null) {
+      details.push(`${elementLabel}：未选择`)
+    } else {
+      const name = elementNames?.get(step.element_id)
+      details.push(name ? `${elementLabel}：${name}` : `${elementLabel} #${step.element_id}`)
+    }
+    const text = step.params?.['target_text'] as string | undefined
+    const matchMode = step.params?.['match_mode'] === 'contains' ? '包含' : '等于'
+    if (text) details.push(`文字${matchMode}“${text}”`)
+    const preferred = step.params?.['preferred_direction'] === 'down' ? '下' : '上'
+    const opposite = preferred === '上' ? '下' : '上'
+    details.push(`自动${preferred}→${opposite}`)
+    const maxSwipes = step.params?.['max_swipes_per_direction']
+    if (maxSwipes != null) details.push(`每方向最多${maxSwipes}次`)
+    return details.join(' · ')
+  }
+
   if (meta.needsElement) {
     if (step.element_id == null) {
       details.push('元素：未选择')

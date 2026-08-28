@@ -16,6 +16,7 @@
   自动回退 Strategy X。
 
 解析流程：自校验 → 渲染变量 → 渲染后重验 → 逐候选查询 → 滚动查找 → 选择策略；
+滚动为「当前页全部候选依次检查 → 全未命中才滚动一页 → 新页重查全部候选」；
 全程 60s 总超时（monotonic），每次查询/滚动前检查 context.should_stop()。
 """
 
@@ -421,7 +422,7 @@ def build_selector(alt: dict) -> tuple[str, str]:
 
 
 class SmartElementResolver:
-    """智能定位解析器：校验 → 渲染 → 逐候选查询 → 滚动查找 → 选择策略。
+    """智能定位解析器：校验 → 渲染 → 当前页候选轮询 → 滚动重查 → 选择策略。
 
     全程 60s 总超时（monotonic 时钟）；每次查询/滚动前检查 context.should_stop()。
     """
@@ -431,7 +432,7 @@ class SmartElementResolver:
     def __init__(self, total_timeout: float = DEFAULT_TOTAL_TIMEOUT) -> None:
         self.total_timeout = total_timeout
 
-    def resolve(self, driver, context, locator_snapshot: dict):
+    def resolve(self, driver, context, locator_snapshot: dict, disable_scroll: bool = False):
         """从 smart 快照定位元素；找不到/不唯一/滚动耗尽/配置非法均抛对应异常。"""
         # 平台守卫：本阶段智能定位仅支持 Android（平台字段缺省/None 视为不限定）。
         platform = locator_snapshot.get("platform")
@@ -446,6 +447,10 @@ class SmartElementResolver:
         config = render_config(raw_config, variables)
 
         search = config["search"]
+        if disable_scroll:
+            # 本动作自行控制滑动，临时关闭智能定位的自动滚动，防止全页面滚动抢占。
+            search = dict(search)
+            search["scroll"] = False
         selection = config["selection"]
         alternatives = config["alternatives"]
         deadline = time.monotonic() + self.total_timeout
@@ -453,61 +458,60 @@ class SmartElementResolver:
         swipes_done = 0
         scrolled = False
         page_stable = False
+        prev_sig: str | None = None
+        stable_streak = 0
 
-        for alt_index, alt in enumerate(alternatives, start=1):
-            self._check_stop(context)
-            self._check_deadline(deadline)
-            locator_type, locator_value = build_selector(alt)
-            logger.info(
-                "智能定位候选 %s/%s: %s=%s", alt_index, len(alternatives), locator_type, locator_value
-            )
-            matches = self._find_all(driver, locator_type, locator_value)
-            count = len(matches)
-            logger.info("候选 %s 匹配 %s 个元素", alt_index, count)
-            if count >= 1:
-                return self._select(matches, selection, locator_value)
-
-            if not scroll_enabled or page_stable:
-                continue
-            # 滚动查找循环（页面指纹连续两次不变提前停止，禁止打印完整 page_source）
-            prev_sig = self._page_signature(driver)
-            stable_streak = 0
-            while swipes_done < search["max_swipes"]:
+        # 轮询语义（P1 修复）：当前页面依次检查全部候选 → 全部未命中才滚动一页 →
+        # 新页面重新检查全部候选。禁止让单个候选耗尽滚动预算，
+        # 否则备用候选若原本位于首页，首候选滚动后就可能永远错过。
+        while True:
+            for alt_index, alt in enumerate(alternatives, start=1):
                 self._check_stop(context)
                 self._check_deadline(deadline)
-                driver.swipe(search["direction"], duration=search["duration_ms"])
-                swipes_done += 1
-                scrolled = True
-                settle = search["settle_ms"] / 1000.0
-                if settle > 0:
-                    time.sleep(settle)
-                self._check_stop(context)
-                self._check_deadline(deadline)
+                locator_type, locator_value = build_selector(alt)
+                logger.info(
+                    "智能定位候选 %s/%s: %s=%s", alt_index, len(alternatives), locator_type, locator_value
+                )
                 matches = self._find_all(driver, locator_type, locator_value)
                 count = len(matches)
-                cur_sig = self._page_signature(driver)
-                sig_changed = cur_sig != prev_sig
-                logger.info(
-                    "候选 %s 滚动 %s/%s 次后匹配 %s 个（指纹变化=%s）",
-                    alt_index,
-                    swipes_done,
-                    search["max_swipes"],
-                    count,
-                    sig_changed,
-                )
+                logger.info("候选 %s 匹配 %s 个元素", alt_index, count)
                 if count >= 1:
                     return self._select(matches, selection, locator_value)
-                if sig_changed:
-                    stable_streak = 0
-                else:
-                    stable_streak += 1
-                    if stable_streak >= 2:
-                        page_stable = True
-                        logger.info("页面指纹连续两次未变化，提前停止滚动（疑似已滚动到底）")
-                        break
-                prev_sig = cur_sig
+
+            # 当前页面全部候选未命中 → 滚动一页后重查（页面指纹连续两次不变提前停止）
+            if not scroll_enabled or page_stable:
+                break
             if swipes_done >= search["max_swipes"]:
                 page_stable = True
+                break
+            self._check_stop(context)
+            self._check_deadline(deadline)
+            if prev_sig is None:
+                prev_sig = self._page_signature(driver)
+            driver.swipe(search["direction"], duration=search["duration_ms"])
+            swipes_done += 1
+            scrolled = True
+            settle = search["settle_ms"] / 1000.0
+            if settle > 0:
+                time.sleep(settle)
+            self._check_stop(context)
+            self._check_deadline(deadline)
+            cur_sig = self._page_signature(driver)
+            sig_changed = cur_sig != prev_sig
+            logger.info(
+                "滚动 %s/%s 次后全部候选仍未命中（指纹变化=%s）",
+                swipes_done,
+                search["max_swipes"],
+                sig_changed,
+            )
+            if sig_changed:
+                stable_streak = 0
+            else:
+                stable_streak += 1
+                if stable_streak >= 2:
+                    page_stable = True
+                    logger.info("页面指纹连续两次未变化，提前停止滚动（疑似已滚动到底）")
+            prev_sig = cur_sig
 
         # 全部候选耗尽
         if scrolled:

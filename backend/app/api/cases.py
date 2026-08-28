@@ -33,16 +33,23 @@ async def _check_module_belongs(project_id: int, module_id: int | None, db: Asyn
 async def _check_elements_belong(
     project_id: int, steps: list | None, assertions: list | None, db: AsyncSession
 ) -> None:
-    """CR-09：步骤/断言引用的 element_id 必须存在且属于当前项目。"""
+    """CR-09：步骤/断言引用的 element_id 必须存在且属于当前项目（未删除）。"""
     ids: set[int] = set()
     for item in [*(steps or []), *(assertions or [])]:
-        element_id = item.get("element_id") if isinstance(item, dict) else None
+        if isinstance(item, dict):
+            element_id = item.get("element_id")
+        else:
+            element_id = getattr(item, "element_id", None)
         if element_id is not None:
             ids.add(int(element_id))
     if not ids:
         return
     rows = (
-        await db.execute(select(TestElement).where(TestElement.id.in_(ids)))
+        await db.execute(
+            select(TestElement).where(
+                TestElement.id.in_(ids), TestElement.deleted_at.is_(None)
+            )
+        )
     ).scalars().all()
     found = {r.id for r in rows}
     missing = ids - found

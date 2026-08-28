@@ -61,4 +61,37 @@ describe('步骤编辑器折叠摘要', () => {
     expect(stepSummaryText(step)).toBe('元素 #42')
     expect(stepSummaryText(step, new Map([[99, '其他']]))).toBe('元素 #42')
   })
+
+  it('列表内滑动查找文字并点击 使用特化摘要', () => {
+    const step: Step = {
+      order: 1,
+      phase: 'main',
+      action: 'swipe_in_element_find_text_click',
+      element_id: 7,
+      params: {
+        target_text: '2026',
+        match_mode: 'equals',
+        preferred_direction: 'up',
+        max_swipes_per_direction: 8,
+      },
+      continue_on_failure: false,
+    }
+    expect(stepSummaryText(step, new Map([[7, '日期列表']]))).toBe(
+      '列表：日期列表 · 文字等于“2026” · 自动上→下 · 每方向最多8次',
+    )
+    expect(stepActionLabel(step)).toBe('列表内滑动查找文字并点击')
+  })
+
+  it('列表内滑动查找文字并点击 未选列表给出明确提示', () => {
+    const step: Step = {
+      order: 1,
+      phase: 'main',
+      action: 'swipe_in_element_find_text_click',
+      element_id: null,
+      params: { target_text: '系统时间', match_mode: 'contains' },
+      continue_on_failure: false,
+    }
+    expect(stepSummaryText(step)).toContain('列表：未选择')
+    expect(stepSummaryText(step)).toContain('文字包含“系统时间”')
+  })
 })

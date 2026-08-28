@@ -96,6 +96,9 @@ export function validateActionParams(action: string, params: Record<string, unkn
     if (field.required && (value === undefined || value === null || value === '')) {
       return `请填写“${field.label}”`
     }
+    if (typeof value === 'string' && field.minLength !== undefined && value.trim().length < field.minLength) {
+      return `“${field.label}”不能为空`
+    }
     if (field.type !== 'number' || value === undefined || value === null || value === '') continue
     const numeric = Number(value)
     if (!Number.isFinite(numeric)) return `“${field.label}”必须是数字`
@@ -112,6 +115,15 @@ export function validateActionParams(action: string, params: Record<string, unkn
     if (top + height > 100) return '上边界(%) + 高度(%) 不能大于 100'
   }
   return null
+}
+
+/** 保存前统一校验一个步骤：需要元素时必带 element_id，再校验动作参数。 */
+export function validateStep(step: Step): string | null {
+  const meta = actionMeta(step.action)
+  if (meta.needsElement && (step.element_id == null)) {
+    return `请选择“${meta.elementLabel ?? '元素'}”`
+  }
+  return validateActionParams(step.action, step.params)
 }
 
 // Step 4：continue_on_failure 是 Step 顶层字段；加载旧数据/历史 params 时归一化，

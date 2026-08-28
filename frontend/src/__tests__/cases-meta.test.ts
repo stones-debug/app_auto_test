@@ -8,11 +8,12 @@ import {
   defaultParams,
   normalizeStep,
   validateActionParams,
+  validateStep,
   type Step,
 } from '@/api/cases'
 
 describe('CR-09 动作/断言元数据契约', () => {
-  it('覆盖 Agent Registry 全部 16 个动作', () => {
+  it('覆盖 Agent Registry 全部 17 个动作', () => {
     const values = ACTIONS.map((a) => a.value).sort()
     expect(values).toEqual(
       [
@@ -25,6 +26,7 @@ describe('CR-09 动作/断言元数据契约', () => {
         'swipe_to_find',
         'swipe_in_element',
         'swipe_in_region',
+        'swipe_in_element_find_text_click',
         'scroll',
         'back',
         'sleep',
@@ -101,6 +103,43 @@ describe('CR-09 动作/断言元数据契约', () => {
       height_percent: 60,
       percent: 0.3,
     })).toBeNull()
+  })
+
+  it('列表内滑动查找文字并点击 的元数据和默认值正确', () => {
+    const meta = actionMeta('swipe_in_element_find_text_click')
+    expect(meta.needsElement).toBe(true)
+    expect(meta.elementLabel).toBe('列表控件')
+    expect(defaultParams(meta.fields)).toMatchObject({
+      match_mode: 'equals',
+      preferred_direction: 'up',
+      max_swipes_per_direction: 8,
+      percent: 0.3,
+      container_wait_timeout: 10,
+      settle_ms: 300,
+    })
+    const textField = meta.fields.find((f) => f.key === 'target_text')!
+    expect(textField.required).toBe(true)
+    expect(textField.minLength).toBe(1)
+  })
+
+  it('列表内滑动查找文字并点击 保存前校验参数范围', () => {
+    expect(validateActionParams('swipe_in_element_find_text_click', {
+      target_text: '系统时间',
+      max_swipes_per_direction: 51,
+    })).toBe('“每方向最大滑动次数”不能大于 50')
+    expect(validateActionParams('swipe_in_element_find_text_click', {
+      target_text: '   ',
+    })).toBe('“目标文字”不能为空')
+    expect(validateActionParams('swipe_in_element_find_text_click', {
+      target_text: '系统时间',
+      percent: 0.04,
+    })).toBe('“滑动比例（0.05～0.95）”不能小于 0.05')
+  })
+
+  it('validateStep 覆盖 needsElement 缺元素校验', () => {
+    expect(validateStep({ order: 1, action: 'swipe_in_element_find_text_click', element_id: null, params: { target_text: 'x' }, continue_on_failure: false })).toBe('请选择“列表控件”')
+    expect(validateStep({ order: 1, action: 'click', element_id: null, params: {}, continue_on_failure: false })).toBe('请选择“元素”')
+    expect(validateStep({ order: 1, action: 'click', element_id: 1, params: {}, continue_on_failure: false })).toBeNull()
   })
 })
 

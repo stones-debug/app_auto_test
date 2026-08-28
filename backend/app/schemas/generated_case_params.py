@@ -67,6 +67,16 @@ class SwipeInRegionParams(ParamsBase):
         return self
 
 
+class SwipeInElementFindTextClickParams(ParamsBase):
+    target_text: str = Field(..., min_length=1)
+    match_mode: Literal['equals', 'contains'] = 'equals'
+    preferred_direction: Literal['up', 'down'] = 'up'
+    max_swipes_per_direction: int = Field(default=8, ge=1, le=50)
+    percent: float = Field(default=0.3, ge=0.05, le=0.95)
+    container_wait_timeout: int = Field(default=10, ge=0, le=60)
+    settle_ms: int = Field(default=300, ge=0, le=2000)
+
+
 class ScrollParams(ParamsBase):
     pass
 
@@ -142,6 +152,7 @@ STEP_PARAM_MODELS: dict[str, type[ParamsBase]] = {
     'swipe_to_find': SwipeToFindParams,  # noqa: F821
     'swipe_in_element': SwipeInElementParams,  # noqa: F821
     'swipe_in_region': SwipeInRegionParams,  # noqa: F821
+    'swipe_in_element_find_text_click': SwipeInElementFindTextClickParams,  # noqa: F821
     'scroll': ScrollParams,  # noqa: F821
     'back': BackParams,  # noqa: F821
     'sleep': SleepParams,  # noqa: F821
@@ -165,4 +176,20 @@ ASSERTION_PARAM_MODELS: dict[str, type[ParamsBase]] = {
 KNOWN_ACTIONS = frozenset(STEP_PARAM_MODELS)
 KNOWN_ASSERTIONS = frozenset(ASSERTION_PARAM_MODELS)
 
-PROTOCOL_VERSION = '2.1.0'
+PROTOCOL_VERSION = '2.2.0'
+
+STEP_NEEDS_ELEMENT = frozenset({
+    'click',
+    'input',
+    'clear',
+    'swipe_to_find',
+    'swipe_in_element',
+    'swipe_in_element_find_text_click',
+    'scroll',
+    'get_text',
+    'get_attribute',
+})
+
+ELEMENT_LABELS: dict[str, str] = {
+    'swipe_in_element_find_text_click': '列表控件',
+}

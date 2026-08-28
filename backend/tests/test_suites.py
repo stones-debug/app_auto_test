@@ -124,3 +124,65 @@ async def test_variable_crud(client: AsyncClient):
 
     deleted = await client.delete(f"/api/variables/{var_id}", headers=headers)
     assert deleted.status_code == 204
+
+
+async def test_suite_steps_with_find_text_click(client: AsyncClient):
+    """Step 12：套件前后置步骤可保存新动作，缺少列表控件时拒绝。"""
+    headers, project_id, _ = await _setup(client)
+    el = await client.post(
+        f"/api/projects/{project_id}/elements",
+        json={"name": "列表", "locator_type": "id", "locator_value": "date_list"},
+        headers=headers,
+    )
+    assert el.status_code == 201
+    element_id = el.json()["id"]
+
+    created = await client.post(
+        f"/api/projects/{project_id}/suites",
+        json={
+            "name": "含列表查找套件",
+            "setup_steps": [
+                {
+                    "order": 1,
+                    "action": "swipe_in_element_find_text_click",
+                    "element_id": element_id,
+                    "params": {"target_text": "系统时间"},
+                },
+            ],
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201
+    suite_id = created.json()["id"]
+    assert created.json()["setup_steps"][0]["params"]["target_text"] == "系统时间"
+
+    # 缺少 element_id 的新动作被拒绝
+    bad = await client.post(
+        f"/api/projects/{project_id}/suites",
+        json={
+            "name": "缺列表套件",
+            "setup_steps": [
+                {"order": 1, "action": "swipe_in_element_find_text_click", "params": {"target_text": "x"}},
+            ],
+        },
+        headers=headers,
+    )
+    assert bad.status_code == 422
+
+    # 更新套件前后置步骤
+    updated = await client.put(
+        f"/api/suites/{suite_id}",
+        json={
+            "teardown_steps": [
+                {
+                    "order": 1,
+                    "action": "swipe_in_element_find_text_click",
+                    "element_id": element_id,
+                    "params": {"target_text": "确定", "match_mode": "contains"},
+                },
+            ],
+        },
+        headers=headers,
+    )
+    assert updated.status_code == 200
+    assert updated.json()["teardown_steps"][0]["params"]["match_mode"] == "contains"

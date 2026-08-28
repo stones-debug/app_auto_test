@@ -10,12 +10,14 @@ export interface ParamField {
   required?: boolean
   min?: number
   max?: number
+  minLength?: number
 }
 
 export interface ActionMeta {
   value: string
   label: string
   needsElement: boolean
+  elementLabel?: string
   fields: ParamField[]
   constraints?: ActionConstraint[]
 }
@@ -35,7 +37,7 @@ export interface AssertionMeta {
   fields: ParamField[]
 }
 
-export const PROTOCOL_VERSION = "2.1.0"
+export const PROTOCOL_VERSION = "2.2.0"
 
 export const ACTIONS: ActionMeta[] = [
   { value: 'launch_app', label: '启动 APP', needsElement: false, fields: [
@@ -78,6 +80,15 @@ export const ACTIONS: ActionMeta[] = [
     { key: 'direction', label: '方向', type: 'select', options: [{ value: 'up', label: '上滑' }, { value: 'down', label: '下滑' }, { value: 'left', label: '左滑' }, { value: 'right', label: '右滑' }], default: 'up' },
     { key: 'percent', label: '滑动比例（0.05～0.95）', type: 'number', default: 0.3, min: 0.05, max: 0.95 },
   ], constraints: [{"type": "percent_region", "left": "left_percent", "top": "top_percent", "width": "width_percent", "height": "height_percent"}] },
+  { value: 'swipe_in_element_find_text_click', label: '列表内滑动查找文字并点击', needsElement: true, elementLabel: '列表控件', fields: [
+    { key: 'target_text', label: '目标文字', type: 'text', required: true, minLength: 1, placeholder: "如 系统时间 或 ${date}" },
+    { key: 'match_mode', label: '匹配方式', type: 'select', options: [{ value: 'equals', label: '精确匹配' }, { value: 'contains', label: '包含匹配' }], default: 'equals' },
+    { key: 'preferred_direction', label: '首选方向', type: 'select', options: [{ value: 'up', label: '上滑' }, { value: 'down', label: '下滑' }], default: 'up' },
+    { key: 'max_swipes_per_direction', label: '每方向最大滑动次数', type: 'number', default: 8, min: 1, max: 50 },
+    { key: 'percent', label: '滑动比例（0.05～0.95）', type: 'number', default: 0.3, min: 0.05, max: 0.95 },
+    { key: 'container_wait_timeout', label: '列表等待秒数', type: 'number', default: 10, min: 0, max: 60 },
+    { key: 'settle_ms', label: '稳定等待(ms)', type: 'number', default: 300, min: 0, max: 2000 },
+  ] },
   { value: 'scroll', label: '滚动到元素', needsElement: true, fields: [
   ] },
   { value: 'back', label: '返回键', needsElement: false, fields: [

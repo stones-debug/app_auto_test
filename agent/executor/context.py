@@ -44,6 +44,7 @@ class ExecutionContext:
         wait_timeout: float | None = None,
         *,
         editable: bool = False,
+        disable_smart_scroll: bool = False,
     ):
         key = str(element_id)
         data = self.elements_snapshot.get(key)
@@ -53,7 +54,9 @@ class ExecutionContext:
         if locator_type == "smart":
             # smart 快照不支持 editable 概念（resource_id 追加 EditText 后缀仅适用普通定位）；
             # 若 step 参数携带 editable 一并忽略。
-            return SmartElementResolver().resolve(self.driver, self, data)
+            return SmartElementResolver().resolve(
+                self.driver, self, data, disable_scroll=disable_smart_scroll
+            )
         locator_value = self.render(data.get("locator_value") or "")
         if editable and locator_type == "resource_id":
             editable_suffix = "//android.widget.EditText"

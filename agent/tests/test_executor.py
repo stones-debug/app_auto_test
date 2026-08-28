@@ -1434,3 +1434,314 @@ async def test_run_suite_stop_raises_stop_requested():
     with pytest.raises(StopRequested):
         await runner.run_suite(suite)
 
+# ---------- Step 12：列表内双向滑动查找文字并点击 ----------
+
+
+class _ListScrollDriver(MockDriver):
+    """为容器元素提供几何 bounds；按方向精确控制滚动页面与边界。
+
+    scroll_in_element 由 Action 调用，返回「该方向是否还能继续滚动」。
+    测试通过 up_pages/down_pages 回调按方向滑动次数返回新屏幕，
+    通过 *_boundary_at 控制到达边界后返回 False。
+    """
+
+    def __init__(self, container_bounds, container_locator="list"):
+        super().__init__()
+        self.container_bounds = container_bounds
+        self.container_locator = container_locator
+        self.clicked: list[str] = []
+        self.up_pages = None
+        self.down_pages = None
+        self.up_boundary_at = None
+        self.down_boundary_at = None
+        self.up_count = 0
+        self.down_count = 0
+
+    def find_element(self, locator_type, locator_value, wait_timeout=10):
+        el = super().find_element(locator_type, locator_value, wait_timeout)
+        if locator_value == self.container_locator:
+            el._bounds = dict(self.container_bounds)
+        return el
+
+    def click(self, element):
+        self._assert_fresh(element)
+        self.clicked.append(element.text or element.get_attribute("id"))
+
+    def scroll_in_element(self, element, direction: str, percent: float) -> bool:
+        self._assert_fresh(element)
+        if direction == "up":
+            self.up_count += 1
+            can = not (self.up_boundary_at is not None and self.up_count >= self.up_boundary_at)
+            if self.up_pages is not None:
+                self.set_screen(self.up_pages(self.up_count))
+        else:
+            self.down_count += 1
+            can = not (self.down_boundary_at is not None and self.down_count >= self.down_boundary_at)
+            if self.down_pages is not None:
+                self.set_screen(self.down_pages(self.down_count))
+        self.element_scrolls.append((element.locator_value, direction, percent, can))
+        return can
+
+
+def _find_text_params(**overrides) -> dict:
+    params = {
+        "element_id": 1,
+        "target_text": "系统时间",
+        "match_mode": "equals",
+        "preferred_direction": "up",
+        "max_swipes_per_direction": 8,
+        "percent": 0.3,
+        "container_wait_timeout": 10,
+        "settle_ms": 0,
+    }
+    params.update(overrides)
+    return params
+
+
+def _list_case(params, elements=None) -> dict:
+    elements = elements or {"1": {"locator_type": "id", "locator_value": "list"}}
+    return _make_case(
+        [{"order": 1, "action": "swipe_in_element_find_text_click", "element_id": 1, "params": params}],
+        elements=elements,
+    )
+
+
+def _run_find_text(driver, params, variables=None, should_stop=None):
+    from executor.actions import ACTION_REGISTRY
+
+    action = ACTION_REGISTRY["swipe_in_element_find_text_click"]()
+    context = ExecutionContext(driver, _list_case(params), variables, should_stop=should_stop)
+    return action, context
+
+
+_FULL_SCREEN = {"x": 0, "y": 0, "width": 1000, "height": 2000}
+
+
+async def test_find_text_click_found_without_swipe():
+    driver = _ListScrollDriver(_FULL_SCREEN)
+    driver.set_screen([{"id": "t1", "text": "系统时间", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
+    action, context = _run_find_text(driver, _find_text_params())
+    result = await action.execute(driver, context, _find_text_params())
+    assert result["status"] == "passed"
+    assert result["found_after_swipes"] == 0
+    assert driver.clicked == ["系统时间"]
+    assert driver.element_scrolls == []
+
+
+async def test_find_text_click_contains_match():
+    driver = _ListScrollDriver(_FULL_SCREEN)
+    driver.set_screen([{"id": "t1", "text": "前缀系统时间后缀", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
+    action, context = _run_find_text(driver, _find_text_params(match_mode="contains"))
+    result = await action.execute(driver, context, _find_text_params(match_mode="contains"))
+    assert result["status"] == "passed"
+    assert driver.clicked == ["前缀系统时间后缀"]
+
+
+async def test_find_text_click_scroll_preferred_direction():
+    driver = _ListScrollDriver(_FULL_SCREEN)
+    # 初始页无目标；上滑 1 次后出现目标
+    driver.set_screen([{"id": "i1", "text": "项目一", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
+    target_page = [{"id": "t1", "text": "系统时间", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}]
+    driver.up_pages = lambda count: target_page if count >= 1 else None
+    action, context = _run_find_text(driver, _find_text_params())
+    result = await action.execute(driver, context, _find_text_params())
+    assert result["status"] == "passed"
+    assert result["found_after_swipes"] == 1
+    assert driver.up_count == 1
+    assert driver.down_count == 0
+
+
+async def test_find_text_click_scroll_preferred_fails_reverse_crosses_start():
+    driver = _ListScrollDriver(_FULL_SCREEN)
+    driver.set_screen([{"id": "i0", "text": "起点项", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
+    driver.up_pages = lambda count: [{"id": f"u{count}", "text": f"上页{count}", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}]
+    driver.up_boundary_at = 2
+    # 下滑：2 次回到起点，再 1 次越过起点出现目标
+    target_page = [{"id": "t1", "text": "系统时间", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}]
+    driver.down_pages = lambda count: target_page if count >= 3 else None
+    action, context = _run_find_text(driver, _find_text_params())
+    result = await action.execute(driver, context, _find_text_params())
+    assert result["status"] == "passed"
+    assert result["found_after_swipes"] == 4  # 1 成功上滑 + 3 下滑（2 返起点 + 1 越过）；边界上滑不计
+    assert driver.up_count == 2
+    assert driver.down_count == 3
+
+
+async def test_find_text_click_preferred_boundary_switches_to_reverse():
+    driver = _ListScrollDriver(_FULL_SCREEN)
+    driver.set_screen([{"id": "i0", "text": "项目一", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
+    driver.up_boundary_at = 1  # 上滑一次即到边界
+    target_page = [{"id": "t1", "text": "系统时间", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}]
+    driver.down_pages = lambda count: target_page if count >= 2 else None
+    action, context = _run_find_text(driver, _find_text_params())
+    result = await action.execute(driver, context, _find_text_params())
+    assert result["status"] == "passed"
+    assert driver.up_count == 1
+    assert driver.down_count == 2
+
+
+async def test_find_text_click_both_directions_exhaust_raises():
+    driver = _ListScrollDriver(_FULL_SCREEN)
+    driver.set_screen([{"id": "i0", "text": "项目一", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
+    driver.up_pages = lambda count: [{"id": f"u{count}", "text": f"上页{count}", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}]
+    driver.up_boundary_at = 2
+    driver.down_pages = lambda count: [{"id": f"d{count}", "text": "下页", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}]
+    driver.down_boundary_at = 2
+    from executor import ElementNotFound
+
+    action, context = _run_find_text(driver, _find_text_params(max_swipes_per_direction=2))
+    with pytest.raises(ElementNotFound, match="系统时间"):
+        await action.execute(driver, context, _find_text_params(max_swipes_per_direction=2))
+
+
+async def test_find_text_click_ignores_text_outside_container():
+    # 容器只在屏幕中段可见；页面上方有同名文字但中心点在容器外，不应被点击
+    container_bounds = {"x": 0, "y": 400, "width": 1000, "height": 1000}
+    driver = _ListScrollDriver(container_bounds)
+    driver.set_screen([
+        {"id": "outside", "text": "系统时间", "bounds": {"x": 100, "y": 100, "width": 200, "height": 50}},
+        {"id": "inside", "text": "系统时间", "bounds": {"x": 100, "y": 600, "width": 200, "height": 50}},
+    ])
+    action, context = _run_find_text(driver, _find_text_params())
+    result = await action.execute(driver, context, _find_text_params())
+    assert result["status"] == "passed"
+    assert driver.clicked == ["系统时间"]
+
+
+class _IdRecordingScrollDriver(_ListScrollDriver):
+    def click(self, element):
+        self._assert_fresh(element)
+        self.last_clicked_id = element.locator_value
+        self.clicked.append(element.text or element.locator_value)
+
+
+async def test_find_text_click_multiple_matches_picks_nearest_center_id():
+    driver = _IdRecordingScrollDriver(_FULL_SCREEN)
+    driver.set_screen([
+        {"id": "far", "text": "选择", "bounds": {"x": 100, "y": 200, "width": 200, "height": 50}},
+        {"id": "near", "text": "选择", "bounds": {"x": 400, "y": 700, "width": 200, "height": 50}},
+    ])
+    action, context = _run_find_text(driver, _find_text_params(target_text="选择"))
+    result = await action.execute(driver, context, _find_text_params(target_text="选择"))
+    assert result["status"] == "passed"
+    assert driver.last_clicked_id == "near"
+
+
+async def test_find_text_click_renders_variable_and_escapes():
+    driver = _ListScrollDriver(_FULL_SCREEN)
+    driver.set_screen([{"id": "t1", "text": '含"引号"和\\反斜杠', "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
+    action, context = _run_find_text(
+        driver,
+        _find_text_params(target_text="${word}", match_mode="contains"),
+        variables={"word": '含"引号"和\\反斜杠'},
+    )
+    result = await action.execute(driver, context, _find_text_params(target_text="${word}", match_mode="contains"))
+    assert result["status"] == "passed"
+    assert driver.clicked == ['含"引号"和\\反斜杠']
+
+
+async def test_find_text_click_stop_requested():
+    from executor import StopRequested
+
+    driver = _ListScrollDriver(_FULL_SCREEN)
+    driver.set_screen([{"id": "i0", "text": "项目一", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
+    action, context = _run_find_text(driver, _find_text_params(), should_stop=lambda: True)
+    with pytest.raises(StopRequested):
+        await action.execute(driver, context, _find_text_params())
+
+
+async def test_find_text_click_stale_retries_relocates():
+    from executor.driver import StaleObjectException
+
+    driver = _ListScrollDriver(_FULL_SCREEN)
+    driver.set_screen([{"id": "t1", "text": "系统时间", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
+    first = True
+
+    def _click(el):
+        nonlocal first
+        if first:
+            first = False
+            raise StaleObjectException("元素已失效")
+        _ListScrollDriver.click(driver, el)
+
+    driver.click = _click
+    action, context = _run_find_text(driver, _find_text_params())
+    result = await action.execute(driver, context, _find_text_params())
+    assert result["status"] == "passed"
+    assert driver.clicked == ["系统时间"]
+def test_appium_scroll_in_element_returns_boolean(monkeypatch):
+    from executor.appium_driver import AppiumDriver
+
+    class _Appium:
+        def __init__(self, result):
+            self.result = result
+            self.calls = []
+
+        def execute_script(self, name, payload):
+            self.calls.append((name, payload))
+            return self.result
+
+    class _Element:
+        id = "native-element-id"
+
+    driver = AppiumDriver(device={"udid": "android-1", "platform": "android"})
+    fake = _Appium(True)
+    driver.driver = fake
+    assert driver.scroll_in_element(_Element(), "down", 0.5) is True
+    assert fake.calls == [("mobile: scrollGesture", {"elementId": "native-element-id", "direction": "down", "percent": 0.5})]
+
+    fake.result = False
+    assert driver.scroll_in_element(_Element(), "up", 0.3) is False
+
+
+def test_appium_get_element_rect_returns_w3c_rect():
+    from executor.appium_driver import AppiumDriver
+
+    class _Element:
+        rect = {"x": 10, "y": 20, "width": 300, "height": 400}
+
+    driver = AppiumDriver(device={"udid": "android-1", "platform": "android"})
+    driver.driver = object()  # 仅需 _ensure 不抛（实际上会抛，因为 driver 非 None）
+    rect = driver.get_element_rect(_Element())
+    assert rect == {"x": 10, "y": 20, "width": 300, "height": 400}
+
+
+def test_mock_get_element_rect_defaults_to_window_size():
+    from executor.driver import MockDriver, MockElement
+
+    driver = MockDriver()
+    el = MockElement("container")
+    assert driver.get_element_rect(el) == {"x": 0, "y": 0, "width": 1000, "height": 2000}
+
+
+def test_mock_scroll_in_element_records_and_returns_can_continue():
+    from executor.driver import MockDriver, MockElement
+
+    driver = MockDriver()
+    el = MockElement("list")
+    assert driver.scroll_in_element(el, "up", 0.3) is True
+    assert driver.element_scrolls == [("list", "up", 0.3, True)]
+    assert driver.swipes == [("up", 500)]
+
+    driver.scroll_can_continue = False
+    assert driver.scroll_in_element(el, "down", 0.5) is False
+    assert driver.element_scrolls[-1] == ("list", "down", 0.5, False)
+
+
+async def test_find_text_click_stale_exhausted_raises_hard_failure():
+    from executor import ElementStaleRetryExhausted
+    from executor.driver import StaleObjectException
+
+    driver = _ListScrollDriver(_FULL_SCREEN)
+    driver.set_screen([{"id": "t1", "text": "系统时间", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
+
+    def _always_stale(el):
+        raise StaleObjectException("元素已失效")
+
+    driver.click = _always_stale
+    action, context = _run_find_text(driver, _find_text_params())
+    with pytest.raises(ElementStaleRetryExhausted):
+        await action.execute(driver, context, _find_text_params())
+    # 不因点击 stale 耗尽而无休止滑动
+    assert driver.up_count == 0
+    assert driver.down_count == 0
