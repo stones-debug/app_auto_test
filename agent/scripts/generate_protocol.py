@@ -75,18 +75,20 @@ _PY_LITERAL_SNIPPET = """{name}: Literal[{choices}] = {default}
 def _py_field_snippet(param: dict) -> str:
     name = param["name"]
     type_ = _PY_SNIPPET_TYPES[param["type"]]
+    kwargs = []
+    if "min" in param:
+        kwargs.append(f"ge={param['min']}")
+    if "max" in param:
+        kwargs.append(f"le={param['max']}")
     if param.get("required"):
+        if kwargs:
+            return f"    {name}: {type_} = Field(..., {', '.join(kwargs)})\n"
         return f"    {name}: {type_}\n"
     default = param.get("default")
     if type_ == "str":
         return f"    {name}: {type_} | None = None\n"
     if type_ == "bool":
         return f"    {name}: {type_} = {repr(bool(default)) if default is not None else 'False'}\n"
-    kwargs = []
-    if "min" in param:
-        kwargs.append(f"ge={param['min']}")
-    if "max" in param:
-        kwargs.append(f"le={param['max']}")
     if default is None:
         default = 0
     if type_ == "float":
@@ -103,7 +105,7 @@ def _render_py(manifest: dict) -> str:
         "",
         "from typing import Literal",
         "",
-        "from pydantic import BaseModel, Field",
+        "from pydantic import BaseModel, Field, model_validator",
         "",
         "",
         "class ParamsBase(BaseModel):",
@@ -129,6 +131,25 @@ def _render_py(manifest: dict) -> str:
                 lines.append(f"    {param['name']}: Literal[{choices}] = {default}")
             else:
                 lines.append(_py_field_snippet(param).rstrip())
+        for constraint in item.get("constraints", []):
+            if constraint["type"] != "percent_region":
+                raise ValueError(f"不支持的协议约束: {constraint['type']}")
+            left = constraint["left"]
+            top = constraint["top"]
+            width = constraint["width"]
+            height = constraint["height"]
+            lines.extend(
+                [
+                    "",
+                    "    @model_validator(mode=\"after\")",
+                    "    def _validate_percent_region(self):",
+                    f"        if self.{left} + self.{width} > 100:",
+                    f"            raise ValueError(\"{left} + {width} 不能大于 100\")",
+                    f"        if self.{top} + self.{height} > 100:",
+                    f"            raise ValueError(\"{top} + {height} 不能大于 100\")",
+                    "        return self",
+                ]
+            )
         lines.append("")
         lines.append("")
     kind = "action" if len(models) <= len(manifest["actions"]) + 1 else "?"
@@ -219,6 +240,15 @@ def _render_ts(manifest: dict) -> str:
         "  label: string",
         "  needsElement: boolean",
         "  fields: ParamField[]",
+        "  constraints?: ActionConstraint[]",
+        "}",
+        "",
+        "export interface ActionConstraint {",
+        "  type: 'percent_region'",
+        "  left: string",
+        "  top: string",
+        "  width: string",
+        "  height: string",
         "}",
         "",
         "export interface AssertionMeta {",
@@ -236,7 +266,11 @@ def _render_ts(manifest: dict) -> str:
         lines.append(f"  {{ value: {item['name']!r}, label: {item['label']!r}, needsElement: {str(item['needs_element']).lower()}, fields: [")
         for param in item["params"]:
             lines.append(_ts_field_snippet(param, "    ") + ",")
-        lines.append("  ] },")
+        constraints = item.get("constraints")
+        if constraints:
+            lines.append(f"  ], constraints: {json.dumps(constraints, ensure_ascii=False)} }},")
+        else:
+            lines.append("  ] },")
     lines.append("]")
     lines.append("")
     lines.append("export const ASSERTION_TYPES: AssertionMeta[] = [")

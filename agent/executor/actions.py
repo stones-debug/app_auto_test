@@ -123,6 +123,54 @@ class SwipeToFindAction(BaseAction):
         raise ElementNotFound(f"滑动 {max_swipes} 次后仍未找到元素（{direction}，{last_error}）")
 
 
+@register_action("swipe_in_element")
+class SwipeInElementAction(BaseAction):
+    """在目标控件内部滑动，适用于日期选择器、列表和独立滚动容器。"""
+
+    async def execute(self, driver, context, params: dict) -> dict:
+        await with_stale_retry(
+            driver,
+            context,
+            params.get("element_id"),
+            lambda element: driver.swipe_in_element(
+                element,
+                params.get("direction", "up"),
+                float(params.get("percent", 0.3)),
+            ),
+            wait_timeout=params.get("wait_timeout"),
+            label="控件内滑动",
+        )
+        return {"status": "passed"}
+
+
+@register_action("swipe_in_region")
+class SwipeInRegionAction(BaseAction):
+    """按屏幕百分比换算区域，在区域内部滑动。"""
+
+    async def execute(self, driver, context, params: dict) -> dict:
+        # 后端协议模型已校验 0..100 和边界和；这里保留换算，避免屏幕分辨率写入用例。
+        left_percent = float(params["left_percent"])
+        top_percent = float(params["top_percent"])
+        width_percent = float(params["width_percent"])
+        height_percent = float(params["height_percent"])
+        size = driver.get_window_size()
+        screen_width, screen_height = int(size["width"]), int(size["height"])
+        left = min(max(0, round(screen_width * left_percent / 100)), screen_width - 1)
+        top = min(max(0, round(screen_height * top_percent / 100)), screen_height - 1)
+        # 百分比边界已由服务端校验；再按剩余像素夹紧，消除浮点/四舍五入造成的越界。
+        width = min(max(1, round(screen_width * width_percent / 100)), screen_width - left)
+        height = min(max(1, round(screen_height * height_percent / 100)), screen_height - top)
+        driver.swipe_in_region(
+            left,
+            top,
+            width,
+            height,
+            params.get("direction", "up"),
+            float(params.get("percent", 0.3)),
+        )
+        return {"status": "passed"}
+
+
 @register_action("scroll")
 class ScrollAction(BaseAction):
     async def execute(self, driver, context, params: dict) -> dict:

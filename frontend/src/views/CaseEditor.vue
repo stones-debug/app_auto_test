@@ -14,6 +14,7 @@ import {
   normalizeAssertion,
   normalizeStep,
   updateCase,
+  validateActionParams,
   type Assertion,
   type Step,
   type StepPhase,
@@ -158,6 +159,13 @@ function collectVariables(): Record<string, unknown> {
 async function save() {
   if (!form.name) {
     ElMessage.warning('请输入用例名称')
+    return
+  }
+  const invalidStep = (form.steps as Step[])
+    .map((step, index) => ({ index, message: validateActionParams(step.action, step.params) }))
+    .find((item) => item.message)
+  if (invalidStep?.message) {
+    ElMessage.warning(`第 ${invalidStep.index + 1} 步：${invalidStep.message}`)
     return
   }
   loading.value = true

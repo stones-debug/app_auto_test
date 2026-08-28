@@ -7,11 +7,12 @@ import {
   assertionMeta,
   defaultParams,
   normalizeStep,
+  validateActionParams,
   type Step,
 } from '@/api/cases'
 
 describe('CR-09 动作/断言元数据契约', () => {
-  it('覆盖 Agent Registry 全部 14 个动作', () => {
+  it('覆盖 Agent Registry 全部 16 个动作', () => {
     const values = ACTIONS.map((a) => a.value).sort()
     expect(values).toEqual(
       [
@@ -22,6 +23,8 @@ describe('CR-09 动作/断言元数据契约', () => {
         'clear',
         'swipe',
         'swipe_to_find',
+        'swipe_in_element',
+        'swipe_in_region',
         'scroll',
         'back',
         'sleep',
@@ -69,6 +72,35 @@ describe('CR-09 动作/断言元数据契约', () => {
   it('launch_app 参数含 package/activity/no_reset', () => {
     const keys = actionMeta('launch_app').fields.map((f) => f.key)
     expect(keys).toEqual(['package', 'activity', 'no_reset'])
+  })
+
+  it('两个限定范围滑动动作的元数据和默认值正确', () => {
+    const elementSwipe = actionMeta('swipe_in_element')
+    expect(elementSwipe.needsElement).toBe(true)
+    expect(defaultParams(elementSwipe.fields)).toMatchObject({ direction: 'up', percent: 0.3, wait_timeout: 10 })
+
+    const regionSwipe = actionMeta('swipe_in_region')
+    expect(regionSwipe.needsElement).toBe(false)
+    expect(regionSwipe.constraints).toEqual([
+      { type: 'percent_region', left: 'left_percent', top: 'top_percent', width: 'width_percent', height: 'height_percent' },
+    ])
+  })
+
+  it('区域内滑动会在保存前校验区域边界', () => {
+    expect(validateActionParams('swipe_in_region', {
+      left_percent: 60,
+      top_percent: 0,
+      width_percent: 50,
+      height_percent: 100,
+      percent: 0.3,
+    })).toBe('左边界(%) + 宽度(%) 不能大于 100')
+    expect(validateActionParams('swipe_in_region', {
+      left_percent: 10,
+      top_percent: 20,
+      width_percent: 50,
+      height_percent: 60,
+      percent: 0.3,
+    })).toBeNull()
   })
 })
 

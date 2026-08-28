@@ -88,6 +88,32 @@ export function defaultParams(fields: ParamField[]): Record<string, unknown> {
   return params
 }
 
+/** 在保存前执行 Registry 中可表达的轻量校验；服务端仍是最终校验方。 */
+export function validateActionParams(action: string, params: Record<string, unknown> = {}): string | null {
+  const meta = actionMeta(action)
+  for (const field of meta.fields) {
+    const value = params[field.key]
+    if (field.required && (value === undefined || value === null || value === '')) {
+      return `请填写“${field.label}”`
+    }
+    if (field.type !== 'number' || value === undefined || value === null || value === '') continue
+    const numeric = Number(value)
+    if (!Number.isFinite(numeric)) return `“${field.label}”必须是数字`
+    if (field.min !== undefined && numeric < field.min) return `“${field.label}”不能小于 ${field.min}`
+    if (field.max !== undefined && numeric > field.max) return `“${field.label}”不能大于 ${field.max}`
+  }
+  for (const constraint of meta.constraints ?? []) {
+    if (constraint.type !== 'percent_region') continue
+    const left = Number(params[constraint.left])
+    const top = Number(params[constraint.top])
+    const width = Number(params[constraint.width])
+    const height = Number(params[constraint.height])
+    if (left + width > 100) return '左边界(%) + 宽度(%) 不能大于 100'
+    if (top + height > 100) return '上边界(%) + 高度(%) 不能大于 100'
+  }
+  return null
+}
+
 // Step 4：continue_on_failure 是 Step 顶层字段；加载旧数据/历史 params 时归一化，
 // 并把历史遗留塞入 params 的同名字段剔除
 // 方案 §2.8：步骤稳定 key 缺失/非法时兜底生成 UUID（后端同样兜底，读写一致）

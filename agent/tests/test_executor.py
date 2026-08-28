@@ -1158,6 +1158,100 @@ async def test_swipe_to_find_step_through_runner():
     assert sent[0]["status"] == "passed"
 
 
+class _StaleOnceElementSwipeDriver(MockDriver):
+    """第一次控件内滑动前刷新页面，验证动作会重新定位后再执行。"""
+
+    def __init__(self):
+        super().__init__()
+        self.staled = False
+
+    def swipe_in_element(self, element, direction: str, percent: float) -> None:
+        if not self.staled:
+            self.staled = True
+            self.refresh()
+        super().swipe_in_element(element, direction, percent)
+
+
+async def test_swipe_in_element_uses_target_element_and_retries_stale_element():
+    from executor.actions import SwipeInElementAction
+
+    driver = _StaleOnceElementSwipeDriver()
+    context = ExecutionContext(driver, _make_case([]))
+
+    result = await SwipeInElementAction().execute(
+        driver,
+        context,
+        {"element_id": 1, "direction": "down", "percent": 0.4, "wait_timeout": 0},
+    )
+
+    assert result["status"] == "passed"
+    assert driver.element_swipes == [("username", "down", 0.4)]
+    assert driver.swipes == [("down", 500)]
+
+
+async def test_swipe_in_region_scales_percentages_to_current_window():
+    from executor.actions import SwipeInRegionAction
+
+    driver = MockDriver()
+    context = ExecutionContext(driver, _make_case([]))
+
+    result = await SwipeInRegionAction().execute(
+        driver,
+        context,
+        {
+            "left_percent": 10,
+            "top_percent": 20,
+            "width_percent": 30,
+            "height_percent": 40,
+            "direction": "left",
+            "percent": 0.5,
+        },
+    )
+
+    assert result["status"] == "passed"
+    assert driver.region_swipes == [(100, 400, 300, 800, "left", 0.5)]
+
+
+def test_appium_limited_swipes_use_uiautomator2_gesture_payloads():
+    from executor.appium_driver import AppiumDriver
+
+    class _Appium:
+        def __init__(self):
+            self.calls = []
+
+        def execute_script(self, name, payload):
+            self.calls.append((name, payload))
+
+        def get_window_size(self):
+            return {"width": 1080, "height": 2400}
+
+    class _Element:
+        id = "native-element-id"
+
+    driver = AppiumDriver(device={"udid": "android-1", "platform": "android"})
+    fake = _Appium()
+    driver.driver = fake
+    driver.swipe_in_element(_Element(), "up", 0.3)
+    driver.swipe_in_region(100, 200, 300, 400, "down", 0.5)
+
+    assert fake.calls == [
+        ("mobile: swipeGesture", {"elementId": "native-element-id", "direction": "up", "percent": 0.3}),
+        (
+            "mobile: swipeGesture",
+            {"left": 100, "top": 200, "width": 300, "height": 400, "direction": "down", "percent": 0.5},
+        ),
+    ]
+
+
+def test_appium_limited_swipes_reject_ios():
+    from executor.appium_driver import AppiumDriver
+    from executor.driver import DriverError
+
+    driver = AppiumDriver(device={"udid": "ios-1", "platform": "ios"})
+    with pytest.raises(DriverError, match="仅支持 Android"):
+        driver.swipe_in_region(0, 0, 100, 100, "up", 0.3)
+
+
 # ---------- Step 2：套件级执行（协议 V2） ----------
 
 

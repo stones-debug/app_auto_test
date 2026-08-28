@@ -81,7 +81,7 @@ async def test_register_rejects_old_agent_version():
         agent_id_db = agent.id
 
     try:
-        # 旧版本 → 拒绝（min_agent_version 随 Registry 升到 2.0.0）
+        # 旧版本 → 拒绝（min_agent_version 随 Registry 升到 2.1.0）
         async with SessionLocal() as db:
             ws_old = FakeWS()
             reply = await handle_register(
@@ -96,7 +96,7 @@ async def test_register_rejects_old_agent_version():
             ws_new = FakeWS()
             reply = await handle_register(
                 db, ws_new,
-                {"type": "register", "agent_id": "pytest_sec_agent", "agent_key": "sk-sec", "version": "2.0.0"},
+                {"type": "register", "agent_id": "pytest_sec_agent", "agent_key": "sk-sec", "version": "2.1.0"},
             )
         assert reply is not None and reply["status"] == "ok"
         assert ws_new.closed is None

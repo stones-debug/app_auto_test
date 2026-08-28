@@ -5,8 +5,8 @@
 #   - frontend/src/api/generated/registry.ts
 # 控制字段（controls.step）属于 Step 顶层，绝不进入 action params。
 
-protocol_version: "2.0.0"
-min_agent_version: "2.0.0"
+protocol_version: "2.1.0"
+min_agent_version: "2.1.0"
 
 controls:
   step:
@@ -75,6 +75,47 @@ actions:
       - { name: max_swipes, type: integer, default: 5, min: 1, max: 50, label: 最大滑动次数 }
       - { name: wait_timeout, type: integer, default: 2, min: 0, max: 300, label: 每次查找等待秒数 }
       - { name: duration, type: integer, default: 500, min: 0, label: 滑动时长(ms) }
+  - name: swipe_in_element
+    label: 控件内滑动
+    version: 1
+    needs_element: true
+    params:
+      - name: direction
+        type: select
+        default: up
+        label: 方向
+        options:
+          - { value: up, label: 上滑 }
+          - { value: down, label: 下滑 }
+          - { value: left, label: 左滑 }
+          - { value: right, label: 右滑 }
+      - { name: percent, type: number, default: 0.3, min: 0.05, max: 0.95, label: 滑动比例（0.05～0.95） }
+      - { name: wait_timeout, type: integer, default: 10, min: 0, max: 300, label: 等待秒数 }
+  - name: swipe_in_region
+    label: 区域内滑动
+    version: 1
+    needs_element: false
+    constraints:
+      - type: percent_region
+        left: left_percent
+        top: top_percent
+        width: width_percent
+        height: height_percent
+    params:
+      - { name: left_percent, type: number, required: true, min: 0, max: 100, label: 左边界(%) }
+      - { name: top_percent, type: number, required: true, min: 0, max: 100, label: 上边界(%) }
+      - { name: width_percent, type: number, required: true, min: 0.01, max: 100, label: 宽度(%) }
+      - { name: height_percent, type: number, required: true, min: 0.01, max: 100, label: 高度(%) }
+      - name: direction
+        type: select
+        default: up
+        label: 方向
+        options:
+          - { value: up, label: 上滑 }
+          - { value: down, label: 下滑 }
+          - { value: left, label: 左滑 }
+          - { value: right, label: 右滑 }
+      - { name: percent, type: number, default: 0.3, min: 0.05, max: 0.95, label: 滑动比例（0.05～0.95） }
   - name: scroll
     label: 滚动到元素
     version: 1

@@ -87,6 +87,26 @@ class BaseDriver:
     def swipe(self, direction: str, duration: int = 500) -> None:
         raise NotImplementedError
 
+    def swipe_in_element(self, element, direction: str, percent: float) -> None:
+        """在指定原生控件可滚动范围内执行滑动。"""
+        raise NotImplementedError
+
+    def swipe_in_region(
+        self,
+        left: int,
+        top: int,
+        width: int,
+        height: int,
+        direction: str,
+        percent: float,
+    ) -> None:
+        """在屏幕像素区域内执行滑动。"""
+        raise NotImplementedError
+
+    def get_window_size(self) -> dict[str, int]:
+        """返回当前可操作窗口的像素尺寸。"""
+        raise NotImplementedError
+
     def scroll_to(self, element) -> None:
         raise NotImplementedError
 
@@ -132,6 +152,8 @@ class MockDriver(BaseDriver):
         self._next_node_id = 0
         self._scroll_callback = None
         self.swipes: list[tuple[str, int]] = []
+        self.element_swipes: list[tuple[str, str, float]] = []
+        self.region_swipes: list[tuple[int, int, int, int, str, float]] = []
         self.swipe_count = 0
 
     def attach_to_current_app(self) -> None:
@@ -222,6 +244,27 @@ class MockDriver(BaseDriver):
             new_screen = self._scroll_callback(self.swipe_count)
             if new_screen is not None:
                 self.set_screen(new_screen)
+
+    def swipe_in_element(self, element, direction: str, percent: float) -> None:
+        self._assert_fresh(element)
+        self.element_swipes.append((element.locator_value, direction, percent))
+        self.swipe(direction)
+
+    def swipe_in_region(
+        self,
+        left: int,
+        top: int,
+        width: int,
+        height: int,
+        direction: str,
+        percent: float,
+    ) -> None:
+        self.region_swipes.append((left, top, width, height, direction, percent))
+        self.swipe(direction)
+
+    def get_window_size(self) -> dict[str, int]:
+        # 固定尺寸使区域百分比换算在单元测试中可断言。
+        return {"width": 1000, "height": 2000}
 
     def scroll_to(self, element) -> None:
         pass

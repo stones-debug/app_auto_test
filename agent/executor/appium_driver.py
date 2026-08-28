@@ -326,6 +326,47 @@ class AppiumDriver(BaseDriver):
         start, end = points.get(direction, points["up"])
         driver.swipe(start[0], start[1], end[0], end[1], duration)
 
+    def _ensure_android_gesture(self) -> None:
+        platform = (self.device.get("platform") or "").lower()
+        if platform and platform != "android":
+            raise DriverError("控件内滑动和区域内滑动当前仅支持 Android（UiAutomator2）")
+
+    def swipe_in_element(self, element, direction: str, percent: float) -> None:
+        """UiAutomator2 mobile: swipeGesture，在元素自身边界内滑动。"""
+        self._ensure_android_gesture()
+        driver = self._ensure()
+        driver.execute_script(
+            "mobile: swipeGesture",
+            {"elementId": element.id, "direction": direction, "percent": percent},
+        )
+
+    def swipe_in_region(
+        self,
+        left: int,
+        top: int,
+        width: int,
+        height: int,
+        direction: str,
+        percent: float,
+    ) -> None:
+        """UiAutomator2 mobile: swipeGesture，在给定屏幕像素区域内滑动。"""
+        self._ensure_android_gesture()
+        driver = self._ensure()
+        driver.execute_script(
+            "mobile: swipeGesture",
+            {
+                "left": left,
+                "top": top,
+                "width": width,
+                "height": height,
+                "direction": direction,
+                "percent": percent,
+            },
+        )
+
+    def get_window_size(self) -> dict[str, int]:
+        return self._ensure().get_window_size()
+
     def scroll_to(self, element) -> None:
         driver = self._ensure()
         driver.execute_script("arguments[0].scrollIntoView(true);", element)

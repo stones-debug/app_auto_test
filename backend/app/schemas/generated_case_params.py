@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ParamsBase(BaseModel):
@@ -42,6 +42,29 @@ class SwipeToFindParams(ParamsBase):
     max_swipes: int = Field(default=5, ge=1, le=50)
     wait_timeout: int = Field(default=2, ge=0, le=300)
     duration: int = Field(default=500, ge=0)
+
+
+class SwipeInElementParams(ParamsBase):
+    direction: Literal['up', 'down', 'left', 'right'] = 'up'
+    percent: float = Field(default=0.3, ge=0.05, le=0.95)
+    wait_timeout: int = Field(default=10, ge=0, le=300)
+
+
+class SwipeInRegionParams(ParamsBase):
+    left_percent: float = Field(..., ge=0, le=100)
+    top_percent: float = Field(..., ge=0, le=100)
+    width_percent: float = Field(..., ge=0.01, le=100)
+    height_percent: float = Field(..., ge=0.01, le=100)
+    direction: Literal['up', 'down', 'left', 'right'] = 'up'
+    percent: float = Field(default=0.3, ge=0.05, le=0.95)
+
+    @model_validator(mode="after")
+    def _validate_percent_region(self):
+        if self.left_percent + self.width_percent > 100:
+            raise ValueError("left_percent + width_percent 不能大于 100")
+        if self.top_percent + self.height_percent > 100:
+            raise ValueError("top_percent + height_percent 不能大于 100")
+        return self
 
 
 class ScrollParams(ParamsBase):
@@ -117,6 +140,8 @@ STEP_PARAM_MODELS: dict[str, type[ParamsBase]] = {
     'clear': ClearParams,  # noqa: F821
     'swipe': SwipeParams,  # noqa: F821
     'swipe_to_find': SwipeToFindParams,  # noqa: F821
+    'swipe_in_element': SwipeInElementParams,  # noqa: F821
+    'swipe_in_region': SwipeInRegionParams,  # noqa: F821
     'scroll': ScrollParams,  # noqa: F821
     'back': BackParams,  # noqa: F821
     'sleep': SleepParams,  # noqa: F821
@@ -140,4 +165,4 @@ ASSERTION_PARAM_MODELS: dict[str, type[ParamsBase]] = {
 KNOWN_ACTIONS = frozenset(STEP_PARAM_MODELS)
 KNOWN_ASSERTIONS = frozenset(ASSERTION_PARAM_MODELS)
 
-PROTOCOL_VERSION = '2.0.0'
+PROTOCOL_VERSION = '2.1.0'

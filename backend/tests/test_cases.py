@@ -419,6 +419,58 @@ async def test_wait_timeout_range_enforced(client: AsyncClient):
     assert defaulted.json()["steps"][0]["params"]["wait_timeout"] == 10
 
 
+async def test_limited_swipe_params_and_region_bounds_enforced(client: AsyncClient):
+    """V2.1：限定范围滑动的比例和区域边界在保存用例时由协议模型校验。"""
+    headers, project_id = await _setup(client)
+    element_id = await _create_element(client, headers, project_id)
+    ok = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "限定范围滑动",
+            "steps": [
+                {"order": 1, "action": "swipe_in_element", "element_id": element_id, "params": {"percent": 0.3}},
+                {
+                    "order": 2,
+                    "action": "swipe_in_region",
+                    "params": {
+                        "left_percent": 10,
+                        "top_percent": 20,
+                        "width_percent": 30,
+                        "height_percent": 40,
+                    },
+                },
+            ],
+        },
+        headers=headers,
+    )
+    assert ok.status_code == 201
+    assert ok.json()["steps"][0]["params"]["percent"] == 0.3
+    assert ok.json()["steps"][1]["params"]["direction"] == "up"
+
+    invalid_percent = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={"name": "比例超限", "steps": [{"order": 1, "action": "swipe_in_element", "params": {"percent": 1}}]},
+        headers=headers,
+    )
+    assert invalid_percent.status_code == 422
+
+    invalid_region = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "越界区域",
+            "steps": [
+                {
+                    "order": 1,
+                    "action": "swipe_in_region",
+                    "params": {"left_percent": 60, "top_percent": 0, "width_percent": 50, "height_percent": 100},
+                },
+            ],
+        },
+        headers=headers,
+    )
+    assert invalid_region.status_code == 422
+
+
 async def test_duplicate_orders_rejected(client: AsyncClient):
     """Step 4：step order 与 assertion order 不得重复。"""
     headers, project_id = await _setup(client)

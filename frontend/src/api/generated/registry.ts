@@ -17,6 +17,15 @@ export interface ActionMeta {
   label: string
   needsElement: boolean
   fields: ParamField[]
+  constraints?: ActionConstraint[]
+}
+
+export interface ActionConstraint {
+  type: 'percent_region'
+  left: string
+  top: string
+  width: string
+  height: string
 }
 
 export interface AssertionMeta {
@@ -26,7 +35,7 @@ export interface AssertionMeta {
   fields: ParamField[]
 }
 
-export const PROTOCOL_VERSION = "2.0.0"
+export const PROTOCOL_VERSION = "2.1.0"
 
 export const ACTIONS: ActionMeta[] = [
   { value: 'launch_app', label: '启动 APP', needsElement: false, fields: [
@@ -56,6 +65,19 @@ export const ACTIONS: ActionMeta[] = [
     { key: 'wait_timeout', label: '每次查找等待秒数', type: 'number', default: 2, min: 0, max: 300 },
     { key: 'duration', label: '滑动时长(ms)', type: 'number', default: 500, min: 0 },
   ] },
+  { value: 'swipe_in_element', label: '控件内滑动', needsElement: true, fields: [
+    { key: 'direction', label: '方向', type: 'select', options: [{ value: 'up', label: '上滑' }, { value: 'down', label: '下滑' }, { value: 'left', label: '左滑' }, { value: 'right', label: '右滑' }], default: 'up' },
+    { key: 'percent', label: '滑动比例（0.05～0.95）', type: 'number', default: 0.3, min: 0.05, max: 0.95 },
+    { key: 'wait_timeout', label: '等待秒数', type: 'number', default: 10, min: 0, max: 300 },
+  ] },
+  { value: 'swipe_in_region', label: '区域内滑动', needsElement: false, fields: [
+    { key: 'left_percent', label: '左边界(%)', type: 'number', required: true, min: 0, max: 100 },
+    { key: 'top_percent', label: '上边界(%)', type: 'number', required: true, min: 0, max: 100 },
+    { key: 'width_percent', label: '宽度(%)', type: 'number', required: true, min: 0.01, max: 100 },
+    { key: 'height_percent', label: '高度(%)', type: 'number', required: true, min: 0.01, max: 100 },
+    { key: 'direction', label: '方向', type: 'select', options: [{ value: 'up', label: '上滑' }, { value: 'down', label: '下滑' }, { value: 'left', label: '左滑' }, { value: 'right', label: '右滑' }], default: 'up' },
+    { key: 'percent', label: '滑动比例（0.05～0.95）', type: 'number', default: 0.3, min: 0.05, max: 0.95 },
+  ], constraints: [{"type": "percent_region", "left": "left_percent", "top": "top_percent", "width": "width_percent", "height": "height_percent"}] },
   { value: 'scroll', label: '滚动到元素', needsElement: true, fields: [
   ] },
   { value: 'back', label: '返回键', needsElement: false, fields: [
