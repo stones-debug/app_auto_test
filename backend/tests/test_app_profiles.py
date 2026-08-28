@@ -420,8 +420,13 @@ async def test_workspace_nodes_enforce_project_and_inherit_parent_skip(client: A
         f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=case&parent_id={case_id}&ancestor_suite_id={suite_id}",
         headers=h,
     )
-    assert nodes.json()["items"][0]["effective_status"] == "skipped"
-    assert nodes.json()["items"][0]["status_source"] == "inherited"
+    node = nodes.json()["items"][0]
+    assert node["effective_status"] == "skipped"
+    assert node["status_source"] == "inherited"
+    assert node["registry_key"] == "sleep"
+    assert node["override_template"] == {"params": {"duration": 1}}
+    assert "action" not in node["override_template"]
+    assert "order" not in node["override_template"]
 
 
 async def test_shared_case_skip_is_scoped_to_selected_suite(client: AsyncClient):
@@ -664,6 +669,9 @@ async def test_suite_steps_workspace_query(client: AsyncClient):
     assert item["phase"] == "suite_setup"
     assert item["effective_status"] == "enabled"
     assert item["status_source"] == "none"
+    assert item["registry_key"] == "sleep"
+    assert item["override_template"] == {"params": {"duration": 1}}
+    assert "action" not in item["override_template"]
 
     teardown = await client.get(f"/api/app-profiles/{profile_id}/suite-steps/{suite_id}?phase=suite_teardown", headers=h)
     assert teardown.status_code == 200

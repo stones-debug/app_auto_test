@@ -38,12 +38,15 @@ export interface ProfileNode {
   id: number | null
   node_key: string | null
   name: string
+  registry_key?: string | null
   phase?: string | null
   order?: number | null
   effective_status: string
   status_source: string
   reason: { code: string; note: string } | null
   override_count: number
+  /** 公共节点中允许覆盖的当前参数；编辑器以此预填并仅提交差异。 */
+  override_template?: Record<string, unknown>
   child_count?: number
   difference_count?: number
   has_children: boolean

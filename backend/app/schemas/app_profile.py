@@ -222,12 +222,14 @@ class WorkspaceNode(BaseModel):
     id: int | None = None
     node_key: str | None = None
     name: str
+    registry_key: str | None = None
     phase: str | None = None
     order: int | None = None
     effective_status: str
     status_source: str
     reason: dict[str, str] | None = None
     override_count: int = 0
+    override_template: dict[str, Any] | None = None
     child_count: int = 0
     difference_count: int = 0
     has_children: bool = False

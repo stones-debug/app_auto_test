@@ -3,6 +3,7 @@
 安全要求：所有按 profile_id 访问的接口反查 project_id 并调用项目权限依赖。
 """
 
+from copy import deepcopy
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -1910,12 +1911,14 @@ def _node_item(
         "id": None,
         "node_key": node_key,
         "name": name,
+        "registry_key": node.get("action") if node_type == "step" else node.get("type") or node.get("assertion_type"),
         "phase": node.get("phase"),
         "order": node.get("order"),
         "effective_status": effective,
         "status_source": source,
         "reason": reason,
         "override_count": 1 if overridden else 0,
+        "override_template": _node_override_template(node),
         "has_children": False,
         "updated_at": None,
     }
@@ -1941,14 +1944,27 @@ def _suite_step_item(
         "id": suite_id,
         "node_key": node_key,
         "name": name,
+        "registry_key": node.get("action"),
         "phase": phase,
         "order": node.get("order"),
         "effective_status": effective,
         "status_source": source,
         "reason": reason,
         "override_count": 1 if overridden else 0,
+        "override_template": _node_override_template(node),
         "has_children": False,
         "updated_at": None,
+    }
+
+
+def _node_override_template(node: dict) -> dict:
+    """返回公共节点中允许用户编辑的字段，避免暴露并误改节点身份字段。"""
+    from app.services.profile_resolver import NODE_PATCH_ALLOWED
+
+    return {
+        key: deepcopy(value)
+        for key, value in node.items()
+        if key in NODE_PATCH_ALLOWED and value is not None
     }
 
 

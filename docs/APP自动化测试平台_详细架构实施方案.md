@@ -1983,6 +1983,7 @@ RUNNING ←── Worker 认领后经内部接口通知 FastAPI 更新
 5. **报告口径**：执行记录永久保存档案名、版本、双 revisions 和解析摘要快照；N/A 来自 `execution_exclusions`，不计入成功率分母，运行期 skipped 与 N/A 分开展示。历史 `app_profile_id IS NULL` 的执行显示“历史兼容执行”，不得查询当前配置回填历史结果。
 6. **灰度与回滚**：`APP_PROFILE_FEATURE_MODE=off|compat|required`；`compat` 仅对 `APP_PROFILE_ENABLED_PROJECT_IDS` 中的项目将旧请求注入通用档案，`required` 要求所有新请求显式选择档案/版本，`off` 保持旧执行协议。关闭灰度不删除档案、审计或历史快照。
 7. **核心接口**：档案 `/api/projects/{id}/app-profiles`，版本 `/api/app-profiles/{id}/releases`，规则 `/api/app-profiles/{id}/skip-rules/batch`，覆盖 `/api/app-profiles/{id}/*-overrides`，工作台 `/api/app-profiles/{id}/workspace`，差异清单 `/api/app-profiles/{id}/differences`，预检 `/api/executions/preview`；报告列表支持 `app_profile_id/app_release_id` 筛选。
+8. **节点覆盖编辑口径**：工作台步骤、断言及套件步骤节点返回 `registry_key` 与 `override_template`；模板仅包含公共节点当前值中 Registry 允许覆盖的字段，不返回 `action/type/key/order/phase` 等身份字段。前端打开覆盖时以模板合并已有补丁并预填完整有效参数，保存时仅提交相对公共模板变化的顶层字段；无差异时不创建空覆盖，已有覆盖恢复为公共配置。
 
 ---
 

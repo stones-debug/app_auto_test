@@ -26,6 +26,12 @@ import { usePermission } from '@/composables/usePermission'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { useAppProfileStore } from '@/stores/appProfile'
 import { buildProfileSkipTarget } from '@/utils/appProfileSkip'
+import {
+  buildEffectiveNodeOverride,
+  buildNodeOverrideDiff,
+  NODE_OVERRIDE_FIELDS,
+  unsupportedNodeOverrideFields,
+} from '@/utils/appProfileNodeOverride'
 
 interface DisplayNode extends ProfileNode {
   _key: string
@@ -62,7 +68,14 @@ const nodeOverrideDialog = reactive({
   visible: false,
   row: null as DisplayNode | null,
   patchText: '{}',
+  source: {} as Record<string, unknown>,
   overridden: false,
+})
+
+const nodeOverrideKind = computed(() => {
+  const row = nodeOverrideDialog.row
+  if (!row) return ''
+  return row.node_type === 'assertion' ? '断言' : '动作'
 })
 
 const displayRows = computed<DisplayNode[]>(() => {
@@ -214,22 +227,23 @@ async function batchRestore() {
 }
 
 async function openNodeOverride(row: DisplayNode) {
-  if (!store.selectedProfileId || !row.node_key) return
-  if (row.node_type === 'suite_step') {
-    nodeOverrideDialog.row = row
-    nodeOverrideDialog.patchText = '{}'
-    nodeOverrideDialog.overridden = row.status_source === 'override'
-    nodeOverrideDialog.visible = true
-    return
-  }
-  if (!row._caseId) return
+  if (!store.selectedProfileId || !row.node_key || row._suiteId == null) return
+  if (row.node_type !== 'suite_step' && row._caseId == null) return
   const data = await listProfileOverrides(store.selectedProfileId)
   const existing = data.nodes.find((item) => (
-    item.suite_id === row._suiteId && item.case_id === row._caseId
-      && item.node_type === row.node_type && item.node_key === row.node_key
+    item.suite_id === row._suiteId
+      && item.case_id === (row.node_type === 'suite_step' ? null : row._caseId)
+      && item.node_type === row.node_type
+      && item.node_key === row.node_key
   ))
+  const source = row.override_template ?? {}
   nodeOverrideDialog.row = row
-  nodeOverrideDialog.patchText = JSON.stringify(existing?.patch ?? {}, null, 2)
+  nodeOverrideDialog.source = source
+  nodeOverrideDialog.patchText = JSON.stringify(
+    buildEffectiveNodeOverride(source, existing?.patch),
+    null,
+    2,
+  )
   nodeOverrideDialog.overridden = Boolean(existing)
   nodeOverrideDialog.visible = true
 }
@@ -237,33 +251,49 @@ async function openNodeOverride(row: DisplayNode) {
 async function saveNodeOverride() {
   const row = nodeOverrideDialog.row
   if (!store.selectedProfileId || store.profileRevision == null || !row?.node_key) return
-  let patch: Record<string, unknown>
+  let edited: Record<string, unknown>
   try {
-    patch = JSON.parse(nodeOverrideDialog.patchText) as Record<string, unknown>
-    if (!patch || Array.isArray(patch) || typeof patch !== 'object') throw new Error()
+    edited = JSON.parse(nodeOverrideDialog.patchText) as Record<string, unknown>
+    if (!edited || Array.isArray(edited) || typeof edited !== 'object') throw new Error()
   } catch {
     ElMessage.warning('覆盖内容必须是 JSON 对象')
     return
   }
-  const result = row.node_type === 'suite_step'
-    ? await upsertSuiteStepOverride(
-        store.selectedProfileId,
-        row._suiteId!,
-        row.node_key,
-        { expected_revision: store.profileRevision, patch },
-      )
-    : await upsertNodeOverride(
-        store.selectedProfileId,
-        row._suiteId!,
-        row._caseId!,
-        row.node_type as 'step' | 'assertion',
-        row.node_key,
-        { expected_revision: store.profileRevision, patch },
-      )
-  store.markRevision(result.revision, store.testAssetRevision ?? 1)
-  nodeOverrideDialog.visible = false
-  await store.refreshVisibleWorkspace()
-  ElMessage.success('节点覆盖已保存')
+  const unsupported = unsupportedNodeOverrideFields(edited)
+  if (unsupported.length > 0) {
+    ElMessage.warning(`不可覆盖字段：${unsupported.join('、')}`)
+    return
+  }
+  const patch = buildNodeOverrideDiff(nodeOverrideDialog.source, edited)
+  if (Object.keys(patch).length === 0) {
+    if (nodeOverrideDialog.overridden) await restoreNode()
+    else ElMessage.info('参数未发生变化，无需保存覆盖')
+    return
+  }
+  saving.value = true
+  try {
+    const result = row.node_type === 'suite_step'
+      ? await upsertSuiteStepOverride(
+          store.selectedProfileId,
+          row._suiteId!,
+          row.node_key,
+          { expected_revision: store.profileRevision, patch },
+        )
+      : await upsertNodeOverride(
+          store.selectedProfileId,
+          row._suiteId!,
+          row._caseId!,
+          row.node_type as 'step' | 'assertion',
+          row.node_key,
+          { expected_revision: store.profileRevision, patch },
+        )
+    store.markRevision(result.revision, store.testAssetRevision ?? 1)
+    nodeOverrideDialog.visible = false
+    await store.refreshVisibleWorkspace()
+    ElMessage.success('节点覆盖已保存')
+  } finally {
+    saving.value = false
+  }
 }
 
 async function restoreNode() {
@@ -458,12 +488,25 @@ onMounted(load)
         <template #footer><el-button @click="skipDialog.visible = false">取消</el-button><el-button type="primary" :loading="saving" @click="confirmSkip">确认跳过</el-button></template>
       </el-dialog>
 
-      <el-dialog v-model="nodeOverrideDialog.visible" title="步骤/断言参数覆盖" width="560px">
-        <p class="override-help">填写与原节点合并的 JSON 对象。字段名及类型会由服务端 Registry 校验。</p>
-        <el-input v-model="nodeOverrideDialog.patchText" type="textarea" :rows="12" />
+      <el-dialog v-model="nodeOverrideDialog.visible" title="步骤/断言参数覆盖" width="640px">
+        <div v-if="nodeOverrideDialog.row" class="override-context">
+          <el-tag size="small" effect="plain">{{ nodeOverrideKind }}</el-tag>
+          <strong>{{ nodeOverrideDialog.row.registry_key || nodeOverrideDialog.row.name }}</strong>
+          <span v-if="nodeOverrideDialog.row.order != null">第 {{ nodeOverrideDialog.row.order }} 项</span>
+        </div>
+        <el-alert
+          class="override-alert"
+          type="info"
+          :closable="false"
+          show-icon
+          title="已预填公共配置与已有覆盖的当前有效参数；只需修改目标值，保存时仅记录差异。"
+        />
+        <div class="override-editor-title">当前有效参数（JSON）</div>
+        <el-input v-model="nodeOverrideDialog.patchText" type="textarea" :rows="14" spellcheck="false" />
+        <p class="override-help">可覆盖字段：{{ NODE_OVERRIDE_FIELDS.join('、') }}。动作类型、节点顺序、阶段及 key 不允许修改。</p>
         <template #footer>
           <el-button v-if="nodeOverrideDialog.overridden" type="danger" plain @click="restoreNode">恢复公共配置</el-button>
-          <el-button @click="nodeOverrideDialog.visible = false">取消</el-button><el-button type="primary" @click="saveNodeOverride">保存覆盖</el-button>
+          <el-button @click="nodeOverrideDialog.visible = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveNodeOverride">保存覆盖</el-button>
         </template>
       </el-dialog>
 
@@ -490,5 +533,9 @@ onMounted(load)
 .node-name { display: inline-flex; align-items: center; }
 .expand-button { width: 22px; padding: 0; border: 0; background: transparent; cursor: pointer; color: inherit; }
 .node-dot { display: inline-block; width: 22px; text-align: center; }
-.override-help { margin: 0 0 10px; }
+.override-context { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; color: var(--el-text-color-regular); }
+.override-context span { font-size: 12px; color: var(--el-text-color-secondary); }
+.override-alert { margin-bottom: 14px; }
+.override-editor-title { margin-bottom: 8px; font-size: 13px; font-weight: 600; }
+.override-help { margin: 8px 0 0; line-height: 1.6; }
 </style>
