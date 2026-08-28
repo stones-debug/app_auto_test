@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import get_current_user, get_editable_project, get_project_permission
 from app.core.database import get_db
@@ -283,7 +284,8 @@ async def export_elements(
             .order_by(TestElement.created_at.desc())
         )
     ).all()
-    return _download_response(build_export(rows), "elements-export.xlsx")
+    content = await run_in_threadpool(build_export, rows)
+    return _download_response(content, "elements-export.xlsx")
 
 
 @router.get("/projects/{project_id}/elements/import-template")
@@ -292,7 +294,8 @@ async def element_import_template(
     perm: tuple[Project, str | None] = Depends(get_project_permission),
 ):
     project, _role = perm
-    return _download_response(build_template(project_id, project.name), "element-import-template.xlsx")
+    content = await run_in_threadpool(build_template, project_id, project.name)
+    return _download_response(content, "element-import-template.xlsx")
 
 
 @router.post("/projects/{project_id}/elements/import")
@@ -309,7 +312,7 @@ async def import_elements(
         raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="只支持 .xlsx 文件")
     content = await file.read(MAX_IMPORT_BYTES + 1)
     try:
-        rows, errors = parse_import(content, project_id)
+        rows, errors = await run_in_threadpool(parse_import, content, project_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"code": "ELEMENT_IMPORT_INVALID", "message": str(exc), "error_count": 1, "errors": []}) from None
     if not rows and not errors:

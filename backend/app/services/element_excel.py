@@ -57,6 +57,7 @@ MAX_CONFIG_SHEET_ROWS = MAX_IMPORT_ROWS * 10
 MAX_EXPORT_ROWS = 20000
 MAX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 MAX_ZIP_ENTRIES = 1000
+_DATA_ALIGNMENT = Alignment(vertical="top", wrap_text=True)
 
 
 @dataclass(slots=True)
@@ -121,12 +122,13 @@ def _apply_data_validation(sheet) -> None:
 def _style_data_rows(sheet) -> None:
     # 只设置已写入的数据行；不要为了预留导入范围创建 2,000 行空单元格。
     for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
-        for cell in row:
-            cell.alignment = Alignment(vertical="top", wrap_text=True)
-            if cell.column in (1, 2):
-                cell.number_format = "0"
-            else:
-                cell.number_format = "@"
+        _style_data_row(row)
+
+
+def _style_data_row(row) -> None:
+    for cell in row:
+        cell.alignment = _DATA_ALIGNMENT
+        cell.number_format = "0" if cell.column in (1, 2) else "@"
 
 
 def _config_reference(config_text: str) -> str:
@@ -330,7 +332,7 @@ def build_export(rows: Iterable[tuple[Any, Any]]) -> bytes:
             if cell.column >= 3:
                 cell.number_format = "@"
                 cell.data_type = "s"
-    _style_data_rows(sheet)
+        _style_data_row(sheet[sheet.max_row])
     sheet.auto_filter.ref = f"A1:K{max(sheet.max_row, 2)}"
     if oversized_configs:
         _write_config_sheet(workbook, oversized_configs)

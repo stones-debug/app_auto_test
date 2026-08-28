@@ -52,10 +52,10 @@ class ModuleOut(BaseModel):
 class ElementCreate(BaseModel):
     project_id: int | None = None
     name: str = Field(min_length=1, max_length=255)
-    page_name: str | None = None
+    page_name: str | None = Field(default=None, max_length=255)
     platform: str = Field(default="both", pattern="^(android|ios|both)$")
     # 适用范围：自由文本；不填/空白 → 兜底 all（表示所有）
-    scope: str = "all"
+    scope: str = Field(default="all", max_length=100)
     locator_type: str = Field(pattern=LOCATOR_TYPE_RE)
     locator_value: str | None = None
     locator_config: SmartLocatorConfig | None = None
@@ -84,9 +84,9 @@ class ElementCreate(BaseModel):
 class ElementUpdate(BaseModel):
     project_id: int | None = None
     name: str | None = Field(default=None, min_length=1, max_length=255)
-    page_name: str | None = None
+    page_name: str | None = Field(default=None, max_length=255)
     platform: str | None = Field(default=None, pattern="^(android|ios|both)$")
-    scope: str | None = None
+    scope: str | None = Field(default=None, max_length=100)
     locator_type: str | None = Field(default=None, pattern=LOCATOR_TYPE_RE)
     # None = 不修改（仅支持设置，不支持清空语义）
     locator_value: str | None = Field(default=None)

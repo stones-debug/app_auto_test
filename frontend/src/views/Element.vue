@@ -39,7 +39,10 @@ const page = ref(1)
 const pageSize = ref(20)
 const keyword = ref('')
 const platform = ref('')
-const projectFilter = ref<number | undefined>()
+const routeProjectId = Number(route.params.projectId)
+const projectFilter = ref<number | undefined>(
+  Number.isInteger(routeProjectId) && routeProjectId > 0 ? routeProjectId : undefined,
+)
 const pageGroups = ref<ElementPageCount[]>([])
 const allTotal = computed(() => totalElementCount(pageGroups.value))
 const selectedPage = ref('all')
@@ -272,6 +275,8 @@ function openImport() {
 }
 
 function chooseImportFile() {
+  // 允许用户修正后再次选择同一路径文件；否则部分浏览器不会触发 change。
+  if (importInput.value) importInput.value.value = ''
   importInput.value?.click()
 }
 

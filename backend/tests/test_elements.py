@@ -1001,3 +1001,26 @@ def test_element_excel_config_chunks_preserve_json_whitespace():
     rows, errors = parse_import(output.getvalue(), project_id=1)
     assert errors == []
     assert rows[0].data["locator_config"] == {"value": "a "}
+
+
+async def test_element_excel_import_validates_database_text_lengths(client: AsyncClient):
+    """Excel 导入应在行级校验阶段拒绝超出数据库字段长度的文本。"""
+    headers, project_id = await _setup(client)
+    response = await client.post(
+        f"/api/projects/{project_id}/elements/import",
+        headers=headers,
+        files={
+            "file": (
+                "length.xlsx",
+                _element_xlsx([
+                    [None, project_id, "元素项目", "页面过长", "x" * 256, "android", "all", "id", "page", None, None],
+                    [None, project_id, "元素项目", "范围过长", "首页", "android", "s" * 101, "id", "scope", None, None],
+                ]),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == "ELEMENT_IMPORT_INVALID"
+    assert {error["row"] for error in detail["errors"]} == {2, 3}
