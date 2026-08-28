@@ -1,5 +1,7 @@
 import json
+from hashlib import sha256
 from io import BytesIO
+from types import SimpleNamespace
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -9,7 +11,16 @@ from sqlalchemy import update
 from app.core.database import SessionLocal
 from app.main import app
 from app.models import TestElement as ElementModel
-from app.services.element_excel import ELEMENT_HEADERS
+from app.services.element_excel import (
+    CONFIG_CHUNK_SIZE,
+    CONFIG_HEADERS,
+    CONFIG_REF_PREFIX,
+    CONFIG_SHEET_TITLE,
+    ELEMENT_HEADERS,
+    EXCEL_CELL_MAX_CHARS,
+    build_export,
+    parse_import,
+)
 
 OWNER = {"username": "pytest_owner", "email": "owner@tl-tek.com", "password": "test123"}
 
@@ -908,3 +919,85 @@ async def test_element_excel_import_is_atomic_and_checks_creator(client: AsyncCl
     assert any(error["row"] == 3 for error in detail["errors"])
     listing = (await client.get(f"/api/elements?project_id={project_id}&keyword=有效行", headers=headers)).json()
     assert listing["total"] == 0
+
+
+def test_element_excel_large_smart_config_round_trip():
+    """超长 smart 配置通过独立分片工作表导出后仍可完整导入。"""
+    condition = {"attribute": "text", "operator": "equals", "value": "x" * 200}
+    config = {
+        "version": 1,
+        "alternatives": [{"target": [condition.copy() for _ in range(20)]} for _ in range(10)],
+        "search": {"scroll": True, "direction": "up", "max_swipes": 8, "duration_ms": 500, "settle_ms": 300},
+        "selection": {"policy": "unique", "index": None},
+    }
+    element = SimpleNamespace(
+        id=1,
+        name="超长配置",
+        page_name=None,
+        platform="android",
+        scope="all",
+        locator_type="smart",
+        locator_value=None,
+        locator_config=config,
+        description=None,
+    )
+    project = SimpleNamespace(id=1, name="项目")
+
+    exported = build_export([(element, project)])
+    workbook = load_workbook(BytesIO(exported), read_only=True, data_only=False)
+    assert CONFIG_SHEET_TITLE in workbook.sheetnames
+    main_value = workbook["元素"]["J2"].value
+    assert isinstance(main_value, str) and main_value.startswith(CONFIG_REF_PREFIX)
+    assert len(main_value) <= EXCEL_CELL_MAX_CHARS
+    assert all(
+        len(row[2]) <= CONFIG_CHUNK_SIZE <= EXCEL_CELL_MAX_CHARS
+        for row in workbook[CONFIG_SHEET_TITLE].iter_rows(min_row=2, values_only=True)
+        if row[2]
+    )
+    workbook.close()
+
+    rows, errors = parse_import(exported, project_id=1)
+    assert errors == []
+    assert len(rows) == 1
+    assert rows[0].data["locator_config"] == config
+
+
+def test_element_excel_import_rejects_nonblank_rows_after_limit():
+    """超过 2,000 条的数据不能在限制行之后被静默忽略。"""
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "元素"
+    sheet.append(list(ELEMENT_HEADERS))
+    sheet.cell(row=2, column=4, value="第一条")
+    sheet.cell(row=2, column=8, value="id")
+    sheet.cell(row=2, column=9, value="first")
+    sheet.cell(row=2003, column=4, value="超限条目")
+    sheet.cell(row=2003, column=8, value="id")
+    sheet.cell(row=2003, column=9, value="overflow")
+    output = BytesIO()
+    workbook.save(output)
+
+    rows, errors = parse_import(output.getvalue(), project_id=1)
+    assert len(rows) == 1
+    assert any(error["row"] == 2003 for error in errors)
+
+
+def test_element_excel_config_chunks_preserve_json_whitespace():
+    """配置分片首尾空白属于 JSON 字符串内容时不能被导入清洗。"""
+    config_text = '{"value":"a "}'
+    reference = CONFIG_REF_PREFIX + sha256(config_text.encode("utf-8")).hexdigest()
+    workbook = Workbook()
+    data = workbook.active
+    data.title = "元素"
+    data.append(list(ELEMENT_HEADERS))
+    data.append([None, 1, "项目", "带空格", None, "android", "all", "smart", None, reference, None])
+    config_sheet = workbook.create_sheet(CONFIG_SHEET_TITLE)
+    config_sheet.append(list(CONFIG_HEADERS))
+    config_sheet.append([reference, 1, '{"value":"a '])
+    config_sheet.append([reference, 2, '"}'])
+    output = BytesIO()
+    workbook.save(output)
+
+    rows, errors = parse_import(output.getvalue(), project_id=1)
+    assert errors == []
+    assert rows[0].data["locator_config"] == {"value": "a "}
