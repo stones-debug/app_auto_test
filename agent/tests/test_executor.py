@@ -1617,6 +1617,40 @@ async def test_find_text_click_both_directions_exhaust_raises():
         await action.execute(driver, context, _find_text_params(max_swipes_per_direction=2))
 
 
+class _StaleOnceScrollDriver(_ListScrollDriver):
+    """首次滚动时模拟页面重绘导致容器失效，验证动作会重新定位容器再滚动。"""
+
+    def __init__(self, container_bounds):
+        super().__init__(container_bounds)
+        self.staled = False
+        self.scroll_attempts = 0
+
+    def scroll_in_element(self, element, direction: str, percent: float) -> bool:
+        self.scroll_attempts += 1
+        if not self.staled:
+            self.staled = True
+            # 模拟滚动手势执行时页面重绘、元素失效：此句柄已过期
+            from executor.driver import StaleObjectException
+
+            raise StaleObjectException("元素已失效")
+        return super().scroll_in_element(element, direction, percent)
+
+
+async def test_find_text_click_scroll_stale_retries_relocates_container():
+    """滚动过程因页面重绘抛 stale 时，应重新定位容器再滚动，而不是直接失败。"""
+    driver = _StaleOnceScrollDriver(_FULL_SCREEN)
+    driver.set_screen([{"id": "i0", "text": "项目一", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
+    target_page = [{"id": "t1", "text": "系统时间", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}]
+    driver.up_pages = lambda count: target_page if count >= 1 else None
+    action, context = _run_find_text(driver, _find_text_params())
+    result = await action.execute(driver, context, _find_text_params())
+    assert result["status"] == "passed"
+    assert result["found_after_swipes"] == 1  # stale 重试一次后成功滚动 1 次并命中
+    assert driver.up_count == 1
+    assert driver.down_count == 0
+    assert driver.scroll_attempts == 2  # 首次抛 stale，第二次成功
+
+
 async def test_find_text_click_ignores_text_outside_container():
     # 容器只在屏幕中段可见；页面上方有同名文字但中心点在容器外，不应被点击
     container_bounds = {"x": 0, "y": 400, "width": 1000, "height": 1000}

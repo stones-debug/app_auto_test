@@ -350,8 +350,23 @@ class SwipeInElementFindTextClickAction(BaseAction):
         stop = getattr(context, "should_stop", None)
         if stop is not None and stop():
             raise StopRequested("执行被用户停止")
-        container = context.find_element(element_id, wait_timeout=container_wait_timeout, disable_smart_scroll=True)
-        can_continue = driver.scroll_in_element(container, direction, percent)
+
+        def _do_scroll(container):
+            # scroll_in_element 内部会断言元素句柄有效（Appium 端元素失效会抛
+            # StaleObjectException/StaleElementReferenceException）。列表重新定位后到
+            # 执行滚动之间仍可能发生页面重绘，必须把「重新定位 + 滚动」作为一个整体走
+            # 统一的 stale 重试：句柄失效时重新定位容器再滚动，而不是直接失败。
+            return driver.scroll_in_element(container, direction, percent)
+
+        can_continue = await with_stale_retry(
+            driver,
+            context,
+            element_id,
+            _do_scroll,
+            wait_timeout=container_wait_timeout,
+            disable_smart_scroll=True,
+            label=f"列表内滚动（{direction}）",
+        )
         if settle_ms > 0:
             await asyncio.sleep(settle_ms / 1000.0)
         return can_continue

@@ -43,6 +43,7 @@ async def with_stale_retry(
     *,
     wait_timeout=None,
     editable: bool = False,
+    disable_smart_scroll: bool = False,
     retries: int = 2,
     delays: tuple[float, ...] = (0.2, 0.5),
     label: str = "操作",
@@ -52,13 +53,17 @@ async def with_stale_retry(
     operation 接收新定位到的元素并返回其操作结果；不得复用失效元素对象。
     捕获到失效异常后：context.invalidate_element 丢弃旧句柄 → 重新
     context.find_element → 重试；耗尽抛 ElementStaleRetryExhausted（DriverError 子类）。
+    disable_smart_scroll 透传给 context.find_element：智能定位时临时禁用自动滚动。
     """
     stop = getattr(context, "should_stop", None)
     for attempt in range(retries + 1):
         if stop is not None and stop():
             raise StopRequested("执行被用户停止")
         try:
-            element = context.find_element(element_id, wait_timeout=wait_timeout, editable=editable)
+            element = context.find_element(
+                element_id, wait_timeout=wait_timeout, editable=editable,
+                disable_smart_scroll=disable_smart_scroll,
+            )
             return operation(element)
         except Exception as exc:
             if not is_stale_element_error(exc):
