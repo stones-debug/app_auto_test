@@ -64,6 +64,18 @@ export interface ElementUsage {
   step_orders?: number[]
 }
 
+export interface ElementImportResult {
+  created: number
+  updated: number
+  total: number
+}
+
+export interface ElementImportError {
+  row: number
+  field: string
+  message: string
+}
+
 export function listModules(projectId: number, parentId?: number | null) {
   return request.get<TestModule[]>(`/projects/${projectId}/modules`, {
     params: parentId === undefined ? {} : { parent_id: parentId ?? 0 },
@@ -130,6 +142,34 @@ export function deleteElement(id: number) {
 
 export function elementUsage(id: number) {
   return request.get<ElementUsage[]>(`/elements/${id}/usage`)
+}
+
+export function exportElements(params?: {
+  keyword?: string
+  platform?: string
+  page_name?: string
+  locator_type?: string
+  project_id?: number
+}) {
+  return request.get<Blob>('/elements/export', {
+    params,
+    responseType: 'blob',
+    timeout: 120000,
+  })
+}
+
+export function downloadElementImportTemplate(projectId: number) {
+  return request.get<Blob>(`/projects/${projectId}/elements/import-template`, {
+    responseType: 'blob',
+  })
+}
+
+export function importElements(projectId: number, file: File) {
+  const form = new FormData()
+  form.append('file', file)
+  return request.post<ElementImportResult>(`/projects/${projectId}/elements/import`, form, {
+    timeout: 120000,
+  })
 }
 
 export function elementPageFilter(pageName: string): string | undefined {

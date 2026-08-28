@@ -2014,6 +2014,7 @@ RUNNING ←── Worker 认领后经内部接口通知 FastAPI 更新
 6. **错误类型**：Agent 异常类 `InvalidSmartLocator / ElementNotFound / ElementNotUnique / ScrollLimitReached / ElementStaleRetryExhausted`（无机器错误码，经 `step_result.error_message` 中文文本上报落库）；日志含候选规则序号、匹配数量、滚动次数、失败原因，不记录完整页面源码。
 7. **前端**：元素库「智能定位（Android）」可视化编辑器（候选规则/锚点/相对路径/滚动/匹配策略，实时校验，索引策略带风险提示）；APP 档案覆盖抽屉复用同一编辑器组件；列表展示规则摘要（如「文字等于 ${device_name} + 类名等于TextView + 向上滑动8次」）。前端校验覆盖面为结构与数值上限；组合语义限制（regex 与 anchor/path 及需 XPath 表达的条件互斥、path 须带 anchor）由 Agent 运行时校验。
 8. **协议版本**：elements_snapshot 经 start_test 载荷下发（非 WS 入站消息），无新增 action/assertion Registry 项，`protocol_version` 不提升，协议产物无需重新生成（`generate_protocol.py --check` 通过）。
+9. **元素 Excel 批处理**：`GET /api/elements/export` 按当前筛选导出全部匹配元素；项目内 `GET /api/projects/{project_id}/elements/import-template` 下载模板，`POST /api/projects/{project_id}/elements/import` 批量导入。Excel 使用固定中英文表头，支持普通定位与智能定位 JSON；元素 ID 为空创建、存在时仅允许创建者更新当前项目元素。导入先完成整批校验，任一行失败则全部回滚，单文件限制 5 MB/2,000 行。
 
 ---
 

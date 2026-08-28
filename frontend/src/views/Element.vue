@@ -12,12 +12,16 @@ import {
   createElementGroup,
   deleteElement,
   deleteElementGroup,
+  downloadElementImportTemplate,
   elementPageFilter,
   elementPages,
   elementUsage,
+  exportElements,
+  importElements,
   listElements,
   totalElementCount,
   updateElement,
+  type ElementImportError,
   type ElementPageCount,
   type TestElement,
 } from '@/api/elements'
@@ -70,6 +74,12 @@ const groupName = ref('')
 
 const usageDialogVisible = ref(false)
 const usageCases = ref<{ case_id: number; case_name: string }[]>([])
+const exportLoading = ref(false)
+const importDialogVisible = ref(false)
+const importLoading = ref(false)
+const importFile = ref<File | null>(null)
+const importErrors = ref<ElementImportError[]>([])
+const importInput = ref<HTMLInputElement>()
 
 function canEdit(row: TestElement) {
   return !!auth.user && row.created_by === auth.user.id
@@ -225,6 +235,105 @@ async function showUsage(row: TestElement) {
   usageDialogVisible.value = true
 }
 
+function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
+async function exportExcel() {
+  exportLoading.value = true
+  try {
+    const blob = await exportElements({
+      keyword: keyword.value || undefined,
+      platform: platform.value || undefined,
+      page_name: elementPageFilter(selectedPage.value),
+      project_id: projectFilter.value,
+    })
+    saveBlob(blob, 'elements-export.xlsx')
+    ElMessage.success('元素已导出')
+  } finally {
+    exportLoading.value = false
+  }
+}
+
+function openImport() {
+  if (!isProjectMode.value || !projectFilter.value) {
+    ElMessage.warning('请从具体项目的元素库进入批量导入')
+    return
+  }
+  importFile.value = null
+  importErrors.value = []
+  if (importInput.value) importInput.value.value = ''
+  importDialogVisible.value = true
+}
+
+function chooseImportFile() {
+  importInput.value?.click()
+}
+
+function onImportFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  if (!file.name.toLowerCase().endsWith('.xlsx')) {
+    ElMessage.warning('只支持 .xlsx 文件')
+    input.value = ''
+    return
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    ElMessage.warning('文件大小不能超过 5 MB')
+    input.value = ''
+    return
+  }
+  importFile.value = file
+  importErrors.value = []
+}
+
+async function downloadTemplate() {
+  if (!projectFilter.value) return
+  const blob = await downloadElementImportTemplate(projectFilter.value)
+  saveBlob(blob, 'element-import-template.xlsx')
+}
+
+function importErrorDetail(error: unknown): { message: string; errors: ElementImportError[] } {
+  const detail = (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+  if (detail && typeof detail === 'object') {
+    const typed = detail as { message?: unknown; errors?: unknown }
+    const errors = Array.isArray(typed.errors) ? typed.errors.filter((item): item is ElementImportError => {
+      if (!item || typeof item !== 'object') return false
+      const value = item as Record<string, unknown>
+      return typeof value.row === 'number' && typeof value.field === 'string' && typeof value.message === 'string'
+    }) : []
+    return { message: typeof typed.message === 'string' ? typed.message : '导入失败', errors }
+  }
+  return { message: '导入失败，请检查文件后重试', errors: [] }
+}
+
+async function submitImport() {
+  if (!projectFilter.value || !importFile.value) {
+    ElMessage.warning('请选择要导入的 Excel 文件')
+    return
+  }
+  importLoading.value = true
+  importErrors.value = []
+  try {
+    const result = await importElements(projectFilter.value, importFile.value)
+    ElMessage.success(`导入完成：新建 ${result.created}，更新 ${result.updated}`)
+    importDialogVisible.value = false
+    await Promise.all([loadPages(), load()])
+  } catch (error) {
+    const detail = importErrorDetail(error)
+    importErrors.value = detail.errors
+    ElMessage.error(detail.message)
+  } finally {
+    importLoading.value = false
+  }
+}
+
 async function addGroup() {
   const name = groupName.value.trim()
   if (!name) {
@@ -320,6 +429,8 @@ onMounted(() => {
         </el-select>
         <el-button type="primary" @click="page = 1; load()">搜索</el-button>
         <span class="spacer"></span>
+        <el-button v-if="isProjectMode" @click="openImport">导入 Excel</el-button>
+        <el-button :loading="exportLoading" @click="exportExcel">导出 Excel</el-button>
         <el-button type="primary" @click="openCreate">新建元素</el-button>
       </div>
 
@@ -438,6 +549,26 @@ onMounted(() => {
       </template>
     </el-dialog>
 
+    <input ref="importInput" type="file" accept=".xlsx" hidden @change="onImportFileChange" />
+    <el-dialog v-model="importDialogVisible" title="批量导入元素" width="640px">
+      <el-alert type="info" :closable="false" show-icon title="元素ID为空时新建；填写元素ID时仅更新当前项目内由你创建的元素。任意一行错误都会整批回滚。" />
+      <div class="import-actions">
+        <el-button @click="downloadTemplate">下载 Excel 模板</el-button>
+        <el-button type="primary" plain @click="chooseImportFile">选择 .xlsx 文件</el-button>
+        <span v-if="importFile" class="import-file">{{ importFile.name }}（{{ Math.ceil(importFile.size / 1024) }} KB）</span>
+      </div>
+      <el-empty v-if="!importFile && importErrors.length === 0" :image-size="60" description="请选择 Excel 文件" />
+      <el-table v-if="importErrors.length" :data="importErrors" max-height="260" class="import-errors">
+        <el-table-column prop="row" label="行号" width="70" />
+        <el-table-column prop="field" label="字段" width="220" />
+        <el-table-column prop="message" label="错误原因" show-overflow-tooltip />
+      </el-table>
+      <template #footer>
+        <el-button @click="importDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="importLoading" :disabled="!importFile" @click="submitImport">开始导入</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="usageDialogVisible" title="被以下用例引用" width="480px">
       <el-empty v-if="usageCases.length === 0" description="暂无用例引用" />
       <el-table v-else :data="usageCases">
@@ -527,6 +658,22 @@ onMounted(() => {
   color: var(--text-2);
   font-size: 12px;
   line-height: 20px;
+}
+.import-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 18px 0 12px;
+}
+.import-file {
+  color: var(--text-2);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.import-errors {
+  margin-top: 12px;
 }
 .smart-tag {
   display: inline-block;

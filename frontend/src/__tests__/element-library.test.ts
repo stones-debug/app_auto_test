@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { LOCATOR_TYPES, elementPageFilter, totalElementCount } from '@/api/elements'
+import {
+  LOCATOR_TYPES,
+  downloadElementImportTemplate,
+  elementPageFilter,
+  exportElements,
+  importElements,
+  totalElementCount,
+} from '@/api/elements'
 
 describe('元素库页面分组', () => {
   it('全部计数来自分组全量统计，不随当前列表筛选总数变化', () => {
@@ -24,5 +31,11 @@ describe('元素库页面分组', () => {
       value: 'resource_id',
       label: 'Resource ID (Android)',
     })
+  })
+
+  it('提供 Excel 模板下载、筛选导出和项目内导入 API', () => {
+    expect(typeof downloadElementImportTemplate).toBe('function')
+    expect(typeof exportElements).toBe('function')
+    expect(typeof importElements).toBe('function')
   })
 })

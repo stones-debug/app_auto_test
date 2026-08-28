@@ -1,10 +1,15 @@
+import json
+from io import BytesIO
+
 import pytest
 from httpx import ASGITransport, AsyncClient
+from openpyxl import Workbook, load_workbook
 from sqlalchemy import update
 
 from app.core.database import SessionLocal
 from app.main import app
 from app.models import TestElement as ElementModel
+from app.services.element_excel import ELEMENT_HEADERS
 
 OWNER = {"username": "pytest_owner", "email": "owner@tl-tek.com", "password": "test123"}
 
@@ -817,3 +822,89 @@ async def test_element_list_detail_returns_locator_config(client: AsyncClient):
 
     detail = (await client.get(f"/api/elements/{el_id}", headers=headers)).json()
     assert detail["locator_config"] == SMART_CONFIG
+
+
+def _element_xlsx(rows: list[list[object]]) -> bytes:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "元素"
+    sheet.append(list(ELEMENT_HEADERS))
+    for row in rows:
+        sheet.append(row)
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+async def test_element_excel_template_import_export_and_update(client: AsyncClient):
+    """模板、普通/智能元素导入、全量导出及按 ID 更新。"""
+    headers, project_id = await _setup(client)
+    template = await client.get(f"/api/projects/{project_id}/elements/import-template", headers=headers)
+    assert template.status_code == 200
+    template_book = load_workbook(BytesIO(template.content), read_only=True)
+    assert template_book.sheetnames == ["元素", "填写说明"]
+    assert [cell.value for cell in next(template_book["元素"].iter_rows(max_row=1))] == list(ELEMENT_HEADERS)
+    template_book.close()
+
+    smart_json = json.dumps(SMART_CONFIG, ensure_ascii=False, separators=(",", ":"))
+    imported = await client.post(
+        f"/api/projects/{project_id}/elements/import",
+        headers=headers,
+        files={
+            "file": (
+                "elements.xlsx",
+                _element_xlsx([
+                    [None, project_id, "元素项目", "Excel按钮", "首页", "android", "all", "resource_id", "btn_excel", None, "批量导入"],
+                    [None, project_id, "元素项目", "Excel智能", "首页", "android", "all", "smart", None, smart_json, "智能"],
+                ]),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert imported.status_code == 200, imported.text
+    assert imported.json() == {"created": 2, "updated": 0, "total": 2}
+
+    exported = await client.get(f"/api/elements/export?project_id={project_id}&keyword=Excel", headers=headers)
+    assert exported.status_code == 200
+    exported_book = load_workbook(BytesIO(exported.content), read_only=True, data_only=False)
+    exported_rows = list(exported_book["元素"].iter_rows(min_row=2, values_only=True))
+    assert len(exported_rows) == 2
+    button_row = next(row for row in exported_rows if row[3] == "Excel按钮")
+    exported_book.close()
+
+    updated = list(button_row)
+    updated[3] = "Excel按钮-已更新"
+    update_response = await client.post(
+        f"/api/projects/{project_id}/elements/import",
+        headers=headers,
+        files={"file": ("update.xlsx", _element_xlsx([updated]), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert update_response.status_code == 200, update_response.text
+    assert update_response.json() == {"created": 0, "updated": 1, "total": 1}
+    listing = (await client.get(f"/api/elements?project_id={project_id}&keyword=已更新", headers=headers)).json()
+    assert listing["total"] == 1
+
+
+async def test_element_excel_import_is_atomic_and_checks_creator(client: AsyncClient):
+    """任一行失败整批回滚，且不允许更新其他用户创建的元素。"""
+    headers, project_id = await _setup(client)
+    before = await client.post(
+        "/api/elements",
+        headers=headers,
+        json={"project_id": project_id, "name": "不应写入", "locator_type": "id", "locator_value": "before"},
+    )
+    assert before.status_code == 201
+    response = await client.post(
+        f"/api/projects/{project_id}/elements/import",
+        headers=headers,
+        files={"file": ("bad.xlsx", _element_xlsx([
+            [None, project_id, "元素项目", "有效行", "首页", "android", "all", "id", "ok", None, None],
+            [None, project_id, "元素项目", "错误行", "首页", "android", "all", "smart", "不得填写", "{bad", None],
+        ]), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == "ELEMENT_IMPORT_INVALID"
+    assert any(error["row"] == 3 for error in detail["errors"])
+    listing = (await client.get(f"/api/elements?project_id={project_id}&keyword=有效行", headers=headers)).json()
+    assert listing["total"] == 0

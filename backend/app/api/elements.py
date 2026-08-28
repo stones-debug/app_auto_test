@@ -1,6 +1,8 @@
 from datetime import UTC, datetime
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +21,14 @@ from app.schemas.element import (
     ModuleCreate,
     ModuleOut,
     ModuleUpdate,
+)
+from app.services.element_excel import (
+    ELEMENT_CONTENT_TYPE,
+    MAX_EXPORT_ROWS,
+    MAX_IMPORT_BYTES,
+    build_export,
+    build_template,
+    parse_import,
 )
 from app.services.profile_revision import touch_project_asset_revision
 from app.utils.pagination import get_pagination
@@ -223,6 +233,147 @@ async def list_elements(
     ).all()
     items = [_element_out(r[0], r[1], r[2]) for r in rows]
     return {"total": total or 0, "page": pagination.page, "page_size": pagination.page_size, "items": items}
+
+
+def _download_response(content: bytes, filename: str) -> StreamingResponse:
+    return StreamingResponse(
+        iter([content]),
+        media_type=ELEMENT_CONTENT_TYPE,
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{filename}\"; filename*=UTF-8''{filename}",
+            "Content-Length": str(len(content)),
+        },
+    )
+
+
+@router.get("/elements/export")
+async def export_elements(
+    keyword: str = "",
+    platform: str = "",
+    page_name: str = "",
+    locator_type: str = "",
+    project_id: int | None = None,
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """按当前筛选导出全部元素（不受列表分页限制）。"""
+    conditions = [TestElement.deleted_at.is_(None)]
+    if project_id is not None:
+        conditions.append(TestElement.project_id == project_id)
+    if keyword:
+        conditions.append(TestElement.name.ilike(f"%{keyword}%"))
+    if platform:
+        conditions.append((TestElement.platform == platform) | (TestElement.platform == "both"))
+    if page_name:
+        conditions.append(
+            _ungrouped_element_condition()
+            if page_name == "未分组"
+            else TestElement.page_name == page_name
+        )
+    if locator_type:
+        conditions.append(TestElement.locator_type == locator_type)
+    count = await db.scalar(select(func.count()).select_from(TestElement).where(*conditions)) or 0
+    if count > MAX_EXPORT_ROWS:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="导出数据超过 20000 条，请缩小筛选范围")
+    rows = (
+        await db.execute(
+            select(TestElement, Project)
+            .join(Project, TestElement.project_id == Project.id)
+            .where(*conditions)
+            .order_by(TestElement.created_at.desc())
+        )
+    ).all()
+    return _download_response(build_export(rows), "elements-export.xlsx")
+
+
+@router.get("/projects/{project_id}/elements/import-template")
+async def element_import_template(
+    project_id: int,
+    perm: tuple[Project, str | None] = Depends(get_project_permission),
+):
+    project, _role = perm
+    return _download_response(build_template(project_id, project.name), "element-import-template.xlsx")
+
+
+@router.post("/projects/{project_id}/elements/import")
+async def import_elements(
+    project_id: int,
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    project, role = await get_project_permission(project_id, user, db)
+    if role not in ("owner", "admin", "member"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    if not file.filename or not file.filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="只支持 .xlsx 文件")
+    content = await file.read(MAX_IMPORT_BYTES + 1)
+    try:
+        rows, errors = parse_import(content, project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"code": "ELEMENT_IMPORT_INVALID", "message": str(exc), "error_count": 1, "errors": []}) from None
+    if not rows and not errors:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"code": "ELEMENT_IMPORT_INVALID", "message": "Excel 中没有可导入的数据", "error_count": 1, "errors": [{"row": 1, "field": "数据", "message": "请至少填写一行元素"}]})
+
+    validated: list[tuple[Any, Any]] = []
+    seen_ids: set[int] = set()
+    for row in rows:
+        try:
+            model = ElementCreate(project_id=project_id, **row.data)
+        except Exception as exc:
+            message = str(exc).split("\n")[-1]
+            errors.append({"row": row.row_number, "field": "数据", "message": message[:500]})
+            continue
+        if row.element_id is not None:
+            if row.element_id in seen_ids:
+                errors.append({"row": row.row_number, "field": "元素ID(element_id)", "message": "同一元素ID在文件中重复"})
+            seen_ids.add(row.element_id)
+        validated.append((row, model))
+
+    existing_by_id: dict[int, TestElement] = {}
+    if seen_ids:
+        existing = (
+            await db.execute(
+                select(TestElement).where(
+                    TestElement.id.in_(seen_ids),
+                    TestElement.deleted_at.is_(None),
+                )
+            )
+        ).scalars().all()
+        existing_by_id = {item.id: item for item in existing}
+    for row, _model in validated:
+        if row.element_id is None:
+            continue
+        element = existing_by_id.get(row.element_id)
+        if element is None:
+            errors.append({"row": row.row_number, "field": "元素ID(element_id)", "message": "元素不存在或已删除"})
+        elif element.project_id != project_id:
+            errors.append({"row": row.row_number, "field": "元素ID(element_id)", "message": "元素不属于当前项目"})
+        elif element.created_by != user.id:
+            errors.append({"row": row.row_number, "field": "元素ID(element_id)", "message": "仅元素创建者可批量更新"})
+    if errors:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "ELEMENT_IMPORT_INVALID", "message": "Excel 中存在校验错误，未导入任何元素", "error_count": len(errors), "errors": errors[:100]},
+        )
+
+    created_count = 0
+    updated_count = 0
+    for row, model in validated:
+        data = model.model_dump()
+        data["locator_config"] = model.locator_config.model_dump() if model.locator_config else None
+        if row.element_id is None:
+            db.add(TestElement(created_by=user.id, updated_by=user.id, **data))
+            created_count += 1
+            continue
+        element = existing_by_id[row.element_id]
+        for field in ("name", "page_name", "platform", "scope", "locator_type", "locator_value", "locator_config", "description"):
+            setattr(element, field, data[field])
+        element.updated_by = user.id
+        updated_count += 1
+    await touch_project_asset_revision(db, project_id)
+    await db.commit()
+    return {"created": created_count, "updated": updated_count, "total": created_count + updated_count}
 
 
 @router.post("/elements", response_model=ElementOut, status_code=status.HTTP_201_CREATED)
