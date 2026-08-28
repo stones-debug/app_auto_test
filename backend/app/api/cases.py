@@ -1,18 +1,36 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_editable_project, get_project_permission
 from app.core.database import get_db
 from app.models import Execution, Project, TestCase, TestElement, TestModule, User
-from app.schemas.case import CaseCreate, CaseListItem, CaseOut, CasePage, CaseUpdate
+from app.schemas.case import (
+    CaseBatchDeleteRequest,
+    CaseBatchDeleteResponse,
+    CaseCreate,
+    CaseListItem,
+    CaseOut,
+    CasePage,
+    CaseUpdate,
+)
 from app.services.profile_revision import touch_project_asset_revision
 from app.utils.pagination import get_pagination
 
 router = APIRouter(tags=["用例管理"])
+
+def _ids_from_query_values(values: list[str]) -> list[int]:
+    result: list[int] = []
+    for raw in values:
+        for part in raw.split(","):
+            part = part.strip()
+            if part.isdigit():
+                result.append(int(part))
+    return result
+
 
 
 async def _get_case_or_404(case_id: int, db: AsyncSession) -> TestCase:
@@ -236,6 +254,159 @@ async def update_case(
     await db.commit()
     await db.refresh(case)
     return case
+
+
+
+async def _batch_delete_cases(
+    project_id: int,
+    ids: list[int],
+    user: User,
+    db: AsyncSession,
+) -> list[TestCase]:
+    _project, role = await get_project_permission(project_id, user, db)
+    if role not in ("owner", "admin", "member"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+
+    rows = (
+        await db.execute(
+            select(TestCase).where(
+                TestCase.id.in_(ids),
+                TestCase.project_id == project_id,
+                TestCase.deleted_at.is_(None),
+            )
+        )
+    ).scalars().all()
+    by_id = {case.id: case for case in rows}
+    ordered = [by_id[i] for i in ids if i in by_id]
+    now = datetime.now(UTC)
+    for case in ordered:
+        case.deleted_at = now
+    if ordered:
+        await touch_project_asset_revision(db, project_id)
+        await db.commit()
+    return ordered
+
+
+@router.post("/projects/{project_id}/cases/batch", response_model=CaseBatchDeleteResponse)
+@router.post("/projects/{project_id}/cases/batch-delete", response_model=CaseBatchDeleteResponse)
+async def batch_delete_cases(
+    project_id: int,
+    body: CaseBatchDeleteRequest | None = None,
+    ids: list[str] = Query(default=[]),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    delete_ids = body.ids if body is not None and body.ids else _ids_from_query_values(ids)
+    if not delete_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="请提供至少一个用例 ID",
+        )
+    rows = await _batch_delete_cases(project_id, delete_ids, user, db)
+    return {
+        "deleted": len(rows),
+        "deleted_count": len(rows),
+        "ids": [case.id for case in rows],
+    }
+
+
+@router.delete("/projects/{project_id}/cases/batch-delete", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/projects/{project_id}/cases/batch", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/projects/{project_id}/cases", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_cases_batch(
+    project_id: int,
+    body: CaseBatchDeleteRequest | None = None,
+    ids: list[str] = Query(default=[]),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    delete_ids = body.ids if body is not None and body.ids else _ids_from_query_values(ids)
+    if not delete_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="请提供至少一个用例 ID",
+        )
+    await _batch_delete_cases(project_id, delete_ids, user, db)
+
+
+async def _batch_delete_cases_global(
+    ids: list[int],
+    user: User,
+    db: AsyncSession,
+) -> list[TestCase]:
+    rows = (
+        await db.execute(
+            select(TestCase).where(
+                TestCase.id.in_(ids),
+                TestCase.deleted_at.is_(None),
+            )
+        )
+    ).scalars().all()
+    if not rows:
+        return []
+    by_id = {case.id: case for case in rows}
+    ordered = [by_id[i] for i in ids if i in by_id]
+    project_ids = {case.project_id for case in ordered}
+    for pid in project_ids:
+        _project, role = await get_project_permission(pid, user, db)
+        if role not in ("owner", "admin", "member"):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    now = datetime.now(UTC)
+    for case in ordered:
+        case.deleted_at = now
+    for pid in project_ids:
+        await touch_project_asset_revision(db, pid)
+    await db.commit()
+    return ordered
+
+
+@router.post("/cases/batch", response_model=CaseBatchDeleteResponse)
+@router.post("/cases/batch-delete", response_model=CaseBatchDeleteResponse)
+async def batch_delete_cases_global(
+    body: CaseBatchDeleteRequest | None = None,
+    ids: list[str] = Query(default=[]),
+    project_id: int | None = Query(default=None),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    delete_ids = body.ids if body is not None and body.ids else _ids_from_query_values(ids)
+    if not delete_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="请提供至少一个用例 ID",
+        )
+    effective_project_id = (body.project_id if body is not None else None) or project_id
+    if effective_project_id is not None:
+        rows = await _batch_delete_cases(effective_project_id, delete_ids, user, db)
+    else:
+        rows = await _batch_delete_cases_global(delete_ids, user, db)
+    return {
+        "deleted": len(rows),
+        "deleted_count": len(rows),
+        "ids": [case.id for case in rows],
+    }
+
+
+@router.delete("/cases/batch-delete", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/cases/batch", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_cases_batch_global(
+    body: CaseBatchDeleteRequest | None = None,
+    ids: list[str] = Query(default=[]),
+    project_id: int | None = Query(default=None),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    delete_ids = body.ids if body is not None and body.ids else _ids_from_query_values(ids)
+    if not delete_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="请提供至少一个用例 ID",
+        )
+    effective_project_id = (body.project_id if body is not None else None) or project_id
+    if effective_project_id is not None:
+        await _batch_delete_cases(effective_project_id, delete_ids, user, db)
+    else:
+        await _batch_delete_cases_global(delete_ids, user, db)
 
 
 @router.delete("/cases/{case_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -117,6 +117,27 @@ class CaseUpdate(BaseModel):
         return self
 
 
+class CaseBatchDeleteRequest(BaseModel):
+    project_id: int | None = None
+    ids: list[int] = Field(default_factory=list)
+    case_ids: list[int] | None = None
+
+    @model_validator(mode="after")
+    def _resolve_ids(self) -> "CaseBatchDeleteRequest":
+        merged = [*self.ids, *(self.case_ids or [])]
+        if not merged:
+            raise ValueError("at least one case id is required")
+        self.ids = list(dict.fromkeys(merged))
+        self.case_ids = None
+        return self
+
+
+class CaseBatchDeleteResponse(BaseModel):
+    deleted: int
+    deleted_count: int
+    ids: list[int]
+
+
 class CaseOut(BaseModel):
     id: int
     project_id: int

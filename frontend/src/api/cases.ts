@@ -179,6 +179,17 @@ export function deleteCase(id: number) {
   return request.delete<void>(`/cases/${id}`)
 }
 
+export interface CaseBatchDeleteResult {
+  deleted: number
+  deleted_count: number
+  ids: number[]
+}
+
+export function deleteCases(projectId: number, ids: number[]) {
+  return request.post<CaseBatchDeleteResult>(`/projects/${projectId}/cases/batch-delete`, { ids })
+}
+
+
 export function cloneCase(id: number) {
   return request.post<TestCase>(`/cases/${id}/clone`)
 }

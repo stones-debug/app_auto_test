@@ -2,7 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { CASE_STATUS, cloneCase, deleteCase, listCases, type TestCase } from '@/api/cases'
+import { CASE_STATUS, cloneCase, deleteCase, deleteCases, listCases, type TestCase } from '@/api/cases'
 import { createModule, listModules } from '@/api/elements'
 import RunButton from '@/components/RunButton.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
@@ -14,6 +14,8 @@ const projectId = Number(route.params.projectId)
 
 const loading = ref(false)
 const items = ref<TestCase[]>([])
+const selectedRows = ref<TestCase[]>([])
+const deleting = ref(false)
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
@@ -41,6 +43,7 @@ function selectModule(key: string) {
 }
 
 async function load() {
+  selectedRows.value = []
   loading.value = true
   try {
     const data = await listCases(projectId, {
@@ -96,6 +99,26 @@ async function remove(row: TestCase) {
   ElMessage.success('已删除')
   await load()
 }
+
+function handleSelectionChange(rows: TestCase[]) {
+  selectedRows.value = rows
+}
+
+async function removeSelected() {
+  const ids = selectedRows.value.map((row) => row.id)
+  if (!ids.length) return
+  await ElMessageBox.confirm(`确认删除选中的 ${ids.length} 个用例？`, '提示', { type: 'warning' })
+  deleting.value = true
+  try {
+    const result = await deleteCases(projectId, ids)
+    ElMessage.success(`已删除 ${result.deleted ?? ids.length} 个用例`)
+    selectedRows.value = []
+    await load()
+  } finally {
+    deleting.value = false
+  }
+}
+
 
 async function clone(row: TestCase) {
   await cloneCase(row.id)
@@ -162,10 +185,17 @@ onMounted(() => {
         </el-select>
         <el-button type="primary" @click="page = 1; load()">搜索</el-button>
         <span class="spacer"></span>
+        <el-button type="danger" plain :disabled="!selectedRows.length || deleting" :loading="deleting" @click="removeSelected">批量删除</el-button>
         <el-button type="primary" @click="openCreate">新建用例</el-button>
       </div>
 
-      <el-table v-loading="loading" :data="items" stripe>
+      <div v-if="selectedRows.length" class="batch-bar">
+        <span>已选 {{ selectedRows.length }} 个用例</span>
+      </div>
+
+
+      <el-table v-loading="loading" :data="items" stripe row-key="id" @selection-change="handleSelectionChange">
+        <el-table-column type="selection" width="42" />
         <el-table-column prop="name" label="名称" min-width="200" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="case-name" @click="openEdit(row as TestCase)">{{ row.name }}</span>
@@ -254,6 +284,19 @@ onMounted(() => {
   border: 1px dashed var(--border);
   border-radius: 6px;
 }
+.batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: var(--primary-light);
+  border: 1px solid var(--primary);
+  border-radius: 6px;
+  color: var(--primary);
+  font-size: 13px;
+}
+
 .cases-main {
   flex: 1;
   min-width: 0;

@@ -624,3 +624,54 @@ async def test_find_text_click_cross_project_element_rejected(client: AsyncClien
     )
     assert resp.status_code == 400
     assert "元素不属于该项目" in resp.json()["detail"]
+
+
+
+async def test_batch_delete_cases(client: AsyncClient):
+    headers, project_id = await _setup(client)
+    case_ids = []
+    for i in range(3):
+        resp = await client.post(
+            f"/api/projects/{project_id}/cases",
+            json={"name": f"批量删除用例{i}", "steps": [], "assertions": []},
+            headers=headers,
+        )
+        assert resp.status_code == 201
+        case_ids.append(resp.json()["id"])
+
+    deleted = await client.post(
+        f"/api/projects/{project_id}/cases/batch-delete",
+        json={"ids": case_ids},
+        headers=headers,
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] == 3
+    assert sorted(deleted.json()["ids"]) == sorted(case_ids)
+
+    for case_id in case_ids:
+        gone = await client.get(f"/api/cases/{case_id}", headers=headers)
+        assert gone.status_code == 404
+
+    listing = await client.get(f"/api/projects/{project_id}/cases", headers=headers)
+    assert listing.json()["total"] == 0
+
+
+
+async def test_batch_delete_cases_delete_route(client: AsyncClient):
+    headers, project_id = await _setup(client)
+    created = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={"name": "DELETE批量删除", "steps": [], "assertions": []},
+        headers=headers,
+    )
+    case_id = created.json()["id"]
+
+    resp = await client.request(
+        "DELETE",
+        f"/api/projects/{project_id}/cases",
+        json={"case_ids": [case_id]},
+        headers=headers,
+    )
+    assert resp.status_code == 204
+    gone = await client.get(f"/api/cases/{case_id}", headers=headers)
+    assert gone.status_code == 404
