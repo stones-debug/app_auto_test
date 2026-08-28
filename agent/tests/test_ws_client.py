@@ -125,6 +125,20 @@ class FakeWebSocket:
         raise StopAsyncIteration
 
 
+class FailAfterRegisterWebSocket(FakeWebSocket):
+    """注册消息可发送，第一条业务消息模拟服务端重启导致连接断开。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.business_send_failed = asyncio.Event()
+
+    async def send(self, data: str) -> None:
+        if self.sent:
+            self.business_send_failed.set()
+            raise ConnectionError("server restarted")
+        await super().send(data)
+
+
 def _install_fake_connect(monkeypatch, factory) -> None:
     async def fake_connect(*args, **kwargs):
         return factory()
@@ -157,6 +171,26 @@ async def test_static_agent_key_still_works(monkeypatch):
     await client.connect()
     register = json.loads(ws.sent[0])
     assert register["agent_key"] == "sk-static"
+
+
+async def test_business_send_waits_for_reregister_and_retries(monkeypatch):
+    """服务端重启窗口中的执行消息应在新连接注册后续传，不向执行器抛错。"""
+    first = FailAfterRegisterWebSocket()
+    second = FakeWebSocket()
+    sockets = iter([first, second])
+    _install_fake_connect(monkeypatch, lambda: next(sockets))
+
+    client = AgentWSClient("ws://t/ws/agent", "sk-static", "agent-reconnect")
+    await client.connect()
+    sending = asyncio.create_task(client.send({"type": "execution_result", "execution_id": 7}))
+    await asyncio.wait_for(first.business_send_failed.wait(), timeout=1)
+
+    # 模拟 run_forever 建立并完成新的注册握手。
+    await client.connect()
+    await asyncio.wait_for(sending, timeout=1)
+
+    assert [json.loads(raw)["type"] for raw in second.sent] == ["register", "execution_result"]
+    await client.close()
 
 
 async def test_run_forever_raises_auth_without_retry(monkeypatch):

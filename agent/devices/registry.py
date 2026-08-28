@@ -41,11 +41,16 @@ class DeviceRegistry:
         self._on_snapshot: SnapshotFn | None = None
         self._stop = asyncio.Event()
 
-    async def start(self, on_snapshot: SnapshotFn) -> None:
-        """启动轮询。首次扫描立即上报一次全量快照。"""
+    async def start(self, on_snapshot: SnapshotFn) -> bool:
+        """启动轮询；返回是否新建了任务。首次扫描立即上报全量快照。"""
         self._on_snapshot = on_snapshot
+        if self._task is not None and not self._task.done():
+            # Agent WebSocket 重连会再次触发注册回调，不能叠加扫描循环。
+            # 当前快照由 AgentApp 在后台同步，避免注册回调阻塞重连循环。
+            return False
         self._stop.clear()
         self._task = asyncio.create_task(self._poll_loop())
+        return True
 
     async def stop(self) -> None:
         self._stop.set()

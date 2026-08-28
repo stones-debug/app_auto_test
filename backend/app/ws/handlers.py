@@ -612,11 +612,24 @@ async def _stored_execution_terminal(
     return None, None
 
 
-async def handle_execution_result(db: AsyncSession, agent_id: int, payload: dict) -> None:
+async def handle_execution_result(db: AsyncSession, agent_id: int, payload: dict) -> bool:
     execution_id = payload.get("execution_id")
     execution = await _bound_execution(db, agent_id, execution_id, payload.get("session_token"))
     if execution is None:
-        return
+        # ACK 可能在服务端提交终态后、到达 Agent 前断线。Agent 重连会重放，
+        # 对同一设备/会话且已是终态的结果视为幂等成功并再次确认。
+        settled = await db.get(Execution, execution_id) if execution_id is not None else None
+        device = await db.get(Device, settled.device_id) if settled is not None and settled.device_id else None
+        same_session = settled is not None and (
+            settled.session_token is None or settled.session_token == payload.get("session_token")
+        )
+        return bool(
+            settled is not None
+            and device is not None
+            and device.agent_id == agent_id
+            and same_session
+            and settled.status in TERMINAL_STATES
+        )
     status = (payload.get("status") or "error").lower()
     if status not in TERMINAL_STATES:
         status = "error"
@@ -668,3 +681,4 @@ async def handle_execution_result(db: AsyncSession, agent_id: int, payload: dict
             "timestamp": now.isoformat(),
         },
     )
+    return True

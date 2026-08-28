@@ -1050,9 +1050,8 @@ Response:
 // 使用 VueUse 的 useWebSocket 或自研封装
 const { status, data, send, open, close } = useWebSocket(wsUrl, {
   autoReconnect: {
-    retries: 10,
+    retries: -1, // 执行未终态前持续重连，覆盖服务端升级/重启窗口
     delay: 1000,
-    onFailed() { alert('WebSocket 连接失败') }
   },
   heartbeat: {
     message: JSON.stringify({type: 'ping'}),
@@ -1060,8 +1059,8 @@ const { status, data, send, open, close } = useWebSocket(wsUrl, {
     pongTimeout: 5000
   },
   onConnected() {
-    // 重连后先拉取历史日志，避免遗漏
-    fetchHistoricalLogs(executionId, lastReceivedTimestamp)
+    // 重连后重新拉取执行详情，并补拉断线窗口内的历史日志
+    resyncExecution(executionId, lastReceivedTimestamp)
   }
 })
 ```
@@ -1075,7 +1074,7 @@ const { status, data, send, open, close } = useWebSocket(wsUrl, {
 {"type": "device_list", "devices": [{"udid": "...", "name": "...", "status": "idle"}]}
 {"type": "log", "execution_id": 10001, "level": "INFO", "message": "..."}
 {"type": "screenshot", "execution_id": 10001, "step_order": 2, "data": "base64..."}
-{"type": "execution_result", "execution_id": 10001, "status": "PASSED", "report_path": "..."}
+{"type": "execution_result", "execution_id": 10001, "session_token": "...", "status": "passed"}
 ```
 
 **服务器 → Agent**：
@@ -1083,8 +1082,11 @@ const { status, data, send, open, close } = useWebSocket(wsUrl, {
 {"type": "registered", "agent_id": "agent-001", "status": "ok"}
 {"type": "start_test", "execution_id": 10001, "parameters": {...}}
 {"type": "stop_test", "execution_id": 10001}
+{"type": "execution_result_ack", "execution_id": 10001, "session_token": "..."}
 {"type": "upgrade_required", "download_url": "https://..."}
 ```
+
+**服务端重启恢复口径**：Agent 业务消息仅在 WS 注册握手完成后发送；连接中断时当前执行暂停在发送点，待重新注册后按原顺序续传。`execution_result` 在收到同 `execution_id + session_token` 的 `execution_result_ack` 前保留于 Agent 内存并在重连后重放。FastAPI 对同一 Agent、设备和会话的重复终态按幂等成功处理并再次返回 ACK，防止“服务端已提交终态但 ACK 丢失”造成无限重放。Agent 重连不得重复启动 ADB 设备扫描任务，只复用原任务并同步当前快照。
 
 
 ### 3.6 执行引擎详细设计
@@ -1760,6 +1762,7 @@ LOG_RETENTION_DAYS=7
 3. Worker runtime 只做调度与终态处理：轮询终态 → 生成报告 → 释放设备锁 → 队列置 done；默认 `WORKER_MODE=embedded`，由 FastAPI lifespan 启停，日常部署只启动一个 Uvicorn 进程。
 4. `WORKER_MODE=external` 时 FastAPI 不启动 runtime，改由独立 `worker.py` 托管；`disabled` 仅提供 API 且不消费队列。调度与超时扫描（APScheduler）只允许一个 runtime 启用，禁止嵌入式与独立模式同时运行。
 5. WS 协议修订：移除 Agent 回传的 `execution_result.report_path`（3.5.2），报告由 Worker 生成后写 `reports` 表，前端从 `/api/reports` 读取。
+6. 服务端重启期间，Agent 的 WS 业务发送等待重新注册后续传；执行终态必须由 FastAPI 返回 `execution_result_ack`，Agent 在 ACK 前保留并可重放终态。执行详情前端持续重连，连接恢复后通过 REST 重新同步执行树与断线日志，禁止仅依赖实时广播决定终态。
 
 ### 10.2 Worker ↔ Agent 通信中转（解决链路断裂）
 

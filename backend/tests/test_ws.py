@@ -286,7 +286,19 @@ async def test_handle_log_step_result_execution_result(client: AsyncClient):
         assert step.actual_value == "OK"
         assert step.parameters["wait_timeout"] == 10
 
-        await handlers.handle_execution_result(db, agent_id, {"execution_id": execution_id, "session_token": "sess-token", "status": "PASSED"})
+        acknowledged = await handlers.handle_execution_result(
+            db,
+            agent_id,
+            {"execution_id": execution_id, "session_token": "sess-token", "status": "PASSED"},
+        )
+        assert acknowledged is True
+        # 服务端提交后若 ACK 丢失，Agent 会在重连后重放；同会话终态必须幂等确认。
+        replay_acknowledged = await handlers.handle_execution_result(
+            db,
+            agent_id,
+            {"execution_id": execution_id, "session_token": "sess-token", "status": "PASSED"},
+        )
+        assert replay_acknowledged is True
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)

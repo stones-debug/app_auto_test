@@ -115,12 +115,56 @@ class AgentApp:
         )
         self._appium_lock = asyncio.Lock()
         self._appium_refs = 0
+        # execution_id → 尚未收到服务端确认的终态。结果在内存中保留并于
+        # Agent 重连后重放，避免终态恰好落在服务端重启窗口而永久丢失。
+        self._pending_execution_results: dict[int, ExecutionResultMessage] = {}
+        self._result_replay_task: asyncio.Task | None = None
 
     # ---------- Windows 方案 §4.1：设备上报与 Appium 生命周期 ----------
 
     async def start_device_reporting(self, _reply: dict | None = None) -> None:
         """注册成功后启动设备注册表轮询（3s 变更即报 / 30s 全量）。"""
         await self.registry.start(self.send_device_list)
+
+    async def on_registered(self, reply: dict | None = None) -> None:
+        """重连注册完成：恢复设备上报，并重放尚未确认的执行终态。"""
+        registry_started = await self.registry.start(self.send_device_list)
+        needs_sync = not registry_started or bool(self._pending_execution_results)
+        if needs_sync and (
+            self._result_replay_task is None or self._result_replay_task.done()
+        ):
+            self._result_replay_task = asyncio.create_task(
+                self._sync_reconnected_state(include_devices=not registry_started),
+                name="sync-agent-state",
+            )
+
+    async def _sync_reconnected_state(self, *, include_devices: bool) -> None:
+        # 必须脱离 on_registered 回调执行：若连接刚恢复又断开，可靠 send
+        # 可以等待下一次重连，而不会反向阻塞 run_forever 的重连循环。
+        try:
+            if include_devices:
+                await self.send_device_list()
+            await self._replay_pending_execution_results()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Agent 重连状态同步失败，将在下次重连重试: %s", exc)
+
+    async def _replay_pending_execution_results(self) -> None:
+        if self.client is None:
+            return
+        for payload in list(self._pending_execution_results.values()):
+            try:
+                await self.client.send(payload)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "execution=%s 待确认终态重放失败: %s",
+                    payload["execution_id"],
+                    exc,
+                )
+                return
 
     async def stop_device_reporting(self) -> None:
         await self.registry.stop()
@@ -163,8 +207,9 @@ class AgentApp:
         }
         if error_message:
             payload["error_message"] = error_message
+        self._pending_execution_results[execution_id] = payload
         if self.client is None:
-            logger.warning("WS 未连接，execution=%s 结果未上报: %s", execution_id, status)
+            logger.warning("WS 未连接，execution=%s 结果已等待重连上报: %s", execution_id, status)
             return
         try:
             await self.client.send(payload)
@@ -296,6 +341,11 @@ class AgentApp:
 
     async def stop_all_executions(self) -> None:
         """取消全部执行并等待收敛（serve_agent / 桌面退出时调用）。"""
+        replay_task = self._result_replay_task
+        self._result_replay_task = None
+        if replay_task is not None and not replay_task.done():
+            replay_task.cancel()
+            await asyncio.gather(replay_task, return_exceptions=True)
         for runtime in self.runtimes.values():
             runtime.cancel_event.set()
             task = runtime.task
@@ -317,7 +367,13 @@ class AgentApp:
     async def on_message(self, message: dict) -> None:
         """CR-06：接收循环只做分发；start_test 独立 task，stop_test 立即生效。"""
         msg_type = message.get("type")
-        if msg_type == "start_test":
+        if msg_type == "execution_result_ack":
+            execution_id = message.get("execution_id")
+            pending = self._pending_execution_results.get(execution_id)
+            if pending is not None and pending.get("session_token") == message.get("session_token"):
+                self._pending_execution_results.pop(execution_id, None)
+                logger.info("execution=%s 终态已获服务端确认", execution_id)
+        elif msg_type == "start_test":
             execution_id = message.get("execution_id")
             if execution_id is None:
                 logger.warning("start_test 缺少 execution_id，忽略")
@@ -409,7 +465,7 @@ def build_agent_app(
         agent_id=install_id,
     )
     client.on_message = app.on_message
-    client.on_registered = app.start_device_reporting
+    client.on_registered = app.on_registered
     if not key_provider():
         logger.error("本机无机器 PSK，无法注册；请先执行 --bind <用户Key>")
     return app, client

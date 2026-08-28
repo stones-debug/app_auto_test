@@ -196,7 +196,15 @@ async def agent_ws(websocket: WebSocket, db: AsyncSession = Depends(get_db)):
                     await handle_suite_status(db, current_agent_id, valid)
             elif msg_type == "execution_result":
                 if current_agent_id is not None:
-                    await handle_execution_result(db, current_agent_id, valid)
+                    acknowledged = await handle_execution_result(db, current_agent_id, valid)
+                    if acknowledged:
+                        await websocket.send_json(
+                            {
+                                "type": "execution_result_ack",
+                                "execution_id": valid["execution_id"],
+                                "session_token": valid.get("session_token"),
+                            }
+                        )
             elif msg_type == "ping":
                 await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:

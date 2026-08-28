@@ -109,6 +109,31 @@ async def test_scanner_error_does_not_kill_loop():
         await reg.stop()
 
 
+async def test_reconnect_reuses_poll_task_and_resends_current_snapshot():
+    scanner = SequenceScanner([D1])
+    reg = DeviceRegistry(poll_interval=0.01, full_interval=100, scanner=scanner)
+    first_connection: list[list[dict]] = []
+    second_connection: list[list[dict]] = []
+
+    async def first_snapshot(devices: list[dict]):
+        first_connection.append(devices)
+
+    async def second_snapshot(devices: list[dict]):
+        second_connection.append(devices)
+
+    await reg.start(first_snapshot)
+    try:
+        await _wait_snapshots(first_connection, 1)
+        poll_task = reg._task
+        started = await reg.start(second_snapshot)
+
+        assert started is False
+        assert reg._task is poll_task
+        assert second_connection == []
+    finally:
+        await reg.stop()
+
+
 async def test_protocol_manifest_registry_consistency(monkeypatch):
     """Step 10：启动断言——decorator 注册集合与 manifest 一致；多/少都拒绝。"""
     from executor.protocol import verify_registry_matches_manifest

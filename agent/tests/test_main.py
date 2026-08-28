@@ -99,6 +99,48 @@ async def test_start_test_runs_in_background_task():
     assert 1 not in app.runtimes  # 完成回调清理
 
 
+async def test_execution_result_is_retained_until_matching_server_ack():
+    app = AgentApp({"driver": "mock"})
+    app.client = FakeClient()
+
+    await app._send_execution_result_safe(77, "session-77", "passed")
+    assert app._pending_execution_results[77]["status"] == "passed"
+
+    # 其它会话的确认不能清除当前执行结果。
+    await app.on_message(
+        {"type": "execution_result_ack", "execution_id": 77, "session_token": "stale-session"}
+    )
+    assert 77 in app._pending_execution_results
+
+    await app.on_message(
+        {"type": "execution_result_ack", "execution_id": 77, "session_token": "session-77"}
+    )
+    assert 77 not in app._pending_execution_results
+
+
+async def test_reregister_resends_current_device_snapshot_without_blocking_callback():
+    class ReconnectedRegistry:
+        async def start(self, _callback):
+            return False
+
+        def current(self):
+            return [{"udid": "device-1", "status": "idle"}]
+
+    app = AgentApp({"driver": "mock"}, registry=ReconnectedRegistry())
+    app.client = FakeClient()
+
+    await app.on_registered({"status": "ok"})
+    assert app._result_replay_task is not None
+    await app._result_replay_task
+
+    assert app.client.sent == [
+        {
+            "type": "device_list",
+            "devices": [{"udid": "device-1", "status": "idle"}],
+        }
+    ]
+
+
 async def test_start_test_current_screen_mode_attaches_driver(monkeypatch):
     from executor.driver import MockDriver
 

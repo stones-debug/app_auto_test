@@ -20,7 +20,9 @@ export function useExecutionSocket(
   let manuallyClosed = false
   const ws = useWebSocket(url, {
     autoReconnect: {
-      retries: 10,
+      // 服务端升级/重启可能超过 10 秒；执行未终态前持续重连，连接恢复后
+      // ExecutionDetail 会立即通过 REST 补拉断线窗口中的状态和日志。
+      retries: -1,
       delay: 1000,
       onFailed() {
         connecting.value = false
