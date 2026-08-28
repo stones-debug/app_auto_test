@@ -23,6 +23,7 @@ export function stepSummaryText(step: Step, elementNames?: ElementNameMap): stri
   const details: string[] = []
 
   if (step.continue_on_failure) details.push('失败后继续')
+  if (step.assertions?.length) details.push(`步骤后断言 ${step.assertions.length}`)
 
   // Step 12：列表内滑动查找文字并点击 使用特化摘要，便于一眼看清目标与双向策略
   if (step.action === 'swipe_in_element_find_text_click') {

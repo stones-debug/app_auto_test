@@ -167,11 +167,15 @@ async def _cleanup_test_data():
                             select(ExecutionCase.id).where(ExecutionCase.execution_id.in_(exec_ids))
                         )
                     ).scalars().all()
-                    # ExecutionAssertion 现在直接归属 ExecutionCase（原 execution_step_id 已移除）
+                    # 断言归属执行步骤，按用例下的步骤子查询清理
                     if case_ids:
                         await session.execute(
                             delete(ExecutionAssertion).where(
-                                ExecutionAssertion.execution_case_id.in_(case_ids)
+                                ExecutionAssertion.execution_step_id.in_(
+                                    select(ExecutionStep.id).where(
+                                        ExecutionStep.execution_case_id.in_(case_ids)
+                                    )
+                                )
                             )
                         )
                         await session.execute(

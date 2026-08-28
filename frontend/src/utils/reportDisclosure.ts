@@ -1,6 +1,5 @@
 import type { ReportCase, ReportSuite } from '@/api/reports'
 import { splitExecutionSteps } from '@/utils/executionOrder'
-
 export interface PreparedReportCase extends ReportCase {
   beforeAssertionSteps: ReportCase['steps']
   afterAssertionSteps: ReportCase['steps']
@@ -19,11 +18,7 @@ const isFailed = (status: string) => ['failed', 'error'].includes(status)
 
 export function prepareReportCase(reportCase: ReportCase): PreparedReportCase {
   const { beforeAssertions, afterAssertions } = splitExecutionSteps(reportCase.steps)
-  return {
-    ...reportCase,
-    beforeAssertionSteps: beforeAssertions,
-    afterAssertionSteps: afterAssertions,
-  }
+  return { ...reportCase, beforeAssertionSteps: beforeAssertions, afterAssertionSteps: afterAssertions }
 }
 
 export function prepareReportSuites(suites: ReportSuite[]): PreparedReportSuite[] {

@@ -18,7 +18,7 @@ from app.services.screenshot_store import resolve_screenshot_path, validate_obje
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates" / "reports"
 # Step 8：HTML 缓存版本标记——修改模板/数据规则后旧缓存不再复用
-_REPORT_HTML_VERSION = "suite-html-v7"
+_REPORT_HTML_VERSION = "step-assertions-html-v8"
 
 
 def _execution_dict(execution: Execution) -> dict:
@@ -59,6 +59,20 @@ def _report_step(execution_id: int, step: dict) -> dict:
         "actual_value": step["actual_value"],
         "error_message": step["error_message"],
         "screenshot": _rel_screenshot(execution_id, step["screenshot_path"]),
+        "assertions": [
+            {
+                "id": assertion["id"],
+                "assertion_order": assertion.get("assertion_order"),
+                "assertion_type": assertion["assertion_type"],
+                "expected_value": assertion["expected_value"],
+                "actual_value": assertion["actual_value"],
+                "status": assertion["status"],
+                "error_message": assertion["error_message"],
+                "params": assertion.get("params"),
+                "description": assertion.get("description"),
+            }
+            for assertion in step.get("assertions") or []
+        ],
     }
 
 
@@ -73,20 +87,6 @@ def _report_case(execution_id: int, case: dict) -> dict:
         "error_message": case["error_message"],
         "elements": case["elements"],
         "steps": [_report_step(execution_id, step) for step in case["steps"]],
-        "assertions": [
-            {
-                "id": assertion["id"],
-                "assertion_order": assertion.get("assertion_order"),
-                "assertion_type": assertion["assertion_type"],
-                "expected_value": assertion["expected_value"],
-                "actual_value": assertion["actual_value"],
-                "status": assertion["status"],
-                "error_message": assertion["error_message"],
-                "params": assertion.get("params"),
-                "description": assertion.get("description"),
-            }
-            for assertion in case["assertions"]
-        ],
     }
 
 

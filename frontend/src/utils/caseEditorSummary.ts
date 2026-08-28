@@ -10,14 +10,16 @@ export interface CaseEditorSummary {
 
 export function buildCaseEditorSummary(
   steps: Step[],
-  assertions: Assertion[],
-  variables: Array<{ key: string }>,
+  variablesOrAssertions: Array<{ key: string }> | Assertion[],
+  legacyVariables?: Array<{ key: string }>,
 ): CaseEditorSummary {
+  const variables = legacyVariables ?? variablesOrAssertions as Array<{ key: string }>
+  const assertions = legacyVariables ? variablesOrAssertions as Assertion[] : []
   return {
     setup: steps.filter((step) => (step.phase ?? 'main') === 'setup').length,
     main: steps.filter((step) => (step.phase ?? 'main') === 'main').length,
     teardown: steps.filter((step) => (step.phase ?? 'main') === 'teardown').length,
-    assertions: assertions.length,
+    assertions: steps.reduce((total, step) => total + (step.assertions?.length ?? 0), 0) + assertions.length,
     variables: variables.filter((entry) => entry.key.trim().length > 0).length,
   }
 }

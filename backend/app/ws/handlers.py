@@ -96,14 +96,14 @@ def _parse_terminal_status(status: str | None) -> str | None:
 
 
 async def _upsert_assertion(
-    db: AsyncSession, execution_case_id: int, assertion_order: int, data: dict
+    db: AsyncSession, execution_step_id: int, assertion_order: int, data: dict
 ) -> bool:
-    """仅按 execution_assertion_id 更新预建断言，并严格校验用例归属。"""
+    """仅按 execution_assertion_id 更新预建断言，并严格校验步骤归属。"""
     assertion_id = data.get("execution_assertion_id")
     if assertion_id is None:
         return False
     existing = await db.get(ExecutionAssertion, assertion_id)
-    if existing is None or existing.execution_case_id != execution_case_id:
+    if existing is None or existing.execution_step_id != execution_step_id:
         return False
     existing.assertion_type = data.get("type") or data.get("assertion_type") or existing.assertion_type
     expected = data.get("expected") if data.get("expected") is not None else data.get("expected_value")
@@ -384,9 +384,6 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
         elif parent_suite.status != "failed":
             parent_suite.status = "running"
 
-    for order, assertion in enumerate(payload.get("assertions") or [], start=1):
-        if parent_case is not None:
-            await _upsert_assertion(db, parent_case.id, order, assertion)
     await db.commit()
 
     await execution_manager.broadcast(
@@ -419,8 +416,8 @@ async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict
     execution = await _bound_execution(db, agent_id, execution_id, payload.get("session_token"))
     if execution is None:
         return
-    execution_case = await _resolve_case(db, execution, payload)
-    if execution_case is None:
+    step, execution_case, _suite = await _locate_step(db, execution, payload)
+    if step is None or execution_case is None:
         return
     normalized_assertions: list[dict] = []
     for order, assertion in enumerate(payload.get("assertions") or [], start=1):
@@ -433,7 +430,7 @@ async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict
             "status": "pass" if raw_status in {"pass", "passed"} else "fail",
         }
         matched = await _upsert_assertion(
-            db, execution_case.id, assertion_order, normalized
+            db, step.id, assertion_order, normalized
         )
         if not matched:
             db.add(
@@ -452,13 +449,11 @@ async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict
     if not normalized_assertions and payload.get("assertions"):
         await db.commit()
         return
-    assertion_failed = any(item["status"] == "fail" for item in normalized_assertions)
-    if execution_case.status != "failed":
-        execution_case.status = "failed" if assertion_failed else "passed"
+    if any(item["status"] == "fail" for item in normalized_assertions):
+        step.status = "failed"
+        step.error_message = step.error_message or "步骤后断言失败"
+        execution_case.status = "failed"
     now = datetime.now(UTC)
-    execution_case.finished_at = now
-    if execution_case.started_at is not None:
-        execution_case.duration = int((now - execution_case.started_at).total_seconds() * 1000)
     await db.commit()
     # V2 §8.2：assertion 广播（前端按 execution_id+case_id+assertions 幂等合并）
     await execution_manager.broadcast(
@@ -468,9 +463,9 @@ async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict
             "execution_id": execution_id,
             "case_id": execution_case.case_id,
             "execution_case_id": execution_case.id,
+            "execution_step_id": step.id,
             "step_order": payload.get("step_order"),
             "assertions": normalized_assertions,
-            "case_status": execution_case.status,
             "timestamp": now.isoformat(),
         },
     )

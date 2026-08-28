@@ -117,7 +117,6 @@ class ExecutionCaseOut(BaseModel):
     duration: int | None
     error_message: str | None
     steps: list["ExecutionStepOut"] = Field(default_factory=list)
-    assertions: list["ExecutionAssertionOut"] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
@@ -133,6 +132,7 @@ class ExecutionStepOut(BaseModel):
     actual_value: str | None
     error_message: str | None
     artifact_id: int | None = None
+    assertions: list["ExecutionAssertionOut"] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
@@ -145,7 +145,7 @@ class ExecutionAssertionOut(BaseModel):
     actual_value: str | None
     status: str
     error_message: str | None
-    # 快照携带的说明/参数（断言行本身不落库，从 assertions_snapshot 补）
+    # 快照携带的说明/参数（断言行本身不落库，从步骤内 assertions 补）
     params: dict[str, Any] | None = None
     description: str | None = None
 

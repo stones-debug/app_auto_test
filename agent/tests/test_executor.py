@@ -22,12 +22,17 @@ def _make_case(steps, assertions=None, elements=None) -> dict:
         {"execution_assertion_id": 4000 + index, **assertion}
         for index, assertion in enumerate(assertions or [], start=1)
     ]
+    if normalized_assertions and normalized_steps:
+        target = next(
+            (step for step in reversed(normalized_steps) if step.get("phase") not in {"teardown", "case_teardown"}),
+            normalized_steps[-1],
+        )
+        target["assertions"] = normalized_assertions
     return {
         "execution_case_id": 2001,
         "case_id": 1,
         "case_name": "测试用例",
         "steps_snapshot": normalized_steps,
-        "assertions_snapshot": normalized_assertions,
         "elements_snapshot": elements or {
             "1": {"locator_type": "id", "locator_value": "username"},
             "2": {"locator_type": "id", "locator_value": "login_btn"},
@@ -1279,6 +1284,12 @@ def _suite_case(*, execution_case_id=2001, steps=None, assertions=None):
         {"execution_assertion_id": 8000 + index, **assertion}
         for index, assertion in enumerate(assertions or [], start=1)
     ]
+    if normalized_assertions and normalized_steps:
+        target = next(
+            (step for step in reversed(normalized_steps) if step.get("phase") not in {"teardown", "case_teardown"}),
+            normalized_steps[-1],
+        )
+        target["assertions"] = normalized_assertions
     return {
         "execution_case_id": execution_case_id,
         "case_id": 1,
@@ -1286,7 +1297,6 @@ def _suite_case(*, execution_case_id=2001, steps=None, assertions=None):
         "case_order": 1,
         "module_name": None,
         "steps_snapshot": normalized_steps,
-        "assertions_snapshot": normalized_assertions,
         "elements_snapshot": {
             "1": {"locator_type": "id", "locator_value": "username"},
             "2": {"locator_type": "id", "locator_value": "login_btn"},

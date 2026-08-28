@@ -40,6 +40,7 @@ export interface ExecutionStep {
   actual_value: string | null
   error_message: string | null
   artifact_id?: number | null
+  assertions?: ExecutionAssertion[]
 }
 
 export interface ExecutionAssertion {
@@ -65,7 +66,6 @@ export interface ExecutionCase {
   duration: number | null
   error_message: string | null
   steps?: ExecutionStep[]
-  assertions?: ExecutionAssertion[]
 }
 
 export interface ExecutionSuite {

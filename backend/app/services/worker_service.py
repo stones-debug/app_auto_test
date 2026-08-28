@@ -113,8 +113,9 @@ async def build_variable_map(
 # ---------- 快照（§10.3：元素定位快照） ----------
 
 
-async def _collect_element_ids(steps: list, assertions: list) -> set[int]:
+async def _collect_element_ids(steps: list) -> set[int]:
     ids: set[int] = set()
+    assertions = [a for step in steps for a in (step.get("assertions") or [])]
     for item in [*steps, *assertions]:
         element_id = item.get("element_id") if isinstance(item, dict) else None
         if element_id is not None:
@@ -161,9 +162,7 @@ async def build_case_snapshot(
                 }
             )
     steps = selected_steps
-    assertions = render_value(deepcopy(case.assertions or []), variable_map)
-
-    element_ids = await _collect_element_ids(steps, assertions)
+    element_ids = await _collect_element_ids(steps)
     elements: dict = {}
     if element_ids:
         rows = (
@@ -171,7 +170,7 @@ async def build_case_snapshot(
         ).scalars().all()
         for el in rows:
             elements[str(el.id)] = _element_snapshot(el, variable_map)
-    return {"steps": steps, "assertions": assertions, "elements": elements}
+    return {"steps": steps, "elements": elements}
 
 
 def _element_snapshot(el: TestElement, variables: dict) -> dict:
@@ -247,9 +246,8 @@ async def _rebuild_legacy_snapshot(db: AsyncSession, execution: Execution) -> li
     ).scalars().all()
     old_case_ids = [c.id for c in existing_cases]
     if old_case_ids:
-        await db.execute(
-            delete(ExecutionAssertion).where(ExecutionAssertion.execution_case_id.in_(old_case_ids))
-        )
+        old_step_ids = select(ExecutionStep.id).where(ExecutionStep.execution_case_id.in_(old_case_ids))
+        await db.execute(delete(ExecutionAssertion).where(ExecutionAssertion.execution_step_id.in_(old_step_ids)))
         await db.execute(delete(ExecutionStep).where(ExecutionStep.execution_case_id.in_(old_case_ids)))
     await db.execute(delete(ExecutionCase).where(ExecutionCase.execution_id == execution.id))
     await db.execute(delete(ExecutionStep).where(ExecutionStep.execution_suite_id.in_(
@@ -297,38 +295,37 @@ async def _rebuild_legacy_snapshot(db: AsyncSession, execution: Execution) -> li
             case_order=case_order,
             status="pending",
             steps_snapshot=snapshot["steps"],
-            assertions_snapshot=snapshot["assertions"],
             elements_snapshot=snapshot["elements"],
         )
         db.add(ec)
         await db.flush()
         for step in snapshot["steps"]:
-            db.add(
-                ExecutionStep(
-                    execution_case_id=ec.id,
-                    phase=_legacy_phase_to_exec_phase(step.get("phase")),
-                    step_order=int(step.get("order") or 0),
-                    action=step.get("action") or "",
-                    source_key=step.get("source_key") or step.get("key"),
-                    source_order=step.get("source_order"),
-                    parameters=step.get("params") or {},
-                    continue_on_failure=bool(step.get("continue_on_failure", False)),
-                    status="pending",
-                )
+            exec_step = ExecutionStep(
+                execution_case_id=ec.id,
+                phase=_legacy_phase_to_exec_phase(step.get("phase")),
+                step_order=int(step.get("order") or 0),
+                action=step.get("action") or "",
+                source_key=step.get("source_key") or step.get("key"),
+                source_order=step.get("source_order"),
+                parameters=step.get("params") or {},
+                continue_on_failure=bool(step.get("continue_on_failure", False)),
+                status="pending",
             )
-        for assertion in snapshot["assertions"]:
-            expected = assertion.get("expected")
-            if expected is None:
-                expected = assertion.get("expected_value")
             db.add(
-                ExecutionAssertion(
-                    execution_case_id=ec.id,
-                    assertion_order=int(assertion.get("order") or 0),
-                    assertion_type=assertion.get("type") or assertion.get("assertion_type") or "",
-                    expected_value=str(expected) if expected is not None else None,
-                    status="pending",
-                )
+                exec_step
             )
+            await db.flush()
+            for assertion in step.get("assertions") or []:
+                expected = assertion.get("expected") or (assertion.get("params") or {}).get("expected")
+                db.add(
+                    ExecutionAssertion(
+                        execution_step_id=exec_step.id,
+                        assertion_order=int(assertion.get("order") or 0),
+                        assertion_type=assertion.get("type") or assertion.get("assertion_type") or "",
+                        expected_value=str(expected) if expected is not None else None,
+                        status="pending",
+                    )
+                )
         created.append(ec)
     await db.commit()
     for ec in created:
@@ -523,7 +520,9 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
             ).scalars().all()
             assertions = (
                 await db.execute(
-                    select(ExecutionAssertion).where(ExecutionAssertion.execution_case_id == c.id)
+                    select(ExecutionAssertion)
+                    .join(ExecutionStep, ExecutionAssertion.execution_step_id == ExecutionStep.id)
+                    .where(ExecutionStep.execution_case_id == c.id)
                 )
             ).scalars().all()
             failed = any(s.status == "failed" for s in steps) or any(
@@ -545,7 +544,12 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
         # 未执行断言（pending）置 skipped（隶属用例）
         await db.execute(
             update(ExecutionAssertion)
-            .where(ExecutionAssertion.execution_case_id == c.id, ExecutionAssertion.status == "pending")
+            .where(
+                ExecutionAssertion.execution_step_id.in_(
+                    select(ExecutionStep.id).where(ExecutionStep.execution_case_id == c.id)
+                ),
+                ExecutionAssertion.status == "pending",
+            )
             .values(status="skipped")
         )
         # 未执行用例步骤（pending）置 skipped（父节点 pending/running → 已归并，未执行即 skipped）
@@ -733,12 +737,12 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
     _assertion_rows = (
         await db.execute(
             select(ExecutionAssertion)
-            .where(ExecutionAssertion.execution_case_id.in_(_case_ids))
-            .order_by(ExecutionAssertion.execution_case_id, ExecutionAssertion.assertion_order)
+            .where(ExecutionAssertion.execution_step_id.in_([step.id for step in _case_step_rows]))
+            .order_by(ExecutionAssertion.execution_step_id, ExecutionAssertion.assertion_order)
         )
     ).scalars().all()
     assertion_id_by_key: dict[tuple[int, int], int] = {
-        (a.execution_case_id, a.assertion_order): a.id for a in _assertion_rows
+        (a.execution_step_id, a.assertion_order): a.id for a in _assertion_rows
     }
 
     def _inject_step_ids(case: ExecutionCase, steps: list) -> list:
@@ -755,21 +759,18 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
                     f"执行快照缺少步骤行 execution_case_id={case.id}, phase={phase}, order={order}"
                 )
             entry["execution_step_id"] = step_id
-            out.append(entry)
-        return out
-
-    def _inject_assertion_ids(case: ExecutionCase, assertions: list) -> list:
-        """向断言快照注入 execution_assertion_id；缺行说明快照物化不完整。"""
-        out: list[dict] = []
-        for a in assertions:
-            entry = dict(a)
-            order = int(entry.get("order") or 0)
-            assertion_id = assertion_id_by_key.get((case.id, order))
-            if assertion_id is None:
-                raise RuntimeError(
-                    f"执行快照缺少断言行 execution_case_id={case.id}, order={order}"
-                )
-            entry["execution_assertion_id"] = assertion_id
+            injected_assertions: list[dict] = []
+            for raw_assertion in entry.get("assertions") or []:
+                assertion = dict(raw_assertion)
+                assertion_order = int(assertion.get("order") or 0)
+                assertion_id = assertion_id_by_key.get((step_id, assertion_order))
+                if assertion_id is None:
+                    raise RuntimeError(
+                        f"执行快照缺少断言行 execution_step_id={step_id}, order={assertion_order}"
+                    )
+                assertion["execution_assertion_id"] = assertion_id
+                injected_assertions.append(assertion)
+            entry["assertions"] = injected_assertions
             out.append(entry)
         return out
 
@@ -823,7 +824,6 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
                 "case_order": c.case_order,
                 "module_name": c.module_name,
                 "steps_snapshot": _inject_step_ids(c, c.steps_snapshot or []),
-                "assertions_snapshot": _inject_assertion_ids(c, c.assertions_snapshot or []),
                 "elements_snapshot": c.elements_snapshot,
             }
             for c in cases_by_suite.get(s.id, [])

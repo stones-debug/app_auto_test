@@ -1805,7 +1805,29 @@ ALTER TABLE execution_cases
 - `execution_steps.parameters` 必须保存 `steps_snapshot` 中变量渲染后的 `params`；详情聚合对历史空值从快照回退。Agent 每个步骤结束后必须上报一条 `log`，FastAPI 先写入 `execution_logs` 再广播，供执行详情实时展示并由报告聚合复用。
 - `ExecutionContext.find_element`（正文 3.6.3）改为只从 `elements_snapshot` 解析，杜绝查询实时表。
 - 抓取快照时按 `element_id` 直接查询（含已逻辑删除记录），避免用例引用元素被删除导致执行失败。
-- 用例 `steps` 中每项增加 `phase=setup|main|teardown`，缺省为 `main`；三个阶段分别维护从 1 开始的 `order`。Worker 根据执行参数 `use_pre_steps/use_post_steps` 选择阶段，并按 setup → main → teardown 重新编号写入 `steps_snapshot`。Agent 执行顺序为前置 → 主体 → 断言 → 后置；主体或断言失败时仍尝试后置操作，后置失败会使该用例失败。
+- 用例仅保存 `steps`，不再保存用例级 `assertions`。每个步骤可包含 `assertions` 子数组，动作执行成功后立即按断言 `order` 校验；动作失败时该步骤断言不执行并在终态汇总时记为 `skipped`。任一断言失败会使所属步骤与用例失败，`continue_on_failure` 同时控制动作或步骤后断言失败后是否继续后续步骤。
+- 用例 `steps` 中每项包含 `phase=setup|main|teardown`，缺省为 `main`；三个阶段分别维护从 1 开始的 `order`。Worker 根据执行参数 `use_pre_steps/use_post_steps` 选择阶段，并按 setup → main → teardown 重新编号写入 `steps_snapshot`。每个步骤快照内保留其断言；`execution_assertions.execution_step_id` 指向所属执行步骤，WS 断言结果按 `execution_step_id` 精确回传。
+
+步骤资产示例：
+
+```json
+{
+  "order": 2,
+  "action": "click",
+  "element_id": 17,
+  "params": {},
+  "assertions": [
+    {
+      "order": 1,
+      "type": "text_equals",
+      "element_id": 18,
+      "params": {"expected": "保存成功"}
+    }
+  ]
+}
+```
+
+Agent 对该步骤先执行 `click`，再发送 `assertion_result { execution_step_id, assertions[] }`；后端据此更新 `execution_assertions`，并将断言失败回写为该步骤失败。报告和执行详情均按步骤渲染其断言子表。
 
 ### 10.4 执行 API 请求体与停止机制
 

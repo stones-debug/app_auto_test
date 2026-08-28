@@ -75,36 +75,37 @@ async def materialize_snapshot(
                 case_order=case.case_order,
                 status="pending",
                 steps_snapshot=case.steps_snapshot,
-                assertions_snapshot=case.assertions_snapshot,
                 elements_snapshot=case.elements_snapshot,
             )
             db.add(exec_case)
             await db.flush()
 
             for step in case.steps_snapshot:
-                db.add(
-                    ExecutionStep(
-                        execution_case_id=exec_case.id,
-                        phase=step.get("phase") or "case_main",
-                        step_order=int(step.get("order") or 0),
-                        action=step.get("action") or "",
-                        source_key=step.get("source_key"),
-                        source_order=step.get("source_order"),
-                        parameters=step.get("params") or {},
-                        continue_on_failure=bool(step.get("continue_on_failure", False)),
-                        status="pending",
-                    )
+                exec_step = ExecutionStep(
+                    execution_case_id=exec_case.id,
+                    phase=step.get("phase") or "case_main",
+                    step_order=int(step.get("order") or 0),
+                    action=step.get("action") or "",
+                    source_key=step.get("source_key"),
+                    source_order=step.get("source_order"),
+                    parameters=step.get("params") or {},
+                    continue_on_failure=bool(step.get("continue_on_failure", False)),
+                    status="pending",
                 )
-            for assertion in case.assertions_snapshot:
-                _expected = assertion.get("expected")
-                if _expected is None:
-                    _expected = assertion.get("expected_value")
-                db.add(
-                    ExecutionAssertion(
-                        execution_case_id=exec_case.id,
-                        assertion_order=int(assertion.get("order") or 0),
-                        assertion_type=assertion.get("type") or assertion.get("assertion_type") or "",
-                        expected_value=str(_expected) if _expected is not None else None,
-                        status="pending",
+                db.add(exec_step)
+                await db.flush()
+                for assertion in step.get("assertions") or []:
+                    expected = assertion.get("expected")
+                    if expected is None:
+                        expected = assertion.get("expected_value")
+                    if expected is None:
+                        expected = (assertion.get("params") or {}).get("expected")
+                    db.add(
+                        ExecutionAssertion(
+                            execution_step_id=exec_step.id,
+                            assertion_order=int(assertion.get("order") or 0),
+                            assertion_type=assertion.get("type") or assertion.get("assertion_type") or "",
+                            expected_value=str(expected) if expected is not None else None,
+                            status="pending",
+                        )
                     )
-                )

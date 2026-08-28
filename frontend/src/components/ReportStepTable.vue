@@ -35,6 +35,30 @@ function phaseLabel(phase?: string) {
 
 <template>
   <el-table :data="steps" size="small">
+    <el-table-column type="expand" width="42">
+      <template #default="{ row }">
+        <el-table v-if="row.assertions?.length" :data="row.assertions" size="small" class="assertion-table">
+          <el-table-column label="#" width="50">
+            <template #default="{ row: assertion }">{{ assertion.assertion_order ?? assertion.id }}</template>
+          </el-table-column>
+          <el-table-column prop="assertion_type" label="步骤后断言" width="150" />
+          <el-table-column label="参数" min-width="120" show-overflow-tooltip>
+            <template #default="{ row: assertion }">{{ formatParameters(assertion.params) || '-' }}</template>
+          </el-table-column>
+          <el-table-column prop="expected_value" label="期望" min-width="100" />
+          <el-table-column prop="actual_value" label="实际" min-width="100" />
+          <el-table-column label="状态" width="90">
+            <template #default="{ row: assertion }">
+              <el-tag :type="['pass', 'passed'].includes(assertion.status) ? 'success' : 'danger'" size="small">
+                {{ assertion.status }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="error_message" label="错误" min-width="140" show-overflow-tooltip />
+        </el-table>
+        <div v-else class="assertion-empty">该步骤未配置断言</div>
+      </template>
+    </el-table-column>
     <el-table-column prop="step_order" label="#" width="50" />
     <el-table-column label="阶段" width="80">
       <template #default="{ row }">{{ phaseLabel(row.phase) }}</template>
@@ -72,4 +96,6 @@ function phaseLabel(phase?: string) {
   border-radius: 4px;
   border: 1px solid #eee;
 }
+.assertion-table { padding: 0 16px 8px 42px; }
+.assertion-empty { padding: 8px 42px; color: var(--el-text-color-secondary); }
 </style>

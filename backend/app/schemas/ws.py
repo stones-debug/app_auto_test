@@ -58,14 +58,13 @@ class StepResultIn(BaseModel):
     actual_value: str | None = None
     error_message: str | None = None
     screenshot_path: str | None = None
-    assertions: list[AgentAssertionIn] = Field(default_factory=list)
 
 
 class AssertionResultIn(BaseModel):
     type: Literal["assertion_result"]
     execution_id: int
     session_token: str | None = None
-    execution_case_id: int
+    execution_step_id: int
     step_order: int | None = None
     assertions: list[AgentAssertionIn] = Field(default_factory=list)
 

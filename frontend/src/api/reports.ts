@@ -73,6 +73,7 @@ export interface ReportStep {
   actual_value: string | null
   error_message: string | null
   screenshot: string | null
+  assertions?: ReportAssertion[]
 }
 
 export interface ReportAssertion {
@@ -97,7 +98,8 @@ export interface ReportCase {
   error_message: string | null
   elements: Record<string, unknown>
   steps: ReportStep[]
-  assertions: ReportAssertion[]
+  /** @deprecated 新数据将断言挂在 ReportStep.assertions 下。 */
+  assertions?: ReportAssertion[]
 }
 
 // 方案 §4.4：嵌套套件（套件前后置 + 套件内用例）

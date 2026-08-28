@@ -615,7 +615,11 @@ def _find_case_node(case: TestCase, node_type: str, node_key: str) -> tuple[str,
         normalized_key = str(UUID(str(node_key)))
     except ValueError:
         return None
-    collection = case.steps if node_type == "step" else case.assertions
+    collection = case.steps if node_type == "step" else [
+        assertion
+        for step in (case.steps or [])
+        for assertion in (step.get("assertions") or [])
+    ]
     for node in collection or []:
         if isinstance(node, dict) and str(node.get("key") or "") == normalized_key:
             return normalized_key, node
@@ -1558,11 +1562,12 @@ async def workspace_nodes(
             rule = skip["step"].get((ancestor_suite_id, case.id), {}).get(node_key)
             overridden = overrides["node"].get((ancestor_suite_id, case.id), {}).get(node_key) == "step"
             items.append(_node_item("step", case.id, node_key, node, rule, case_rule, overridden))
-        for node in (case.assertions or []):
-            node_key = str(node.get("key") or "")
-            rule = skip["assertion"].get((ancestor_suite_id, case.id), {}).get(node_key)
-            overridden = overrides["node"].get((ancestor_suite_id, case.id), {}).get(node_key) == "assertion"
-            items.append(_node_item("assertion", case.id, node_key, node, rule, case_rule, overridden))
+        for step in (case.steps or []):
+            for node in (step.get("assertions") or []):
+                node_key = str(node.get("key") or "")
+                rule = skip["assertion"].get((ancestor_suite_id, case.id), {}).get(node_key)
+                overridden = overrides["node"].get((ancestor_suite_id, case.id), {}).get(node_key) == "assertion"
+                items.append(_node_item("assertion", case.id, node_key, node, rule, case_rule, overridden))
         start = (page - 1) * page_size
         return {"total": len(items), "page": page, "page_size": page_size, "items": items[start : start + page_size]}
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="parent_type 必须是 suite 或 case")

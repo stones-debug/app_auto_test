@@ -129,12 +129,12 @@ class RunnerReporter:
             msg["execution_suite_id"] = execution_suite_id
         await self.send(msg)
 
-    async def assertion_result(self, execution_case_id: int, assertions: list[AssertionItem]) -> None:
+    async def assertion_result(self, execution_step_id: int, assertions: list[AssertionItem]) -> None:
         msg: AssertionResultMessage = {
             "type": "assertion_result",
             "execution_id": self.execution_id,
             "session_token": self.session_token,
-            "execution_case_id": execution_case_id,
+            "execution_step_id": execution_step_id,
             "assertions": assertions,
         }
         await self.send(msg)
@@ -254,6 +254,56 @@ class TestRunner:
                 raise
             except Exception as exc:
                 result = {"status": "failed", "error_message": str(exc)}
+            assertion_results: list[AssertionItem] = []
+            if result.get("status", "passed") == "passed":
+                for assertion_index, assertion in enumerate(step.get("assertions") or [], start=1):
+                    try:
+                        assertion_cls = ASSERTION_REGISTRY.get(assertion.get("type"))
+                        if assertion_cls is None:
+                            raise ValueError(f"未知断言: {assertion.get('type')}")
+                        effective = dict(assertion.get("params") or {})
+                        if assertion.get("element_id") is not None and "element_id" not in effective:
+                            effective["element_id"] = assertion["element_id"]
+                        assertion_result = await asyncio.to_thread(
+                            _run_assertion_in_thread,
+                            assertion_cls,
+                            self.driver,
+                            context,
+                            effective,
+                        )
+                    except StopRequested:
+                        raise
+                    except Exception as exc:
+                        assertion_result = {
+                            "status": "failed",
+                            "expected": (assertion.get("params") or {}).get("expected"),
+                            "actual": "",
+                            "error_message": str(exc),
+                        }
+                    execution_assertion_id = int(assertion.get("execution_assertion_id") or 0)
+                    if execution_assertion_id <= 0:
+                        raise ValueError("协议快照缺少有效 execution_assertion_id")
+                    item: AssertionItem = {
+                        "execution_assertion_id": execution_assertion_id,
+                        "type": str(assertion.get("type") or ""),
+                        "assertion_order": int(assertion.get("order") or assertion_index),
+                        "expected": str(assertion_result.get("expected") or ""),
+                        "actual": str(assertion_result.get("actual") or ""),
+                        "status": str(assertion_result.get("status") or "failed"),
+                        "error_message": (
+                            str(assertion_result["error_message"])
+                            if assertion_result.get("error_message")
+                            else None
+                        ),
+                    }
+                    assertion_results.append(item)
+                    if assertion_result.get("status") != "passed":
+                        result = {
+                            **result,
+                            "status": "failed",
+                            "error_message": item.get("error_message")
+                            or f"步骤后断言 {item['assertion_order']} 未通过",
+                        }
             duration = int((time.monotonic() - start) * 1000)
             await self._resolve_screenshot(result)
             await reporter.step_result(
@@ -280,6 +330,10 @@ class TestRunner:
                     f"{phase_label} {step_order} {action_name} 执行失败（{duration}ms）：{error_message}"
                 )
             await reporter.log(log_level, log_message, step_order)
+            if assertion_results:
+                if execution_case_id is None:
+                    raise ValueError("套件步骤不支持步骤后断言")
+                await reporter.assertion_result(execution_step_id, assertion_results)
             if step_status == "failed":
                 failed = True
                 if not step.get("continue_on_failure", False):
@@ -317,47 +371,6 @@ class TestRunner:
             )
             if main_failed:
                 case_status = "failed"
-
-        assertion_results: list[AssertionItem] = []
-        assertions = [] if setup_halted else (case.get("assertions_snapshot") or [])
-        for _assertion_index, assertion in enumerate(assertions, start=1):
-            try:
-                cls = ASSERTION_REGISTRY.get(assertion.get("type"))
-                if cls is None:
-                    raise ValueError(f"未知断言: {assertion.get('type')}")
-                effective = dict(assertion.get("params") or {})
-                if assertion.get("element_id") is not None and "element_id" not in effective:
-                    effective["element_id"] = assertion["element_id"]
-                res = await asyncio.to_thread(
-                    _run_assertion_in_thread, cls, self.driver, context, effective
-                )
-            except Exception as exc:
-                res = {
-                    "status": "failed",
-                    "expected": (assertion.get("params") or {}).get("expected"),
-                    "actual": "",
-                    "error_message": str(exc),
-                }
-            execution_assertion_id = int(assertion.get("execution_assertion_id") or 0)
-            if execution_assertion_id <= 0:
-                raise ValueError("协议 V2 快照缺少有效 execution_assertion_id")
-            item: AssertionItem = {
-                "execution_assertion_id": execution_assertion_id,
-                "type": str(assertion.get("type") or ""),
-                # 保持与后端预建断言一致的 assertion_order：优先取快照自带 order，
-                # 缺省回退遍历序号（后端按 execution_case_id+assertion_order 幂等创建）。
-                "assertion_order": int(assertion.get("order") or _assertion_index),
-                "expected": str(res.get("expected") or ""),
-                "actual": str(res.get("actual") or ""),
-                "status": str(res.get("status") or "failed"),
-                "error_message": (
-                    str(res["error_message"]) if res.get("error_message") else None
-                ),
-            }
-            assertion_results.append(item)
-            if res.get("status") != "passed":
-                case_status = "failed"
-        await reporter.assertion_result(execution_case_id, assertion_results)
 
         teardown_failed, _teardown_halted = await self._run_steps(
             teardown_steps, context, reporter, "teardown", execution_case_id=execution_case_id

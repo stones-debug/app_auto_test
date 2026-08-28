@@ -115,8 +115,12 @@ class ResolvedCase:
     module_name: str | None
     case_order: int
     steps_snapshot: list[dict[str, Any]]
-    assertions_snapshot: list[dict[str, Any]]
     elements_snapshot: dict[str, dict[str, Any]]
+
+    @property
+    def assertions_snapshot(self) -> list[dict[str, Any]]:
+        """只读派生视图，便于旧的统计调用逐步迁移；持久化快照不再使用该字段。"""
+        return [a for step in self.steps_snapshot for a in (step.get("assertions") or [])]
 
 
 @dataclass(frozen=True)
@@ -506,6 +510,7 @@ def _finalize_case_step(node: dict) -> dict:
     out["phase"] = _CASE_PHASE_MAP.get(raw_phase, "case_main")
     out["source_order"] = node.get("_source_order")
     out["source_key"] = node.get("_source_key")
+    out["assertions"] = [finalize_snapshot_node(a) for a in node.get("assertions") or []]
     return out
 
 
@@ -625,7 +630,11 @@ async def resolve(request: ResolutionRequest, db: AsyncSession, cache: _LRUCache
             len(s.setup_steps_snapshot) + len(s.teardown_steps_snapshot)
             for s in executable_suites
         ),
-        "executable_assertions": sum(len(c.assertions_snapshot) for c in executable_cases),
+        "executable_assertions": sum(
+            len(step.get("assertions") or [])
+            for c in executable_cases
+            for step in c.steps_snapshot
+        ),
         "na_suites": sum(1 for e in exclusions if e.target_type == "suite"),
         "na_cases": sum(1 for e in na_cases if e.suite_id is None),
         "na_steps": sum(1 for e in exclusions if e.target_type == "step"),
@@ -802,33 +811,53 @@ async def _resolve_case(
     override_count = len(
         {str(node.get("key") or "") for node in selected_steps if isinstance(node, dict)} & set(step_overrides)
     )
-    override_count += len(
-        {str(node.get("key") or "") for node in (case.assertions or []) if isinstance(node, dict)}
-        & set(assert_overrides)
-    )
+    source_assertions = [
+        assertion
+        for step in selected_steps
+        for assertion in (step.get("assertions") or [])
+        if isinstance(assertion, dict)
+    ]
+    override_count += len({str(node.get("key") or "") for node in source_assertions} & set(assert_overrides))
 
     kept_steps, step_ex = _filter_and_patch(
         selected_steps, config["step_rules"].get((suite_id, case.id), {}), step_overrides,
         "step", case.id, case_name=case.name, suite_id=suite_id, suite_name=suite_name,
     )
-    kept_assertions, assert_ex = _filter_and_patch(
-        case.assertions or [], config["assertion_rules"].get((suite_id, case.id), {}), assert_overrides,
-        "assertion", case.id, case_name=case.name, suite_id=suite_id, suite_name=suite_name,
-    )
-    exclusions = [*step_ex, *assert_ex]
+    exclusions = [*step_ex]
 
     # 渲染 + Registry 校验
-    steps = [_registry_validate_step(_render_node_with_context(n, variables, case.name)) for n in kept_steps]
-    assertions = [
-        _registry_validate_assertion(_render_node_with_context(n, variables, case.name))
-        for n in kept_assertions
-    ]
+    steps: list[dict] = []
+    for node in kept_steps:
+        raw_assertions = deepcopy(node.get("assertions") or [])
+        node_without_assertions = {k: v for k, v in node.items() if k != "assertions"}
+        resolved_step = _registry_validate_step(
+            _render_node_with_context(node_without_assertions, variables, case.name)
+        )
+        kept_assertions, assert_ex = _filter_and_patch(
+            raw_assertions,
+            config["assertion_rules"].get((suite_id, case.id), {}),
+            assert_overrides,
+            "assertion",
+            case.id,
+            case_name=case.name,
+            suite_id=suite_id,
+            suite_name=suite_name,
+        )
+        exclusions.extend(assert_ex)
+        resolved_step["assertions"] = _assign_order(
+            [
+                _registry_validate_assertion(
+                    _render_node_with_context(assertion, variables, case.name)
+                )
+                for assertion in kept_assertions
+            ],
+            order_offset=0,
+        )
+        steps.append(resolved_step)
 
     # 重新生成执行级连续 order，保留 source_order/source_key。
     steps = _assign_order(steps, order_offset=0)
-    assertions = _assign_order(assertions, order_offset=len(steps))
-
-    if not steps and not assertions:
+    if not steps:
         exclusions.append(
             ExclusionItem(
                 target_type="case", suite_id=suite_id, case_id=case.id, node_key=None,
@@ -841,7 +870,9 @@ async def _resolve_case(
         )
         return None, exclusions, override_count
 
-    elements = await _resolve_element_snapshots(db, request.project_id, steps, assertions, config["element_overrides"], variables)
+    elements = await _resolve_element_snapshots(
+        db, request.project_id, steps, config["element_overrides"], variables
+    )
     override_count += sum(1 for element_id in elements if int(element_id) in config["element_overrides"])
 
     return (
@@ -853,7 +884,6 @@ async def _resolve_case(
             module_name=module_names.get(case.module_id) if case.module_id is not None else None,
             case_order=case_order,
             steps_snapshot=[_finalize_case_step(s) for s in steps],
-            assertions_snapshot=[finalize_snapshot_node(a) for a in assertions],
             elements_snapshot=elements,
         ),
         exclusions, override_count,
@@ -894,7 +924,7 @@ async def _parse_suite_steps(
     teardown_snapshot, teardown_ex = _process(teardown_nodes, "suite_teardown")
     exclusions = [*setup_ex, *teardown_ex]
     elements = await _resolve_element_snapshots(
-        db, project_id, [*setup_snapshot, *teardown_snapshot], [], config["element_overrides"], variables
+        db, project_id, [*setup_snapshot, *teardown_snapshot], config["element_overrides"], variables
     )
     override_count += sum(1 for element_id in elements if int(element_id) in config["element_overrides"])
     return setup_snapshot, teardown_snapshot, elements, exclusions, override_count
@@ -994,11 +1024,11 @@ async def _resolve_element_snapshots(
     db: AsyncSession,
     project_id: int,
     steps: list[dict],
-    assertions: list[dict],
     element_overrides: dict[int, AppProfileElementOverride],
     variables: dict,
 ) -> dict[str, dict[str, Any]]:
     ids: set[int] = set()
+    assertions = [a for step in steps for a in (step.get("assertions") or [])]
     for item in [*steps, *assertions]:
         element_id = item.get("element_id") if isinstance(item, dict) else None
         if element_id is not None:

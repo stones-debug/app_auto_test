@@ -5,8 +5,11 @@ import Draggable from 'vuedraggable'
 
 import {
   ACTIONS,
+  ASSERTION_TYPES,
   actionMeta,
+  assertionMeta,
   defaultParams,
+  type Assertion,
   type Step,
   type StepPhase,
 } from '@/api/cases'
@@ -95,6 +98,7 @@ function addStep() {
       element_id: null,
       description: '',
       continue_on_failure: false,
+      assertions: [],
     },
   ])
 }
@@ -110,6 +114,32 @@ function onActionChange(step: Step) {
 }
 
 function onDragEnd() {
+  update([...props.modelValue])
+}
+
+function addAssertion(step: Step) {
+  const assertions = step.assertions ?? (step.assertions = [])
+  assertions.push({
+    key: crypto.randomUUID(),
+    order: assertions.length + 1,
+    type: 'element_exists',
+    params: defaultParams(assertionMeta('element_exists').fields),
+    element_id: null,
+    description: '',
+  })
+  update([...props.modelValue])
+}
+
+function removeAssertion(step: Step, index: number) {
+  step.assertions?.splice(index, 1)
+  step.assertions?.forEach((assertion, assertionIndex) => {
+    assertion.order = assertionIndex + 1
+  })
+  update([...props.modelValue])
+}
+
+function onAssertionTypeChange(assertion: Assertion) {
+  assertion.params = defaultParams(assertionMeta(assertion.type).fields)
   update([...props.modelValue])
 }
 </script>
@@ -190,6 +220,54 @@ function onDragEnd() {
               <span class="field-label">描述</span>
               <el-input v-model="element.description" placeholder="操作说明（可选）" />
             </div>
+            <div class="assertion-section">
+              <div class="assertion-title-row">
+                <div>
+                  <strong>步骤后断言</strong>
+                  <span class="assertion-tip">动作成功后立即按顺序校验</span>
+                </div>
+                <el-button type="primary" plain size="small" @click="addAssertion(element)">添加断言</el-button>
+              </div>
+              <el-card
+                v-for="(assertion, assertionIndex) in element.assertions ?? []"
+                :key="assertion.key ?? assertionIndex"
+                class="assertion-card"
+                shadow="never"
+              >
+                <div class="assertion-head">
+                  <span class="assertion-badge">{{ assertionIndex + 1 }}</span>
+                  <el-select v-model="assertion.type" class="action-select" @change="onAssertionTypeChange(assertion)">
+                    <el-option v-for="item in ASSERTION_TYPES" :key="item.value" :label="item.label" :value="item.value" />
+                  </el-select>
+                  <el-button type="danger" text size="small" @click="removeAssertion(element, assertionIndex)">删除</el-button>
+                </div>
+                <div v-if="assertionMeta(assertion.type).needsElement" class="step-row">
+                  <span class="field-label">元素</span>
+                  <ElementSelector v-model="assertion.element_id" />
+                </div>
+                <div v-for="field in assertionMeta(assertion.type).fields" :key="field.key" class="step-row">
+                  <span class="field-label">{{ field.label }}</span>
+                  <el-select v-if="field.type === 'select'" v-model="assertion.params![field.key]" class="w-200">
+                    <el-option v-for="option in field.options" :key="option.value" :label="option.label" :value="option.value" />
+                  </el-select>
+                  <el-switch v-else-if="field.type === 'switch'" v-model="assertion.params![field.key]" />
+                  <el-input
+                    v-else
+                    v-model="assertion.params![field.key]"
+                    :type="field.type === 'number' ? 'number' : 'text'"
+                    :min="field.min"
+                    :max="field.max"
+                    :placeholder="field.placeholder"
+                    class="w-200"
+                  />
+                </div>
+                <div class="step-row">
+                  <span class="field-label">描述</span>
+                  <el-input v-model="assertion.description" placeholder="断言说明（可选）" />
+                </div>
+              </el-card>
+              <div v-if="!(element.assertions?.length)" class="assertion-empty">暂无断言</div>
+            </div>
           </div>
         </el-card>
       </template>
@@ -239,6 +317,14 @@ function onDragEnd() {
 }
 .continue-label { color: #888; font-size: 13px; flex-shrink: 0; }
 .step-body { margin-top: 8px; }
+.assertion-section { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--border); }
+.assertion-title-row, .assertion-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.assertion-tip { margin-left: 10px; color: var(--text-2); font-size: 12px; }
+.assertion-card { margin-top: 10px; background: #fafbff; }
+.assertion-head { justify-content: flex-start; margin-bottom: 10px; }
+.assertion-head .action-select { flex: 1; }
+.assertion-badge { color: var(--primary); font-weight: 600; }
+.assertion-empty { padding: 14px 0 2px; color: var(--text-2); text-align: center; font-size: 13px; }
 .step-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .field-label { width: 80px; color: #888; flex-shrink: 0; }
 .w-200 { width: 200px; }

@@ -9,7 +9,7 @@ import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import AuthenticatedImage from '@/components/AuthenticatedImage.vue'
-import { assertionPassed, orderExecutionItems, type OrderedExecutionItem } from '@/utils/executionOrder'
+import { assertionPassed } from '@/utils/executionOrder'
 import { formatParameters } from '@/utils/parameters'
 
 export type TimelineStepPhase =
@@ -33,6 +33,7 @@ export interface TimelineStep {
   actual_value?: string | null
   error_message?: string | null
   artifact_id?: number | null
+  assertions?: TimelineAssertion[]
 }
 
 export interface TimelineAssertion {
@@ -55,7 +56,6 @@ export interface TimelineCase {
   duration?: number | null
   error_message?: string | null
   steps: TimelineStep[]
-  assertions: TimelineAssertion[]
 }
 
 export interface TimelineSuite {
@@ -160,7 +160,9 @@ function artifactUrl(artifactId: number): string {
 // 严禁用数组下标作 key——实时更新会让下标位移，导致组件 VNode 被按 index 误复用。
 // key 随 item 一并生成（模板只读 item.key），避免模板 :key 中调用 script 函数
 // （vue-tsc 对特殊绑定位的函数调用 usage 检测不可靠，会误报 TS6133）。
-type KeyedExecutionItem<TStep, TAssertion> = OrderedExecutionItem<TStep, TAssertion> & { key: string }
+type KeyedExecutionItem<TStep, TAssertion> =
+  | { kind: 'step'; index: number; value: TStep; key: string }
+  | { kind: 'assertion'; index: number; value: TAssertion; key: string }
 
 // 套件前后置步骤：纯步骤（无断言），按 step_order 顺序渲染
 function suiteItems(s: TimelineSuite, steps: TimelineStep[], prefix: string): KeyedExecutionItem<TimelineStep, never>[] {
@@ -173,12 +175,20 @@ function suiteItems(s: TimelineSuite, steps: TimelineStep[], prefix: string): Ke
 }
 
 function executionItems(c: TimelineCase): KeyedExecutionItem<TimelineStep, TimelineAssertion>[] {
-  return orderExecutionItems(c.steps, c.assertions).map((item) => ({
-    ...item,
-    key: item.kind === 'step'
-      ? `step-${item.value.id ?? `${c.case_id}-${item.value.phase ?? 'main'}-${item.value.step_order}`}`
-      : `assert-${item.value.id ?? `${c.case_id}-${item.value.assertion_order}`}`,
-  }))
+  return c.steps.flatMap((step, stepIndex) => [
+    {
+      kind: 'step' as const,
+      index: stepIndex,
+      value: step,
+      key: `step-${step.id ?? `${c.case_id}-${step.phase ?? 'main'}-${step.step_order}`}`,
+    },
+    ...(step.assertions ?? []).map((assertion, assertionIndex) => ({
+      kind: 'assertion' as const,
+      index: assertionIndex,
+      value: assertion,
+      key: `assert-${assertion.id ?? `${step.id ?? step.step_order}-${assertion.assertion_order}`}`,
+    })),
+  ])
 }
 
 function fmtDuration(ms: number | null | undefined) {

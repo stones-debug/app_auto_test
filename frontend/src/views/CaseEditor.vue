@@ -2,27 +2,19 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import Draggable from 'vuedraggable'
-
 import {
-  ASSERTION_TYPES,
   CASE_STATUS,
-  assertionMeta,
   createCase,
-  defaultParams,
   getCase,
-  normalizeAssertion,
   normalizeStep,
   updateCase,
   validateStep,
-  type Assertion,
   type Step,
   type StepPhase,
   type TestCase,
 } from '@/api/cases'
 import { listElements, listModules } from '@/api/elements'
 import CaseStepEditor from '@/components/CaseStepEditor.vue'
-import ElementSelector from '@/components/ElementSelector.vue'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 import { buildCaseEditorSummary, caseEditorSummaryText } from '@/utils/caseEditorSummary'
 import { mergePhaseSteps } from '@/utils/mergePhaseSteps'
@@ -47,7 +39,6 @@ const form = reactive<Partial<TestCase>>({
   description: '',
   status: 'draft',
   steps: [] as Step[],
-  assertions: [] as Assertion[],
   variables: {} as Record<string, unknown>,
 })
 
@@ -64,10 +55,6 @@ watch(
   { deep: true },
 )
 const loadedOnce = ref(false)
-
-function assertMeta(assertion: Assertion) {
-  return assertionMeta(assertion.type)
-}
 
 function phaseSteps(phase: StepPhase) {
   return computed<Step[]>({
@@ -94,7 +81,6 @@ const moduleName = computed(() => {
 const summaryMeta = computed(() => {
   return buildCaseEditorSummary(
     (form.steps as Step[]) ?? [],
-    (form.assertions as Assertion[]) ?? [],
     variableEntries.value,
   )
 })
@@ -113,31 +99,6 @@ function statusType(s: string | undefined): 'info' | 'success' | 'danger' {
 
 function toggleCollapsed() {
   collapsed.value = !collapsed.value
-}
-
-function addAssertion() {
-  const assertions = form.assertions as Assertion[]
-  assertions.push({
-    key: crypto.randomUUID(),
-    order: assertions.length + 1,
-    type: 'element_exists',
-    params: defaultParams(assertionMeta('element_exists').fields),
-    element_id: null,
-    description: '',
-  })
-}
-
-function onAssertionTypeChange(assertion: Assertion) {
-  assertion.params = defaultParams(assertionMeta(assertion.type).fields)
-}
-
-function removeAssertion(index: number) {
-  ;(form.assertions as Assertion[]).splice(index, 1)
-  reorderAssertions()
-}
-
-function reorderAssertions() {
-  ;(form.assertions as Assertion[]).forEach((a, i) => (a.order = i + 1))
 }
 
 function addVariable() {
@@ -176,7 +137,6 @@ async function save() {
       description: form.description,
       status: form.status,
       steps: (form.steps as Step[]).map(normalizeStep),
-      assertions: (form.assertions as Assertion[]).map(normalizeAssertion),
       variables: collectVariables(),
     }
     if (isEdit.value) {
@@ -214,7 +174,6 @@ onMounted(async () => {
     form.status = data.status
     // Step 4：加载旧数据时归一化 continue_on_failure，且清理历史留在 params 里的字段
     form.steps = data.steps.map(normalizeStep)
-    form.assertions = data.assertions.map(normalizeAssertion)
     form.variables = data.variables
     variableEntries.value = Object.entries(data.variables).map(([key, value]) => ({
       key,
@@ -291,66 +250,10 @@ onMounted(async () => {
       v-model="teardownSteps"
       phase="teardown"
       title="后置操作"
-      description="运行时勾选后，在断言完成后执行；主体失败时仍会尝试清理"
+      description="运行时勾选后，在主体步骤之后执行；主体失败时仍会尝试清理"
       tone="success"
       :element-names="elementNames"
     />
-
-    <div class="content-card mb16">
-      <div class="section-title-row">
-        <span class="section-title">断言</span>
-        <el-button type="primary" size="small" @click="addAssertion">添加断言</el-button>
-      </div>
-      <Draggable v-model="form.assertions" item-key="order" handle=".drag-handle" class="step-list" @end="reorderAssertions">
-        <template #item="{ element, index }">
-          <el-card class="step-card assertion" shadow="never">
-            <div class="step-head">
-              <span class="drag-handle">⠿</span>
-              <span class="step-badge assertion">{{ index + 1 }}</span>
-              <el-select
-                v-model="element.type"
-                class="action-select"
-                @change="onAssertionTypeChange(element)"
-              >
-                <el-option v-for="a in ASSERTION_TYPES" :key="a.value" :label="a.label" :value="a.value" />
-              </el-select>
-              <el-button type="danger" text size="small" @click="removeAssertion(index)">删除</el-button>
-            </div>
-            <div class="step-body">
-              <div v-if="assertMeta(element).needsElement" class="step-row">
-                <span class="field-label">元素</span>
-                <ElementSelector v-model="element.element_id" />
-              </div>
-              <div v-for="f in assertMeta(element).fields" :key="f.key" class="step-row">
-                <span class="field-label">{{ f.label }}</span>
-                <el-select
-                  v-if="f.type === 'select'"
-                  v-model="element.params![f.key]"
-                  class="w-200"
-                >
-                  <el-option v-for="o in f.options" :key="o.value" :label="o.label" :value="o.value" />
-                </el-select>
-                <el-switch v-else-if="f.type === 'switch'" v-model="element.params![f.key]" />
-                <el-input
-                  v-else
-                  v-model="element.params![f.key]"
-                  :type="f.type === 'number' ? 'number' : 'text'"
-                  :placeholder="f.placeholder"
-                  class="w-200"
-                />
-              </div>
-              <div class="step-row">
-                <span class="field-label">描述</span>
-                <el-input v-model="element.description" placeholder="断言说明（可选）" />
-              </div>
-            </div>
-          </el-card>
-        </template>
-      </Draggable>
-      <div class="add-more">
-        <el-button type="primary" plain class="w-full" @click="addAssertion">+ 添加断言</el-button>
-      </div>
-    </div>
 
     <div class="content-card mb16">
       <div class="section-title-row">

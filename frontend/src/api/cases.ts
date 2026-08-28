@@ -32,6 +32,7 @@ export interface Step {
   description?: string
   // Step 4：失败后继续为 Step 顶层字段（不入 params）
   continue_on_failure: boolean
+  assertions?: Assertion[]
 }
 
 export interface Assertion {
@@ -51,7 +52,6 @@ export interface TestCase {
   description?: string | null
   status: string
   steps: Step[]
-  assertions: Assertion[]
   variables: Record<string, unknown>
   created_by?: number | null
   created_at: string
@@ -123,7 +123,25 @@ export function validateStep(step: Step): string | null {
   if (meta.needsElement && (step.element_id == null)) {
     return `请选择“${meta.elementLabel ?? '元素'}”`
   }
-  return validateActionParams(step.action, step.params)
+  const actionError = validateActionParams(step.action, step.params)
+  if (actionError) return actionError
+  for (let index = 0; index < (step.assertions ?? []).length; index += 1) {
+    const error = validateAssertion(step.assertions![index])
+    if (error) return `断言 ${index + 1}：${error}`
+  }
+  return null
+}
+
+export function validateAssertion(assertion: Assertion): string | null {
+  const meta = assertionMeta(assertion.type)
+  if (meta.needsElement && assertion.element_id == null) return '请选择“元素”'
+  for (const field of meta.fields) {
+    const value = (assertion.params ?? {})[field.key]
+    if (field.required && (value === undefined || value === null || value === '')) {
+      return `请填写“${field.label}”`
+    }
+  }
+  return null
 }
 
 // Step 4：continue_on_failure 是 Step 顶层字段；加载旧数据/历史 params 时归一化，
@@ -138,6 +156,7 @@ export function normalizeStep(step: Step): Step {
     phase: step.phase ?? 'main',
     params,
     continue_on_failure: step.continue_on_failure ?? false,
+    assertions: (step.assertions ?? []).map(normalizeAssertion),
   }
 }
 

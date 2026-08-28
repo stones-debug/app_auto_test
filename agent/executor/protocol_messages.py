@@ -34,7 +34,7 @@ class AssertionResultMessage(TypedDict):
     type: str
     execution_id: int
     session_token: str | None
-    execution_case_id: int
+    execution_step_id: int
     assertions: list[AssertionItem]
 
 

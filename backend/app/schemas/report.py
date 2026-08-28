@@ -51,6 +51,7 @@ class ReportStepOut(BaseModel):
     actual_value: str | None
     error_message: str | None
     screenshot: str | None
+    assertions: list["ReportAssertionOut"] = Field(default_factory=list)
 
 
 class ReportAssertionOut(BaseModel):
@@ -61,7 +62,7 @@ class ReportAssertionOut(BaseModel):
     actual_value: str | None
     status: str
     error_message: str | None
-    # 快照携带的说明/参数（断言行本身不落库，从 assertions_snapshot 补）
+    # 快照携带的说明/参数（断言行本身不落库，从步骤内 assertions 补）
     params: dict[str, Any] | None = None
     description: str | None = None
 
@@ -76,7 +77,6 @@ class ReportCaseOut(BaseModel):
     error_message: str | None
     elements: dict[str, Any]
     steps: list[ReportStepOut]
-    assertions: list[ReportAssertionOut]
 
 
 class ReportLogOut(BaseModel):

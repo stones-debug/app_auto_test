@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -48,12 +49,28 @@ async def _check_module_belongs(project_id: int, module_id: int | None, db: Asyn
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="模块不存在")
 
 
+def _nested_assertions(steps: list | None):
+    for step in steps or []:
+        assertions = step.get("assertions", []) if isinstance(step, dict) else getattr(step, "assertions", [])
+        yield from assertions or []
+
+
 async def _check_elements_belong(
-    project_id: int, steps: list | None, assertions: list | None, db: AsyncSession
+    project_id: int,
+    steps: list | None,
+    assertions_or_db: list | AsyncSession | None = None,
+    db: AsyncSession | None = None,
 ) -> None:
     """CR-09：步骤/断言引用的 element_id 必须存在且属于当前项目（未删除）。"""
+    # 套件 API 仍以 (setup_steps, teardown_steps, db) 调用；用例 API 使用
+    # (steps, db)。两种入口都归一化为嵌套步骤断言集合。
+    if db is None:
+        db = assertions_or_db  # type: ignore[assignment]
+        extra: list = []
+    else:
+        extra = assertions_or_db if isinstance(assertions_or_db, list) else []
     ids: set[int] = set()
-    for item in [*(steps or []), *(assertions or [])]:
+    for item in [*(steps or []), *extra, *_nested_assertions(steps), *_nested_assertions(extra)]:
         if isinstance(item, dict):
             element_id = item.get("element_id")
         else:
@@ -82,8 +99,8 @@ async def _check_elements_belong(
         )
 
 
-async def _check_orders_unique(steps: list | None, assertions: list | None) -> None:
-    """同一阶段内 step order 与 assertion order 不得重复。"""
+async def _check_orders_unique(steps: list | None) -> None:
+    """同一阶段内步骤、同一步骤内断言 order 不得重复。"""
     step_orders = [
         (str(s.get("phase") or "main"), int(s["order"]))
         for s in (steps or [])
@@ -93,19 +110,19 @@ async def _check_orders_unique(steps: list | None, assertions: list | None) -> N
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="同一阶段内步骤 order 不得重复"
         )
-    assertion_orders = [
-        int(a["order"]) for a in (assertions or []) if isinstance(a, dict) and "order" in a
-    ]
-    if len(assertion_orders) != len(set(assertion_orders)):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="断言 order 不得重复"
-        )
+    for step in steps or []:
+        assertions = step.get("assertions", []) if isinstance(step, dict) else []
+        orders = [int(a["order"]) for a in assertions if isinstance(a, dict) and "order" in a]
+        if len(orders) != len(set(orders)):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="同一步骤内断言 order 不得重复"
+            )
 
 
-def _check_keys_unique(steps: list | None, assertions: list | None) -> None:
+def _check_keys_unique(steps: list | None) -> None:
     """方案 §2.8：用例内步骤/断言稳定 key 不得重复（NODE_KEY_DUPLICATED）。"""
     keys = [s.get("key") for s in (steps or []) if isinstance(s, dict) and s.get("key")]
-    keys += [a.get("key") for a in (assertions or []) if isinstance(a, dict) and a.get("key")]
+    keys += [a.get("key") for a in _nested_assertions(steps) if isinstance(a, dict) and a.get("key")]
     if len(keys) != len(set(keys)):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="用例内步骤/断言 key 不得重复"
@@ -180,7 +197,7 @@ async def list_cases(
         item = CaseListItem.model_validate(case)
         item.module_name = modules.get(case.module_id) if case.module_id else None
         item.step_count = len(case.steps or [])
-        item.assertion_count = len(case.assertions or [])
+        item.assertion_count = sum(len(s.get("assertions") or []) for s in (case.steps or []))
         if case.id in last_exec:
             item.last_execution_status, item.last_execution_at = last_exec[case.id]
         items.append(item)
@@ -196,9 +213,9 @@ async def create_case(
     db: AsyncSession = Depends(get_db),
 ):
     await _check_module_belongs(project_id, body.module_id, db)
-    await _check_elements_belong(project_id, body.steps, body.assertions, db)
-    await _check_orders_unique(body.steps, body.assertions)
-    _check_keys_unique(body.steps, body.assertions)
+    await _check_elements_belong(project_id, body.steps, db)
+    await _check_orders_unique(body.steps)
+    _check_keys_unique(body.steps)
     case = TestCase(
         project_id=project_id,
         module_id=body.module_id,
@@ -206,7 +223,6 @@ async def create_case(
         description=body.description,
         status=body.status,
         steps=body.steps,
-        assertions=body.assertions,
         variables=body.variables,
         created_by=user.id,
         updated_by=user.id,
@@ -241,11 +257,11 @@ async def update_case(
     if role not in ("owner", "admin", "member"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
     await _check_module_belongs(case.project_id, body.module_id, db)
-    if body.steps is not None or body.assertions is not None:
-        await _check_elements_belong(case.project_id, body.steps, body.assertions, db)
-    await _check_orders_unique(body.steps, body.assertions)
-    _check_keys_unique(body.steps, body.assertions)
-    for field in ("name", "module_id", "description", "status", "steps", "assertions", "variables"):
+    if body.steps is not None:
+        await _check_elements_belong(case.project_id, body.steps, db)
+    await _check_orders_unique(body.steps)
+    _check_keys_unique(body.steps)
+    for field in ("name", "module_id", "description", "status", "steps", "variables"):
         # CR-25：model_fields_set 区分“未提交”与“显式 null”，支持清空可选字段
         if field in body.model_fields_set:
             setattr(case, field, getattr(body, field))
@@ -430,20 +446,24 @@ async def clone_case(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """克隆用例：复制 steps/assertions/variables，名称加后缀。"""
+    """克隆用例：复制步骤（含步骤断言）和变量，并重建全部节点 key。"""
     case = await _get_case_or_404(case_id, db)
     _project, role = await get_project_permission(case.project_id, user, db)
     if role not in ("owner", "admin", "member"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
 
+    cloned_steps = deepcopy(case.steps or [])
+    for step in cloned_steps:
+        step["key"] = str(uuid4())
+        for assertion in step.get("assertions") or []:
+            assertion["key"] = str(uuid4())
     new_case = TestCase(
         project_id=case.project_id,
         module_id=case.module_id,
         name=f"{case.name} (副本)",
         description=case.description,
         status="draft",
-        steps=[{**dict(s), "key": str(uuid4())} for s in (case.steps or [])],
-        assertions=[{**dict(a), "key": str(uuid4())} for a in (case.assertions or [])],
+        steps=cloned_steps,
         variables=dict(case.variables or {}),
         created_by=user.id,
         updated_by=user.id,

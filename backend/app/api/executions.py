@@ -30,7 +30,6 @@ from app.models import (
 )
 from app.schemas.execution import (
     BatchExecutionCreate,
-    ExecutionAssertionOut,
     ExecutionCaseOut,
     ExecutionCreate,
     ExecutionDetail,
@@ -456,9 +455,6 @@ async def get_execution(
         for case in suite.get("cases") or []:
             case_out = ExecutionCaseOut.model_validate(case)
             case_out.steps = [case_step_out(s) for s in case.get("steps") or []]
-            case_out.assertions = [
-                ExecutionAssertionOut.model_validate(a) for a in case.get("assertions") or []
-            ]
             case_outs.append(case_out)
         suite_out.cases = case_outs
         suite_outs.append(suite_out)

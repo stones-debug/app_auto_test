@@ -2,7 +2,6 @@
 import { executionStatusMeta } from '@/api/executions'
 import ReportStepTable from '@/components/ReportStepTable.vue'
 import type { PreparedReportCase } from '@/utils/reportDisclosure'
-import { formatParameters } from '@/utils/parameters'
 
 defineProps<{
   caseItem: PreparedReportCase
@@ -47,41 +46,11 @@ function statusMeta(status: string) {
     <div v-if="expanded" class="case-body">
       <div v-if="caseItem.error_message" class="error-box">{{ caseItem.error_message }}</div>
       <ReportStepTable
-        v-if="caseItem.beforeAssertionSteps.length"
-        :steps="caseItem.beforeAssertionSteps"
+        v-if="caseItem.steps.length"
+        :steps="caseItem.steps"
         :report-id="reportId"
       />
-      <el-empty
-        v-else-if="!caseItem.assertions.length && !caseItem.afterAssertionSteps.length"
-        description="无步骤"
-        :image-size="60"
-      />
-      <el-table v-if="caseItem.assertions.length" :data="caseItem.assertions" size="small" class="mt8">
-        <el-table-column label="#" width="50">
-          <template #default="{ row }">{{ row.assertion_order ?? row.id }}</template>
-        </el-table-column>
-        <el-table-column prop="assertion_type" label="断言" width="150" />
-        <el-table-column label="参数" min-width="120" show-overflow-tooltip>
-          <template #default="{ row }">{{ formatParameters(row.params) || '-' }}</template>
-        </el-table-column>
-        <el-table-column prop="description" label="说明" min-width="120" show-overflow-tooltip />
-        <el-table-column prop="expected_value" label="期望" min-width="100" show-overflow-tooltip />
-        <el-table-column prop="actual_value" label="实际" min-width="100" show-overflow-tooltip />
-        <el-table-column label="状态" width="90">
-          <template #default="{ row }">
-            <el-tag :type="['pass', 'passed'].includes(row.status) ? 'success' : 'danger'" size="small">
-              {{ row.status }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="error_message" label="错误" min-width="140" show-overflow-tooltip />
-      </el-table>
-      <ReportStepTable
-        v-if="caseItem.afterAssertionSteps.length"
-        :steps="caseItem.afterAssertionSteps"
-        :report-id="reportId"
-        class="mt8"
-      />
+      <el-empty v-else description="无步骤" :image-size="60" />
     </div>
   </article>
 </template>

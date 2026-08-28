@@ -139,7 +139,6 @@ class ExecutionCase(Base, TimestampMixin):
     case_order: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     steps_snapshot: Mapped[list] = mapped_column(JSON, nullable=False)
-    assertions_snapshot: Mapped[list] = mapped_column(JSON, nullable=False)
     elements_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -202,21 +201,21 @@ class ExecutionStep(Base, TimestampMixin):
 
 
 class ExecutionAssertion(Base, TimestampMixin):
-    """执行断言（§3.1：直接关联 execution_case_id，预建 pending 供 Agent 按 id 上报）。"""
+    """步骤完成后执行的断言，按 execution_step_id 预建供 Agent 精确上报。"""
 
     __tablename__ = "execution_assertions"
     __table_args__ = (
-        Index("idx_exec_assertions_case", "execution_case_id"),
+        Index("idx_exec_assertions_step", "execution_step_id"),
         Index(
-            "uq_exec_assertions_case_order",
-            "execution_case_id",
+            "uq_exec_assertions_step_order",
+            "execution_step_id",
             "assertion_order",
             unique=True,
         ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    execution_case_id: Mapped[int] = mapped_column(ForeignKey("execution_cases.id"), nullable=False)
+    execution_step_id: Mapped[int] = mapped_column(ForeignKey("execution_steps.id"), nullable=False)
     assertion_order: Mapped[int] = mapped_column(Integer, nullable=False)
     assertion_type: Mapped[str] = mapped_column(String(50), nullable=False)
     expected_value: Mapped[str | None] = mapped_column(Text)

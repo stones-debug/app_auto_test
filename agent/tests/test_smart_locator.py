@@ -850,12 +850,13 @@ def _make_e2e_case(steps, elements, assertions=None, case_id=7001) -> dict:
         {"execution_assertion_id": 8000 + index, **assertion}
         for index, assertion in enumerate(assertions or [], start=1)
     ]
+    if normalized_assertions and normalized_steps:
+        normalized_steps[-1]["assertions"] = normalized_assertions
     return {
         "execution_case_id": case_id,
         "case_id": 11,
         "case_name": "智能定位端到端",
         "steps_snapshot": normalized_steps,
-        "assertions_snapshot": normalized_assertions,
         "elements_snapshot": elements,
     }
 

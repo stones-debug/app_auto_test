@@ -74,6 +74,18 @@
         {%- endif -%}
       </td>
     </tr>
+    {% if step.assertions %}
+    <tr><td colspan="9">
+      <table style="margin:4px 0 8px 36px;width:calc(100% - 36px)">
+        <thead><tr><th>#</th><th>步骤后断言</th><th>期望</th><th>实际</th><th>状态</th></tr></thead>
+        <tbody>{% for a in step.assertions %}<tr>
+          <td>{{ a.assertion_order or a.id }}</td><td>{{ a.assertion_type }}</td>
+          <td>{{ a.expected_value }}</td><td>{{ a.actual_value }}</td>
+          <td class="{{ 'step-ok' if a.status in ['pass', 'passed'] else 'step-fail' }}">{{ a.status }}</td>
+        </tr>{% endfor %}</tbody>
+      </table>
+    </td></tr>
+    {% endif %}
   {% endfor %}
   </tbody>
 </table>
@@ -87,28 +99,7 @@
   </summary>
   <div class="case-body">
     {% if case.error_message %}<div class="error-box">{{ case.error_message }}</div>{% endif %}
-    {% set before_assertions = case.steps | rejectattr('phase', 'equalto', 'case_teardown') | list %}
-    {% set after_assertions = case.steps | selectattr('phase', 'equalto', 'case_teardown') | list %}
-    {% if before_assertions %}{{ render_steps(before_assertions) }}{% endif %}
-    {% if not before_assertions and not case.assertions and not after_assertions %}<div class="empty">无步骤</div>{% endif %}
-
-    {% if case.assertions %}
-    <table style="margin-top:8px">
-      <thead><tr><th>#</th><th>断言</th><th>期望</th><th>实际</th><th>状态</th></tr></thead>
-      <tbody>
-      {% for a in case.assertions %}
-        <tr>
-          <td>{{ a.id }}</td>
-          <td>{{ a.assertion_type }}</td>
-          <td style="word-break:break-all">{{ a.expected_value }}</td>
-          <td style="word-break:break-all">{{ a.actual_value }}</td>
-          <td class="{{ 'step-ok' if a.status in ['pass', 'passed'] else 'step-fail' }}">{{ a.status }}</td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-    {% endif %}
-    {% if after_assertions %}{{ render_steps(after_assertions, true) }}{% endif %}
+    {% if case.steps %}{{ render_steps(case.steps) }}{% else %}<div class="empty">无步骤</div>{% endif %}
   </div>
 </details>
 {%- endmacro %}

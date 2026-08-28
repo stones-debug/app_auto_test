@@ -80,17 +80,6 @@ function toTimelineSuites(suites: ExecutionDetail['suites']): TimelineSuite[] {
       duration: c.duration,
       error_message: c.error_message,
       steps: (c.steps ?? []).map(toTimelineStep),
-      assertions: (c.assertions ?? []).map((a) => ({
-        id: a.id,
-        assertion_order: a.assertion_order ?? a.id,
-        assertion_type: a.assertion_type,
-        expected_value: a.expected_value,
-        actual_value: a.actual_value,
-        status: a.status,
-        error_message: a.error_message,
-        params: a.params,
-        description: a.description,
-      })),
     })),
     teardown_steps: (s.teardown_steps ?? []).map(toTimelineStep),
   }))
@@ -107,6 +96,17 @@ function toTimelineStep(s: {
   actual_value: string | null
   error_message: string | null
   artifact_id?: number | null
+  assertions?: Array<{
+    id: number
+    assertion_order?: number | null
+    assertion_type: string
+    expected_value: string | null
+    actual_value: string | null
+    status: string
+    error_message: string | null
+    params?: Record<string, unknown> | null
+    description?: string | null
+  }>
 }) {
   return {
     id: s.id,
@@ -119,6 +119,10 @@ function toTimelineStep(s: {
     actual_value: s.actual_value,
     error_message: s.error_message,
     artifact_id: s.artifact_id ?? null,
+    assertions: (s.assertions ?? []).map((assertion) => ({
+      ...assertion,
+      assertion_order: assertion.assertion_order ?? assertion.id,
+    })),
   }
 }
 

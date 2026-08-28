@@ -35,6 +35,8 @@ class StepCreate(BaseModel):
     key: str | None = None
     # Step 4：失败后继续为 Step 顶层字段（manifest controls.step，不进 params）
     continue_on_failure: bool = False
+    # 动作成功后立即执行的断言列表。
+    assertions: list["AssertionCreate"] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_action_params(self):
@@ -78,24 +80,18 @@ def _dump_steps(steps: list[StepCreate]) -> list[dict[str, Any]]:
     return [s.model_dump() for s in steps]
 
 
-def _dump_assertions(assertions: list[AssertionCreate]) -> list[dict[str, Any]]:
-    return [a.model_dump() for a in assertions]
-
-
 class CaseCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     module_id: int | None = None
     description: str | None = None
     status: str = Field(default="draft", pattern="^(draft|active|disabled)$")
     steps: list[StepCreate] = Field(default_factory=list)
-    assertions: list[AssertionCreate] = Field(default_factory=list)
     variables: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _dump_nested(self):
         # 校验后转回 dict，供 ORM JSON 列直接存储
         self.steps = _dump_steps(self.steps)
-        self.assertions = _dump_assertions(self.assertions)
         return self
 
 
@@ -105,15 +101,12 @@ class CaseUpdate(BaseModel):
     description: str | None = None
     status: str | None = Field(default=None, pattern="^(draft|active|disabled)$")
     steps: list[StepCreate] | None = None
-    assertions: list[AssertionCreate] | None = None
     variables: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def _dump_nested(self):
         if self.steps is not None:
             self.steps = _dump_steps(self.steps)
-        if self.assertions is not None:
-            self.assertions = _dump_assertions(self.assertions)
         return self
 
 
@@ -146,7 +139,6 @@ class CaseOut(BaseModel):
     description: str | None
     status: str
     steps: list[dict[str, Any]]
-    assertions: list[dict[str, Any]]
     variables: dict[str, Any]
     created_by: int | None
     created_at: datetime
