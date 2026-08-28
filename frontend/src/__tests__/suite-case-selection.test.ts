@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { getGroupSelectionState, setGroupSelection } from '@/utils/suiteCaseSelection'
+import {
+  getGroupSelectionState,
+  setGroupSelection,
+  toggleCollapsedGroup,
+} from '@/utils/suiteCaseSelection'
 
 const moduleCases = [{ id: 11 }, { id: 12 }, { id: 13 }]
 
@@ -24,5 +28,14 @@ describe('套件添加用例的模块全选', () => {
 
     expect([...selected]).toEqual([99])
     expect(getGroupSelectionState(selected, moduleCases)).toEqual({ checked: false, indeterminate: false })
+  })
+
+  it('收起模块只改变展开状态，不影响模块已有选择', () => {
+    const selected = new Set([11, 12])
+    const collapsed = toggleCollapsedGroup(new Set(), '登录模块')
+
+    expect(collapsed.has('登录模块')).toBe(true)
+    expect([...selected]).toEqual([11, 12])
+    expect(toggleCollapsedGroup(collapsed, '登录模块').size).toBe(0)
   })
 })

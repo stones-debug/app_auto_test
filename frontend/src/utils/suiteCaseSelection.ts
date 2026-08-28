@@ -33,3 +33,14 @@ export function setGroupSelection(
   }
   return next
 }
+
+/** 切换一个模块的展开状态，不影响该模块的已选用例。 */
+export function toggleCollapsedGroup(
+  collapsedGroups: ReadonlySet<string>,
+  groupName: string,
+): Set<string> {
+  const next = new Set(collapsedGroups)
+  if (next.has(groupName)) next.delete(groupName)
+  else next.add(groupName)
+  return next
+}

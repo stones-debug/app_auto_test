@@ -28,7 +28,11 @@ import EmptyState from '@/components/EmptyState.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 import { formatDateTime } from '@/utils/format'
-import { getGroupSelectionState, setGroupSelection } from '@/utils/suiteCaseSelection'
+import {
+  getGroupSelectionState,
+  setGroupSelection,
+  toggleCollapsedGroup,
+} from '@/utils/suiteCaseSelection'
 
 const route = useRoute()
 const projectId = Number(route.params.projectId)
@@ -113,6 +117,7 @@ const allCases = ref<AddCaseCandidate[]>([])
 const selectedIds = ref<Set<number>>(new Set())
 const addingCases = ref(false)
 const loadingAddCases = ref(false)
+const collapsedCaseGroups = ref<Set<string>>(new Set())
 
 const filteredCases = computed(() => {
   const kw = addKeyword.value.trim().toLowerCase()
@@ -362,6 +367,7 @@ async function openAddCase() {
 function resetAddDialog() {
   addKeyword.value = ''
   selectedIds.value = new Set()
+  collapsedCaseGroups.value = new Set()
 }
 
 function toggleSelect(id: number) {
@@ -377,6 +383,14 @@ function groupSelectionState(group: CaseGroup) {
 
 function toggleGroupSelection(group: CaseGroup, selected: boolean) {
   selectedIds.value = setGroupSelection(selectedIds.value, group.cases, selected)
+}
+
+function isCaseGroupCollapsed(group: CaseGroup) {
+  return collapsedCaseGroups.value.has(group.name)
+}
+
+function toggleCaseGroup(group: CaseGroup) {
+  collapsedCaseGroups.value = toggleCollapsedGroup(collapsedCaseGroups.value, group.name)
 }
 
 async function addSelectedCases() {
@@ -754,7 +768,15 @@ onMounted(loadSuites)
       <template v-if="groupedCases.length">
         <div v-for="group in groupedCases" :key="group.name" class="case-group">
           <div class="case-group-head">
-            <span>{{ group.name }}</span>
+            <button
+              type="button"
+              class="case-group-toggle"
+              :aria-expanded="!isCaseGroupCollapsed(group)"
+              @click="toggleCaseGroup(group)"
+            >
+              <span class="case-group-chevron" :class="{ collapsed: isCaseGroupCollapsed(group) }" aria-hidden="true">⌄</span>
+              <span>{{ group.name }}</span>
+            </button>
             <span class="case-group-actions">
               <span class="case-group-count">{{ group.cases.length }} 个</span>
               <el-checkbox
@@ -767,25 +789,27 @@ onMounted(loadSuites)
               </el-checkbox>
             </span>
           </div>
-          <div
-            v-for="c in group.cases"
-            :key="c.id"
-            class="case-pick-row"
-            :class="{ selected: selectedIds.has(c.id) }"
-            role="checkbox"
-            :aria-checked="selectedIds.has(c.id)"
-            tabindex="0"
-            @click="toggleSelect(c.id)"
-            @keyup.enter="toggleSelect(c.id)"
-          >
-            <span class="pick-check" :class="{ on: selectedIds.has(c.id) }">
-              {{ selectedIds.has(c.id) ? '✓' : '' }}
-            </span>
-            <span class="case-pick-name" :title="c.name">{{ c.name }}</span>
-            <el-tag v-if="c.status !== 'active'" :type="caseStatusMeta(c.status).type" size="small" effect="light">
-              {{ caseStatusMeta(c.status).label }}
-            </el-tag>
-          </div>
+          <template v-if="!isCaseGroupCollapsed(group)">
+            <div
+              v-for="c in group.cases"
+              :key="c.id"
+              class="case-pick-row"
+              :class="{ selected: selectedIds.has(c.id) }"
+              role="checkbox"
+              :aria-checked="selectedIds.has(c.id)"
+              tabindex="0"
+              @click="toggleSelect(c.id)"
+              @keyup.enter="toggleSelect(c.id)"
+            >
+              <span class="pick-check" :class="{ on: selectedIds.has(c.id) }">
+                {{ selectedIds.has(c.id) ? '✓' : '' }}
+              </span>
+              <span class="case-pick-name" :title="c.name">{{ c.name }}</span>
+              <el-tag v-if="c.status !== 'active'" :type="caseStatusMeta(c.status).type" size="small" effect="light">
+                {{ caseStatusMeta(c.status).label }}
+              </el-tag>
+            </div>
+          </template>
         </div>
       </template>
       <div v-else class="add-case-empty v2-aux">
@@ -1213,6 +1237,32 @@ onMounted(loadSuites)
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
+}
+.case-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.case-group-toggle:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.case-group-chevron {
+  display: inline-block;
+  color: var(--text-2);
+  line-height: 1;
+  transition: transform 0.12s;
+}
+.case-group-chevron.collapsed {
+  transform: rotate(-90deg);
 }
 .case-group-count {
   color: var(--text-2);
