@@ -82,8 +82,8 @@ export function listSuiteCases(suiteId: number) {
   return request.get<SuiteCase[]>(`/suites/${suiteId}/cases`)
 }
 
-export function addSuiteCase(suiteId: number, caseId: number) {
-  return request.post<SuiteCase>(`/suites/${suiteId}/cases`, { case_id: caseId })
+export function addSuiteCases(suiteId: number, caseIds: number[]) {
+  return request.post<SuiteCase[]>(`/suites/${suiteId}/cases`, { case_ids: caseIds })
 }
 
 export function reorderSuiteCases(suiteId: number, order: number[]) {

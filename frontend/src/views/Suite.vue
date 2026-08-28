@@ -5,7 +5,7 @@ import { MoreFilled, Plus, Search } from '@element-plus/icons-vue'
 import Draggable from 'vuedraggable'
 
 import {
-  addSuiteCase,
+  addSuiteCases,
   createSuite,
   deleteSuite,
   deleteVariable,
@@ -28,6 +28,7 @@ import EmptyState from '@/components/EmptyState.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 import { formatDateTime } from '@/utils/format'
+import { getGroupSelectionState, setGroupSelection } from '@/utils/suiteCaseSelection'
 
 const route = useRoute()
 const projectId = Number(route.params.projectId)
@@ -111,6 +112,7 @@ const addKeyword = ref('')
 const allCases = ref<AddCaseCandidate[]>([])
 const selectedIds = ref<Set<number>>(new Set())
 const addingCases = ref(false)
+const loadingAddCases = ref(false)
 
 const filteredCases = computed(() => {
   const kw = addKeyword.value.trim().toLowerCase()
@@ -119,8 +121,13 @@ const filteredCases = computed(() => {
 })
 
 // 按模块分组，便于批量挑选；未分组归入「未分组」
+interface CaseGroup {
+  name: string
+  cases: AddCaseCandidate[]
+}
+
 const groupedCases = computed(() => {
-  const groups: { name: string; cases: AddCaseCandidate[] }[] = []
+  const groups: CaseGroup[] = []
   const map = new Map<string, AddCaseCandidate[]>()
   for (const c of filteredCases.value) {
     const key = c.module_name || '未分组'
@@ -324,13 +331,32 @@ function onItemMenu(cmd: string | number | object, s: Suite) {
 /* ============ 用例编排 ============ */
 async function openAddCase() {
   if (!activeSuite.value) return
+  const suiteId = activeSuite.value
   resetAddDialog()
+  allCases.value = []
   addDialogVisible.value = true
-  const data = await listCases(projectId, { page: 1, page_size: 200 })
-  const inSuite = new Set(suiteCases.value.map((c) => c.case_id))
-  allCases.value = data.items
-    .filter((c) => !inSuite.has(c.id))
-    .map((c) => ({ id: c.id, name: c.name, module_name: c.module_name ?? null, status: c.status }))
+  loadingAddCases.value = true
+  try {
+    // 列表接口单页上限为 200；选择窗口必须能覆盖项目中的全部用例。
+    const pageSize = 200
+    const firstPage = await listCases(projectId, { page: 1, page_size: pageSize })
+    const totalPages = Math.ceil(firstPage.total / pageSize)
+    const remainingPages = await Promise.all(
+      Array.from({ length: Math.max(0, totalPages - 1) }, (_, index) =>
+        listCases(projectId, { page: index + 2, page_size: pageSize }),
+      ),
+    )
+    if (activeSuite.value !== suiteId) return
+    const inSuite = new Set(suiteCases.value.map((c) => c.case_id))
+    allCases.value = [firstPage, ...remainingPages]
+      .flatMap((page) => page.items)
+      .filter((c) => !inSuite.has(c.id))
+      .map((c) => ({ id: c.id, name: c.name, module_name: c.module_name ?? null, status: c.status }))
+  } catch {
+    ElMessage.error('加载可添加用例失败，请重试')
+  } finally {
+    loadingAddCases.value = false
+  }
 }
 
 function resetAddDialog() {
@@ -345,13 +371,19 @@ function toggleSelect(id: number) {
   selectedIds.value = next
 }
 
+function groupSelectionState(group: CaseGroup) {
+  return getGroupSelectionState(selectedIds.value, group.cases)
+}
+
+function toggleGroupSelection(group: CaseGroup, selected: boolean) {
+  selectedIds.value = setGroupSelection(selectedIds.value, group.cases, selected)
+}
+
 async function addSelectedCases() {
   if (!activeSuite.value || selectedIds.value.size === 0) return
   addingCases.value = true
   try {
-    for (const id of selectedIds.value) {
-      await addSuiteCase(activeSuite.value, id)
-    }
+    await addSuiteCases(activeSuite.value, [...selectedIds.value])
     const count = selectedIds.value.size
     ElMessage.success(`已添加 ${count} 个用例`)
     addDialogVisible.value = false
@@ -718,12 +750,22 @@ onMounted(loadSuites)
     </el-input>
     <div class="add-case-hint v2-aux">从用例库挑选用例，可多选批量添加。</div>
 
-    <div class="add-case-body">
+    <div v-loading="loadingAddCases" class="add-case-body">
       <template v-if="groupedCases.length">
         <div v-for="group in groupedCases" :key="group.name" class="case-group">
           <div class="case-group-head">
             <span>{{ group.name }}</span>
-            <span class="case-group-count">{{ group.cases.length }}</span>
+            <span class="case-group-actions">
+              <span class="case-group-count">{{ group.cases.length }} 个</span>
+              <el-checkbox
+                :model-value="groupSelectionState(group).checked"
+                :indeterminate="groupSelectionState(group).indeterminate"
+                @click.stop
+                @change="toggleGroupSelection(group, Boolean($event))"
+              >
+                全选
+              </el-checkbox>
+            </span>
           </div>
           <div
             v-for="c in group.cases"
@@ -747,7 +789,7 @@ onMounted(loadSuites)
         </div>
       </template>
       <div v-else class="add-case-empty v2-aux">
-        {{ allCases.length ? '没有匹配的用例' : '该套件已加入全部可用用例' }}
+        {{ loadingAddCases ? '正在加载用例…' : allCases.length ? '没有匹配的用例' : '该套件已加入全部可用用例' }}
       </div>
     </div>
 
@@ -1176,6 +1218,16 @@ onMounted(loadSuites)
   color: var(--text-2);
   font-weight: 400;
   font-size: 12px;
+}
+.case-group-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 400;
+}
+.case-group-actions :deep(.el-checkbox) {
+  height: auto;
+  margin-right: 0;
 }
 .case-pick-row {
   display: flex;
