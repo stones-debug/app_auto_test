@@ -95,6 +95,25 @@ def _parse_terminal_status(status: str | None) -> str | None:
     return None
 
 
+# Step 7.2：Agent 上报终态与已落库分层终态按统一优先级合并（error > failed > stopped），
+# 与权威口径 V1.1 §10.14 及 Worker 侧 `_aggregate_status` 一致。
+def _merge_terminal_status(agent_status: str, stored_status: str | None) -> str:
+    """合并 Agent 终态与服务端已落库终态：任一侧更严重时以更严重者为准。
+
+    - Agent 上报 passed 不能覆盖已落库 error/failed/stopped；
+    - Agent 上报 failed/stopped 也不能覆盖已落库 error；
+    - cancelled 与 stopped 互相兼容（同属中断终态）。
+    """
+    agent_normalized = "stopped" if agent_status == "cancelled" else agent_status
+    if agent_normalized not in ("passed", "failed", "error", "stopped"):
+        agent_normalized = "error"
+    stored_normalized = "stopped" if stored_status == "cancelled" else stored_status
+    for state in ("error", "failed", "stopped"):
+        if state in (agent_normalized, stored_normalized):
+            return state
+    return agent_normalized
+
+
 async def _upsert_assertion(
     db: AsyncSession, execution_step_id: int, assertion_order: int, data: dict
 ) -> bool:
@@ -374,14 +393,15 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
         if step.status == "failed":
             parent_case.status = "failed"
             parent_case.finished_at = now
-        elif parent_case.status != "failed":
+        elif parent_case.status not in TERMINAL_STATES:
+            # Step 7.2：已终态的用例不被迟到的步骤结果回退为 running
             parent_case.status = "running"
     else:
         if parent_suite.started_at is None:
             parent_suite.started_at = now
         if step.status == "failed":
             parent_suite.status = "failed"
-        elif parent_suite.status != "failed":
+        elif parent_suite.status not in TERMINAL_STATES:
             parent_suite.status = "running"
 
     await db.commit()
@@ -495,6 +515,10 @@ async def handle_case_status(db: AsyncSession, agent_id: int, payload: dict) -> 
         parent_case.finished_at = now
         if parent_case.started_at is not None:
             parent_case.duration = int((now - parent_case.started_at).total_seconds() * 1000)
+    elif parent_case.status in TERMINAL_STATES:
+        # Step 7.2：终态节点不被迟到的 running 消息回退（状态转换白名单：
+        # running 仅允许从 pending/running 进入）
+        return
     else:
         parent_case.status = "running"
         if parent_case.started_at is None:
@@ -535,6 +559,9 @@ async def handle_suite_status(db: AsyncSession, agent_id: int, payload: dict) ->
         suite.finished_at = now
         if suite.started_at is not None:
             suite.duration = int((now - suite.started_at).total_seconds() * 1000)
+    elif suite.status in TERMINAL_STATES:
+        # Step 7.2：终态节点不被迟到的 running 消息回退
+        return
     else:
         suite.status = "running"
         if suite.started_at is None:
@@ -628,23 +655,24 @@ async def handle_execution_result(db: AsyncSession, agent_id: int, payload: dict
     status = (payload.get("status") or "error").lower()
     if status not in TERMINAL_STATES:
         status = "error"
-    # 服务端以已落库的分层结果为准，不能让迟到或异常 Agent 的 passed
-    # 覆盖套件、用例或套件级步骤已经判定的失败状态。
-    if status == "passed":
-        corrected_status, failure_source = await _stored_execution_terminal(db, execution.id)
-        if corrected_status is not None:
-            status = corrected_status
-            db.add(
-                ExecutionLog(
-                    execution_id=execution_id,
-                    level="WARN",
-                    message=(
-                        f"Agent 上报执行通过，但服务端已记录{failure_source}，"
-                        f"终态已修正为 {corrected_status}"
-                    ),
-                    source="worker",
-                )
+    # Step 7.2：服务端以已落库的分层结果为准，Agent 上报任何终态（含 failed/stopped）
+    # 都与已落库终态按统一优先级合并——不能让迟到的 passed 覆盖失败，
+    # 也不能让 Agent 的 failed/stopped 覆盖已落库的 error。
+    stored_status, failure_source = await _stored_execution_terminal(db, execution.id)
+    merged_status = _merge_terminal_status(status, stored_status)
+    if merged_status != status:
+        db.add(
+            ExecutionLog(
+                execution_id=execution_id,
+                level="WARN",
+                message=(
+                    f"Agent 上报 {status}，服务端已记录{failure_source or '更高优先级终态'}，"
+                    f"终态已修正为 {merged_status}"
+                ),
+                source="worker",
             )
+        )
+    status = merged_status
     now = datetime.now(UTC)
     execution.status = status
     execution.finished_at = now

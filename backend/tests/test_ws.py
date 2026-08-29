@@ -1025,3 +1025,110 @@ async def test_agent_ws_closes_on_register_timeout(monkeypatch):
     async with SessionLocal() as db:
         await agent_ws(cast(WebSocket, ws), db)
     assert ws.closed == (1008, "注册超时")
+
+
+# ---------- Step 7.2：统一终态合并与 running 回退防护 ----------
+
+
+@pytest.mark.parametrize(
+    ("stored_suite_status", "agent_status", "expected"),
+    [
+        ("error", "failed", "error"),
+        ("error", "stopped", "error"),
+        ("error", "passed", "error"),
+        ("failed", "stopped", "failed"),
+        ("failed", "passed", "failed"),
+    ],
+)
+async def test_agent_terminal_merged_with_stored_by_priority(
+    client: AsyncClient, stored_suite_status: str, agent_status: str, expected: str
+):
+    """Agent 上报 failed/stopped 也不能覆盖已落库的更高优先级终态。"""
+    _token, _case_id, execution_id = await _setup_case_execution(client)
+    async with SessionLocal() as db:
+        agent_id = await _create_agent()
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        await _bind_execution_to_agent(db, execution_id, agent_id)
+        suite = (
+            await db.execute(
+                select(ExecutionSuite).where(ExecutionSuite.execution_id == execution_id)
+            )
+        ).scalar_one()
+        suite.status = stored_suite_status
+        await db.commit()
+        await handlers.handle_execution_result(
+            db,
+            agent_id,
+            {
+                "execution_id": execution_id,
+                "session_token": "sess-token",
+                "status": agent_status,
+            },
+        )
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution.status == expected
+
+
+async def test_case_status_late_running_does_not_revert_terminal(client: AsyncClient):
+    """终态用例不被迟到的 running 消息回退。"""
+    _token, _case_id, execution_id = await _setup_case_execution(client)
+    async with SessionLocal() as db:
+        agent_id = await _create_agent()
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        await _bind_execution_to_agent(db, execution_id, agent_id)
+        execution_case, _steps, _assertions = await _snapshot_ids(db, execution_id)
+        execution_case.status = "failed"
+        execution_case.finished_at = datetime.now(UTC)
+        await db.commit()
+
+        await handlers.handle_case_status(
+            db,
+            agent_id,
+            {
+                "execution_id": execution_id,
+                "session_token": "sess-token",
+                "execution_case_id": execution_case.id,
+                "status": "running",
+            },
+        )
+
+    async with SessionLocal() as db:
+        execution_case = await db.get(ExecutionCase, execution_case.id)
+        assert execution_case.status == "failed"
+
+
+async def test_suite_status_late_running_does_not_revert_terminal(client: AsyncClient):
+    """终态套件不被迟到的 running 消息回退。"""
+    _token, _case_id, execution_id = await _setup_case_execution(client)
+    async with SessionLocal() as db:
+        agent_id = await _create_agent()
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        await _bind_execution_to_agent(db, execution_id, agent_id)
+        suite = (
+            await db.execute(
+                select(ExecutionSuite).where(ExecutionSuite.execution_id == execution_id)
+            )
+        ).scalar_one()
+        suite.status = "stopped"
+        suite.finished_at = datetime.now(UTC)
+        await db.commit()
+
+        await handlers.handle_suite_status(
+            db,
+            agent_id,
+            {
+                "execution_id": execution_id,
+                "session_token": "sess-token",
+                "execution_suite_id": suite.id,
+                "status": "running",
+            },
+        )
+
+    async with SessionLocal() as db:
+        suite = await db.get(ExecutionSuite, suite.id)
+        assert suite.status == "stopped"

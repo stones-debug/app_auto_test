@@ -20,6 +20,7 @@ from execution_supervisor import ExecutionRuntime
 from executor import StopRequested, TestRunner, create_driver
 from executor.protocol import protocol_version, verify_registry_matches_manifest
 from executor.protocol_messages import DeviceListMessage, ExecutionResultMessage
+from executor.status import aggregate_statuses
 from state import load_or_create_install_id, state_dir
 from uploader import Uploader
 from version import __version__
@@ -261,7 +262,7 @@ class AgentApp:
                 session_token=session_token,
                 uploader=self.uploader,
             )
-            overall = "passed"
+            suite_statuses: list[str] = []
             for suite in suites:
                 if cancel_event.is_set():
                     raise StopRequested("执行被用户停止")
@@ -269,12 +270,13 @@ class AgentApp:
                 started_suite_ids.add(suite_id)
                 status = await runner.run_suite(suite)
                 completed_suite_ids.add(suite_id)
-                if status == "failed":
-                    overall = "failed"
-                elif status == "error":
-                    overall = "error"
-                elif status == "stopped":
-                    overall = "stopped"
+                # Step 7.1：收集全部套件结果后一次聚合，禁止在循环中按顺序覆盖 overall
+                suite_statuses.append(status)
+            overall = aggregate_statuses(suite_statuses)
+            if overall == "skipped":
+                # 顶层执行状态机没有 skipped：全部套件 skipped/N/A 按权威口径（V1.1 §10.14）
+                # 映射为 passed（执行正常完成，只是没有可计分的子节点）
+                overall = "passed"
             await self._send_execution_result_safe(execution_id, session_token, overall)
             logger.info("execution=%s 完成: %s", execution_id, overall)
         except asyncio.CancelledError:

@@ -43,6 +43,12 @@ class AgentAssertionIn(BaseModel):
     error_message: str | None = None
 
 
+# Step 7.2：状态字段收紧为 Literal——非法状态在消息验证层直接返回
+# PROTOCOL_ERROR，不再静默转换为 running 或写入任意字符串。
+NodeStatus = Literal["running", "passed", "failed", "error", "stopped", "skipped"]
+ExecutionStatus = Literal["passed", "failed", "error", "stopped", "cancelled"]
+
+
 class StepResultIn(BaseModel):
     type: Literal["step_result"]
     execution_id: int
@@ -53,7 +59,7 @@ class StepResultIn(BaseModel):
     phase: str | None = None
     step_order: int | None = None
     action: str = "unknown"
-    status: str = "passed"
+    status: Literal["passed", "failed", "error", "stopped", "skipped"] = "passed"
     duration: int | None = None
     actual_value: str | None = None
     error_message: str | None = None
@@ -74,7 +80,7 @@ class CaseStatusIn(BaseModel):
     execution_id: int
     session_token: str | None = None
     execution_case_id: int
-    status: str = "running"
+    status: NodeStatus = "running"
     error_message: str | None = None
 
 
@@ -83,7 +89,7 @@ class SuiteStatusIn(BaseModel):
     execution_id: int
     session_token: str | None = None
     execution_suite_id: int
-    status: str = "running"
+    status: NodeStatus = "running"
     error_message: str | None = None
 
 
@@ -91,7 +97,7 @@ class ExecutionResultIn(BaseModel):
     type: Literal["execution_result"]
     execution_id: int
     session_token: str | None = None
-    status: str = "error"
+    status: ExecutionStatus = "error"
     error_message: str | None = None
 
 

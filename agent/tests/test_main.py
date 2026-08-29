@@ -514,3 +514,122 @@ async def test_start_test_matching_protocol_version_runs():
     )
     assert 32 in app.runtimes
     await asyncio.wait_for(app.runtimes[32].task, timeout=2)
+
+
+# ---------- Step 7.1：_run_execution 套件结果一次聚合（与顺序无关） ----------
+
+
+def _multi_suites() -> list[dict]:
+    return [
+        {
+            "execution_suite_id": 1001,
+            "suite_id": None,
+            "suite_name": "套件A",
+            "suite_order": 1,
+            "is_virtual": True,
+            "setup_steps": [],
+            "cases": [],
+            "teardown_steps": [],
+        },
+        {
+            "execution_suite_id": 1002,
+            "suite_id": None,
+            "suite_name": "套件B",
+            "suite_order": 2,
+            "is_virtual": True,
+            "setup_steps": [],
+            "cases": [],
+            "teardown_steps": [],
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    "suite_results",
+    [
+        ("failed", "error"),
+        ("error", "failed"),
+        ("stopped", "error"),
+        ("error", "stopped"),
+    ],
+)
+async def test_run_execution_aggregates_suite_statuses_order_invariant(monkeypatch, suite_results):
+    """[error, failed] 与 [failed, error] 等任意排列必须得到相同终态（error > failed > stopped）。"""
+    from executor import TestRunner
+
+    async def fake_run_suite(self, suite):
+        return suite_results[int(suite["suite_order"]) - 1]
+
+    monkeypatch.setattr(TestRunner, "run_suite", fake_run_suite)
+    app = AgentApp({"driver": "mock"})
+    app.client = FakeClient()
+    await app.on_message(
+        {
+            "type": "start_test",
+            "execution_id": 41,
+            "session_token": "t-41",
+            "parameters": {},
+            "device": {"udid": "u-41", "platform": "android"},
+            "suites": _multi_suites(),
+        }
+    )
+    await asyncio.wait_for(app.runtimes[41].task, timeout=2)
+    results = [m for m in app.client.sent if m["type"] == "execution_result"]
+    assert results and results[0]["status"] == "error"
+
+
+@pytest.mark.parametrize(
+    ("suite_results", "expected"),
+    [
+        (("failed", "stopped"), "failed"),
+        (("stopped", "failed"), "failed"),
+        (("passed", "failed"), "failed"),
+    ],
+)
+async def test_run_execution_aggregates_failed_over_stopped(monkeypatch, suite_results, expected):
+    from executor import TestRunner
+
+    async def fake_run_suite(self, suite):
+        return suite_results[int(suite["suite_order"]) - 1]
+
+    monkeypatch.setattr(TestRunner, "run_suite", fake_run_suite)
+    app = AgentApp({"driver": "mock"})
+    app.client = FakeClient()
+    await app.on_message(
+        {
+            "type": "start_test",
+            "execution_id": 42,
+            "session_token": "t-42",
+            "parameters": {},
+            "device": {"udid": "u-42", "platform": "android"},
+            "suites": _multi_suites(),
+        }
+    )
+    await asyncio.wait_for(app.runtimes[42].task, timeout=2)
+    results = [m for m in app.client.sent if m["type"] == "execution_result"]
+    assert results and results[0]["status"] == expected
+
+
+async def test_run_execution_all_suites_skipped_maps_to_passed(monkeypatch):
+    """全部套件 skipped/N/A 时顶层映射为 passed（权威口径 V1.1 §10.14，非循环默认值巧合）。"""
+    from executor import TestRunner
+
+    async def fake_run_suite(self, suite):
+        return "skipped"
+
+    monkeypatch.setattr(TestRunner, "run_suite", fake_run_suite)
+    app = AgentApp({"driver": "mock"})
+    app.client = FakeClient()
+    await app.on_message(
+        {
+            "type": "start_test",
+            "execution_id": 43,
+            "session_token": "t-43",
+            "parameters": {},
+            "device": {"udid": "u-43", "platform": "android"},
+            "suites": _multi_suites(),
+        }
+    )
+    await asyncio.wait_for(app.runtimes[43].task, timeout=2)
+    results = [m for m in app.client.sent if m["type"] == "execution_result"]
+    assert results and results[0]["status"] == "passed"

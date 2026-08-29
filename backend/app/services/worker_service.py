@@ -34,6 +34,7 @@ from app.models import (
 )
 from app.services.execution_summary import (
     CaseStatusInput,
+    aggregate_statuses,
     compute_counts,
     compute_exclusion_summary,
     merge_case_status,
@@ -439,27 +440,27 @@ def _stop_grace_exceeded(execution: Execution) -> bool:
 
 
 def _aggregate_status(statuses: list[str]) -> str:
-    """套件/父节点终态汇总优先级：error > failed > stopped > skipped > passed。"""
-    if "error" in statuses:
-        return "error"
-    if "failed" in statuses:
-        return "failed"
-    if "stopped" in statuses:
-        return "stopped"
-    if "skipped" in statuses:
+    """兼容旧调用方；实际规则位于 execution_summary 纯函数模块。"""
+    return aggregate_statuses(statuses)
+
+
+def _normalize_stuck_status(child_status: str, execution_status: str) -> str:
+    """Step 7.3：终态汇总前把残留 pending/running 子节点按"是否执行过"归并。
+
+    - pending：从未执行 → skipped；
+    - running：执行被打断 → stopped（执行为 stopped/cancelled）或 error；
+    - 其余状态原样保留。
+    """
+    if child_status == "pending":
         return "skipped"
-    if statuses and all(s == "passed" for s in statuses):
-        return "passed"
-    if statuses:
-        return "passed"
-    return "skipped"
+    if child_status == "running":
+        return "stopped" if execution_status in ("stopped", "cancelled") else "error"
+    return child_status
 
 
 def _rate_percent(numerator: int, denominator: int) -> Decimal:
-    """方案 §7.1：成功率仅按 passed/(passed+failed+error_count)，N/A 与停止 skipped 不入分母；分母 0 → 0。"""
-    if denominator:
-        return Decimal(str(round(numerator / denominator * 100, 2)))
-    return Decimal("0")
+    """兼容旧调用方；实际规则位于 execution_summary 纯函数模块。"""
+    return rate_percent(numerator, denominator)
 
 
 async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, message: str | None = None) -> None:
@@ -569,13 +570,25 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
     for suite in suites:
         if suite.status not in ("pending", "running"):
             continue
+        suite_was_running = suite.status == "running"
         suite_steps = (
             await db.execute(select(ExecutionStep).where(ExecutionStep.execution_suite_id == suite.id))
         ).scalars().all()
-        child_statuses = [s.status for s in suite_steps] + [
+        child_statuses = [
+            _normalize_stuck_status(s.status, status_) for s in suite_steps
+        ] + [
             c.status for c in cases_by_suite.get(suite.id, [])
         ]
-        suite.status = _aggregate_status(child_statuses)
+        merged = _aggregate_status(child_statuses)
+        if (
+            merged == "skipped"
+            and suite_was_running
+            and status_ in ("stopped", "cancelled")
+        ):
+            # Step 7.3：套件已开始执行但被打断（如 teardown 仍 pending、执行被停止），
+            # 不得汇为 skipped 以下的歧义口径，归为 stopped
+            merged = "stopped"
+        suite.status = merged
         if suite.status not in ("passed",):
             suite.error_message = suite.error_message or (
                 f"执行被中断（{status_}）" if status_ in ("stopped", "cancelled") else None

@@ -1166,3 +1166,129 @@ async def test_cancelled_queued_execution_not_started_by_worker(client: AsyncCli
         assert queue.status == "done"
         # 不应生成报告
         assert (await db.execute(select(Report).where(Report.execution_id == execution_id))).scalars().all() == []
+
+
+# ---------- Step 7.3：Worker 终态汇总兜底 ----------
+
+
+@pytest.mark.parametrize(
+    ("statuses", "expected"),
+    [
+        (["passed", "pending"], "error"),  # 未知/残留状态不得汇为 passed
+        (["passed", "running"], "error"),
+        (["error", "failed"], "error"),
+        (["failed", "stopped"], "failed"),
+        (["stopped", "skipped"], "stopped"),
+        (["skipped", "passed"], "skipped"),
+        (["passed"], "passed"),
+        ([], "skipped"),
+    ],
+)
+def test_aggregate_status_never_passes_unknown(statuses, expected):
+    assert worker_service._aggregate_status(statuses) == expected
+
+
+async def test_mark_terminal_stopped_suite_with_pending_teardown_not_passed(client: AsyncClient):
+    """套件含 passed 用例但 teardown 仍 pending、执行被停止 → 套件不得被汇为 passed。"""
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        ec = (await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )).scalar_one()
+        suite = await db.get(ExecutionSuite, ec.execution_suite_id)
+        suite.status = "running"
+        # 用例已通过（步骤 passed），但套件后置步骤仍 pending（被停止打断）
+        ec.status = "passed"
+        step = (await db.execute(
+            select(ExecutionStep).where(ExecutionStep.execution_case_id == ec.id)
+        )).scalar_one()
+        step.status = "passed"
+        db.add(
+            ExecutionStep(
+                execution_suite_id=suite.id,
+                phase="suite_teardown",
+                step_order=1,
+                action="clear",
+                status="pending",
+            )
+        )
+        execution.status = "running"
+        execution.started_at = datetime.now(UTC)
+        await db.commit()
+
+        await worker_service._mark_terminal(db, execution, "stopped")
+
+    async with SessionLocal() as db:
+        suite = (await db.execute(
+            select(ExecutionSuite).where(ExecutionSuite.execution_id == execution_id)
+        )).scalar_one()
+        assert suite.status == "stopped"
+        execution = await db.get(Execution, execution_id)
+        assert execution.status == "stopped"
+
+
+async def test_mark_terminal_agent_failed_cannot_override_stored_error(client: AsyncClient):
+    """Agent 上报 failed 不能覆盖已落库 error：顶层执行终态按分层结果修正。"""
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        ec = (await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )).scalar_one()
+        suite = await db.get(ExecutionSuite, ec.execution_suite_id)
+        suite.status = "error"
+        ec.status = "passed"
+        execution.status = "running"
+        execution.started_at = datetime.now(UTC)
+        await db.commit()
+
+        await worker_service._mark_terminal(db, execution, "failed")
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution.status == "error"
+        warning = await db.scalar(
+            select(ExecutionLog.message).where(
+                ExecutionLog.execution_id == execution_id,
+                ExecutionLog.level == "WARN",
+            )
+        )
+        assert warning is not None and "修正" in warning
+
+
+async def test_mark_terminal_pending_case_under_stopped_is_skipped(client: AsyncClient):
+    """执行被停止时从未执行的用例归为 skipped，残留 pending 步骤一并收敛，不入分母。"""
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        execution.status = "running"
+        execution.started_at = datetime.now(UTC)
+        await db.commit()
+
+        # 执行被停止，但用例从未执行（全部子行 pending）
+        await worker_service._mark_terminal(db, execution, "stopped")
+
+    async with SessionLocal() as db:
+        ec = (await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )).scalar_one()
+        assert ec.status == "skipped"
+        steps = (await db.execute(
+            select(ExecutionStep).where(ExecutionStep.execution_case_id == ec.id)
+        )).scalars().all()
+        assert all(s.status == "skipped" for s in steps)
+        report = (await db.execute(select(Report).where(Report.execution_id == execution_id))).scalar_one()
+        assert report.skipped == 1

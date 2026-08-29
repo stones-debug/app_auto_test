@@ -11,6 +11,7 @@ from executor import (
     StopRequested,
     TestRunner,
 )
+from executor.status import aggregate_statuses
 
 
 def _make_case(steps, assertions=None, elements=None) -> dict:
@@ -1849,3 +1850,67 @@ async def test_step_result_accepts_string_step_order():
     assert status == "passed"
     step_msgs = [m for m in sent if m["type"] == "step_result"]
     assert step_msgs[0]["step_order"] == 2
+
+
+# ---------- Step 7.1：终态聚合表驱动测试（executor.status.aggregate_statuses） ----------
+
+
+@pytest.mark.parametrize(
+    ("statuses", "expected"),
+    [
+        ([], "skipped"),
+        (["passed"], "passed"),
+        (["skipped"], "skipped"),
+        (["passed", "skipped"], "skipped"),
+        (["error", "failed"], "error"),
+        (["failed", "error"], "error"),
+        (["failed", "stopped"], "failed"),
+        (["stopped", "failed"], "failed"),
+        (["stopped", "skipped"], "stopped"),
+        (["skipped", "stopped"], "stopped"),
+        (["passed", "passed"], "passed"),
+        (["error"], "error"),
+        (["failed"], "failed"),
+        (["stopped"], "stopped"),
+        # 未知状态不允许静默视为 passed（fail-closed）
+        (["running"], "error"),
+        (["pending"], "error"),
+        (["passed", "running"], "error"),
+        # cancelled 在聚合边界归一为 stopped
+        (["cancelled"], "stopped"),
+        (["passed", "cancelled"], "stopped"),
+    ],
+)
+def test_aggregate_statuses_priority_table(statuses, expected):
+    assert aggregate_statuses(statuses) == expected
+
+
+@pytest.mark.parametrize(
+    "statuses",
+    [
+        ["error", "failed", "stopped", "skipped", "passed"],
+        ["passed", "skipped", "stopped", "failed", "error"],
+        ["skipped", "error", "passed", "stopped", "failed"],
+        ["stopped", "passed", "failed", "skipped", "error"],
+        ["failed", "stopped", "error", "passed", "skipped"],
+    ],
+)
+def test_aggregate_statuses_order_invariant(statuses):
+    """多套件结果的任意排列得到相同终态。"""
+    assert aggregate_statuses(statuses) == "error"
+
+
+@pytest.mark.parametrize(
+    ("statuses", "expected"),
+    [
+        (["failed", "error", "stopped"], "error"),
+        (["stopped", "failed", "skipped"], "failed"),
+        (["skipped", "stopped", "passed"], "stopped"),
+        (["passed", "skipped", "failed"], "failed"),
+    ],
+)
+def test_aggregate_statuses_partial_permutations(statuses, expected):
+    import itertools
+
+    for perm in itertools.permutations(statuses):
+        assert aggregate_statuses(list(perm)) == expected

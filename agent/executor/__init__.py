@@ -17,6 +17,7 @@ from .smart_locator import (
     ScrollLimitReached,
     SmartElementResolver,
 )
+from .status import aggregate_statuses
 from .test_runner import TestRunner
 
 __all__ = [
@@ -40,5 +41,6 @@ __all__ = [
     "InvalidSmartLocator",
     "ScrollLimitReached",
     "SmartElementResolver",
+    "aggregate_statuses",
     "TestRunner",
 ]

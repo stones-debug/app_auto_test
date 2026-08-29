@@ -112,3 +112,49 @@ def test_protocol_error_never_reaches_handlers():
     ):
         with pytest.raises(ValidationError):
             validate_agent_message(bad)
+
+
+def test_node_status_literal_rejects_unknown_states():
+    """Step 7.2：case/suite 状态字段收紧为 Literal，非法状态返回 PROTOCOL_ERROR。"""
+    for bad_status in ("hacked", "PASSED", "pending", "", "ok"):
+        with pytest.raises(ValidationError):
+            validate_agent_message(
+                {"type": "case_status", "execution_id": 7, "execution_case_id": 9, "status": bad_status}
+            )
+        with pytest.raises(ValidationError):
+            validate_agent_message(
+                {"type": "suite_status", "execution_id": 7, "execution_suite_id": 10, "status": bad_status}
+            )
+
+
+def test_step_result_status_literal_rejects_unknown_states():
+    with pytest.raises(ValidationError):
+        validate_agent_message(
+            {"type": "step_result", "execution_id": 7, "execution_step_id": 501, "status": "running"}
+        )
+    with pytest.raises(ValidationError):
+        validate_agent_message(
+            {"type": "step_result", "execution_id": 7, "execution_step_id": 501, "status": "anything"}
+        )
+
+
+def test_execution_result_status_literal_rejects_unknown_states():
+    for bad_status in ("running", "skipped", "queued", "hacked"):
+        with pytest.raises(ValidationError):
+            validate_agent_message(
+                {"type": "execution_result", "execution_id": 7, "status": bad_status}
+            )
+
+
+def test_valid_terminal_statuses_still_accepted():
+    for status in ("running", "passed", "failed", "error", "stopped", "skipped"):
+        assert validate_agent_message(
+            {"type": "case_status", "execution_id": 7, "execution_case_id": 9, "status": status}
+        ) is not None
+        assert validate_agent_message(
+            {"type": "suite_status", "execution_id": 7, "execution_suite_id": 10, "status": status}
+        ) is not None
+    for status in ("passed", "failed", "error", "stopped", "cancelled"):
+        assert validate_agent_message(
+            {"type": "execution_result", "execution_id": 7, "status": status}
+        ) is not None

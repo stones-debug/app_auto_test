@@ -2048,4 +2048,17 @@ RUNNING ←── Worker 认领后经内部接口通知 FastAPI 更新
 
 ---
 
+### 10.14 终态聚合与执行级映射（V1.5 增量）
+
+> 本节为多套件执行终态优先级的最终口径；Agent、FastAPI、Worker 三侧统一，冲突时以本节为准。
+
+1. **聚合优先级**：子节点终态聚合统一为 `error > failed > stopped > skipped > passed`，与输入顺序无关。Agent 侧纯函数为 `agent/executor/status.py::aggregate_statuses`（`run_suite` 与 `_run_execution` 共用），Worker 侧为 `worker_service._aggregate_status`。
+2. **未知状态 fail-closed**：聚合输入中的未知状态（含残留 `pending`/`running`）不允许静默视为 `passed`——含未知状态时聚合结果为 `error`；空集合返回 `skipped`。`cancelled` 在子节点聚合边界归一为 `stopped`。
+3. **执行级映射**：顶层执行状态机没有 `skipped`。全部套件结果为 `skipped`/N/A 时，执行终态映射为 `passed`（执行正常完成，只是没有可计分子节点），不得依赖循环默认值巧合。
+4. **残留子节点归并**：终态汇总前，`pending` 子节点归并为 `skipped`（从未执行），`running` 子节点归并为 `stopped`（执行为 stopped/cancelled）或 `error`（其他异常终态）。套件已开始执行但被打断（如 teardown 仍 pending、执行被停止）归为 `stopped`，不得汇为 `passed`。
+5. **服务端兜底**：`handle_execution_result` 将 Agent 上报终态与已落库分层终态（套件/用例/套件步骤）按统一优先级合并——Agent 上报 `passed` 不能覆盖已落库失败，上报 `failed`/`stopped` 也不能覆盖已落库 `error`。`CaseStatusIn`/`SuiteStatusIn`/`StepResultIn` 状态字段为 Literal，非法状态返回 `PROTOCOL_ERROR`；终态节点不被迟到的 `running` 消息回退。
+6. **Worker 兜底**：`_mark_terminal` 写报告前按已落库套件/用例终态再次合并顶层执行状态并记录 WARN 修正日志；报告统计在残留子节点归并完成后进行。
+
+---
+
 > **文档结束**。本方案基于原始设计进行了系统性修订，重点解决了执行引擎耦合、Agent 落地性、执行可靠性、报告可追溯性等核心问题，并经由 V1.1 评审补齐执行职责划分、Worker↔Agent 通信中转、元素快照、停止机制、设备原子锁、变量系统等缺口，可直接作为项目启动的技术基线。

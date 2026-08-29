@@ -16,6 +16,7 @@ from .protocol_messages import (
     StepResultMessage,
     SuiteStatusMessage,
 )
+from .status import aggregate_statuses
 
 Message = (
     dict
@@ -27,21 +28,6 @@ Message = (
     | CaseStatusMessage
 )
 SendFn = Callable[[Message], Awaitable[None]]
-
-
-def _aggregate_status(statuses: list[str]) -> str:
-    """优先级 error > failed > stopped > skipped > passed（与后端 _aggregate_status 一致）。"""
-    if "error" in statuses:
-        return "error"
-    if "failed" in statuses:
-        return "failed"
-    if "stopped" in statuses:
-        return "stopped"
-    if "skipped" in statuses:
-        return "skipped"
-    if statuses and all(s == "passed" for s in statuses):
-        return "passed"
-    return "skipped"
 
 
 # 用例步骤阶段归一化：后端快照五值 → 本地分桶的三段（setup/main/teardown）。
@@ -443,7 +429,7 @@ class TestRunner:
             statuses.append("failed")
         if teardown_failed:
             statuses.append("failed")
-        terminal = _aggregate_status(statuses)
+        terminal = aggregate_statuses(statuses)
         await reporter.suite_status(suite_id, terminal)
         return terminal
 
