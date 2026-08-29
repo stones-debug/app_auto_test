@@ -1,9 +1,13 @@
+import asyncio
+import json
+import time
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import decode_token
 from app.models import Execution, Project, ProjectMember, User
@@ -149,9 +153,55 @@ async def _can_access_project(db: AsyncSession, user: User, project_id: int) -> 
 async def agent_ws(websocket: WebSocket, db: AsyncSession = Depends(get_db)):
     await websocket.accept()
     current_agent_id: int | None = None
+    pre_register_messages = 0
+    # Step 5：整条连接共享一个注册期限——若按"每条消息各自计时"，
+    # 未注册连接可周期性发消息无限续命，期限形同虚设
+    register_deadline = time.monotonic() + settings.agent_ws_register_timeout_seconds
     try:
         while True:
-            data = await websocket.receive_json()
+            if current_agent_id is None:
+                remaining = register_deadline - time.monotonic()
+                if remaining <= 0:
+                    await websocket.close(code=1008, reason="注册超时")
+                    return
+                try:
+                    message = await asyncio.wait_for(websocket.receive(), timeout=remaining)
+                except TimeoutError:
+                    await websocket.close(code=1008, reason="注册超时")
+                    return
+            else:
+                message = await websocket.receive()
+
+            if message.get("type") == "websocket.disconnect":
+                return
+
+            # Step 5：先量尺寸再解析——receive_json() 无法在解析前拿到帧大小
+            text = message.get("text")
+            payload = message.get("bytes") or b""
+            if len(text or "") + len(payload) > settings.agent_ws_max_frame_bytes:
+                await websocket.close(code=1009, reason="消息过大")
+                return
+
+            if current_agent_id is None:
+                pre_register_messages += 1
+                if pre_register_messages > settings.agent_ws_max_pre_register_messages:
+                    await websocket.close(code=1008, reason="注册前消息数超限")
+                    return
+
+            try:
+                data = json.loads(text if text is not None else payload)
+            except (TypeError, ValueError):
+                data = None
+            if not isinstance(data, dict):
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "code": "PROTOCOL_ERROR",
+                        "message": "消息必须是 JSON 对象",
+                    }
+                )
+                continue
+
             msg_type = data.get("type")
             # Step 10：按 type 验证 payload；协议错误回结构化 error，不写入 DB
             try:

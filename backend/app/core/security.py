@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import hmac
 import secrets
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -121,3 +122,23 @@ def decode_token(token: str) -> dict | None:
         return jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
     except jwt.PyJWTError:
         return None
+
+
+def constant_time_equals(left: str, right: str) -> bool:
+    """恒定时间字符串比较（Step 5：防计时侧信道）。
+
+    hmac.compare_digest 遇到含非 ASCII 字符的 str 会抛 TypeError，
+    因此统一按 UTF-8 字节比较。
+    """
+    return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
+
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"})
+
+
+def is_loopback_host(host: str | None) -> bool:
+    """Step 5：判断来源地址是否为本机（/metrics 可选的来源限制）。
+
+    host 为 None（ASGI 未携带 client 信息）一律视为非本机，避免因信息缺失而误放行。
+    """
+    return host in _LOOPBACK_HOSTS

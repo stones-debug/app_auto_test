@@ -40,17 +40,27 @@ async def test_create_backfills_key(client: AsyncClient):
     headers, project_id, element_id = await _setup(client)
     resp = await client.post(
         f"/api/projects/{project_id}/cases",
+        # 断言已下沉到步骤内（StepCreate.assertions），不再是用例级字段
         json={
             "name": "兜底key",
-            "steps": [{"order": 1, "action": "click", "element_id": element_id, "params": {}}],
-            "assertions": [{"order": 1, "type": "element_exists", "element_id": element_id, "params": {}}],
+            "steps": [
+                {
+                    "order": 1,
+                    "action": "click",
+                    "element_id": element_id,
+                    "params": {},
+                    "assertions": [
+                        {"order": 1, "type": "element_exists", "element_id": element_id, "params": {}}
+                    ],
+                }
+            ],
         },
         headers=headers,
     )
     assert resp.status_code == 201
     data = resp.json()
     step_key = data["steps"][0]["key"]
-    assertion_key = data["assertions"][0]["key"]
+    assertion_key = data["steps"][0]["assertions"][0]["key"]
     uuid.UUID(step_key)
     uuid.UUID(assertion_key)
     assert step_key != assertion_key

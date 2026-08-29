@@ -1,7 +1,11 @@
+import asyncio
+import json
 import uuid
 from datetime import UTC, datetime
+from typing import cast
 
 import pytest
+from fastapi import WebSocket
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
@@ -24,6 +28,7 @@ from app.models import (
 from app.services import worker_service
 from app.ws import handlers
 from app.ws.managers import agent_manager, execution_manager
+from app.ws.routes import agent_ws
 from tests.helpers import create_bound_agent_device
 
 REG = {"username": "pytest_ws_user", "email": "ws@tl-tek.com", "password": "test123"}
@@ -97,15 +102,23 @@ async def _setup_case_execution(client: AsyncClient) -> tuple[str, int, int]:
     case = await client.post(
         f"/api/projects/{project_id}/cases",
         headers=headers,
+        # 断言下沉到步骤内（StepCreate.assertions），用例级 assertions 字段已不存在
         json={
             "name": "WS用例",
-            "steps": [{"order": 1, "action": "click", "element_id": element_id, "params": {}}],
-            "assertions": [
+            "steps": [
                 {
                     "order": 1,
-                    "type": "text_equals",
+                    "action": "click",
                     "element_id": element_id,
-                    "params": {"expected": "admin"},
+                    "params": {},
+                    "assertions": [
+                        {
+                            "order": 1,
+                            "type": "text_equals",
+                            "element_id": element_id,
+                            "params": {"expected": "admin"},
+                        }
+                    ],
                 }
             ],
         },
@@ -137,11 +150,13 @@ async def _snapshot_ids(
             )
         ).scalars()
     )
+    # 断言下沉到步骤：经 ExecutionStep 关联回用例
     assertions = list(
         (
             await db.execute(
                 select(ExecutionAssertion)
-                .where(ExecutionAssertion.execution_case_id == execution_case.id)
+                .join(ExecutionStep, ExecutionAssertion.execution_step_id == ExecutionStep.id)
+                .where(ExecutionStep.execution_case_id == execution_case.id)
                 .order_by(ExecutionAssertion.assertion_order)
             )
         ).scalars()
@@ -558,7 +573,8 @@ async def test_handle_assertion_result(client: AsyncClient):
             {
                 "execution_id": execution_id,
                 "session_token": "sess-token",
-                "execution_case_id": execution_case.id,
+                # _locate_step 只按 execution_step_id 定位
+                "execution_step_id": execution_steps[0].id,
                 "assertions": [
                     {
                         "execution_assertion_id": execution_assertions[0].id,
@@ -575,13 +591,34 @@ async def test_handle_assertion_result(client: AsyncClient):
         ec = (await db.execute(
             select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
         )).scalar_one()
+        # 断言下沉到步骤：经 ExecutionStep 关联回用例
         rows = (await db.execute(
-            select(ExecutionAssertion).where(ExecutionAssertion.execution_case_id == ec.id)
+            select(ExecutionAssertion)
+            .join(ExecutionStep, ExecutionAssertion.execution_step_id == ExecutionStep.id)
+            .where(ExecutionStep.execution_case_id == ec.id)
         )).scalars().all()
         assert len(rows) == 1
         assert rows[0].assertion_type == "text_equals"
         assert rows[0].status == "pass"
-        assert ec.status == "passed"
+        # edeb068 起断言通过不再结束用例（用例可有多个步骤/后续断言），终态由
+        # 独立的 case_status 消息驱动，这里显式补一步以覆盖完整协议链路
+        assert ec.status == "running"
+        await handlers.handle_case_status(
+            db,
+            agent_id,
+            {
+                "execution_id": execution_id,
+                "session_token": "sess-token",
+                "execution_case_id": ec.id,
+                "status": "passed",
+            },
+        )
+
+    async with SessionLocal() as db:
+        ec_after = (await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )).scalar_one()
+        assert ec_after.status == "passed"
 
     # B5：assertion_result 广播（V2 §8.2）
     assertion_msgs = [m for m in front.sent if m["type"] == "assertion_result"]
@@ -590,7 +627,6 @@ async def test_handle_assertion_result(client: AsyncClient):
     assert assertion_msgs[0]["assertions"][0]["status"] == "pass"
     assert assertion_msgs[0]["assertions"][0]["assertion_order"] == 1
     assert assertion_msgs[0]["assertions"][0]["execution_assertion_id"] == execution_assertions[0].id
-    assert assertion_msgs[0]["case_status"] == "passed"
     await execution_manager.disconnect(execution_id, front)
 
 
@@ -737,7 +773,8 @@ async def test_assertion_failure_survives_teardown_and_overrides_agent_passed(
             {
                 "execution_id": execution_id,
                 "session_token": "sess-token",
-                "execution_case_id": execution_case.id,
+                # _locate_step 只按 execution_step_id 定位
+                "execution_step_id": execution_steps[0].id,
                 "assertions": [
                     {
                         "execution_assertion_id": execution_assertions[0].id,
@@ -779,10 +816,12 @@ async def test_assertion_failure_survives_teardown_and_overrides_agent_passed(
                 select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
             )
         ).scalar_one()
+        # 断言下沉到步骤：经 ExecutionStep 关联回用例
         assertion = (
             await db.execute(
                 select(ExecutionAssertion)
-                .where(ExecutionAssertion.execution_case_id == execution_case.id)
+                .join(ExecutionStep, ExecutionAssertion.execution_step_id == ExecutionStep.id)
+                .where(ExecutionStep.execution_case_id == execution_case.id)
             )
         ).scalar_one()
         assert assertion.status == "fail"
@@ -873,3 +912,64 @@ async def test_device_list_keeps_locked_missing_device(client: AsyncClient):
         device = (await db.execute(select(Device).where(Device.agent_id == agent_id))).scalar_one()
         assert device.status == "busy"
         assert device.locked_by_execution is not None
+
+
+# ---------- Step 5：Agent WS 连接级防护 ----------
+
+
+class _FakeAgentWS:
+    """满足 agent_ws 所需的最小 WebSocket 子集（accept / receive / send_json / close）。
+
+    不走真实 ASGI：这三条限制都发生在任何数据库访问之前，直接驱动协程既能
+    避开 wsproto 依赖，也让用例不依赖测试库的可用性。
+    """
+
+    def __init__(self, messages: list[dict] | None = None) -> None:
+        self._messages = list(messages or [])
+        self.sent: list[dict] = []
+        self.closed: tuple[int, str] | None = None
+
+    async def accept(self) -> None:
+        return None
+
+    async def receive(self) -> dict:
+        if self._messages:
+            return self._messages.pop(0)
+        await asyncio.sleep(3600)  # 无更多消息：挂起，交由注册超时兜底
+        return {"type": "websocket.disconnect"}
+
+    async def send_json(self, data: dict) -> None:
+        self.sent.append(data)
+
+    async def close(self, code: int = 1000, reason: str = "") -> None:
+        self.closed = (code, reason)
+
+
+def _text_frame(text: str) -> dict:
+    return {"type": "websocket.receive", "text": text}
+
+
+async def test_agent_ws_rejects_oversized_frame():
+    """Step 5：单帧超过上限 → 1009。先量尺寸再解析，超限帧不会被反序列化。"""
+    ws = _FakeAgentWS([_text_frame("x" * (settings.agent_ws_max_frame_bytes + 1))])
+    async with SessionLocal() as db:
+        await agent_ws(cast(WebSocket, ws), db)
+    assert ws.closed == (1009, "消息过大")
+
+
+async def test_agent_ws_limits_pre_register_messages():
+    """Step 5：注册前消息数超限 → 1008（未注册连接不得无限刷协议错误包）。"""
+    limit = settings.agent_ws_max_pre_register_messages
+    ws = _FakeAgentWS([_text_frame(json.dumps({"type": "ping"})) for _ in range(limit + 1)])
+    async with SessionLocal() as db:
+        await agent_ws(cast(WebSocket, ws), db)
+    assert ws.closed == (1008, "注册前消息数超限")
+
+
+async def test_agent_ws_closes_on_register_timeout(monkeypatch):
+    """Step 5：期限内未完成注册 → 1008。期限对整条连接生效，周期性消息不能续命。"""
+    monkeypatch.setattr(settings, "agent_ws_register_timeout_seconds", 0.05)
+    ws = _FakeAgentWS([])
+    async with SessionLocal() as db:
+        await agent_ws(cast(WebSocket, ws), db)
+    assert ws.closed == (1008, "注册超时")

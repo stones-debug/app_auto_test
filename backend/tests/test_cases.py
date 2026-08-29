@@ -34,12 +34,18 @@ async def _create_element(client: AsyncClient, headers: dict, project_id: int) -
 async def test_case_crud(client: AsyncClient):
     headers, project_id = await _setup(client)
     element_id = await _create_element(client, headers, project_id)
+    # 断言已下沉到步骤内（StepCreate.assertions），用例级 assertions 字段不复存在
     steps = [
         {"order": 1, "action": "launch_app", "params": {"package": "com.demo.app"}, "description": "启动应用"},
-        {"order": 2, "action": "click", "element_id": element_id, "params": {"wait_timeout": 10}},
-    ]
-    assertions = [
-        {"order": 1, "type": "element_exists", "element_id": element_id, "params": {"expected": "exists"}},
+        {
+            "order": 2,
+            "action": "click",
+            "element_id": element_id,
+            "params": {"wait_timeout": 10},
+            "assertions": [
+                {"order": 1, "type": "element_exists", "element_id": element_id, "params": {"expected": "exists"}}
+            ],
+        },
     ]
 
     created = await client.post(
@@ -49,7 +55,6 @@ async def test_case_crud(client: AsyncClient):
             "description": "测试登录",
             "status": "active",
             "steps": steps,
-            "assertions": assertions,
             "variables": {"username": "u1"},
         },
         headers=headers,
@@ -102,12 +107,27 @@ async def test_case_jsonb_validation(client: AsyncClient):
         f"/api/projects/{project_id}/cases",
         json={
             "name": "断言用例",
-            "assertions": [{"order": 1, "type": "text_equals", "element_id": element_id, "params": {"expected": "成功"}}],
+            "steps": [
+                {
+                    "order": 1,
+                    "action": "click",
+                    "element_id": element_id,
+                    "params": {},
+                    "assertions": [
+                        {
+                            "order": 1,
+                            "type": "text_equals",
+                            "element_id": element_id,
+                            "params": {"expected": "成功"},
+                        }
+                    ],
+                }
+            ],
         },
         headers=headers,
     )
     assert created.status_code == 201
-    assert created.json()["assertions"][0]["type"] == "text_equals"
+    assert created.json()["steps"][0]["assertions"][0]["type"] == "text_equals"
 
 
 async def test_case_steps_support_setup_main_teardown_phases(client: AsyncClient):
@@ -161,7 +181,16 @@ async def test_unknown_assertion_rejected(client: AsyncClient):
         f"/api/projects/{project_id}/cases",
         json={
             "name": "坏断言用例",
-            "assertions": [{"order": 1, "type": "hack_assert", "params": {}}],
+            # 外层动作选 back：click 属于 STEP_NEEDS_ELEMENT，缺 element_id 会先报 422，
+            # 那样本用例会因"错误的原因"通过，断言类型校验失效也抓不到
+            "steps": [
+                {
+                    "order": 1,
+                    "action": "back",
+                    "params": {},
+                    "assertions": [{"order": 1, "type": "hack_assert", "params": {}}],
+                }
+            ],
         },
         headers=headers,
     )
@@ -190,14 +219,27 @@ async def test_regex_match_uses_pattern(client: AsyncClient):
         f"/api/projects/{project_id}/cases",
         json={
             "name": "正则用例",
-            "assertions": [
-                {"order": 1, "type": "regex_match", "element_id": element_id, "params": {"pattern": r"^\d{4}$"}}
+            "steps": [
+                {
+                    "order": 1,
+                    "action": "click",
+                    "element_id": element_id,
+                    "params": {},
+                    "assertions": [
+                        {
+                            "order": 1,
+                            "type": "regex_match",
+                            "element_id": element_id,
+                            "params": {"pattern": r"^\d{4}$"},
+                        }
+                    ],
+                }
             ],
         },
         headers=headers,
     )
     assert created.status_code == 201
-    params = created.json()["assertions"][0]["params"]
+    params = created.json()["steps"][0]["assertions"][0]["params"]
     assert params.get("pattern") == r"^\d{4}$"
 
 
@@ -241,12 +283,12 @@ async def test_list_status_filter_contract(client: AsyncClient):
     headers, project_id = await _setup(client)
     await client.post(
         f"/api/projects/{project_id}/cases",
-        json={"name": "启用用例", "status": "active", "steps": [], "assertions": []},
+        json={"name": "启用用例", "status": "active", "steps": []},
         headers=headers,
     )
     await client.post(
         f"/api/projects/{project_id}/cases",
-        json={"name": "草稿用例", "status": "draft", "steps": [], "assertions": []},
+        json={"name": "草稿用例", "status": "draft", "steps": []},
         headers=headers,
     )
 
@@ -265,7 +307,7 @@ async def test_pagination_page_size_cap(client: AsyncClient):
     for i in range(3):
         await client.post(
             f"/api/projects/{project_id}/cases",
-            json={"name": f"用例{i}", "steps": [], "assertions": []},
+            json={"name": f"用例{i}", "steps": []},
             headers=headers,
         )
 
@@ -289,10 +331,17 @@ async def test_case_list_extended_fields(client: AsyncClient):
         json={
             "name": "扩展字段用例",
             "steps": [
-                {"order": 1, "action": "click", "element_id": element_id, "params": {}},
+                {
+                    "order": 1,
+                    "action": "click",
+                    "element_id": element_id,
+                    "params": {},
+                    "assertions": [
+                        {"order": 1, "type": "element_exists", "element_id": element_id, "params": {}}
+                    ],
+                },
                 {"order": 2, "action": "back", "params": {}},
             ],
-            "assertions": [{"order": 1, "type": "element_exists", "element_id": element_id, "params": {}}],
         },
         headers=headers,
     )
@@ -385,7 +434,17 @@ async def test_unknown_params_rejected_422(client: AsyncClient):
         f"/api/projects/{project_id}/cases",
         json={
             "name": "未知断言参数用例",
-            "assertions": [{"order": 1, "type": "text_equals", "params": {"expected": "x", "typo_field": 1}}],
+            # 同 test_unknown_assertion_rejected：外层用 back 避免 needs_element 抢先报 422
+            "steps": [
+                {
+                    "order": 1,
+                    "action": "back",
+                    "params": {},
+                    "assertions": [
+                        {"order": 1, "type": "text_equals", "params": {"expected": "x", "typo_field": 1}}
+                    ],
+                }
+            ],
         },
         headers=headers,
     )
@@ -493,9 +552,17 @@ async def test_duplicate_orders_rejected(client: AsyncClient):
         f"/api/projects/{project_id}/cases",
         json={
             "name": "重复断言序用例",
-            "assertions": [
-                {"order": 2, "type": "text_equals", "params": {"expected": "a"}},
-                {"order": 2, "type": "text_equals", "params": {"expected": "b"}},
+            # 同 test_unknown_assertion_rejected：外层用 back，确保 400 来自断言 order 重复
+            "steps": [
+                {
+                    "order": 1,
+                    "action": "back",
+                    "params": {},
+                    "assertions": [
+                        {"order": 2, "type": "text_equals", "params": {"expected": "a"}},
+                        {"order": 2, "type": "text_equals", "params": {"expected": "b"}},
+                    ],
+                }
             ],
         },
         headers=headers,
@@ -633,7 +700,7 @@ async def test_batch_delete_cases(client: AsyncClient):
     for i in range(3):
         resp = await client.post(
             f"/api/projects/{project_id}/cases",
-            json={"name": f"批量删除用例{i}", "steps": [], "assertions": []},
+            json={"name": f"批量删除用例{i}", "steps": []},
             headers=headers,
         )
         assert resp.status_code == 201
@@ -661,7 +728,7 @@ async def test_batch_delete_cases_delete_route(client: AsyncClient):
     headers, project_id = await _setup(client)
     created = await client.post(
         f"/api/projects/{project_id}/cases",
-        json={"name": "DELETE批量删除", "steps": [], "assertions": []},
+        json={"name": "DELETE批量删除", "steps": []},
         headers=headers,
     )
     case_id = created.json()["id"]

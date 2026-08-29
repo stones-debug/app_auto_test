@@ -66,8 +66,8 @@ async def _seed_tree(execution_id: int, case_count: int = 100) -> None:
                 case_name=f"C{i}",
                 case_order=i + 1,
                 status="passed",
+                # 断言下沉后 ExecutionCase 不再有 assertions_snapshot 列
                 steps_snapshot=[],
-                assertions_snapshot=[],
             )
             for i in range(case_count)
         ]
@@ -82,9 +82,18 @@ async def _seed_tree(execution_id: int, case_count: int = 100) -> None:
                 )
         db.add_all(steps)
         await db.flush()
+        # 断言挂在步骤上（ExecutionAssertion.execution_step_id），每个用例取其首个步骤
+        steps_by_case: dict[int, list] = {}
+        for step in steps:
+            steps_by_case.setdefault(step.execution_case_id, []).append(step)
         for ec in cases:
             assertions.append(
-                ExecutionAssertion(execution_case_id=ec.id, assertion_order=1, assertion_type="text_equals", status="pass")
+                ExecutionAssertion(
+                    execution_step_id=steps_by_case[ec.id][0].id,
+                    assertion_order=1,
+                    assertion_type="text_equals",
+                    status="pass",
+                )
             )
         db.add_all(assertions)
         await db.commit()
@@ -199,7 +208,8 @@ async def test_small_report_keeps_compatible_shape(monkeypatch):
     assert set(detail) >= {"execution", "report", "cases", "logs", "logs_total", "logs_truncated"}
     assert len(detail["cases"]) == 3
     case0 = detail["cases"][0]
-    assert set(case0) >= {"id", "case_id", "case_name", "status", "steps", "assertions"}
+    assert set(case0) >= {"id", "case_id", "case_name", "status", "steps"}
     step0 = case0["steps"][0]
-    assert set(step0) >= {"id", "step_order", "action", "status", "screenshot"}
+    # 断言下沉后挂在步骤上，不再是用例级 assertions 字段
+    assert set(step0) >= {"id", "step_order", "action", "status", "screenshot", "assertions"}
     assert "screenshot_base64" not in step0  # 仅 HTML 内嵌时填充

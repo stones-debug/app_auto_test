@@ -65,14 +65,25 @@ async def _setup(client: AsyncClient) -> tuple[str, int]:
     case = await client.post(
         f"/api/projects/{project_id}/cases",
         headers=headers,
+        # 断言下沉到步骤内（StepCreate.assertions），用例级 assertions 字段已不存在
         json={
             "name": "报告用例",
             "steps": [
-                {"order": 1, "action": "input", "element_id": element_id, "params": {"value": "admin"}},
+                {
+                    "order": 1,
+                    "action": "input",
+                    "element_id": element_id,
+                    "params": {"value": "admin"},
+                    "assertions": [
+                        {
+                            "order": 1,
+                            "type": "text_equals",
+                            "element_id": element_id,
+                            "params": {"expected": "admin"},
+                        }
+                    ],
+                },
                 {"order": 2, "action": "click", "element_id": element_id, "params": {}},
-            ],
-            "assertions": [
-                {"order": 1, "type": "text_equals", "element_id": element_id, "params": {"expected": "admin"}}
             ],
         },
     )
@@ -148,8 +159,11 @@ async def _setup(client: AsyncClient) -> tuple[str, int]:
             agent_id,
             {"execution_id": execution_id, "session_token": "rp-token", "execution_step_id": step_rows[1].id, "action": "click", "status": "passed"},
         )
+        # 断言已下沉到步骤：经 ExecutionStep 关联回用例
         assertion_row = (await db.execute(
-            sa_select(ExecutionAssertion).where(ExecutionAssertion.execution_case_id == ec.id)
+            sa_select(ExecutionAssertion)
+            .join(ExecutionStep, ExecutionAssertion.execution_step_id == ExecutionStep.id)
+            .where(ExecutionStep.execution_case_id == ec.id)
         )).scalar_one()
         await handlers.handle_assertion_result(
             db,
@@ -157,8 +171,17 @@ async def _setup(client: AsyncClient) -> tuple[str, int]:
             {
                 "execution_id": execution_id,
                 "session_token": "rp-token",
-                "execution_case_id": ec.id,
-                "assertions": [{"execution_assertion_id": assertion_row.id, "type": "text_equals", "expected": "admin", "actual": "admin", "status": "pass"}],
+                # _locate_step 只按 execution_step_id 定位；断言行自身就带着所属步骤
+                "execution_step_id": assertion_row.execution_step_id,
+                "assertions": [
+                    {
+                        "execution_assertion_id": assertion_row.id,
+                        "type": "text_equals",
+                        "expected": "admin",
+                        "actual": "admin",
+                        "status": "pass",
+                    }
+                ],
             },
         )
         execution = await db.get(Execution, execution_id)
@@ -246,8 +269,8 @@ async def _suite_with_setup_steps(client: AsyncClient) -> tuple[str, int, int, i
             case_name="套件内用例",
             case_order=1,
             status="pending",
-            steps_snapshot=[{"order": 1, "action": "click", "phase": "case_main", "params": {}}],
-            assertions_snapshot=[],
+            # 断言下沉后 ExecutionCase 不再有 assertions_snapshot 列，断言随 steps_snapshot 走
+            steps_snapshot=[{"order": 1, "action": "click", "phase": "case_main", "params": {}, "assertions": []}],
             elements_snapshot={},
         )
         db.add(case_row)
@@ -335,8 +358,9 @@ async def test_report_list_and_detail(client: AsyncClient):
     assert report_case["steps"][0]["parameters"]["value"] == "admin"
     assert report_case["steps"][0]["parameters"]["clear_first"] is True
     assert report_case["steps"][0]["actual_value"] == "admin"
-    assert report_case["assertions"][0]["assertion_type"] == "text_equals"
-    assert report_case["assertions"][0]["status"] == "pass"
+    # 断言下沉后挂在步骤上（execution_detail_service 按 execution_step_id 聚合）
+    assert report_case["steps"][0]["assertions"][0]["assertion_type"] == "text_equals"
+    assert report_case["steps"][0]["assertions"][0]["status"] == "pass"
     assert body["exclusions"][0]["path"] == "报告用例/不支持步骤"
     assert body["logs"][0]["message"] == "步骤 1 input 执行通过"
 

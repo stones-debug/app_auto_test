@@ -47,11 +47,30 @@ def test_validate_agent_message_ok_shapes():
             "execution_step_id": 501,
             "step_order": 1,
             "status": "passed",
-            "assertions": [{"execution_assertion_id": 601, "type": "text_equals", "expected": "a", "actual": "a", "status": "pass"}],
         }
     )
     assert step is not None
-    assert step["assertions"][0]["status"] == "pass"
+    assert step["execution_step_id"] == 501
+
+    # 断言下沉后由独立的 assertion_result 消息上报；step_result 不再内联 assertions
+    assertion = validate_agent_message(
+        {
+            "type": "assertion_result",
+            "execution_id": 7,
+            "execution_step_id": 501,
+            "assertions": [
+                {
+                    "execution_assertion_id": 601,
+                    "type": "text_equals",
+                    "expected": "a",
+                    "actual": "a",
+                    "status": "pass",
+                }
+            ],
+        }
+    )
+    assert assertion is not None
+    assert assertion["assertions"][0]["status"] == "pass"
 
     # 协议 V2：step_result 以 execution_step_id 定位（case_id/step_order 可选）
     v2_step = validate_agent_message(

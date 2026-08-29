@@ -57,8 +57,18 @@ async def _setup_case(client: AsyncClient) -> tuple[str, int]:
         headers=headers,
         json={
             "name": "登录用例",
-            "steps": [{"order": 1, "action": "click", "element_id": element_id, "params": {}}],
-            "assertions": [{"order": 1, "type": "element_exists", "element_id": element_id, "params": {}}],
+            # 断言下沉到步骤内（StepCreate.assertions），用例级 assertions 字段已不存在
+            "steps": [
+                {
+                    "order": 1,
+                    "action": "click",
+                    "element_id": element_id,
+                    "params": {},
+                    "assertions": [
+                        {"order": 1, "type": "element_exists", "element_id": element_id, "params": {}}
+                    ],
+                }
+            ],
         },
     )
     return token, case.json()["id"]
@@ -321,7 +331,8 @@ async def test_create_execution_snapshots(client: AsyncClient):
         ec = cases[0]
         assert ec.status == "pending"
         assert ec.steps_snapshot[0]["action"] == "click"
-        assert ec.assertions_snapshot[0]["type"] == "element_exists"
+        # 断言下沉到步骤内，ExecutionCase 模型不再有 assertions_snapshot 列
+        assert ec.steps_snapshot[0]["assertions"][0]["type"] == "element_exists"
         element_id = str(ec.steps_snapshot[0]["element_id"])
         assert ec.elements_snapshot[element_id]["locator_value"] == "btn_login"
 
@@ -385,12 +396,17 @@ async def test_suites_payload_injects_execution_node_ids(client: AsyncClient):
         ).scalars().first()
         assert ec is not None
         # 模拟档案路径：执行已含 assertion snapshot（order 从 steps 数量后开始），预建 pending 断言
-        assertions_snapshot = ec.assertions_snapshot or []
+        # 断言下沉后挂在步骤上，这里从 steps_snapshot 展平
+        assertions_snapshot = [
+            a for step in (ec.steps_snapshot or []) for a in (step.get("assertions") or [])
+        ]
         assert len(assertions_snapshot) >= 1
         sent_order = int(assertions_snapshot[0].get("order") or 0)
         row = await db.scalar(
-            select(ExecutionAssertion).where(
-                ExecutionAssertion.execution_case_id == ec.id,
+            select(ExecutionAssertion)
+            .join(ExecutionStep, ExecutionAssertion.execution_step_id == ExecutionStep.id)
+            .where(
+                ExecutionStep.execution_case_id == ec.id,
                 ExecutionAssertion.assertion_order == sent_order,
             )
         )
@@ -423,7 +439,8 @@ async def test_suites_payload_injects_execution_node_ids(client: AsyncClient):
             )
         )
         assert sent_step["execution_step_id"] == precreated_step.id
-        sent_assertion = case_payload["assertions_snapshot"][0]
+        # 断言随步骤下发（_build_suites_payload 注入到 steps_snapshot 各条目内）
+        sent_assertion = sent_step["assertions"][0]
         # 必须注入 execution_assertion_id，且与预建行一致
         assert sent_assertion.get("execution_assertion_id") == precreated_id
         # assertion_order 应沿用快照 order（而非 Agent 从 1 重编号），与预建行 assertion_order 对齐
@@ -954,8 +971,9 @@ async def test_mark_terminal_fractional_success_rate(client: AsyncClient):
                 select(ExecutionSuite).where(ExecutionSuite.execution_id == execution_id)
             )
         ).scalar_one().id
-        db.add(ExecutionCase(execution_id=execution_id, execution_suite_id=exec_suite_id, case_id=9001, case_name="c1", case_order=2, status="running", steps_snapshot=[], assertions_snapshot=[]))
-        db.add(ExecutionCase(execution_id=execution_id, execution_suite_id=exec_suite_id, case_id=9002, case_name="c2", case_order=3, status="running", steps_snapshot=[], assertions_snapshot=[]))
+        # 断言下沉后 ExecutionCase 不再有 assertions_snapshot 列
+        db.add(ExecutionCase(execution_id=execution_id, execution_suite_id=exec_suite_id, case_id=9001, case_name="c1", case_order=2, status="running", steps_snapshot=[]))
+        db.add(ExecutionCase(execution_id=execution_id, execution_suite_id=exec_suite_id, case_id=9002, case_name="c2", case_order=3, status="running", steps_snapshot=[]))
         await db.commit()
         ecs = (await db.execute(
             select(ExecutionCase).where(ExecutionCase.execution_id == execution_id).order_by(ExecutionCase.id)

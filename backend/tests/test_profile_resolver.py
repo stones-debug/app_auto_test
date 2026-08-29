@@ -73,10 +73,18 @@ async def _setup_case_with_steps(client: AsyncClient, base: dict, name: str) -> 
             "name": name,
             "steps": [
                 {"key": K1, "order": 1, "phase": "setup", "action": "launch_app", "params": {"package": "${pkg}"}},
-                {"key": K2, "order": 2, "phase": "main", "action": "click", "element_id": element_id, "params": {"wait_timeout": 5}},
-            ],
-            "assertions": [
-                {"key": K3, "order": 1, "type": "element_exists", "element_id": element_id, "params": {}}
+                {
+                    "key": K2,
+                    "order": 2,
+                    "phase": "main",
+                    "action": "click",
+                    "element_id": element_id,
+                    "params": {"wait_timeout": 5},
+                    # 断言下沉到步骤内（StepCreate.assertions），用例级 assertions 字段已不存在
+                    "assertions": [
+                        {"key": K3, "order": 1, "type": "element_exists", "element_id": element_id, "params": {}}
+                    ],
+                },
             ],
             "variables": {"pkg": "com.v"},
         },

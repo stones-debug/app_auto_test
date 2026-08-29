@@ -50,18 +50,24 @@ async def _create_case(client: AsyncClient, token: str, project_id: int, element
         headers={"Authorization": f"Bearer {token}"},
         json={
             "name": "登录用例",
+            # 断言下沉到步骤内（StepCreate.assertions），用例级 assertions 字段已不存在
             "steps": [
-                {"order": 1, "action": "click", "element_id": element_id, "params": {"wait_timeout": 5}},
-                {"order": 2, "action": "sleep", "params": {"duration": 1}},
-            ],
-            "assertions": [
                 {
                     "order": 1,
-                    "type": "element_exists",
+                    "action": "click",
                     "element_id": element_id,
-                    "params": {"expected": "exists"},
-                    "description": "断言说明",
-                }
+                    "params": {"wait_timeout": 5},
+                    "assertions": [
+                        {
+                            "order": 1,
+                            "type": "element_exists",
+                            "element_id": element_id,
+                            "params": {"expected": "exists"},
+                            "description": "断言说明",
+                        }
+                    ],
+                },
+                {"order": 2, "action": "sleep", "params": {"duration": 1}},
             ],
         },
     )
@@ -595,8 +601,11 @@ async def test_execution_detail_aggregates_steps_assertions(client: AsyncClient)
                 ExecutionStep.step_order == 1,
             )
         )).scalar_one()
+        # 断言下沉到步骤：经 ExecutionStep 关联回用例
         assertion_row = (await db.execute(
-            select(ExecutionAssertion).where(ExecutionAssertion.execution_case_id == ec.id)
+            select(ExecutionAssertion)
+            .join(ExecutionStep, ExecutionAssertion.execution_step_id == ExecutionStep.id)
+            .where(ExecutionStep.execution_case_id == ec.id)
         )).scalar_one()
         # 协议 V2：只按 execution_*_id 精确定位（旧协议 case_id/step_order 已拒绝）
         await handlers.handle_step_result(
@@ -605,7 +614,8 @@ async def test_execution_detail_aggregates_steps_assertions(client: AsyncClient)
         )
         await handlers.handle_assertion_result(
             db, agent_id,
-            {"execution_id": execution_id, "execution_case_id": ec.id, "assertions": [{"execution_assertion_id": assertion_row.id, "type": "text_equals", "expected": "a", "actual": "a", "status": "pass"}]},
+            # _locate_step 只认 execution_step_id
+            {"execution_id": execution_id, "execution_step_id": assertion_row.execution_step_id, "assertions": [{"execution_assertion_id": assertion_row.id, "type": "text_equals", "expected": "a", "actual": "a", "status": "pass"}]},
         )
 
     detail = (await client.get(f"/api/executions/{execution_id}", headers=headers)).json()
@@ -619,12 +629,14 @@ async def test_execution_detail_aggregates_steps_assertions(client: AsyncClient)
     case = suite["cases"][0]
     assert case["steps"][0]["action"] == "click"
     assert case["steps"][0]["status"] == "passed"
-    assert case["assertions"][0]["assertion_type"] == "text_equals"
-    assert case["assertions"][0]["status"] == "pass"
+    # 断言下沉后挂在步骤上（execution_detail_service 按 execution_step_id 聚合）
+    assertion = case["steps"][0]["assertions"][0]
+    assert assertion["assertion_type"] == "text_equals"
+    assert assertion["status"] == "pass"
     # 断言行需携带序号与快照说明/参数（回归：只显示断言操作无序号/说明/参数）
-    assert case["assertions"][0]["assertion_order"] == 1
-    assert case["assertions"][0]["description"] == "断言说明"
-    assert case["assertions"][0]["params"] is not None
+    assert assertion["assertion_order"] == 1
+    assert assertion["description"] == "断言说明"
+    assert assertion["params"] is not None
 
 
 async def test_execution_detail_suite_snapshot_phase_merge(client: AsyncClient):

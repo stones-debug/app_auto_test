@@ -1,20 +1,14 @@
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
+from app.api.deps import require_internal_token
 from app.core.database import get_db
 from app.models import Agent, Execution
 
 router = APIRouter(prefix="/internal", tags=["内部接口"])
-
-
-async def _check_internal_token(x_internal_token: str = Header(...)) -> str:
-    if x_internal_token != settings.internal_token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="内部令牌无效")
-    return x_internal_token
 
 
 class InternalStateBody(BaseModel):
@@ -34,7 +28,7 @@ class AgentMessageBody(BaseModel):
 async def set_execution_state(
     execution_id: int,
     body: InternalStateBody,
-    _token: str = Depends(_check_internal_token),
+    _token: str = Depends(require_internal_token),
     db: AsyncSession = Depends(get_db),
 ):
     """Worker → FastAPI 状态推进通知（Step 18 用于 WS 广播）。"""
@@ -55,7 +49,7 @@ async def set_execution_state(
 async def forward_to_agent(
     agent_id: int,
     body: AgentMessageBody,
-    _token: str = Depends(_check_internal_token),
+    _token: str = Depends(require_internal_token),
     db: AsyncSession = Depends(get_db),
 ):
     """Worker → Agent 消息中转：经 WS 网关转发给 Agent。"""

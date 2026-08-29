@@ -1,10 +1,11 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
-from app.core.security import decode_token
+from app.core.security import constant_time_equals, decode_token
 from app.models import Agent, AgentUser, Device, Project, ProjectMember, User
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -170,3 +171,22 @@ def bound_agent_ids_subquery(user_id: int):
         AgentUser.user_id == user_id,
         AgentUser.agent_id.in_(select(Agent.id).where(Agent.deleted_at.is_(None))),
     )
+
+
+# ---------- Step 5：内部接口令牌（Worker → FastAPI） ----------
+
+
+def require_internal_token(x_internal_token: str | None = Header(default=None)) -> str:
+    """校验 X-Internal-Token（恒定时间比较，避免计时侧信道）。
+
+    原先该校验内联在 api/internal.py，/metrics 复用不到；提取到 deps 供内部接口与
+    指标端点共用同一套判定逻辑。
+
+    缺省值用 None 而非 `Header(...)`：后者在头部缺失时返回 422（参数校验失败），
+    对鉴权端点而言 401 才是正确语义，也让"缺头"与"令牌错误"行为一致。
+    """
+    if x_internal_token is None or not constant_time_equals(
+        x_internal_token, settings.internal_token
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="内部令牌无效")
+    return x_internal_token

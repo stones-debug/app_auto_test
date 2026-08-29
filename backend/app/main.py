@@ -1,7 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -12,6 +12,7 @@ from app.api.app_profiles import router as app_profiles_router
 from app.api.auth import router as auth_router
 from app.api.cases import router as cases_router
 from app.api.dashboard import router as dashboard_router
+from app.api.deps import require_internal_token
 from app.api.elements import router as elements_router
 from app.api.executions import router as executions_router
 from app.api.internal import router as internal_router
@@ -22,6 +23,7 @@ from app.api.reports import router as reports_router
 from app.api.suites import router as suites_router
 from app.api.variables import router as variables_router
 from app.core.config import BASE_DIR, settings, validate_security_baseline
+from app.core.security import is_loopback_host
 from app.services.worker_runtime import WorkerRuntime
 from app.ws.managers import agent_manager
 from app.ws.routes import router as ws_router
@@ -94,13 +96,29 @@ app.include_router(ws_router)
 
 
 @app.get("/metrics")
-async def metrics():
-    """方案 §10.5：轻量指标暴露（内网；生产应受网络策略保护）。"""
+async def metrics(
+    request: Request,
+    _token: str = Depends(require_internal_token),
+):
+    """方案 §10.5：轻量指标暴露（需内部令牌，可选限制仅本机访问）。
+
+    Step 5：原先该端点完全无鉴权，保护依据是"部署在内网"这一未被强制的假设，
+    会泄漏执行量、失败率、Agent 数量等运营数据。现与 /internal/* 共用内部令牌校验；
+    metrics_require_loopback=true 时再叠加来源地址限制（本机 Prometheus 场景）。
+    """
     from fastapi.responses import PlainTextResponse
 
     from app.services.metrics import render_metrics
 
+    if settings.metrics_require_loopback:
+        host = request.client.host if request.client else None
+        if not is_loopback_host(host):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="指标端点仅允许本机访问"
+            )
     return PlainTextResponse(render_metrics(), media_type="text/plain; version=0.0.4")
+
+
 @app.get("/api/health")
 async def health() -> dict:
     return {"status": "ok", "version": "0.1.0"}

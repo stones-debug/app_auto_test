@@ -1,8 +1,10 @@
 """CR-21：部署安全基线（限流 / 版本校验 / 生产默认密钥拒绝）。"""
+import logging
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.core.config import settings, validate_security_baseline
+from app.core.config import settings, validate_security_baseline, weak_secret_names
 from app.core.database import SessionLocal
 from app.core.ratelimit import reset_rate_limits
 from app.main import app
@@ -167,3 +169,77 @@ def test_verify_psk_invalid_hash_returns_false():
     assert verify_psk("sk-any", "sk-plaintext-legacy") is False  # 非 Argon2 格式
     assert verify_psk("sk-wrong", hash_psk("sk-right")) is False  # 哈希不匹配
     assert verify_psk("sk-right", hash_psk("sk-right")) is True
+
+
+# ---------- Step 5：恒定时间比较 ----------
+
+
+def test_constant_time_equals():
+    """Step 5：内部令牌比较改为恒定时间，且非 ASCII 不得抛异常。"""
+    from app.core.security import constant_time_equals
+
+    assert constant_time_equals("abc", "abc") is True
+    assert constant_time_equals("abc", "abd") is False
+    assert constant_time_equals("abc", "abcd") is False
+    assert constant_time_equals("", "") is True
+    # hmac.compare_digest 的 str 版遇非 ASCII 会抛 TypeError，必须走字节比较
+    assert constant_time_equals("令牌值", "令牌值") is True
+    assert constant_time_equals("令牌值", "令牌其他") is False
+
+
+# ---------- Step 5：CORS 通配护栏与弱配置可见性 ----------
+
+
+def test_validate_security_baseline_production_rejects_wildcard_cors(monkeypatch):
+    """Step 5：allow_credentials=True 下通配源等于对任意站点开放，生产必须拒绝。"""
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "jwt_secret_key", "x" * 40)
+    monkeypatch.setattr(settings, "internal_token", "x" * 40)
+    monkeypatch.setattr(settings, "agent_user_key_encryption_key", "x" * 40)
+    monkeypatch.setattr(settings, "database_url", "postgresql+asyncpg://u:strong-pw@db:5432/test_platform")
+    monkeypatch.setattr(settings, "cors_origins", ["*"])
+    with pytest.raises(RuntimeError, match="cors_origins"):
+        validate_security_baseline()
+
+
+def test_weak_secret_names_detects_defaults(monkeypatch):
+    """Step 5：默认/弱配置可被逐项检出（development 告警的输入）。"""
+    monkeypatch.setattr(settings, "jwt_secret_key", "dev-secret-key-change-me-in-production-at-least-32-chars")
+    monkeypatch.setattr(settings, "internal_token", "dev-internal-token-change-me")
+    monkeypatch.setattr(settings, "agent_user_key_encryption_key", "")
+    monkeypatch.setattr(settings, "database_url", "postgresql+asyncpg://dev:dev123@127.0.0.1:5432/test_platform")
+    assert set(weak_secret_names()) == {
+        "jwt_secret_key",
+        "internal_token",
+        "agent_user_key_encryption_key",
+        "database_url(默认密码 dev123)",
+    }
+
+
+def test_weak_secret_names_empty_when_hardened(monkeypatch):
+    monkeypatch.setattr(settings, "jwt_secret_key", "x" * 40)
+    monkeypatch.setattr(settings, "internal_token", "x" * 40)
+    monkeypatch.setattr(settings, "agent_user_key_encryption_key", "x" * 40)
+    monkeypatch.setattr(settings, "database_url", "postgresql+asyncpg://u:strong-pw@db:5432/test_platform")
+    assert weak_secret_names() == []
+
+
+def test_development_warns_on_weak_secrets(monkeypatch, caplog):
+    """Step 5：development 不阻断启动，但弱配置必须留下可见告警。"""
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(settings, "jwt_secret_key", "dev-secret-key-change-me-in-production-at-least-32-chars")
+    with caplog.at_level(logging.WARNING, logger="app.core.config"):
+        validate_security_baseline()
+    assert any("jwt_secret_key" in record.getMessage() for record in caplog.records)
+
+
+def test_development_stays_silent_when_hardened(monkeypatch, caplog):
+    """Step 5：配置已加固时不产生噪音告警。"""
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(settings, "jwt_secret_key", "x" * 40)
+    monkeypatch.setattr(settings, "internal_token", "x" * 40)
+    monkeypatch.setattr(settings, "agent_user_key_encryption_key", "x" * 40)
+    monkeypatch.setattr(settings, "database_url", "postgresql+asyncpg://u:strong-pw@db:5432/test_platform")
+    with caplog.at_level(logging.WARNING, logger="app.core.config"):
+        validate_security_baseline()
+    assert caplog.records == []

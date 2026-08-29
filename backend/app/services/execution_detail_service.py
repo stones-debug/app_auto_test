@@ -44,11 +44,14 @@ async def load_case_tree(db: AsyncSession, execution_id: int) -> list[dict]:
             )
         ).scalars().all()
 
-    step_by_case: dict[int, list[dict]] = {}
-    snapshot_parameters: dict[tuple[int, int], dict] = {}
-    snapshot_phases: dict[tuple[int, int], str] = {}
+    # 键中的 case_id 来自 ExecutionStep.execution_case_id（可空列：套件阶段步骤不挂用例）。
+    # 本函数的 steps 已按 execution_case_id.in_(case_ids) 过滤，运行时不为 None，
+    # 但类型系统无法感知，故键类型放宽为 int | None（纯标注，运行时行为不变）。
+    step_by_case: dict[int | None, list[dict]] = {}
+    snapshot_parameters: dict[tuple[int | None, int], dict] = {}
+    snapshot_phases: dict[tuple[int | None, int], str] = {}
     # 断言快照：按 (case_id, order) 携带 params / description（断言行本身不落库这些字段）
-    snapshot_assertion_info: dict[tuple[int, int, int], dict] = {}
+    snapshot_assertion_info: dict[tuple[int | None, int, int], dict] = {}
     for case in case_rows:
         for item in case.steps_snapshot or []:
             if not isinstance(item, dict):
@@ -192,10 +195,11 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
         )
     ).scalars().all() if case_step_rows else []
 
-    snapshot_parameters: dict[tuple[int, int], dict] = {}
-    snapshot_phases: dict[tuple[int, int], str] = {}
+    # 同 load_case_tree：键中的 case_id 来自可空列，运行时已过滤但类型系统无法感知
+    snapshot_parameters: dict[tuple[int | None, int], dict] = {}
+    snapshot_phases: dict[tuple[int | None, int], str] = {}
     # 断言快照：按 (case_id, order) 携带 params / description
-    snapshot_assertion_info: dict[tuple[int, int, int], dict] = {}
+    snapshot_assertion_info: dict[tuple[int | None, int, int], dict] = {}
     for c in cases:
         for item in c.steps_snapshot or []:
             if not isinstance(item, dict):
@@ -219,7 +223,7 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
                 if isinstance(description, str) and description.strip():
                     info["description"] = description.strip()
                 snapshot_assertion_info[(c.id, order, assertion_order)] = info
-    suite_snapshot_parameters: dict[tuple[int, str, int], dict] = {}
+    suite_snapshot_parameters: dict[tuple[int | None, str, int], dict] = {}
     for s in suite_rows:
         for src, default_phase in (
             (s.setup_steps_snapshot or [], "suite_setup"),
@@ -234,13 +238,13 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
                 if isinstance(order, int) and isinstance(params, dict):
                     suite_snapshot_parameters[(s.id, phase, order)] = params
 
-    steps_by_case: dict[int, list] = {}
+    steps_by_case: dict[int | None, list] = {}
     for s in case_step_rows:
         steps_by_case.setdefault(s.execution_case_id, []).append(s)
     assertions_by_step: dict[int, list] = {}
     for a in assertion_rows:
         assertions_by_step.setdefault(a.execution_step_id, []).append(a)
-    suite_steps_by_suite: dict[int, list] = {}
+    suite_steps_by_suite: dict[int | None, list] = {}
     for s in suite_step_rows:
         suite_steps_by_suite.setdefault(s.execution_suite_id, []).append(s)
     cases_by_suite: dict[int, list] = {}

@@ -420,8 +420,8 @@ async def test_finalize_unfinished_terminal_recovers_summary(client: AsyncClient
                 case_name="恢复用例",
                 case_order=1,
                 status="passed",
+                # 断言下沉后 ExecutionCase 不再有 assertions_snapshot 列
                 steps_snapshot=[],
-                assertions_snapshot=[],
             )
         )
         device = await db.get(Device, device_id)

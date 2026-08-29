@@ -1,9 +1,25 @@
+import logging
 from pathlib import Path
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
+
+
+def _warn(message: str, *args: object) -> None:
+    """输出启动告警。
+
+    uvicorn 的 dictConfig 默认 `disable_existing_loggers=True`，会把导入早于它的
+    logger 置为 disabled；本模块位于导入链最早期，正是受害者之一
+    （实测：app.main / uvicorn.error 均为 disabled=False，仅 app.core.config 为 True）。
+    不处理的话下面的弱配置告警会被静默丢弃——那样这个告警就白加了。
+    因此每次输出前先恢复启用状态，保证弱配置一定可见。
+    """
+    log = logging.getLogger(__name__)
+    if log.disabled:
+        log.disabled = False
+    log.warning(message, *args)
 
 
 def reports_dir() -> Path:
@@ -92,6 +108,16 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
+    # Step 5：/metrics 端点来源限制（纵深防御；主防护为 internal token）
+    # true 时仅接受 loopback 来源，适用于 Prometheus 部署在本机的场景
+    metrics_require_loopback: bool = False
+
+    # Step 5：Agent WS 连接级防护——未注册连接不得长期占用网关资源
+    # 阈值刻意设宽松（弱网 Agent 可能重连频繁），上线观察后再收紧
+    agent_ws_max_frame_bytes: int = 1048576
+    agent_ws_max_pre_register_messages: int = 20
+    agent_ws_register_timeout_seconds: int = 30
+
 
 settings = Settings()
 
@@ -124,9 +150,49 @@ _DEFAULT_SECRETS = (
 )
 
 
+def weak_secret_names() -> list[str]:
+    """返回仍在使用默认值/弱值的配置项名称（development 告警与自检共用）。"""
+    weak: list[str] = []
+    if settings.jwt_secret_key in _DEFAULT_SECRETS or len(settings.jwt_secret_key) < 32:
+        weak.append("jwt_secret_key")
+    if settings.internal_token in _DEFAULT_SECRETS:
+        weak.append("internal_token")
+    if len(settings.agent_user_key_encryption_key) < 32:
+        weak.append("agent_user_key_encryption_key")
+    if "dev123" in settings.database_url:
+        weak.append("database_url(默认密码 dev123)")
+    return weak
+
+
+def _warn_development_weaknesses() -> None:
+    """Step 5：development 下不阻断启动，但把弱配置显式暴露出来。
+
+    validate_security_baseline 在 development 下直接 return，历史上导致弱配置零可见性：
+    "能正常启动"被误读成"配置是安全的"。这里补一条启动告警，只增加可见性，不改变行为。
+    """
+    weak = weak_secret_names()
+    if weak:
+        _warn(
+            "当前为 development 环境，以下配置仍是默认值/弱值，仅允许本地开发使用，"
+            "部署前必须覆盖：%s",
+            "、".join(weak),
+        )
+
+
+def _warn_production_advisories() -> None:
+    """Step 5：生产环境的可选加固建议——只告警，不阻断启动。"""
+    if not settings.metrics_require_loopback:
+        _warn(
+            "/metrics 已要求内部令牌，但未限制来源地址；若 Prometheus 不在本机，"
+            "请确认已通过内网网络策略限制该端点的访问范围，"
+            "或设置 metrics_require_loopback=true 仅允许本机访问"
+        )
+
+
 def validate_security_baseline() -> None:
     """CR-21：非 development 环境遇到默认密钥/弱配置时拒绝启动。"""
     if settings.environment == "development":
+        _warn_development_weaknesses()
         return
     problems: list[str] = []
     if settings.jwt_secret_key in _DEFAULT_SECRETS or len(settings.jwt_secret_key) < 32:
@@ -137,5 +203,9 @@ def validate_security_baseline() -> None:
         problems.append("agent_user_key_encryption_key 必须为随机长密钥（>=32 字符）")
     if "dev123" in settings.database_url:
         problems.append("数据库密码不能使用默认值 dev123")
+    # Step 5：凭据模式下通配源等于对任意站点开放（allow_credentials=True）
+    if "*" in settings.cors_origins:
+        problems.append("cors_origins 不能包含通配符 *（与 allow_credentials=True 冲突）")
     if problems:
         raise RuntimeError("部署安全基线未通过: " + "; ".join(problems))
+    _warn_production_advisories()
