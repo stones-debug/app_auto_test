@@ -1812,3 +1812,40 @@ async def test_find_text_click_stale_exhausted_raises_hard_failure():
     # 不因点击 stale 耗尽而无休止滑动
     assert driver.up_count == 0
     assert driver.down_count == 0
+
+
+async def test_step_result_missing_step_order_raises_protocol_error():
+    """Step 6.2：快照缺少 step_order 时必须明确报协议错误，不能静默发送 None。"""
+    case = _make_case(
+        steps=[{"action": "input", "element_id": 1, "params": {"value": "admin"}}],
+    )
+    with pytest.raises(ValueError, match="缺少有效 step_order"):
+        await _run_and_capture(case)
+
+
+async def test_step_result_invalid_step_order_raises_protocol_error():
+    """Step 6.2：step_order 为 0/负数/非数字时明确报协议错误。"""
+    for bad_order in (0, -1, "abc"):
+        case = _make_case(
+            steps=[
+                {
+                    "step_order": bad_order,
+                    "action": "input",
+                    "element_id": 1,
+                    "params": {"value": "admin"},
+                },
+            ],
+        )
+        with pytest.raises(ValueError, match="step_order 非法"):
+            await _run_and_capture(case)
+
+
+async def test_step_result_accepts_string_step_order():
+    """step_order 为数字字符串时可正常转换为 int 并上报。"""
+    case = _make_case(
+        steps=[{"order": "2", "action": "input", "element_id": 1, "params": {"value": "admin"}}],
+    )
+    status, sent = await _run_and_capture(case)
+    assert status == "passed"
+    step_msgs = [m for m in sent if m["type"] == "step_result"]
+    assert step_msgs[0]["step_order"] == 2

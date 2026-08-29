@@ -109,6 +109,16 @@ class RunnerReporter:
         error_message: str | None = None,
         screenshot_path: str | None = None,
     ) -> None:
+        # Step 6.2：step_order 必须能转为大于 0 的 int，否则为协议错误；
+        # StepResultMessage.step_order 保持 int，不放宽消息类型。
+        if step_order is None:
+            raise ValueError("协议 V2 快照缺少有效 step_order")
+        try:
+            step_order = int(step_order)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"协议 V2 快照 step_order 非法: {step_order!r}") from exc
+        if step_order <= 0:
+            raise ValueError(f"协议 V2 快照 step_order 非法: {step_order!r}")
         msg: StepResultMessage = {
             "type": "step_result",
             "execution_id": self.execution_id,
@@ -241,9 +251,9 @@ class TestRunner:
                         "actual_value": "已复用当前设备界面，跳过启动 APP",
                     }
                 else:
-                    action_cls = ACTION_REGISTRY.get(step.get("action"))
+                    action_cls = ACTION_REGISTRY.get(action_name)
                     if action_cls is None:
-                        raise ValueError(f"未知动作: {step.get('action')}")
+                        raise ValueError(f"未知动作: {action_name}")
                     effective = dict(step.get("params") or {})
                     if step.get("element_id") is not None and "element_id" not in effective:
                         effective["element_id"] = step["element_id"]
