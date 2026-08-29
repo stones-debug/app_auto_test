@@ -1778,6 +1778,14 @@ Body: { "type": "start_test", "execution_id": 10001, ... }
 - 反向流程（Agent → Worker 状态推进）无需 WS：Worker 每 5s 轮询 `executions.status` 是否进入终态。
 - **部署约束（V1）**：多 uvicorn worker 时 WS 连接分散在各进程，内部转发可能落在不含该连接的进程。V1 明确 WS 网关以**单进程运行**（Gunicorn 仅启 1 个 Uvicorn Worker，或独立 ws-gateway 进程）；跨进程广播在 V2 引入 Redis Pub/Sub 解决。
 
+**WS 入口与应用层安全约束（V1.1）**：
+
+- Agent WS 的应用层单消息上限为 `AGENT_WS_MAX_FRAME_BYTES`：文本按 UTF-8 编码后的字节数计算，二进制按 payload 字节数计算；超限关闭码为 `1009`。注册前消息数和注册超时必须为正数，并分别限制未注册连接的资源占用。
+- 启动 Uvicorn 时必须传入与上述配置一致的 `--ws-max-size <AGENT_WS_MAX_FRAME_BYTES>`，由 ASGI 入口先行限制；应用层检查是纵深防御，不应单独描述为网络入口帧限制。直接绕过启动脚本时同样必须配置该参数。
+- 当前协议要求连接建立后发送 `register` 消息，因此服务端必须先 `accept()` 才能收取注册消息；风险控制在注册前连接时长、消息数和消息字节数上限。
+- `/metrics` 始终需要内部令牌。Prometheus 不在本机时，使用网络白名单或反向代理鉴权；`metrics_require_loopback=true` 仅用于本机采集器，开启后不应期待远程直连。
+- production 的 `INTERNAL_TOKEN` 必须为非默认且至少 32 个字符；development 可使用弱值，但启动会告警。
+
 **完整执行时序（最终口径）**：
 
 ```

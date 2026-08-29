@@ -949,6 +949,58 @@ def _text_frame(text: str) -> dict:
     return {"type": "websocket.receive", "text": text}
 
 
+def _binary_frame(payload: bytes) -> dict:
+    return {"type": "websocket.receive", "bytes": payload}
+
+
+@pytest.mark.parametrize(
+    ("kind", "value"),
+    [("ASCII", "a"), ("中文", "汉"), ("Emoji", "😀"), ("二进制", b"binary")],
+)
+async def test_agent_ws_frame_limit_uses_payload_bytes(monkeypatch, kind: str, value: str | bytes):
+    """Step 8：文本按 UTF-8 字节、二进制按 payload 字节计算，刚好到上限放行。"""
+    if isinstance(value, bytes):
+        frame_payload = json.dumps(
+            {"type": "ping", "payload": value.decode("ascii")}, separators=(",", ":")
+        ).encode("utf-8")
+        frame = _binary_frame(frame_payload)
+    else:
+        frame_text = json.dumps({"type": "ping", "payload": value}, ensure_ascii=False, separators=(",", ":"))
+        frame = _text_frame(frame_text)
+        frame_payload = frame_text.encode("utf-8")
+    monkeypatch.setattr(settings, "agent_ws_max_frame_bytes", len(frame_payload))
+
+    ws = _FakeAgentWS([frame, {"type": "websocket.disconnect"}])
+    async with SessionLocal() as db:
+        await agent_ws(cast(WebSocket, ws), db)
+    assert ws.closed is None, kind
+
+
+@pytest.mark.parametrize(
+    ("kind", "value"),
+    [("ASCII", "a"), ("中文", "汉"), ("Emoji", "😀"), ("二进制", b"binary")],
+)
+async def test_agent_ws_frame_limit_closes_oversized_payload(
+    monkeypatch, kind: str, value: str | bytes
+):
+    """Step 8：超过实际字节上限的文本或二进制帧统一以 1009 关闭。"""
+    if isinstance(value, bytes):
+        frame_payload = json.dumps(
+            {"type": "ping", "payload": value.decode("ascii")}, separators=(",", ":")
+        ).encode("utf-8")
+        frame = _binary_frame(frame_payload + b"x")
+    else:
+        frame_text = json.dumps({"type": "ping", "payload": value}, ensure_ascii=False, separators=(",", ":"))
+        frame = _text_frame(frame_text + "x")
+        frame_payload = frame_text.encode("utf-8")
+    monkeypatch.setattr(settings, "agent_ws_max_frame_bytes", len(frame_payload))
+
+    ws = _FakeAgentWS([frame])
+    async with SessionLocal() as db:
+        await agent_ws(cast(WebSocket, ws), db)
+    assert ws.closed == (1009, "消息过大"), kind
+
+
 async def test_agent_ws_rejects_oversized_frame():
     """Step 5：单帧超过上限 → 1009。先量尺寸再解析，超限帧不会被反序列化。"""
     ws = _FakeAgentWS([_text_frame("x" * (settings.agent_ws_max_frame_bytes + 1))])

@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -114,9 +115,9 @@ class Settings(BaseSettings):
 
     # Step 5：Agent WS 连接级防护——未注册连接不得长期占用网关资源
     # 阈值刻意设宽松（弱网 Agent 可能重连频繁），上线观察后再收紧
-    agent_ws_max_frame_bytes: int = 1048576
-    agent_ws_max_pre_register_messages: int = 20
-    agent_ws_register_timeout_seconds: int = 30
+    agent_ws_max_frame_bytes: int = Field(default=1048576, gt=0)
+    agent_ws_max_pre_register_messages: int = Field(default=20, gt=0)
+    agent_ws_register_timeout_seconds: int = Field(default=30, gt=0)
 
 
 settings = Settings()
@@ -150,12 +151,17 @@ _DEFAULT_SECRETS = (
 )
 
 
+def _is_weak_internal_token(value: str) -> bool:
+    """生产环境内部令牌必须是非默认且至少 32 个字符的值。"""
+    return value in _DEFAULT_SECRETS or len(value) < 32
+
+
 def weak_secret_names() -> list[str]:
     """返回仍在使用默认值/弱值的配置项名称（development 告警与自检共用）。"""
     weak: list[str] = []
     if settings.jwt_secret_key in _DEFAULT_SECRETS or len(settings.jwt_secret_key) < 32:
         weak.append("jwt_secret_key")
-    if settings.internal_token in _DEFAULT_SECRETS:
+    if _is_weak_internal_token(settings.internal_token):
         weak.append("internal_token")
     if len(settings.agent_user_key_encryption_key) < 32:
         weak.append("agent_user_key_encryption_key")
@@ -184,8 +190,8 @@ def _warn_production_advisories() -> None:
     if not settings.metrics_require_loopback:
         _warn(
             "/metrics 已要求内部令牌，但未限制来源地址；若 Prometheus 不在本机，"
-            "请确认已通过内网网络策略限制该端点的访问范围，"
-            "或设置 metrics_require_loopback=true 仅允许本机访问"
+            "请使用网络白名单或反向代理鉴权限制该端点的访问范围；"
+            "metrics_require_loopback=true 仅适用于本机采集器，开启后远程采集会被拒绝"
         )
 
 
@@ -197,8 +203,8 @@ def validate_security_baseline() -> None:
     problems: list[str] = []
     if settings.jwt_secret_key in _DEFAULT_SECRETS or len(settings.jwt_secret_key) < 32:
         problems.append("jwt_secret_key 必须为随机长密钥（>=32 字符），不能使用默认值")
-    if settings.internal_token in _DEFAULT_SECRETS:
-        problems.append("internal_token 不能使用默认值")
+    if _is_weak_internal_token(settings.internal_token):
+        problems.append("internal_token 必须为非默认随机长令牌（>=32 字符）")
     if len(settings.agent_user_key_encryption_key) < 32:
         problems.append("agent_user_key_encryption_key 必须为随机长密钥（>=32 字符）")
     if "dev123" in settings.database_url:

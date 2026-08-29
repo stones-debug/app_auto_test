@@ -3,8 +3,9 @@ import logging
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from pydantic import ValidationError
 
-from app.core.config import settings, validate_security_baseline, weak_secret_names
+from app.core.config import Settings, settings, validate_security_baseline, weak_secret_names
 from app.core.database import SessionLocal
 from app.core.ratelimit import reset_rate_limits
 from app.main import app
@@ -243,3 +244,44 @@ def test_development_stays_silent_when_hardened(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="app.core.config"):
         validate_security_baseline()
     assert caplog.records == []
+
+
+@pytest.mark.parametrize("field", [
+    "agent_ws_max_frame_bytes",
+    "agent_ws_max_pre_register_messages",
+    "agent_ws_register_timeout_seconds",
+])
+def test_agent_ws_limits_must_be_positive(field):
+    """Step 8：WS 资源上限不能被配置为零或负数。"""
+    with pytest.raises(ValidationError):
+        Settings(**{field: 0})
+    with pytest.raises(ValidationError):
+        Settings(**{field: -1})
+
+
+@pytest.mark.parametrize(
+    ("token", "weak"),
+    [
+        ("", True),
+        ("x", True),
+        ("x" * 31, True),
+        ("dev-internal-token-change-me", True),
+        ("x" * 32, False),
+        ("令牌" * 16, False),
+    ],
+)
+def test_internal_token_strength_is_shared_by_warning_and_baseline(monkeypatch, token: str, weak: bool):
+    """Step 8：告警与 production 阻断对内部令牌使用同一强度判定。"""
+    monkeypatch.setattr(settings, "internal_token", token)
+    monkeypatch.setattr(settings, "jwt_secret_key", "j" * 32)
+    monkeypatch.setattr(settings, "agent_user_key_encryption_key", "a" * 32)
+    monkeypatch.setattr(settings, "database_url", "postgresql+asyncpg://u:strong@db:5432/test_platform")
+    monkeypatch.setattr(settings, "cors_origins", ["https://test.example.com"])
+
+    assert ("internal_token" in weak_secret_names()) is weak
+    monkeypatch.setattr(settings, "environment", "production")
+    if weak:
+        with pytest.raises(RuntimeError, match="internal_token"):
+            validate_security_baseline()
+    else:
+        validate_security_baseline()

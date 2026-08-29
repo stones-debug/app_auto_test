@@ -177,8 +177,9 @@ async def agent_ws(websocket: WebSocket, db: AsyncSession = Depends(get_db)):
 
             # Step 5：先量尺寸再解析——receive_json() 无法在解析前拿到帧大小
             text = message.get("text")
-            payload = message.get("bytes") or b""
-            if len(text or "") + len(payload) > settings.agent_ws_max_frame_bytes:
+            payload = message.get("bytes")
+            frame_size = len(text.encode("utf-8")) if text is not None else len(payload or b"")
+            if frame_size > settings.agent_ws_max_frame_bytes:
                 await websocket.close(code=1009, reason="消息过大")
                 return
 

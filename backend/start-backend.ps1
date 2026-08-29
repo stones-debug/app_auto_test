@@ -61,6 +61,8 @@ if ($Seed) {
 }
 
 $mode = if ($NoReload) { "no-reload" } else { "reload" }
+$wsMaxSize = [int](uv run python -c "from app.core.config import settings; print(settings.agent_ws_max_frame_bytes)")
+if (-not $?) { exit 1 }
 $workerMode = "embedded"
 if (Test-Path ".env") {
     $workerModeLine = Get-Content ".env" |
@@ -71,10 +73,10 @@ if (Test-Path ".env") {
     }
 }
 Write-Host "[start] FastAPI + Worker mode=$workerMode ($mode)"
-Write-Host "[start] uvicorn app.main:app --host $ListenHost --port $Port"
+Write-Host "[start] uvicorn app.main:app --host $ListenHost --port $Port --ws-max-size $wsMaxSize"
 
 if ($NoReload) {
-    uv run uvicorn app.main:app --host $ListenHost --port $Port
+    uv run uvicorn app.main:app --host $ListenHost --port $Port --ws-max-size $wsMaxSize
 } else {
-    uv run uvicorn app.main:app --host $ListenHost --port $Port --reload
+    uv run uvicorn app.main:app --host $ListenHost --port $Port --ws-max-size $wsMaxSize --reload
 }

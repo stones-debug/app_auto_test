@@ -104,7 +104,8 @@ async def metrics(
 
     Step 5：原先该端点完全无鉴权，保护依据是"部署在内网"这一未被强制的假设，
     会泄漏执行量、失败率、Agent 数量等运营数据。现与 /internal/* 共用内部令牌校验；
-    metrics_require_loopback=true 时再叠加来源地址限制（本机 Prometheus 场景）。
+    metrics_require_loopback=true 时再叠加来源地址限制（仅本机 Prometheus 场景）；
+    远程 Prometheus 应使用网络白名单或反向代理鉴权。
     """
     from fastapi.responses import PlainTextResponse
 
