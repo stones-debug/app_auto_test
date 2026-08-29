@@ -3,7 +3,7 @@ import json
 import logging
 import re
 import secrets
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -463,6 +463,163 @@ def _rate_percent(numerator: int, denominator: int) -> Decimal:
     return rate_percent(numerator, denominator)
 
 
+async def _load_terminal_children(
+    db: AsyncSession,
+    suite_ids: list[int],
+    case_ids: list[int],
+) -> tuple[
+    list[ExecutionStep],
+    dict[int, list[ExecutionStep]],
+    dict[int, list[ExecutionStep]],
+    list[ExecutionAssertion],
+    dict[int, list[ExecutionAssertion]],
+]:
+    """批量加载终态汇总所需的步骤/断言，并按父节点建立内存索引。"""
+    all_steps: list[ExecutionStep] = []
+    if suite_ids or case_ids:
+        step_filters = []
+        if suite_ids:
+            step_filters.append(ExecutionStep.execution_suite_id.in_(suite_ids))
+        if case_ids:
+            step_filters.append(ExecutionStep.execution_case_id.in_(case_ids))
+        all_steps = list(
+            (
+                await db.execute(select(ExecutionStep).where(or_(*step_filters)))
+            ).scalars().all()
+        )
+
+    case_steps_by_case: dict[int, list[ExecutionStep]] = {}
+    suite_steps_by_suite: dict[int, list[ExecutionStep]] = {}
+    steps_by_id: dict[int, ExecutionStep] = {}
+    for step in all_steps:
+        steps_by_id[step.id] = step
+        if step.execution_case_id is not None:
+            case_steps_by_case.setdefault(step.execution_case_id, []).append(step)
+        elif step.execution_suite_id is not None:
+            suite_steps_by_suite.setdefault(step.execution_suite_id, []).append(step)
+
+    all_assertions: list[ExecutionAssertion] = []
+    if steps_by_id:
+        all_assertions = list(
+            (
+                await db.execute(
+                    select(ExecutionAssertion).where(
+                        ExecutionAssertion.execution_step_id.in_(steps_by_id.keys())
+                    )
+                )
+            ).scalars().all()
+        )
+    assertions_by_case: dict[int, list[ExecutionAssertion]] = {}
+    for assertion in all_assertions:
+        step = steps_by_id.get(assertion.execution_step_id)
+        if step is not None and step.execution_case_id is not None:
+            assertions_by_case.setdefault(step.execution_case_id, []).append(assertion)
+
+    return all_steps, case_steps_by_case, suite_steps_by_suite, all_assertions, assertions_by_case
+
+
+async def _merge_cases_and_skip_pending(
+    db: AsyncSession,
+    cases: Sequence[ExecutionCase],
+    case_steps_by_case: dict[int, list[ExecutionStep]],
+    assertions_by_case: dict[int, list[ExecutionAssertion]],
+    all_steps: list[ExecutionStep],
+    all_assertions: list[ExecutionAssertion],
+    terminal_status: str,
+) -> None:
+    """归并用例状态，并批量收敛用例下的 pending 步骤/断言。"""
+    pending_case_step_ids: set[int] = set()
+    pending_assertion_ids: set[int] = set()
+    for case in cases:
+        should_merge = case.status in ("pending", "running")
+        steps = case_steps_by_case.get(case.id, [])
+        assertions = assertions_by_case.get(case.id, [])
+        merged_case = merge_case_status(
+            CaseStatusInput(
+                status=case.status,
+                started=case.started_at is not None if should_merge else False,
+                step_statuses=tuple(step.status for step in steps) if should_merge else (),
+                assertion_statuses=tuple(assertion.status for assertion in assertions)
+                if should_merge
+                else (),
+                error_message=case.error_message,
+            ),
+            terminal_status,
+        )
+        case.status = merged_case.status
+        case.error_message = merged_case.error_message
+        pending_assertion_ids.update(
+            assertion.id for assertion in assertions if assertion.status == "pending"
+        )
+        pending_case_step_ids.update(step.id for step in steps if step.status == "pending")
+
+    if pending_assertion_ids:
+        for assertion in all_assertions:
+            if assertion.id in pending_assertion_ids:
+                assertion.status = "skipped"
+        await db.execute(
+            update(ExecutionAssertion)
+            .where(ExecutionAssertion.id.in_(pending_assertion_ids))
+            .values(status="skipped")
+        )
+    if pending_case_step_ids:
+        for step in all_steps:
+            if step.id in pending_case_step_ids:
+                step.status = "skipped"
+        await db.execute(
+            update(ExecutionStep)
+            .where(ExecutionStep.id.in_(pending_case_step_ids))
+            .values(status="skipped")
+        )
+
+
+async def _merge_suites_and_skip_pending(
+    db: AsyncSession,
+    suites: Sequence[ExecutionSuite],
+    cases_by_suite: dict[int, list[ExecutionCase]],
+    suite_steps_by_suite: dict[int, list[ExecutionStep]],
+    all_steps: list[ExecutionStep],
+    terminal_status: str,
+) -> None:
+    """按套件子节点优先级归并套件，并批量收敛套件下的 pending 步骤。"""
+    pending_suite_step_ids: set[int] = set()
+    for suite in suites:
+        if suite.status not in ("pending", "running"):
+            continue
+        suite_was_running = suite.status == "running"
+        suite_steps = suite_steps_by_suite.get(suite.id, [])
+        child_statuses = [
+            _normalize_stuck_status(step.status, terminal_status) for step in suite_steps
+        ] + [case.status for case in cases_by_suite.get(suite.id, [])]
+        merged = _aggregate_status(child_statuses)
+        if (
+            merged == "skipped"
+            and suite_was_running
+            and terminal_status in ("stopped", "cancelled")
+        ):
+            merged = "stopped"
+        suite.status = merged
+        if suite.status not in ("passed",):
+            suite.error_message = suite.error_message or (
+                f"执行被中断（{terminal_status}）"
+                if terminal_status in ("stopped", "cancelled")
+                else None
+            )
+        pending_suite_step_ids.update(
+            step.id for step in suite_steps if step.status == "pending"
+        )
+
+    if pending_suite_step_ids:
+        for step in all_steps:
+            if step.id in pending_suite_step_ids:
+                step.status = "skipped"
+        await db.execute(
+            update(ExecutionStep)
+            .where(ExecutionStep.id.in_(pending_suite_step_ids))
+            .values(status="skipped")
+        )
+
+
 async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, message: str | None = None) -> None:
     """终态汇总（CR-10/CR-11，套件级 / §2 三层统计）。
 
@@ -521,84 +678,26 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
     for case in cases:
         cases_by_suite.setdefault(case.execution_suite_id, []).append(case)
 
-    # ---------- 用例状态归并（沿用既有逻辑；CR-11 修正：快照预建行不算"开始"信号） ----------
-    for c in cases:
-        steps = []
-        assertions = []
-        if c.status in ("pending", "running"):
-            steps = (
-                await db.execute(select(ExecutionStep).where(ExecutionStep.execution_case_id == c.id))
-            ).scalars().all()
-            assertions = (
-                await db.execute(
-                    select(ExecutionAssertion)
-                    .join(ExecutionStep, ExecutionAssertion.execution_step_id == ExecutionStep.id)
-                    .where(ExecutionStep.execution_case_id == c.id)
-                )
-            ).scalars().all()
-        merged_case = merge_case_status(
-            CaseStatusInput(
-                status=c.status,
-                started=c.started_at is not None,
-                step_statuses=tuple(step.status for step in steps),
-                assertion_statuses=tuple(assertion.status for assertion in assertions),
-                error_message=c.error_message,
-            ),
-            status_,
-        )
-        c.status = merged_case.status
-        c.error_message = merged_case.error_message
-        # 未执行断言（pending）置 skipped（隶属用例）
-        await db.execute(
-            update(ExecutionAssertion)
-            .where(
-                ExecutionAssertion.execution_step_id.in_(
-                    select(ExecutionStep.id).where(ExecutionStep.execution_case_id == c.id)
-                ),
-                ExecutionAssertion.status == "pending",
-            )
-            .values(status="skipped")
-        )
-        # 未执行用例步骤（pending）置 skipped（父节点 pending/running → 已归并，未执行即 skipped）
-        await db.execute(
-            update(ExecutionStep)
-            .where(ExecutionStep.execution_case_id == c.id, ExecutionStep.status == "pending")
-            .values(status="skipped")
-        )
-
-    # ---------- 套件状态归并（按子节点优先级） ----------
-    for suite in suites:
-        if suite.status not in ("pending", "running"):
-            continue
-        suite_was_running = suite.status == "running"
-        suite_steps = (
-            await db.execute(select(ExecutionStep).where(ExecutionStep.execution_suite_id == suite.id))
-        ).scalars().all()
-        child_statuses = [
-            _normalize_stuck_status(s.status, status_) for s in suite_steps
-        ] + [
-            c.status for c in cases_by_suite.get(suite.id, [])
-        ]
-        merged = _aggregate_status(child_statuses)
-        if (
-            merged == "skipped"
-            and suite_was_running
-            and status_ in ("stopped", "cancelled")
-        ):
-            # Step 7.3：套件已开始执行但被打断（如 teardown 仍 pending、执行被停止），
-            # 不得汇为 skipped 以下的歧义口径，归为 stopped
-            merged = "stopped"
-        suite.status = merged
-        if suite.status not in ("passed",):
-            suite.error_message = suite.error_message or (
-                f"执行被中断（{status_}）" if status_ in ("stopped", "cancelled") else None
-            )
-        # 未执行套件步骤（pending）置 skipped
-        await db.execute(
-            update(ExecutionStep)
-            .where(ExecutionStep.execution_suite_id == suite.id, ExecutionStep.status == "pending")
-            .values(status="skipped")
-        )
+    all_steps, case_steps_by_case, suite_steps_by_suite, all_assertions, assertions_by_case = (
+        await _load_terminal_children(db, suite_ids, case_ids)
+    )
+    await _merge_cases_and_skip_pending(
+        db,
+        cases,
+        case_steps_by_case,
+        assertions_by_case,
+        all_steps,
+        all_assertions,
+        status_,
+    )
+    await _merge_suites_and_skip_pending(
+        db,
+        suites,
+        cases_by_suite,
+        suite_steps_by_suite,
+        all_steps,
+        status_,
+    )
 
     # ---------- Step 7.3：报告落库前按已落库分层终态合并顶层执行状态 ----------
     # Agent/WS 上报的终态只作初值；顶层以已落库的套件/用例终态为准——
@@ -626,23 +725,6 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
         suite_counts.passed + suite_counts.failed + suite_counts.error_count,
     )
 
-    all_steps: list[ExecutionStep] = []
-    if case_ids:
-        all_steps = (
-            await db.execute(
-                select(ExecutionStep)
-                .where(ExecutionStep.execution_case_id.in_(case_ids))
-            )
-        ).scalars().all()
-    if suite_ids:
-        all_steps = [
-            *all_steps,
-            *(
-                await db.execute(
-                    select(ExecutionStep).where(ExecutionStep.execution_suite_id.in_(suite_ids))
-                )
-            ).scalars().all(),
-        ]
     step_counts = compute_counts(tuple(s.status for s in all_steps))
     step_rate = rate_percent(
         step_counts.passed,

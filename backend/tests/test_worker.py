@@ -3,10 +3,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from app.core.config import settings
-from app.core.database import SessionLocal
+from app.core.database import SessionLocal, engine
 from app.main import app
 from app.models import (
     Agent,
@@ -1292,3 +1292,60 @@ async def test_mark_terminal_pending_case_under_stopped_is_skipped(client: Async
         assert all(s.status == "skipped" for s in steps)
         report = (await db.execute(select(Report).where(Report.execution_id == execution_id))).scalar_one()
         assert report.skipped == 1
+
+
+@pytest.mark.parametrize("case_count", [1, 10, 50])
+async def test_mark_terminal_query_count_is_bounded(client: AsyncClient, case_count: int):
+    """Step 10：1/10/50 个用例的终态汇总查询数保持常数级。"""
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        suite = (
+            await db.execute(select(ExecutionSuite).where(ExecutionSuite.execution_id == execution_id))
+        ).scalar_one()
+        extra_cases = [
+            ExecutionCase(
+                execution_id=execution_id,
+                execution_suite_id=suite.id,
+                case_id=10_000 + index,
+                case_name=f"perf-case-{index}",
+                case_order=index + 1,
+                status="pending",
+                steps_snapshot=[],
+            )
+            for index in range(1, case_count)
+        ]
+        db.add_all(extra_cases)
+        await db.flush()
+        db.add_all(
+            [
+                ExecutionStep(
+                    execution_case_id=case.id,
+                    step_order=1,
+                    action="click",
+                    status="pending",
+                )
+                for case in extra_cases
+            ]
+        )
+        suite.status = "running"
+        execution.status = "running"
+        execution.started_at = datetime.now(UTC)
+        await db.commit()
+
+        statements: list[str] = []
+
+        def _before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+            statements.append(statement)
+
+        event.listen(engine.sync_engine, "before_cursor_execute", _before_cursor_execute)
+        try:
+            await worker_service._mark_terminal(db, execution, "stopped")
+        finally:
+            event.remove(engine.sync_engine, "before_cursor_execute", _before_cursor_execute)
+
+    assert len(statements) <= 20, f"{case_count} 个用例终态汇总执行了 {len(statements)} 次 SQL"
