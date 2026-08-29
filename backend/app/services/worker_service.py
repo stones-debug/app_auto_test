@@ -32,6 +32,14 @@ from app.models import (
     TestSuiteCase,
     Variable,
 )
+from app.services.execution_summary import (
+    CaseStatusInput,
+    compute_counts,
+    compute_exclusion_summary,
+    merge_case_status,
+    merge_execution_status,
+    rate_percent,
+)
 
 logger = logging.getLogger("worker")
 
@@ -514,6 +522,8 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
 
     # ---------- 用例状态归并（沿用既有逻辑；CR-11 修正：快照预建行不算"开始"信号） ----------
     for c in cases:
+        steps = []
+        assertions = []
         if c.status in ("pending", "running"):
             steps = (
                 await db.execute(select(ExecutionStep).where(ExecutionStep.execution_case_id == c.id))
@@ -525,22 +535,18 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
                     .where(ExecutionStep.execution_case_id == c.id)
                 )
             ).scalars().all()
-            failed = any(s.status == "failed" for s in steps) or any(
-                a.status in ("fail", "failed") for a in assertions
-            )
-            if failed:
-                c.status = "failed"
-            elif status_ == "passed":
-                c.status = "passed"
-            # 用例是否真正开始过：started_at / status=running / 任一子行非 pending
-            # （快照在创建时已预建全部 pending 步骤断言行，行存在≠开始过）
-            elif c.started_at is not None or c.status == "running" or any(
-                s.status != "pending" for s in steps
-            ) or any(a.status != "pending" for a in assertions):
-                c.status = "stopped" if status_ in ("stopped", "cancelled") else "error"
-                c.error_message = c.error_message or f"执行被中断（{status_}）"
-            else:
-                c.status = "skipped"
+        merged_case = merge_case_status(
+            CaseStatusInput(
+                status=c.status,
+                started=c.started_at is not None,
+                step_statuses=tuple(step.status for step in steps),
+                assertion_statuses=tuple(assertion.status for assertion in assertions),
+                error_message=c.error_message,
+            ),
+            status_,
+        )
+        c.status = merged_case.status
+        c.error_message = merged_case.error_message
         # 未执行断言（pending）置 skipped（隶属用例）
         await db.execute(
             update(ExecutionAssertion)
@@ -581,20 +587,31 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
             .values(status="skipped")
         )
 
-    # ---------- 三步统计：用例 / 套件 / 步骤（含套件步骤与用例步骤） ----------
-    total = len(cases)
-    passed = sum(1 for c in cases if c.status == "passed")
-    failed = sum(1 for c in cases if c.status == "failed")
-    error_count = sum(1 for c in cases if c.status == "error")
-    skipped = sum(1 for c in cases if c.status == "skipped")
-    rate = _rate_percent(passed, passed + failed + error_count)
+    # ---------- Step 7.3：报告落库前按已落库分层终态合并顶层执行状态 ----------
+    # Agent/WS 上报的终态只作初值；顶层以已落库的套件/用例终态为准——
+    # failed/stopped 不能覆盖已落库 error，passed 不能覆盖任何失败。
+    # 执行级没有 skipped：合并输入只取 blocking 终态（error/failed/stopped）。
+    stored_statuses = [s.status for s in suites] + [c.status for c in cases]
+    merged_execution_status = merge_execution_status(status_, stored_statuses)
+    if merged_execution_status != status_:
+        _add_log(
+            db,
+            execution.id,
+            "WARN",
+            f"执行终态按已落库分层结果修正：{status_} → {merged_execution_status}",
+        )
+        status_ = merged_execution_status
+        execution.status = status_
 
-    suite_total = len(suites)
-    suite_passed = sum(1 for s in suites if s.status == "passed")
-    suite_failed = sum(1 for s in suites if s.status == "failed")
-    suite_error_count = sum(1 for s in suites if s.status == "error")
-    suite_skipped = sum(1 for s in suites if s.status == "skipped")
-    suite_rate = _rate_percent(suite_passed, suite_passed + suite_failed + suite_error_count)
+    # ---------- 三步统计：用例 / 套件 / 步骤（含套件步骤与用例步骤） ----------
+    case_counts = compute_counts(tuple(c.status for c in cases))
+    rate = rate_percent(case_counts.passed, case_counts.passed + case_counts.failed + case_counts.error_count)
+
+    suite_counts = compute_counts(tuple(s.status for s in suites))
+    suite_rate = rate_percent(
+        suite_counts.passed,
+        suite_counts.passed + suite_counts.failed + suite_counts.error_count,
+    )
 
     all_steps: list[ExecutionStep] = []
     if case_ids:
@@ -613,57 +630,44 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
                 )
             ).scalars().all(),
         ]
-    step_total = len(all_steps)
-    step_passed = sum(1 for s in all_steps if s.status == "passed")
-    step_failed = sum(1 for s in all_steps if s.status == "failed")
-    step_error_count = sum(1 for s in all_steps if s.status == "error")
-    step_skipped = sum(1 for s in all_steps if s.status == "skipped")
-    step_rate = _rate_percent(step_passed, step_passed + step_failed + step_error_count)
+    step_counts = compute_counts(tuple(s.status for s in all_steps))
+    step_rate = rate_percent(
+        step_counts.passed,
+        step_counts.passed + step_counts.failed + step_counts.error_count,
+    )
 
     # ---------- 排除项统计：not_applicable（用例）与 not_applicable_suites（套件） ----------
-    na_cases = 0
-    na_suites = 0
-    exclusion_summary: dict[str, int] = {
-        "na_suites": 0, "na_cases": 0, "na_steps": 0, "na_assertions": 0, "na_suite_steps": 0,
-    }
     exclusions = (
         await db.execute(select(ExecutionExclusion).where(ExecutionExclusion.execution_id == execution.id))
     ).scalars().all()
-    for ex in exclusions:
-        if ex.target_type == "case":
-            na_cases += 1
-        elif ex.target_type == "suite":
-            na_suites += 1
-        key = f"na_{ex.target_type}s"
-        if key in exclusion_summary:
-            exclusion_summary[key] += 1
+    exclusion = compute_exclusion_summary(tuple(ex.target_type for ex in exclusions))
 
     await db.execute(
         pg_insert(Report)
         .values(
             execution_id=execution.id,
-            total=total,
-            passed=passed,
-            failed=failed,
-            error_count=error_count,
-            skipped=skipped,
+            total=case_counts.total,
+            passed=case_counts.passed,
+            failed=case_counts.failed,
+            error_count=case_counts.error_count,
+            skipped=case_counts.skipped,
             success_rate=rate,
             duration=execution.duration,
-            not_applicable=na_cases,
-            exclusion_summary=exclusion_summary,
-            suite_total=suite_total,
-            suite_passed=suite_passed,
-            suite_failed=suite_failed,
-            suite_error_count=suite_error_count,
-            suite_skipped=suite_skipped,
+            not_applicable=exclusion.na_cases,
+            exclusion_summary=exclusion.as_dict(),
+            suite_total=suite_counts.total,
+            suite_passed=suite_counts.passed,
+            suite_failed=suite_counts.failed,
+            suite_error_count=suite_counts.error_count,
+            suite_skipped=suite_counts.skipped,
             suite_success_rate=suite_rate,
-            step_total=step_total,
-            step_passed=step_passed,
-            step_failed=step_failed,
-            step_error_count=step_error_count,
-            step_skipped=step_skipped,
+            step_total=step_counts.total,
+            step_passed=step_counts.passed,
+            step_failed=step_counts.failed,
+            step_error_count=step_counts.error_count,
+            step_skipped=step_counts.skipped,
             step_success_rate=step_rate,
-            not_applicable_suites=na_suites,
+            not_applicable_suites=exclusion.na_suites,
         )
         .on_conflict_do_nothing(constraint="uq_reports_execution_id")
     )
