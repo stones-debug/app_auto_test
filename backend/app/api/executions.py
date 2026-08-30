@@ -369,7 +369,7 @@ async def list_executions(
     else:
         # Step 9：owner/member/public viewer 使用统一可见范围（公开项目执行可发现）
         query = select(Execution).where(
-            Execution.project_id.in_(visible_project_ids(user.id))
+            Execution.project_id.in_(await visible_project_ids(db, user.id))
         )
 
     if status:

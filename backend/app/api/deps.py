@@ -1,13 +1,14 @@
 from fastapi import Depends, Header, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.errors import ErrorCode, api_error
 from app.core.security import constant_time_equals, decode_token
-from app.models import Agent, AgentUser, Device, Project, ProjectMember, User
+from app.models import Agent, Device, Project, User
+from app.repositories import access as access_repo
+from app.repositories import auth as auth_repo
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -21,14 +22,14 @@ async def get_current_user(
     payload = decode_token(credentials.credentials)
     if payload is None or payload.get("type") != "access":
         raise api_error(status.HTTP_401_UNAUTHORIZED, ErrorCode.AUTH_TOKEN_INVALID, "无效或过期的 Token")
-    user = await db.get(User, int(payload["sub"]))
+    user = await auth_repo.get_user_by_id(db, int(payload["sub"]))
     if user is None or user.status != "active":
         raise api_error(status.HTTP_401_UNAUTHORIZED, ErrorCode.AUTH_USER_DISABLED, "用户不存在或已禁用")
     return user
 
 
 async def _get_project_or_404(project_id: int, db: AsyncSession) -> Project:
-    project = await db.get(Project, project_id)
+    project = await access_repo.get_project(db, project_id)
     if project is None or project.deleted_at is not None:
         raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.PROJECT_NOT_FOUND, "项目不存在")
     return project
@@ -47,13 +48,7 @@ async def get_project_permission(
     if project.owner_id == user.id:
         return project, "owner"
 
-    result = await db.execute(
-        select(ProjectMember).where(
-            ProjectMember.project_id == project_id,
-            ProjectMember.user_id == user.id,
-        )
-    )
-    member = result.scalar_one_or_none()
+    member = await access_repo.get_project_member(db, project_id, user.id)
     if member is not None:
         return project, member.role
 
@@ -117,18 +112,12 @@ async def get_editable_project(
 
 async def require_agent_access(agent_id: int, user: User, db: AsyncSession) -> Agent:
     """Agent 访问校验：平台管理员或已绑定该 Agent 的用户；软注销 Agent 视为不存在。"""
-    agent = await db.get(Agent, agent_id)
+    agent = await access_repo.get_agent(db, agent_id)
     if agent is None or agent.deleted_at is not None:
         raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.AGENT_NOT_FOUND, "Agent 不存在")
     if user.is_admin:
         return agent
-    bound = await db.execute(
-        select(AgentUser).where(
-            AgentUser.agent_id == agent_id,
-            AgentUser.user_id == user.id,
-        )
-    )
-    if bound.scalar_one_or_none() is None:
+    if not await access_repo.is_user_bound_to_agent(db, agent_id, user.id):
         raise api_error(status.HTTP_403_FORBIDDEN, ErrorCode.AGENT_FORBIDDEN, "无权访问该 Agent")
     return agent
 
@@ -138,31 +127,17 @@ async def require_device_access(device_id: int, user: User, db: AsyncSession) ->
 
     Step 6：设备需联查所属 Agent；所属 Agent 已软注销时设备同样视为不存在。
     """
-    device = await db.get(Device, device_id)
+    device = await access_repo.get_device(db, device_id)
     if device is None:
         raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.DEVICE_NOT_FOUND, "设备不存在")
-    agent = await db.get(Agent, device.agent_id)
+    agent = await access_repo.get_device_agent(db, device.agent_id)
     if agent is None or agent.deleted_at is not None:
         raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.DEVICE_NOT_FOUND, "设备不存在")
     if user.is_admin:
         return device
-    bound = await db.execute(
-        select(AgentUser).where(
-            AgentUser.agent_id == device.agent_id,
-            AgentUser.user_id == user.id,
-        )
-    )
-    if bound.scalar_one_or_none() is None:
+    if not await access_repo.is_user_bound_to_agent(db, device.agent_id, user.id):
         raise api_error(status.HTTP_403_FORBIDDEN, ErrorCode.DEVICE_FORBIDDEN, "无权使用该设备")
     return device
-
-
-def bound_agent_ids_subquery(user_id: int):
-    """当前用户可访问的 Agent id 子查询（非管理员过滤用；Step 6：排除软注销 Agent）。"""
-    return select(AgentUser.agent_id).where(
-        AgentUser.user_id == user_id,
-        AgentUser.agent_id.in_(select(Agent.id).where(Agent.deleted_at.is_(None))),
-    )
 
 
 # ---------- Step 5：内部接口令牌（Worker → FastAPI） ----------

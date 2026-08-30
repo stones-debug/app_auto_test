@@ -66,7 +66,7 @@ async def list_reports(
         query = (
             select(Report)
             .join(Execution, Report.execution_id == Execution.id)
-            .where(Execution.project_id.in_(visible_project_ids(user.id)))
+            .where(Execution.project_id.in_(await visible_project_ids(db, user.id)))
         )
     if execution_id is not None:
         query = query.where(Report.execution_id == execution_id)
