@@ -10,10 +10,13 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AppProfile, AppProfileRelease, Project, TestCase, TestModule, TestSuite
+from app.models import TestCase
+from app.repositories import projects as projects_repo
+from app.repositories.app_profiles import profiles as profiles_repo
+from app.repositories.app_profiles import releases as releases_repo
+from app.repositories.app_profiles import resolution as resolution_repo
 from app.services.profile_resolver_load import (
     collect_suite_cases as _collect_suite_cases,
 )
@@ -230,7 +233,7 @@ async def resolve(
     request: ResolutionRequest, db: AsyncSession, cache: _LRUCache | None = None
 ) -> ResolutionResult:
     cache = cache or get_resolver().cache
-    profile = await db.get(AppProfile, request.profile_id)
+    profile = await profiles_repo.get_by_id(db, request.profile_id)
     if profile is None or profile.deleted_at is not None:
         raise ProfileRuleError("APP_PROFILE_NOT_FOUND", "档案不存在")
     if profile.project_id != request.project_id:
@@ -240,7 +243,7 @@ async def resolve(
     if request.expected_profile_revision != profile.revision:
         raise ProfileRevisionConflict("PROFILE_REVISION_CONFLICT", profile.revision, request.expected_profile_revision)
 
-    project = await db.get(Project, request.project_id)
+    project = await projects_repo.get_by_id(db, request.project_id)
     if project is None:
         raise ProfileRuleError("PROFILE_TARGET_NOT_FOUND", "项目不存在")
     if request.expected_test_asset_revision != project.test_asset_revision:
@@ -249,7 +252,7 @@ async def resolve(
         )
     if request.release_id is None:
         raise ProfileRuleError("APP_RELEASE_REQUIRED", "执行必须指定发布版本")
-    release = await db.get(AppProfileRelease, request.release_id)
+    release = await releases_repo.get_by_id(db, request.release_id)
     if (
         release is None
         or release.deleted_at is not None
@@ -284,8 +287,7 @@ async def resolve(
     module_ids = {case.module_id for case in cases_by_id.values() if case.module_id is not None}
     module_names: dict[int, str] = {}
     if module_ids:
-        module_rows = (await db.execute(select(TestModule).where(TestModule.id.in_(module_ids)))).scalars().all()
-        module_names = {module.id: module.name for module in module_rows}
+        module_names = await resolution_repo.get_project_modules(db, module_ids)
 
     applied_override_count = 0
     suites: list[ResolvedSuite] = []
@@ -356,7 +358,7 @@ async def _build_suite(
         teardown_snapshot: list[dict[str, Any]] = []
         suite_elements: dict[str, dict[str, Any]] = {}
     else:
-        suite = await db.get(TestSuite, suite_id)
+        suite = await resolution_repo.get_suite(db, suite_id)
         if suite is None or suite.deleted_at is not None:
             exclusions.append(
                 ExclusionItem(

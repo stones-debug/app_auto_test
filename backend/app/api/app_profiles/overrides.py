@@ -4,22 +4,16 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import Depends, Request, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_project_permission
 from app.core.database import get_db
 from app.core.errors import api_error
-from app.models import (
-    AppProfileElementOverride,
-    AppProfileNodeOverride,
-    AppProfileVariableOverride,
-    Project,
-    TestCase,
-    TestSuite,
-    TestSuiteCase,
-    User,
-)
+from app.models import Project, User
+from app.repositories import elements as elements_repo
+from app.repositories.app_profiles import overrides as overrides_repo
+from app.repositories.app_profiles import resolution as resolution_repo
+from app.repositories.app_profiles import skip_rules as skip_rules_repo
 from app.schemas.app_profile import (
     ElementOverrideDelete,
     ElementOverrideUpsert,
@@ -49,30 +43,7 @@ async def list_profile_overrides(
     """返回当前有效覆盖值，供工作台编辑器回显。"""
     profile = await _get_profile_or_404(profile_id, db)
     await get_project_permission(profile.project_id, user, db)
-    element_rows = (
-        await db.execute(
-            select(AppProfileElementOverride).where(
-                AppProfileElementOverride.profile_id == profile_id,
-                AppProfileElementOverride.deleted_at.is_(None),
-            )
-        )
-    ).scalars().all()
-    variable_rows = (
-        await db.execute(
-            select(AppProfileVariableOverride).where(
-                AppProfileVariableOverride.profile_id == profile_id,
-                AppProfileVariableOverride.deleted_at.is_(None),
-            )
-        )
-    ).scalars().all()
-    node_rows = (
-        await db.execute(
-            select(AppProfileNodeOverride).where(
-                AppProfileNodeOverride.profile_id == profile_id,
-                AppProfileNodeOverride.deleted_at.is_(None),
-            )
-        )
-    ).scalars().all()
+    element_rows, variable_rows, node_rows = await overrides_repo.list_all(db, profile_id)
     return {
         "revision": profile.revision,
         "elements": [
@@ -116,38 +87,15 @@ async def upsert_element_override(
         replay = await find_idempotent_replay(db, profile_id, body.request_id)
         if replay is not None:
             return replay
-    from app.models import TestElement
-
-    el = await db.get(TestElement, element_id)
+    el = await elements_repo.get_by_id(db, element_id)
     if el is None or el.deleted_at is not None or el.project_id != profile.project_id:
         raise api_error(status.HTTP_404_NOT_FOUND, "ELEMENT_NOT_FOUND", "元素不存在或跨项目")
-    existing = (
-        await db.execute(
-            select(AppProfileElementOverride).where(
-                AppProfileElementOverride.profile_id == profile_id,
-                AppProfileElementOverride.element_id == element_id,
-                AppProfileElementOverride.deleted_at.is_(None),
-            )
-        )
-    ).scalar_one_or_none()
-    if existing is None:
-        existing = AppProfileElementOverride(
-            profile_id=profile_id,
-            element_id=element_id,
-            locator_type=body.locator_type,
-            locator_value=body.locator_value,
-            locator_config=body.locator_config.model_dump() if body.locator_config else None,
-            created_by=user.id,
-            updated_by=user.id,
-        )
-        db.add(existing)
-        await db.flush()
-    else:
-        existing.deleted_at = None
-        existing.locator_type = body.locator_type
-        existing.locator_value = body.locator_value
-        existing.locator_config = body.locator_config.model_dump() if body.locator_config else None
-        existing.updated_by = user.id
+    await overrides_repo.upsert_element(
+        db, profile_id=profile_id, element_id=element_id, locator_type=body.locator_type,
+        locator_value=body.locator_value,
+        locator_config=body.locator_config.model_dump() if body.locator_config else None,
+        user_id=user.id,
+    )
     response_data = {
         "element_id": element_id,
         "locator_type": body.locator_type,
@@ -156,7 +104,6 @@ async def upsert_element_override(
     new_revision = await _bump_and_audit(
         db, profile, body, "element_override_upsert", user, role, request, response_data=response_data
     )
-    await db.commit()
     return {"revision": new_revision, **response_data}
 
 @router.delete("/app-profiles/{profile_id}/element-overrides/{element_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -175,21 +122,11 @@ async def restore_element_override(
         replay = await find_idempotent_replay(db, profile_id, body.request_id)
         if replay is not None:
             return
-    existing = (
-        await db.execute(
-            select(AppProfileElementOverride).where(
-                AppProfileElementOverride.profile_id == profile_id,
-                AppProfileElementOverride.element_id == element_id,
-                AppProfileElementOverride.deleted_at.is_(None),
-            )
-        )
-    ).scalar_one_or_none()
+    existing = await overrides_repo.get_element(db, profile_id, element_id)
     if existing is None:
         return
-    existing.deleted_at = datetime.now(UTC)
-    existing.updated_by = user.id
+    await overrides_repo.soft_delete(existing, datetime.now(UTC), user.id)
     await _bump_and_audit(db, profile, body, "element_override_restore", user, role, request)
-    await db.commit()
 
 @router.put("/app-profiles/{profile_id}/variable-overrides/{name}", response_model=dict)
 async def upsert_variable_override(
@@ -207,31 +144,14 @@ async def upsert_variable_override(
         replay = await find_idempotent_replay(db, profile_id, body.request_id)
         if replay is not None:
             return replay
-    existing = (
-        await db.execute(
-            select(AppProfileVariableOverride).where(
-                AppProfileVariableOverride.profile_id == profile_id,
-                AppProfileVariableOverride.name == name,
-                AppProfileVariableOverride.deleted_at.is_(None),
-            )
-        )
-    ).scalar_one_or_none()
-    if existing is None:
-        existing = AppProfileVariableOverride(
-            profile_id=profile_id, name=name, created_by=user.id, updated_by=user.id
-        )
-        db.add(existing)
-        await db.flush()
-    else:
-        existing.deleted_at = None
-    existing.value = body.value
-    existing.description = body.description
-    existing.updated_by = user.id
+    await overrides_repo.upsert_variable(
+        db, profile_id=profile_id, name=name, value=body.value,
+        description=body.description, user_id=user.id,
+    )
     response_data = {"name": name, "value": body.value, "description": body.description}
     new_revision = await _bump_and_audit(
         db, profile, body, "variable_override_upsert", user, role, request, response_data=response_data
     )
-    await db.commit()
     return {"revision": new_revision, **response_data}
 
 @router.delete("/app-profiles/{profile_id}/variable-overrides/{name}", status_code=status.HTTP_204_NO_CONTENT)
@@ -250,21 +170,11 @@ async def restore_variable_override(
         replay = await find_idempotent_replay(db, profile_id, body.request_id)
         if replay is not None:
             return
-    existing = (
-        await db.execute(
-            select(AppProfileVariableOverride).where(
-                AppProfileVariableOverride.profile_id == profile_id,
-                AppProfileVariableOverride.name == name,
-                AppProfileVariableOverride.deleted_at.is_(None),
-            )
-        )
-    ).scalar_one_or_none()
+    existing = await overrides_repo.get_variable(db, profile_id, name)
     if existing is None:
         return
-    existing.deleted_at = datetime.now(UTC)
-    existing.updated_by = user.id
+    await overrides_repo.soft_delete(existing, datetime.now(UTC), user.id)
     await _bump_and_audit(db, profile, body, "variable_override_restore", user, role, request)
-    await db.commit()
 
 @router.put("/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/{node_type}/{node_key}", response_model=dict)
 async def upsert_node_override(
@@ -288,16 +198,12 @@ async def upsert_node_override(
     if node_type not in ("step", "assertion"):
         raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, "PROFILE_TARGET_INVALID", "node_type 只允许 step|assertion")
 
-    case = await db.get(TestCase, case_id)
+    case = await resolution_repo.get_case(db, case_id)
     if case is None or case.deleted_at is not None or case.project_id != profile.project_id:
         raise api_error(status.HTTP_404_NOT_FOUND, "CASE_NOT_FOUND", "用例不存在或跨项目")
-    membership = await db.scalar(
-        select(TestSuiteCase.id).where(
-            TestSuiteCase.suite_id == suite_id,
-            TestSuiteCase.case_id == case_id,
-        )
+    suite, _case, membership = await skip_rules_repo.load_target(
+        db, project_id=profile.project_id, suite_id=suite_id, case_id=case_id
     )
-    suite = await db.get(TestSuite, suite_id)
     if (
         suite is None
         or suite.deleted_at is not None
@@ -326,35 +232,10 @@ async def upsert_node_override(
         validate_node_patch(node_type, source_node, body.patch)
     except ProfileRuleError as exc:
         raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.code, exc.message) from None
-    existing = (
-        await db.execute(
-            select(AppProfileNodeOverride).where(
-                AppProfileNodeOverride.profile_id == profile_id,
-                AppProfileNodeOverride.suite_id == suite_id,
-                AppProfileNodeOverride.target_type == node_type,
-                AppProfileNodeOverride.case_id == case_id,
-                AppProfileNodeOverride.node_key == normalized_key,
-                AppProfileNodeOverride.deleted_at.is_(None),
-            )
-        )
-    ).scalar_one_or_none()
-    if existing is None:
-        existing = AppProfileNodeOverride(
-            profile_id=profile_id,
-            suite_id=suite_id,
-            target_type=node_type,
-            case_id=case_id,
-            node_key=normalized_key,
-            patch=body.patch,
-            created_by=user.id,
-            updated_by=user.id,
-        )
-        db.add(existing)
-        await db.flush()
-    else:
-        existing.deleted_at = None
-        existing.patch = body.patch
-        existing.updated_by = user.id
+    await overrides_repo.upsert_node(
+        db, profile_id=profile_id, suite_id=suite_id, case_id=case_id,
+        target_type=node_type, node_key=normalized_key, patch=body.patch, user_id=user.id,
+    )
     response_data = {
         "suite_id": suite_id,
         "case_id": case_id,
@@ -365,7 +246,6 @@ async def upsert_node_override(
     new_revision = await _bump_and_audit(
         db, profile, body, "node_override_upsert", user, role, request, response_data=response_data
     )
-    await db.commit()
     return {"revision": new_revision, **response_data}
 
 @router.delete("/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/{node_type}/{node_key}", status_code=status.HTTP_204_NO_CONTENT)
@@ -391,24 +271,14 @@ async def restore_node_override(
         normalized_key = str(UUID(node_key))
     except ValueError:
         return
-    existing = (
-        await db.execute(
-            select(AppProfileNodeOverride).where(
-                AppProfileNodeOverride.profile_id == profile_id,
-                AppProfileNodeOverride.suite_id == suite_id,
-                AppProfileNodeOverride.target_type == node_type,
-                AppProfileNodeOverride.case_id == case_id,
-                AppProfileNodeOverride.node_key == normalized_key,
-                AppProfileNodeOverride.deleted_at.is_(None),
-            )
-        )
-    ).scalar_one_or_none()
+    existing = await overrides_repo.get_node(
+        db, profile_id, suite_id=suite_id, case_id=case_id,
+        target_type=node_type, node_key=normalized_key,
+    )
     if existing is None:
         return
-    existing.deleted_at = datetime.now(UTC)
-    existing.updated_by = user.id
+    await overrides_repo.soft_delete(existing, datetime.now(UTC), user.id)
     await _bump_and_audit(db, profile, body, "node_override_restore", user, role, request)
-    await db.commit()
 
 @router.put("/app-profiles/{profile_id}/suite-step-overrides/{suite_id}/{node_key}", response_model=dict)
 async def upsert_suite_step_override(
@@ -428,7 +298,7 @@ async def upsert_suite_step_override(
         replay = await find_idempotent_replay(db, profile_id, body.request_id)
         if replay is not None:
             return replay
-    suite = await db.get(TestSuite, suite_id)
+    suite = await resolution_repo.get_suite(db, suite_id)
     if suite is None or suite.deleted_at is not None or suite.project_id != profile.project_id:
         raise api_error(status.HTTP_404_NOT_FOUND, "SUITE_NOT_FOUND", "套件不存在或跨项目")
     found = _find_suite_step(suite, node_key)
@@ -452,34 +322,10 @@ async def upsert_suite_step_override(
         validate_node_patch("step", source_node, body.patch)
     except ProfileRuleError as exc:
         raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.code, exc.message) from None
-    existing = (
-        await db.execute(
-            select(AppProfileNodeOverride).where(
-                AppProfileNodeOverride.profile_id == profile_id,
-                AppProfileNodeOverride.target_type == "suite_step",
-                AppProfileNodeOverride.suite_id == suite_id,
-                AppProfileNodeOverride.node_key == normalized_key,
-                AppProfileNodeOverride.deleted_at.is_(None),
-            )
-        )
-    ).scalar_one_or_none()
-    if existing is None:
-        existing = AppProfileNodeOverride(
-            profile_id=profile_id,
-            target_type="suite_step",
-            suite_id=suite_id,
-            case_id=None,
-            node_key=normalized_key,
-            patch=body.patch,
-            created_by=user.id,
-            updated_by=user.id,
-        )
-        db.add(existing)
-        await db.flush()
-    else:
-        existing.deleted_at = None
-        existing.patch = body.patch
-        existing.updated_by = user.id
+    await overrides_repo.upsert_node(
+        db, profile_id=profile_id, suite_id=suite_id, case_id=None,
+        target_type="suite_step", node_key=normalized_key, patch=body.patch, user_id=user.id,
+    )
     response_data = {
         "suite_id": suite_id,
         "node_type": "suite_step",
@@ -489,7 +335,6 @@ async def upsert_suite_step_override(
     new_revision = await _bump_and_audit(
         db, profile, body, "node_override_upsert", user, role, request, response_data=response_data
     )
-    await db.commit()
     return {"revision": new_revision, **response_data}
 
 @router.delete("/app-profiles/{profile_id}/suite-step-overrides/{suite_id}/{node_key}", status_code=status.HTTP_204_NO_CONTENT)
@@ -513,20 +358,11 @@ async def restore_suite_step_override(
         normalized_key = str(UUID(node_key))
     except ValueError:
         return
-    existing = (
-        await db.execute(
-            select(AppProfileNodeOverride).where(
-                AppProfileNodeOverride.profile_id == profile_id,
-                AppProfileNodeOverride.target_type == "suite_step",
-                AppProfileNodeOverride.suite_id == suite_id,
-                AppProfileNodeOverride.node_key == normalized_key,
-                AppProfileNodeOverride.deleted_at.is_(None),
-            )
-        )
-    ).scalar_one_or_none()
+    existing = await overrides_repo.get_node(
+        db, profile_id, suite_id=suite_id, case_id=None,
+        target_type="suite_step", node_key=normalized_key,
+    )
     if existing is None:
         return
-    existing.deleted_at = datetime.now(UTC)
-    existing.updated_by = user.id
+    await overrides_repo.soft_delete(existing, datetime.now(UTC), user.id)
     await _bump_and_audit(db, profile, body, "node_override_restore", user, role, request)
-    await db.commit()

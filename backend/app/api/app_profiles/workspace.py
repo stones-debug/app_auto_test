@@ -1,25 +1,21 @@
 """APP 档案workspace路由。"""
 
 from fastapi import Depends, HTTPException, Query, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_project_permission
 from app.core.database import get_db
-from app.models import Project, TestCase, TestSuite, TestSuiteCase, User
+from app.models import User
+from app.repositories import projects as projects_repo
+from app.repositories.app_profiles import resolution as resolution_repo
+from app.repositories.app_profiles import skip_rules as skip_rules_repo
 
 from . import router
 from ._shared import (
-    _case_counts,
-    _diff_counts,
     _get_profile_or_404,
-    _load_override_index,
-    _load_skip_index,
     _node_item,
-    _override_counts,
     _skip_row,
     _sort_workspace,
-    _suite_cases,
     _suite_step_item,
 )
 
@@ -39,19 +35,13 @@ async def workspace(
 ):
     profile = await _get_profile_or_404(profile_id, db)
     await get_project_permission(profile.project_id, user, db)
-    project = await db.get(Project, profile.project_id)
+    project = await projects_repo.get_by_id(db, profile.project_id)
 
-    suites = (
-        await db.execute(
-            select(TestSuite).where(
-                TestSuite.project_id == profile.project_id, TestSuite.deleted_at.is_(None)
-            ).order_by(TestSuite.name)
-        )
-    ).scalars().all()
-    skip = await _load_skip_index(db, profile_id)
-    case_counts = await _case_counts(db, profile.project_id)
-    diff_counts = await _diff_counts(db, profile.project_id, profile_id)
-    override_counts = await _override_counts(db, profile.project_id, profile_id)
+    suites = await resolution_repo.list_suites(db, profile.project_id)
+    skip = await resolution_repo.load_skip_index(db, profile_id)
+    case_counts = await resolution_repo.case_counts(db, profile.project_id)
+    diff_counts = await resolution_repo.diff_counts(db, profile_id)
+    override_counts = await resolution_repo.override_counts(db, profile_id)
 
     items: list[dict] = []
     for s in suites:
@@ -115,13 +105,13 @@ async def workspace_nodes(
 ):
     profile = await _get_profile_or_404(profile_id, db)
     await get_project_permission(profile.project_id, user, db)
-    skip = await _load_skip_index(db, profile_id)
-    overrides = await _load_override_index(db, profile_id)
+    skip = await resolution_repo.load_skip_index(db, profile_id)
+    overrides = await resolution_repo.load_override_index(db, profile_id)
     if parent_type == "suite":
-        suite = await db.get(TestSuite, parent_id)
+        suite = await resolution_repo.get_suite(db, parent_id)
         if suite is None or suite.deleted_at is not None or suite.project_id != profile.project_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="套件不存在")
-        rows = await _suite_cases(db, parent_id)
+        rows = await resolution_repo.suite_cases(db, parent_id)
         suite_rule = skip["suite"].get(parent_id)
         items = []
         for case in rows:
@@ -139,17 +129,13 @@ async def workspace_nodes(
         start = (page - 1) * page_size
         return {"total": len(items), "page": page, "page_size": page_size, "items": items[start : start + page_size]}
     if parent_type == "case":
-        case = await db.get(TestCase, parent_id)
+        case = await resolution_repo.get_case(db, parent_id)
         if case is None or case.deleted_at is not None or case.project_id != profile.project_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用例不存在")
         suite_rule = None
         if ancestor_suite_id is not None:
-            suite = await db.get(TestSuite, ancestor_suite_id)
-            membership = await db.scalar(
-                select(TestSuiteCase.id).where(
-                    TestSuiteCase.suite_id == ancestor_suite_id,
-                    TestSuiteCase.case_id == case.id,
-                )
+            suite, _case, membership = await skip_rules_repo.load_target(
+                db, project_id=profile.project_id, suite_id=ancestor_suite_id, case_id=case.id
             )
             if (
                 suite is None
@@ -201,11 +187,11 @@ async def hub_suite_steps(
         )
     profile = await _get_profile_or_404(profile_id, db)
     await get_project_permission(profile.project_id, user, db)
-    suite = await db.get(TestSuite, suite_id)
+    suite = await resolution_repo.get_suite(db, suite_id)
     if suite is None or suite.deleted_at is not None or suite.project_id != profile.project_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="套件不存在")
-    skip = await _load_skip_index(db, profile_id)
-    overrides = await _load_override_index(db, profile_id)
+    skip = await resolution_repo.load_skip_index(db, profile_id)
+    overrides = await resolution_repo.load_override_index(db, profile_id)
 
     items: list[dict] = []
     for phase_name, collection in (("suite_setup", suite.setup_steps or []), ("suite_teardown", suite.teardown_steps or [])):
@@ -241,8 +227,8 @@ async def differences(
 ):
     profile = await _get_profile_or_404(profile_id, db)
     await get_project_permission(profile.project_id, user, db)
-    skip = await _load_skip_index(db, profile_id)
-    overrides = await _load_override_index(db, profile_id)
+    skip = await resolution_repo.load_skip_index(db, profile_id)
+    overrides = await resolution_repo.load_override_index(db, profile_id)
     rows: list[dict] = []
 
     # 收集出现的套件/用例 ID，一次性查名称（差异清单展示名称而非 ID）
@@ -269,14 +255,8 @@ async def differences(
     for sid, _nk in overrides["suite_step"]:
         suite_ids.add(sid)
         step_suite_ids.add(sid)
-    suite_names: dict[int, str] = (
-        {s.id: s.name for s in (await db.execute(select(TestSuite).where(TestSuite.id.in_(suite_ids)))).scalars()} if suite_ids else {}
-    )
-    case_names: dict[int, str] = (
-        {c.id: c.name for c in (await db.execute(select(TestCase).where(TestCase.id.in_(case_ids)))).scalars()} if case_ids else {}
-    )
-    step_suites: dict[int, TestSuite] = (
-        {s.id: s for s in (await db.execute(select(TestSuite).where(TestSuite.id.in_(step_suite_ids)))).scalars()} if step_suite_ids else {}
+    suite_names, case_names, step_suites = await resolution_repo.difference_names(
+        db, suite_ids=suite_ids, case_ids=case_ids
     )
 
     def _n(sid: int | None) -> str:

@@ -24,6 +24,27 @@ async def touch_asset_revision(db: AsyncSession, project_id: int) -> int:
     return new_revision
 
 
+async def compare_and_bump_asset_revision(
+    db: AsyncSession, project_id: int, expected_revision: int, actor_id: int | None = None
+) -> int | None:
+    """按 expected revision 原子递增项目资产版本。"""
+    result = await db.execute(
+        update(Project)
+        .where(Project.id == project_id, Project.test_asset_revision == expected_revision)
+        .values(test_asset_revision=Project.test_asset_revision + 1, updated_at=func.now())
+        .returning(Project.test_asset_revision)
+    )
+    return result.scalar_one_or_none()
+
+
+async def bump_asset_revision(db: AsyncSession, project_id: int) -> int:
+    return await touch_asset_revision(db, project_id)
+
+
+async def bump_all_asset_revisions(db: AsyncSession) -> None:
+    await touch_all_asset_revisions(db)
+
+
 async def touch_all_asset_revisions(db: AsyncSession) -> None:
     await db.execute(
         update(Project)
@@ -57,6 +78,10 @@ async def load_asset_counts(
         for project_id, count in rows.all():
             result[project_id][key] = count
     return result
+
+
+async def get_by_id(db: AsyncSession, project_id: int) -> Project | None:
+    return await db.get(Project, project_id)
 
 
 async def list_visible(
