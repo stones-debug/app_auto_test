@@ -91,14 +91,14 @@ class WorkerRuntime:
             try:
                 async with SessionLocal() as db:
                     item = await worker_service.claim_next_queue(db, self.worker_id)
-                    if item is not None:
-                        await worker_service.run_execution(
-                            db,
-                            item.execution_id,
-                            self.worker_id,
-                            agent_sender=self.agent_sender,
-                            poll_interval=self.execution_poll_interval,
-                        )
+                if item is not None:
+                    await worker_service.run_execution(
+                        None,
+                        item.execution_id,
+                        self.worker_id,
+                        agent_sender=self.agent_sender,
+                        poll_interval=self.execution_poll_interval,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -163,6 +163,7 @@ class WorkerRuntime:
         async def _run() -> None:
             async with SessionLocal() as db:
                 await fn(db)
+                await worker_service.commit(db)
 
         return _run
 

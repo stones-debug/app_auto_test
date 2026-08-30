@@ -120,7 +120,7 @@ async def cancel_queued_execution(db: AsyncSession, execution_id: int, now: date
             finalized_at=now,
         )
     )
-    return result.rowcount == 1
+    return int(getattr(result, "rowcount", 0)) == 1
 
 
 async def release_device(device: Device, *, available: bool, now: datetime) -> Device:

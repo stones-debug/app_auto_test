@@ -43,7 +43,7 @@ async def list_page(
             .where(TestSuiteCase.suite_id.in_([suite.id for suite in suites]))
             .group_by(TestSuiteCase.suite_id)
         )
-        counts = dict(count_rows.all())
+        counts = dict(count_rows.tuples().all())
     return total or 0, suites, counts
 
 
@@ -101,7 +101,7 @@ async def list_cases(
         .where(TestSuiteCase.suite_id == suite_id, TestCase.deleted_at.is_(None))
         .order_by(TestSuiteCase.sort_order)
     )
-    return list(rows.all())
+    return list(rows.tuples().all())
 
 
 async def find_cases(

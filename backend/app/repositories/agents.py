@@ -99,7 +99,7 @@ async def list_bindings(db: AsyncSession, agent_id: int) -> list[tuple[AgentUser
         .where(AgentUser.agent_id == agent_id)
         .order_by(AgentUser.id)
     )
-    return list(rows.all())
+    return list(rows.tuples().all())
 
 
 async def create_binding(
@@ -132,7 +132,7 @@ async def list_for_user(
         query = query.join(AgentUser, AgentUser.agent_id == Agent.id).where(
             AgentUser.user_id == user_id
         )
-    return list((await db.execute(query)).all())
+    return list((await db.execute(query)).tuples().all())
 
 
 async def lock_agent(db: AsyncSession, agent_id: int) -> Agent | None:

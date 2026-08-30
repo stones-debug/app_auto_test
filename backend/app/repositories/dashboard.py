@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AgentUser, Device, Execution, Project, ProjectMember
@@ -20,13 +20,13 @@ async def load_status_counts(db: AsyncSession, project_ids: list[int], since: da
     if since is not None:
         condition &= Execution.created_at >= since
     rows = await db.execute(select(Execution.status, func.count()).where(condition).group_by(Execution.status))
-    return dict(rows.all())
+    return dict(rows.tuples().all())
 
 
 async def load_execution_trend(db: AsyncSession, project_ids: list[int], since: datetime):
     day_col = func.to_char(func.date_trunc("day", Execution.created_at), "YYYY-MM-DD")
     rows = await db.execute(select(day_col.label("day"), Execution.status, func.count()).where(Execution.project_id.in_(project_ids), Execution.created_at >= since).group_by(day_col, Execution.status).order_by(day_col))
-    return list(rows.all())
+    return list(rows.tuples().all())
 
 
 async def list_recent_executions(db: AsyncSession, project_ids: list[int], limit: int = 10):
@@ -35,7 +35,7 @@ async def list_recent_executions(db: AsyncSession, project_ids: list[int], limit
 
 
 async def load_device_counts(db: AsyncSession, *, user_id: int, is_admin: bool) -> tuple[int, int]:
-    condition = True
+    condition = true()
     if not is_admin:
         bound_agents = select(AgentUser.agent_id).where(AgentUser.user_id == user_id)
         condition = Device.agent_id.in_(bound_agents)

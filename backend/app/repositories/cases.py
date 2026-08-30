@@ -139,7 +139,7 @@ async def load_deletable(
     ids: list[int],
     project_id: int | None = None,
 ) -> list[TestCase]:
-    conditions = [TestCase.id.in_(ids), TestCase.deleted_at.is_(None)]
+    conditions: list[Any] = [TestCase.id.in_(ids), TestCase.deleted_at.is_(None)]
     if project_id is not None:
         conditions.append(TestCase.project_id == project_id)
     rows = await db.execute(select(TestCase).where(*conditions))

@@ -189,7 +189,7 @@ async def case_counts(db: AsyncSession, project_id: int) -> dict[int, int]:
             TestCase.project_id == project_id, TestCase.deleted_at.is_(None)
         ).group_by(TestSuiteCase.suite_id)
     )
-    return dict(rows.all())
+    return dict(rows.tuples().all())
 
 
 async def override_counts(db: AsyncSession, profile_id: int) -> dict[int, int]:
@@ -200,7 +200,9 @@ async def override_counts(db: AsyncSession, profile_id: int) -> dict[int, int]:
             AppProfileNodeOverride.suite_id.is_not(None),
         ).group_by(AppProfileNodeOverride.suite_id)
     )
-    return {suite_id: count for suite_id, count in rows.all()}
+    return {
+        suite_id: count for suite_id, count in rows.tuples().all() if suite_id is not None
+    }
 
 
 async def diff_counts(db: AsyncSession, profile_id: int) -> dict[int, int]:

@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.mutable import MutableDict
 
 from app.models import (
     AppProfileElementOverride,
@@ -82,7 +83,7 @@ async def upsert_element(
         row.deleted_at = None
         row.locator_type = locator_type
         row.locator_value = locator_value
-        row.locator_config = locator_config
+        row.locator_config = MutableDict.coerce("locator_config", locator_config)
         row.updated_by = user_id
     return row
 

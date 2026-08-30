@@ -1,15 +1,12 @@
-import asyncio
 import json
 import logging
 import re
-import secrets
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Sequence
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
-import httpx
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +26,7 @@ from app.models import (
     Report,
     TestCase,
     TestElement,
+    TestSuite,
     TestSuiteCase,
     Variable,
 )
@@ -46,6 +44,11 @@ logger = logging.getLogger("worker")
 
 _VAR_RE = re.compile(r"\$\{(\w+)\}")
 TERMINAL_STATES = {"passed", "failed", "error", "stopped", "cancelled"}
+_PHASE_MAP = {"setup": "case_setup", "main": "case_main", "teardown": "case_teardown"}
+
+
+def _numeric_order(value: object) -> int:
+    return int(str(value)) if isinstance(value, (int, float, str)) else 0
 # Step 10：协议版本来自 Registry 生成产物（单一来源）
 _PROTOCOL_JSON = Path(__file__).resolve().parents[1] / "protocol" / "action_registry.json"
 
@@ -160,7 +163,7 @@ async def build_case_snapshot(
             for step in stored_steps
             if isinstance(step, dict) and str(step.get("phase") or "main") == phase
         ]
-        phase_steps.sort(key=lambda step: int(step.get("order") or 0))
+        phase_steps.sort(key=lambda step: _numeric_order(step.get("order")))
         for step in phase_steps:
             selected_steps.append(
                 {
@@ -205,140 +208,127 @@ def _element_snapshot(el: TestElement, variables: dict) -> dict:
     }
 
 
-async def _resolve_cases(db: AsyncSession, execution: Execution) -> list[TestCase]:
-    if execution.type == "case" and execution.case_id is not None:
-        case = await db.get(TestCase, execution.case_id)
-        return [case] if case is not None else []
-    suite_ids: list[int] = []
-    if execution.type == "suite" and execution.suite_id is not None:
-        suite_ids = [execution.suite_id]
-    elif execution.type == "batch":
-        suite_ids = (execution.parameters or {}).get("suite_ids") or []
-    if not suite_ids:
-        return []
-    case_ids: list[int] = []
-    for sid in suite_ids:
-        rows = (
-            await db.execute(
-                select(TestSuiteCase.case_id)
-                .where(TestSuiteCase.suite_id == sid)
-                .order_by(TestSuiteCase.sort_order)
-            )
-        ).scalars().all()
-        case_ids.extend(rows)
-    case_ids = list(dict.fromkeys(case_ids))
-    cases: list[TestCase] = []
-    for cid in case_ids:
-        case = await db.get(TestCase, cid)
-        if case is not None:
-            cases.append(case)
-    return cases
-
-
-_LEGACY_PHASE_MAP = {"setup": "case_setup", "main": "case_main", "teardown": "case_teardown"}
-
-
-def _legacy_phase_to_exec_phase(phase: str | None) -> str:
-    return _LEGACY_PHASE_MAP.get(str(phase or "main"), "case_main")
-
-
-async def _rebuild_legacy_snapshot(db: AsyncSession, execution: Execution) -> list[ExecutionCase]:
-    """无档案执行：按套件级虚拟套件重建 V2 快照。
-
-    - 先行清除旧快照（避免重复执行/重试产生重复行），按依赖顺序删除；
-    - 旧扁平用例归入单个虚拟 ExecutionSuite（is_virtual=True、无套件前后置）；
-    - 用例快照（steps/assertions/elements）落库，并预建步骤/断言 pending 行，
-      确保所有 V2 消息都使用不可歧义的 execution_*_id。
-    """
+async def _clear_execution_tree(db: AsyncSession, execution_id: int) -> None:
     existing_cases = (
-        await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == execution.id))
+        await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == execution_id))
     ).scalars().all()
     old_case_ids = [c.id for c in existing_cases]
     if old_case_ids:
         old_step_ids = select(ExecutionStep.id).where(ExecutionStep.execution_case_id.in_(old_case_ids))
         await db.execute(delete(ExecutionAssertion).where(ExecutionAssertion.execution_step_id.in_(old_step_ids)))
         await db.execute(delete(ExecutionStep).where(ExecutionStep.execution_case_id.in_(old_case_ids)))
-    await db.execute(delete(ExecutionCase).where(ExecutionCase.execution_id == execution.id))
+    await db.execute(delete(ExecutionCase).where(ExecutionCase.execution_id == execution_id))
     await db.execute(delete(ExecutionStep).where(ExecutionStep.execution_suite_id.in_(
-        select(ExecutionSuite.id).where(ExecutionSuite.execution_id == execution.id)
+        select(ExecutionSuite.id).where(ExecutionSuite.execution_id == execution_id)
     )))
-    await db.execute(delete(ExecutionSuite).where(ExecutionSuite.execution_id == execution.id))
+    await db.execute(delete(ExecutionSuite).where(ExecutionSuite.execution_id == execution_id))
     await db.flush()
 
-    cases = await _resolve_cases(db, execution)
-    if not cases:
-        await db.commit()
-        return []
 
-    suite = ExecutionSuite(
-        execution_id=execution.id,
-        suite_id=None,
-        suite_name="虚拟套件",
-        suite_order=1,
-        is_virtual=True,
-        status="pending",
-        setup_steps_snapshot=[],
-        teardown_steps_snapshot=[],
-        elements_snapshot={},
-    )
-    db.add(suite)
-    await db.flush()
+def _suite_step_snapshots(nodes: list, variable_map: dict, phase: str) -> list[dict]:
+    rendered = render_value(deepcopy(nodes or []), variable_map)
+    snapshots: list[dict] = []
+    for node in sorted(
+        (item for item in rendered if isinstance(item, dict)),
+        key=lambda item: _numeric_order(item.get("order")),
+    ):
+        snapshots.append({
+            **node,
+            "phase": phase,
+            "source_order": node.get("order"),
+            "order": len(snapshots) + 1,
+        })
+    return snapshots
+
+
+async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -> list[ExecutionCase]:
+    """无档案执行也按真实套件关系物化，保留套件前后置和重复上下文。"""
+    await _clear_execution_tree(db, execution.id)
+    parameters = execution.parameters or {}
+    if execution.type == "case" and execution.case_id is not None:
+        suite_specs = [(None, [execution.case_id])]
+    elif execution.type == "suite" and execution.suite_id is not None:
+        suite_specs = [(execution.suite_id, None)]
+    else:
+        suite_specs = [(int(sid), None) for sid in parameters.get("suite_ids") or []]
 
     created: list[ExecutionCase] = []
-    for case_order, case in enumerate(cases, start=1):
-        variable_map = await build_variable_map(db, execution, case)
-        options = execution.parameters or {}
-        snapshot = await build_case_snapshot(
-            db,
-            case,
-            variable_map,
-            use_pre_steps=bool(options.get("use_pre_steps")),
-            use_post_steps=bool(options.get("use_post_steps")),
-        )
-        ec = ExecutionCase(
-            execution_id=execution.id,
-            execution_suite_id=suite.id,
-            case_id=case.id,
-            case_name=case.name,
-            module_name=None,
-            case_order=case_order,
-            status="pending",
-            steps_snapshot=snapshot["steps"],
-            elements_snapshot=snapshot["elements"],
-        )
-        db.add(ec)
-        await db.flush()
-        for step in snapshot["steps"]:
-            exec_step = ExecutionStep(
-                execution_case_id=ec.id,
-                phase=_legacy_phase_to_exec_phase(step.get("phase")),
-                step_order=int(step.get("order") or 0),
-                action=step.get("action") or "",
-                source_key=step.get("source_key") or step.get("key"),
-                source_order=step.get("source_order"),
-                parameters=step.get("params") or {},
-                continue_on_failure=bool(step.get("continue_on_failure", False)),
-                status="pending",
-            )
-            db.add(
-                exec_step
-            )
-            await db.flush()
-            for assertion in step.get("assertions") or []:
-                expected = assertion.get("expected") or (assertion.get("params") or {}).get("expected")
-                db.add(
-                    ExecutionAssertion(
-                        execution_step_id=exec_step.id,
-                        assertion_order=int(assertion.get("order") or 0),
-                        assertion_type=assertion.get("type") or assertion.get("assertion_type") or "",
-                        expected_value=str(expected) if expected is not None else None,
-                        status="pending",
-                    )
+    for suite_order, (suite_id, selected_case_ids) in enumerate(suite_specs, start=1):
+        suite = await db.get(TestSuite, suite_id) if suite_id is not None else None
+        if suite_id is not None and (suite is None or suite.deleted_at is not None):
+            continue
+        if suite is None:
+            suite_name = "虚拟套件"
+            setup_snapshot: list[dict] = []
+            teardown_snapshot: list[dict] = []
+        else:
+            suite_name = suite.name
+            suite_variables = (
+                await db.execute(
+                    select(Variable).where(Variable.scope == "suite", Variable.suite_id == suite.id)
                 )
-        created.append(ec)
-    await db.commit()
-    for ec in created:
-        await db.refresh(ec)
+            ).scalars().all()
+            suite_variable_map = await build_variable_map(db, execution)
+            suite_variable_map.update({item.name: item.value for item in suite_variables})
+            setup_snapshot = _suite_step_snapshots(suite.setup_steps, suite_variable_map, "suite_setup")
+            teardown_snapshot = _suite_step_snapshots(suite.teardown_steps, suite_variable_map, "suite_teardown")
+
+        exec_suite = ExecutionSuite(
+            execution_id=execution.id, suite_id=suite_id, suite_name=suite_name,
+            suite_order=suite_order, is_virtual=suite_id is None, status="pending",
+            setup_steps_snapshot=setup_snapshot, teardown_steps_snapshot=teardown_snapshot,
+            elements_snapshot={},
+        )
+        db.add(exec_suite)
+        await db.flush()
+        for step in [*setup_snapshot, *teardown_snapshot]:
+            db.add(ExecutionStep(
+                execution_suite_id=exec_suite.id, phase=step["phase"],
+                step_order=int(step.get("order") or 0), action=step.get("action") or "",
+                source_key=step.get("source_key") or step.get("key"), source_order=step.get("source_order"),
+                parameters=step.get("params") or {}, continue_on_failure=bool(step.get("continue_on_failure", False)),
+                status="pending",
+            ))
+
+        if selected_case_ids is None:
+            selected_case_ids = list((await db.execute(
+                select(TestSuiteCase.case_id).where(TestSuiteCase.suite_id == suite_id).order_by(TestSuiteCase.sort_order)
+            )).scalars().all())
+        for case_order, case_id in enumerate(selected_case_ids, start=1):
+            case = await db.get(TestCase, case_id)
+            if case is None or case.deleted_at is not None:
+                continue
+            variable_map = await build_variable_map(db, execution, case)
+            snapshot = await build_case_snapshot(
+                db, case, variable_map,
+                use_pre_steps=bool(parameters.get("use_pre_steps")),
+                use_post_steps=bool(parameters.get("use_post_steps")),
+            )
+            exec_case = ExecutionCase(
+                execution_id=execution.id, execution_suite_id=exec_suite.id, case_id=case.id,
+                case_name=case.name, module_name=None, case_order=case_order, status="pending",
+                steps_snapshot=snapshot["steps"], elements_snapshot=snapshot["elements"],
+            )
+            db.add(exec_case)
+            await db.flush()
+            for step in snapshot["steps"]:
+                exec_step = ExecutionStep(
+                    execution_case_id=exec_case.id, phase={"setup": "case_setup", "main": "case_main", "teardown": "case_teardown"}.get(str(step.get("phase")), "case_main"),
+                    step_order=int(step.get("order") or 0), action=step.get("action") or "",
+                    source_key=step.get("source_key") or step.get("key"), source_order=step.get("source_order"),
+                    parameters=step.get("params") or {}, continue_on_failure=bool(step.get("continue_on_failure", False)), status="pending",
+                )
+                db.add(exec_step)
+                await db.flush()
+                for assertion in step.get("assertions") or []:
+                    expected = assertion.get("expected") or (assertion.get("params") or {}).get("expected")
+                    db.add(ExecutionAssertion(
+                        execution_step_id=exec_step.id, assertion_order=int(assertion.get("order") or 0),
+                        assertion_type=assertion.get("type") or assertion.get("assertion_type") or "",
+                        expected_value=str(expected) if expected is not None else None, status="pending",
+                    ))
+            created.append(exec_case)
+    await db.flush()
     return created
 
 
@@ -354,8 +344,7 @@ async def create_execution_cases_from_execution(db: AsyncSession, execution: Exe
                 )
             ).scalars().all()
         )
-    # 兼容期旧执行（无档案）：改写为套件级（虚拟套件）重建
-    return await _rebuild_legacy_snapshot(db, execution)
+    return await _materialize_unprofiled_tree(db, execution)
 
 
 # ---------- 队列认领（SKIP LOCKED） ----------
@@ -375,7 +364,7 @@ async def claim_next_queue(db: AsyncSession, worker_id: str) -> ExecutionQueue |
     row.status = "claimed"
     row.claimed_by = worker_id
     row.claimed_at = datetime.now(UTC)
-    await db.commit()
+    await db.flush()
     return row
 
 
@@ -393,7 +382,7 @@ async def _lock_device(db: AsyncSession, device_id: int, execution_id: int) -> b
         .values(status="busy", locked_by_execution=execution_id, updated_at=datetime.now(UTC))
         .returning(Device.id)
     )
-    await db.commit()
+    await db.flush()
     return result.scalar_one_or_none() is not None
 
 
@@ -650,7 +639,7 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
     await db.flush()
     if claimed.scalar_one_or_none() is None:
         # 已被其他调用方汇总：此调用方不重复汇总
-        await db.rollback()
+        await db.flush()
         return
     execution.status = status_
     execution.finished_at = now
@@ -775,17 +764,7 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
     await db.execute(
         update(ExecutionQueue).where(ExecutionQueue.execution_id == execution.id).values(status="done")
     )
-    await db.commit()
-
-
-async def _default_agent_sender(agent_id: int, payload: dict) -> bool:
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.post(
-            f"{settings.backend_base_url}/internal/ws/agents/{agent_id}/send",
-            json=payload,
-            headers={"X-Internal-Token": settings.internal_token},
-        )
-        return resp.status_code in (200, 202)
+    await db.flush()
 
 
 async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[dict]:
@@ -850,8 +829,8 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
             entry = dict(raw_step)
             order = int(entry.get("order") or 0)
             phase = str(entry.get("phase") or "case_main")
-            if phase in _LEGACY_PHASE_MAP:
-                phase = _legacy_phase_to_exec_phase(phase)
+            if phase in _PHASE_MAP:
+                phase = _PHASE_MAP[phase]
             step_id = step_id_by_key.get((case.id, phase, order))
             if step_id is None:
                 raise RuntimeError(
@@ -885,6 +864,8 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
     ).scalars().all()
     steps_by_suite: dict[int, list[ExecutionStep]] = {}
     for st in suite_steps:
+        if st.execution_suite_id is None:
+            continue
         steps_by_suite.setdefault(st.execution_suite_id, []).append(st)
 
     payload_suites: list[dict] = []
@@ -943,95 +924,6 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
     return payload_suites
 
 
-async def run_execution(
-    db: AsyncSession,
-    execution_id: int,
-    worker_id: str,
-    *,
-    agent_sender: Callable[[int, dict], Awaitable[bool]] | None = None,
-    poll_interval: float = 5.0,
-) -> None:
-    agent_sender = agent_sender or _default_agent_sender
-    execution = await db.get(Execution, execution_id)
-    if execution is None:
-        return
-
-    # CR-12：原子认领 queued → running，杜绝与「取消 queued」竞争；
-    # rowcount 为 0 说明已被取消/已非排队态，直接结束队列项。
-    claimed = await db.execute(
-        update(Execution)
-        .where(Execution.id == execution_id, Execution.status == "queued")
-        .values(
-            status="running",
-            session_token=secrets.token_urlsafe(32),
-            started_at=datetime.now(UTC),
-        )
-        .returning(Execution.id)
-    )
-    await db.commit()
-    if claimed.scalar_one_or_none() is None:
-        logger.info("[%s] execution=%s 已非 queued（可能已被取消），跳过", worker_id, execution_id)
-        await db.execute(
-            update(ExecutionQueue)
-            .where(ExecutionQueue.execution_id == execution_id)
-            .values(status="done")
-        )
-        await db.commit()
-        return
-    await db.refresh(execution)
-
-    try:
-        await create_execution_cases_from_execution(db, execution)
-    except ValueError as exc:
-        await _mark_terminal(db, execution, "error", f"变量渲染失败: {exc}")
-        return
-
-    device = await select_and_lock_device(db, execution)
-    if device is None:
-        await _mark_terminal(db, execution, "error", "无可用的在线 Agent/设备")
-        return
-
-    execution.device_id = device.id
-    await db.commit()
-    logger.info("[%s] execution=%s 开始执行，设备=%s", worker_id, execution.id, device.name)
-
-    payload_suites = await _build_suites_payload(db, execution)
-    ok = await agent_sender(
-        device.agent_id,
-        {
-            "type": "start_test",
-            "execution_id": execution.id,
-            "session_token": execution.session_token,
-            "parameters": execution.parameters,
-            "protocol_version": protocol_version(),
-            "device": {"udid": device.udid, "platform": device.platform},
-            "suites": payload_suites,
-        },
-    )
-    if not ok:
-        await _mark_terminal(db, execution, "error", "Agent 不在线或未连接 WS，无法开始执行")
-        return
-
-    # Agent 经 WS 回传状态由 FastAPI 落库（§10.1）；Worker 轮询终态
-    while True:
-        current = await db.get(Execution, execution.id, populate_existing=True)
-        if current is None:
-            return
-        if current.status in TERMINAL_STATES:
-            await _mark_terminal(db, current, current.status)
-            return
-        if current.status == "stopping":
-            await agent_sender(device.agent_id, {"type": "stop_test", "execution_id": execution.id})
-            # Windows 方案 §2：停止宽限期从 stop_requested_at 起算，超时强制终态（与 timeout_scan 同口径）
-            if _stop_grace_exceeded(current):
-                await _mark_terminal(
-                    db, current, "stopped",
-                    f"停止宽限期超时（>{settings.execution_stop_grace_seconds}s），强制结束",
-                )
-                return
-        await asyncio.sleep(poll_interval)
-
-
 # ---------- 扫描任务（仅 worker-001 启用） ----------
 
 
@@ -1059,7 +951,7 @@ async def reclaim_stale_claimed(db: AsyncSession, stale_minutes: int = 10) -> No
             row.status = "pending"
             row.claimed_by = None
             row.claimed_at = None
-    await db.commit()
+    await db.flush()
 
 
 async def timeout_scan(db: AsyncSession) -> None:
@@ -1132,4 +1024,4 @@ async def agent_heartbeat_scan(db: AsyncSession) -> None:
                     await _mark_terminal(db, execution, "stopped", "Agent 心跳超时失联（停止中）")
             device.status = "idle"
             device.locked_by_execution = None
-    await db.commit()
+    await db.flush()

@@ -96,14 +96,13 @@ def _is_allowed(finding: Finding) -> bool:
     if finding.category == "session_factory" and path in {
         "app/seed.py",
         "app/services/worker_runtime.py",
+        "app/services/ws_ingest_service.py",
         "app/ws/routes.py",
     }:
         return True
     if path == "app/core/database.py":
         return True
     if path.startswith("app/repositories/"):
-        if path in {"app/repositories/worker.py", "app/repositories/ws_handlers.py", "app/repositories/ws_routes.py"} and finding.category == "transaction":
-            return True
         return finding.category != "transaction" and finding.category != "session_factory"
     if path.startswith("app/services/") and finding.category == "transaction":
         return finding.operation in {"commit", "rollback"}

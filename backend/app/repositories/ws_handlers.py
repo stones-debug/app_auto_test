@@ -19,7 +19,7 @@ from app.models import (
 )
 from app.services.screenshot_store import validate_object_key
 from app.services.worker_service import min_agent_version
-from app.ws.managers import agent_manager, execution_manager
+from app.ws.managers import agent_manager
 
 TERMINAL_STATES = {"passed", "failed", "error", "stopped", "cancelled"}
 WRITE_STATES = {"running", "stopping"}
@@ -197,7 +197,7 @@ async def mark_agent_offline(db: AsyncSession, agent_id: int) -> None:
     agent = await db.get(Agent, agent_id)
     if agent is not None:
         agent.status = "offline"
-        await db.commit()
+        await db.flush()
 
 
 def version_supported(version: str | None, minimum: str) -> bool:
@@ -242,7 +242,7 @@ async def handle_register(db: AsyncSession, ws: WebSocket, payload: dict) -> dic
         agent.platform = payload["platform"]
     if payload.get("version"):
         agent.version = payload["version"]
-    await db.commit()
+    await db.flush()
     await agent_manager.connect(agent.id, ws)
     return {"type": "registered", "agent_id": agent.id, "status": "ok"}
 
@@ -252,7 +252,7 @@ async def handle_heartbeat(db: AsyncSession, agent_id: int, _payload: dict) -> N
     if agent is not None:
         agent.status = "online"
         agent.last_heartbeat = datetime.now(UTC)
-        await db.commit()
+        await db.flush()
 
 
 async def handle_device_list(db: AsyncSession, agent_id: int, payload: dict) -> None:
@@ -300,10 +300,10 @@ async def handle_device_list(db: AsyncSession, agent_id: int, payload: dict) -> 
         if d.udid not in reported_udids and d.locked_by_execution is None:
             d.status = "offline"
             d.last_heartbeat = datetime.now(UTC)
-    await db.commit()
+    await db.flush()
 
 
-async def handle_log(db: AsyncSession, agent_id: int, payload: dict) -> None:
+async def handle_log(db: AsyncSession, agent_id: int, payload: dict) -> dict | None:
     execution_id = payload.get("execution_id")
     execution = await _bound_execution(db, agent_id, execution_id, payload.get("session_token"))
     if execution is None:
@@ -315,22 +315,19 @@ async def handle_log(db: AsyncSession, agent_id: int, payload: dict) -> None:
         source="agent",
     )
     db.add(log)
-    await db.commit()
+    await db.flush()
     if execution_id:
-        await execution_manager.broadcast(
-            execution_id,
-            {
-                "type": "log",
-                "execution_id": execution_id,
-                "level": log.level,
-                "message": log.message,
-                "step_order": payload.get("step_order"),
-                "timestamp": datetime.now(UTC).isoformat(),
-            },
-        )
+        return {
+            "type": "log",
+            "execution_id": execution_id,
+            "level": log.level,
+            "message": log.message,
+            "step_order": payload.get("step_order"),
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
 
 
-async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> None:
+async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> dict | None:
     execution_id = payload.get("execution_id")
     if execution_id is None:
         return
@@ -357,7 +354,7 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
                 source="agent",
             )
         )
-        await db.commit()
+        await db.flush()
         return
     step_order = step.step_order
 
@@ -366,14 +363,22 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
 
     # 从快照取下发参数（用例 steps_snapshot 或套件 setup/teardown snapshot）
     snapshot_parameters: dict = {}
+    suite = parent_suite
     if parent_case is not None:
         snap = _find_snapshot_step(parent_case.steps_snapshot, step_order)
-        snapshot_parameters = snap.get("params")
+        params = snap.get("params")
+        if isinstance(params, dict):
+            snapshot_parameters = params
     else:
-        snap = _find_snapshot_step(parent_suite.setup_steps_snapshot, step_order)
+        if parent_suite is None:
+            return
+        suite = parent_suite
+        snap = _find_snapshot_step(suite.setup_steps_snapshot, step_order)
         if not snap:
-            snap = _find_snapshot_step(parent_suite.teardown_steps_snapshot, step_order)
-        snapshot_parameters = snap.get("params")
+            snap = _find_snapshot_step(suite.teardown_steps_snapshot, step_order)
+        params = snap.get("params")
+        if isinstance(params, dict):
+            snapshot_parameters = params
     if not isinstance(snapshot_parameters, dict):
         snapshot_parameters = {}
 
@@ -396,40 +401,42 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
         elif parent_case.status not in TERMINAL_STATES:
             # Step 7.2：已终态的用例不被迟到的步骤结果回退为 running
             parent_case.status = "running"
+        parent_status = parent_case.status
     else:
-        if parent_suite.started_at is None:
-            parent_suite.started_at = now
+        if parent_suite is None:
+            return
+        suite = parent_suite
+        if suite.started_at is None:
+            suite.started_at = now
         if step.status == "failed":
-            parent_suite.status = "failed"
-        elif parent_suite.status not in TERMINAL_STATES:
-            parent_suite.status = "running"
+            suite.status = "failed"
+        elif suite.status not in TERMINAL_STATES:
+            suite.status = "running"
+        parent_status = suite.status
 
-    await db.commit()
+    await db.flush()
 
-    await execution_manager.broadcast(
-        execution_id,
-        {
-            "type": "step_result",
-            "execution_id": execution_id,
-            "case_id": parent_case.case_id if parent_case else None,
-            "execution_case_id": parent_case.id if parent_case else None,
-            "execution_suite_id": parent_suite.id if parent_suite else None,
-            "execution_step_id": step.id,
-            "step_order": step_order,
-            "phase": exec_phase,
-            "status": step.status,
-            "case_status": parent_case.status if parent_case else parent_suite.status,
-            "duration": step.duration,
-            "actual_value": step.actual_value,
-            "error_message": step.error_message,
-            "screenshot_url": step.screenshot_path,
-            "artifact_id": step.id if step.screenshot_path else None,
-            "timestamp": now.isoformat(),
-        },
-    )
+    return {
+        "type": "step_result",
+        "execution_id": execution_id,
+        "case_id": parent_case.case_id if parent_case else None,
+        "execution_case_id": parent_case.id if parent_case else None,
+        "execution_suite_id": parent_suite.id if parent_suite else None,
+        "execution_step_id": step.id,
+        "step_order": step_order,
+        "phase": exec_phase,
+        "status": step.status,
+        "case_status": parent_status,
+        "duration": step.duration,
+        "actual_value": step.actual_value,
+        "error_message": step.error_message,
+        "screenshot_url": step.screenshot_path,
+        "artifact_id": step.id if step.screenshot_path else None,
+        "timestamp": now.isoformat(),
+    }
 
 
-async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict) -> None:
+async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict) -> dict | None:
     execution_id = payload.get("execution_id")
     if execution_id is None:
         return
@@ -467,31 +474,28 @@ async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict
             continue
         normalized_assertions.append(normalized)
     if not normalized_assertions and payload.get("assertions"):
-        await db.commit()
+        await db.flush()
         return
     if any(item["status"] == "fail" for item in normalized_assertions):
         step.status = "failed"
         step.error_message = step.error_message or "步骤后断言失败"
         execution_case.status = "failed"
     now = datetime.now(UTC)
-    await db.commit()
+    await db.flush()
     # V2 §8.2：assertion 广播（前端按 execution_id+case_id+assertions 幂等合并）
-    await execution_manager.broadcast(
-        execution_id,
-        {
-            "type": "assertion_result",
-            "execution_id": execution_id,
-            "case_id": execution_case.case_id,
-            "execution_case_id": execution_case.id,
-            "execution_step_id": step.id,
-            "step_order": payload.get("step_order"),
-            "assertions": normalized_assertions,
-            "timestamp": now.isoformat(),
-        },
-    )
+    return {
+        "type": "assertion_result",
+        "execution_id": execution_id,
+        "case_id": execution_case.case_id,
+        "execution_case_id": execution_case.id,
+        "execution_step_id": step.id,
+        "step_order": payload.get("step_order"),
+        "assertions": normalized_assertions,
+        "timestamp": now.isoformat(),
+    }
 
 
-async def handle_case_status(db: AsyncSession, agent_id: int, payload: dict) -> None:
+async def handle_case_status(db: AsyncSession, agent_id: int, payload: dict) -> dict | None:
     """协议 V2：用例级状态更新（{execution_case_id, status: running/terminal, error_message?}）。"""
     execution_id = payload.get("execution_id")
     case_pk = payload.get("execution_case_id")
@@ -525,23 +529,20 @@ async def handle_case_status(db: AsyncSession, agent_id: int, payload: dict) -> 
             parent_case.started_at = now
     if payload.get("error_message") is not None:
         parent_case.error_message = payload["error_message"]
-    await db.commit()
-    await execution_manager.broadcast(
-        execution_id,
-        {
-            "type": "case_status",
-            "execution_id": execution_id,
-            "execution_case_id": parent_case.id,
-            "case_id": parent_case.case_id,
-            "status": parent_case.status,
-            "duration": parent_case.duration,
-            "error_message": parent_case.error_message,
-            "timestamp": now.isoformat(),
-        },
-    )
+    await db.flush()
+    return {
+        "type": "case_status",
+        "execution_id": execution_id,
+        "execution_case_id": parent_case.id,
+        "case_id": parent_case.case_id,
+        "status": parent_case.status,
+        "duration": parent_case.duration,
+        "error_message": parent_case.error_message,
+        "timestamp": now.isoformat(),
+    }
 
 
-async def handle_suite_status(db: AsyncSession, agent_id: int, payload: dict) -> None:
+async def handle_suite_status(db: AsyncSession, agent_id: int, payload: dict) -> dict | None:
     """协议 V2：套件级状态更新（{execution_suite_id, status, error_message?}）。"""
     suite_pk = payload.get("execution_suite_id")
     if suite_pk is None:
@@ -568,20 +569,17 @@ async def handle_suite_status(db: AsyncSession, agent_id: int, payload: dict) ->
             suite.started_at = now
     if payload.get("error_message") is not None:
         suite.error_message = payload["error_message"]
-    await db.commit()
-    await execution_manager.broadcast(
-        suite.execution_id,
-        {
-            "type": "suite_status",
-            "execution_id": suite.execution_id,
-            "execution_suite_id": suite.id,
-            "suite_id": suite.suite_id,
-            "status": suite.status,
-            "duration": suite.duration,
-            "error_message": suite.error_message,
-            "timestamp": now.isoformat(),
-        },
-    )
+    await db.flush()
+    return {
+        "type": "suite_status",
+        "execution_id": suite.execution_id,
+        "execution_suite_id": suite.id,
+        "suite_id": suite.suite_id,
+        "status": suite.status,
+        "duration": suite.duration,
+        "error_message": suite.error_message,
+        "timestamp": now.isoformat(),
+    }
 
 
 async def _stored_execution_terminal(
@@ -634,7 +632,7 @@ async def _stored_execution_terminal(
     return None, None
 
 
-async def handle_execution_result(db: AsyncSession, agent_id: int, payload: dict) -> bool:
+async def handle_execution_result(db: AsyncSession, agent_id: int, payload: dict) -> dict | bool:
     execution_id = payload.get("execution_id")
     execution = await _bound_execution(db, agent_id, execution_id, payload.get("session_token"))
     if execution is None:
@@ -689,19 +687,18 @@ async def handle_execution_result(db: AsyncSession, agent_id: int, payload: dict
                 source="agent",
             )
         )
-    await db.commit()
+    await db.flush()
     # V2 §8.2：completed 携带 report_id（若已生成）
     report = (
         await db.execute(select(Report).where(Report.execution_id == execution_id))
     ).scalar_one_or_none()
-    await execution_manager.broadcast(
-        execution_id,
-        {
+    return {
+        "ack": True,
+        "event": {
             "type": "completed",
             "execution_id": execution_id,
             "status": status,
             "report_id": report.id if report else None,
             "timestamp": now.isoformat(),
         },
-    )
-    return True
+    }

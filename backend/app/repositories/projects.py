@@ -160,7 +160,7 @@ async def list_members(db: AsyncSession, project_id: int) -> list[tuple[ProjectM
         .where(ProjectMember.project_id == project_id)
         .order_by(ProjectMember.id)
     )
-    return list(rows.all())
+    return list(rows.tuples().all())
 
 
 async def list_member_candidates(

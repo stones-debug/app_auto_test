@@ -100,7 +100,7 @@ async def create(
 async def update_fields(
     variable: Variable, *, fields: set[str], value: str | None, description: str | None
 ) -> Variable:
-    if "value" in fields:
+    if "value" in fields and value is not None:
         variable.value = value
     if "description" in fields:
         variable.description = description

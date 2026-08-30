@@ -19,8 +19,10 @@ from app.models import (
 from app.repositories import execution_tree
 
 
-async def get_by_id(db: AsyncSession, execution_id: int) -> Execution | None:
-    return await db.get(Execution, execution_id)
+async def get_by_id(
+    db: AsyncSession, execution_id: int, *, populate_existing: bool = False
+) -> Execution | None:
+    return await db.get(Execution, execution_id, populate_existing=populate_existing)
 
 
 async def update_state(
@@ -126,14 +128,23 @@ async def get_artifact_step(db: AsyncSession, execution_id: int, artifact_id: in
 async def stop_queued(db: AsyncSession, execution_id: int, now) -> int:
     result = await db.execute(update(Execution).where(Execution.id == execution_id, Execution.status == "queued").values(status="cancelled", finished_at=now, stop_requested_at=now, finalized_at=now))
     await db.execute(update(ExecutionQueue).where(ExecutionQueue.execution_id == execution_id).values(status="done"))
-    return result.rowcount
+    return int(getattr(result, "rowcount", 0))
 
 
 async def stop_running(db: AsyncSession, execution_id: int, now) -> int:
     result = await db.execute(update(Execution).where(Execution.id == execution_id, Execution.status == "running").values(status="stopping", stop_requested_at=now))
-    return result.rowcount
+    return int(getattr(result, "rowcount", 0))
+
+
+async def claim_running(db: AsyncSession, execution_id: int, session_token: str, now) -> bool:
+    result = await db.execute(update(Execution).where(Execution.id == execution_id, Execution.status == "queued").values(status="running", session_token=session_token, started_at=now).returning(Execution.id))
+    return result.scalar_one_or_none() is not None
+
+
+async def mark_queue_done(db: AsyncSession, execution_id: int) -> None:
+    await db.execute(update(ExecutionQueue).where(ExecutionQueue.execution_id == execution_id).values(status="done"))
 
 
 async def delete_logs_before(db: AsyncSession, cutoff) -> int:
     result = await db.execute(delete(ExecutionLog).where(ExecutionLog.created_at < cutoff))
-    return result.rowcount
+    return int(getattr(result, "rowcount", 0))

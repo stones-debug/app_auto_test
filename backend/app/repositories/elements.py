@@ -50,11 +50,13 @@ async def update_module(
     module: TestModule, *, fields: set[str], name: str | None, parent_id: int | None, sort_order: int | None
 ) -> TestModule:
     if "name" in fields:
-        module.name = name
+        if name is not None:
+            module.name = name
     if "parent_id" in fields:
         module.parent_id = parent_id
     if "sort_order" in fields:
-        module.sort_order = sort_order
+        if sort_order is not None:
+            module.sort_order = sort_order
     return module
 
 
@@ -75,7 +77,7 @@ def _element_conditions(
     locator_type: str = "",
     project_id: int | None = None,
 ):
-    conditions = [TestElement.deleted_at.is_(None)]
+    conditions: list[Any] = [TestElement.deleted_at.is_(None)]
     if project_id is not None:
         conditions.append(TestElement.project_id == project_id)
     if keyword:
@@ -124,7 +126,7 @@ async def list_page(
         .offset(offset)
         .limit(limit)
     )
-    return count or 0, list(rows.all())
+    return count or 0, list(rows.tuples().all())
 
 
 async def export_rows(
@@ -150,7 +152,7 @@ async def export_rows(
         .where(*conditions)
         .order_by(TestElement.created_at.desc())
     )
-    return count or 0, list(rows.all())
+    return count or 0, list(rows.tuples().all())
 
 
 async def get_by_id(db: AsyncSession, element_id: int) -> TestElement | None:
@@ -166,7 +168,7 @@ async def get_enriched(
         .outerjoin(User, TestElement.created_by == User.id)
         .where(TestElement.id == element_id)
     )
-    return row.first()
+    return row.tuples().first()
 
 
 async def get_project(db: AsyncSession, project_id: int) -> Project | None:
@@ -249,13 +251,13 @@ async def find_by_ids(db: AsyncSession, ids: set[int]) -> list[TestElement]:
 
 async def list_pages(db: AsyncSession, project_id: int | None = None):
     normalized_page = func.coalesce(func.nullif(func.btrim(TestElement.page_name), ""), "未分组")
-    conditions = [TestElement.deleted_at.is_(None)]
+    conditions: list[Any] = [TestElement.deleted_at.is_(None)]
     if project_id is not None:
         conditions.append(TestElement.project_id == project_id)
     rows = await db.execute(
         select(normalized_page, func.count()).where(*conditions).group_by(normalized_page)
     )
-    counts = dict(rows.all())
+    counts = dict(rows.tuples().all())
     groups = await db.execute(select(ElementGroup).order_by(ElementGroup.id))
     return counts, list(groups.scalars().all())
 
@@ -295,7 +297,7 @@ async def list_page_counts(db: AsyncSession, project_id: int) -> list[tuple[str,
         .where(TestElement.project_id == project_id, TestElement.deleted_at.is_(None))
         .group_by(normalized_page)
     )
-    return list(rows.all())
+    return list(rows.tuples().all())
 
 
 async def add_imported(
