@@ -12,6 +12,10 @@ async def get_by_id(db: AsyncSession, suite_id: int) -> TestSuite | None:
     return await db.get(TestSuite, suite_id)
 
 
+async def get_case_relation(db: AsyncSession, suite_id: int, case_id: int) -> TestSuiteCase | None:
+    return (await db.execute(select(TestSuiteCase).where(TestSuiteCase.suite_id == suite_id, TestSuiteCase.case_id == case_id))).scalar_one_or_none()
+
+
 async def list_page(
     db: AsyncSession,
     *,

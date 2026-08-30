@@ -2,7 +2,6 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, status
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -16,18 +15,19 @@ from app.core.database import get_db
 from app.core.errors import ErrorCode, api_error
 from app.core.ratelimit import rate_limit
 from app.models import (
-    Agent,
-    AppProfile,
     Device,
     Execution,
-    ExecutionCase,
-    ExecutionStep,
-    Project,
     TestCase,
     TestSuite,
-    TestSuiteCase,
     User,
 )
+from app.repositories import agents as agents_repo
+from app.repositories import cases as cases_repo
+from app.repositories import devices as devices_repo
+from app.repositories import executions as executions_repo
+from app.repositories import projects as projects_repo
+from app.repositories import suites as suites_repo
+from app.repositories.app_profiles import profiles as profiles_repo
 from app.schemas.execution import (
     BatchExecutionCreate,
     ExecutionCaseOut,
@@ -113,7 +113,7 @@ async def preview_execution(
 
     rate_limit_check("preview", f"u{user.id}:p{body.project_id}", settings.rate_limit_preview_per_minute)
     # 读取当前档案/项目 revision 作为 expected（预检返回给前端，供提交时二次校验）
-    profile = await db.get(AppProfile, body.app_profile_id)
+    profile = await profiles_repo.get_by_id(db, body.app_profile_id)
     if profile is None or profile.deleted_at is not None or profile.project_id != body.project_id:
         raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.APP_PROFILE_NOT_FOUND, "APP 档案不存在")
     expected_profile_rev = profile.revision
@@ -176,7 +176,7 @@ async def preview_execution(
 
 
 async def _get_execution_or_404(execution_id: int, db: AsyncSession) -> Execution:
-    execution = await db.get(Execution, execution_id)
+    execution = await executions_repo.get_by_id(db, execution_id)
     if execution is None:
         raise api_error(status.HTTP_404_NOT_FOUND, "EXECUTION_NOT_FOUND", "执行记录不存在")
     return execution
@@ -193,14 +193,14 @@ async def _require_execution_write(execution: Execution, user: User, db: AsyncSe
 
 
 async def _get_case_or_404(case_id: int, db: AsyncSession) -> TestCase:
-    case = await db.get(TestCase, case_id)
+    case = await cases_repo.get_by_id(db, case_id)
     if case is None or case.deleted_at is not None:
         raise api_error(status.HTTP_404_NOT_FOUND, "CASE_NOT_FOUND", "用例不存在")
     return case
 
 
 async def _get_suite_or_404(suite_id: int, db: AsyncSession) -> TestSuite:
-    suite = await db.get(TestSuite, suite_id)
+    suite = await suites_repo.get_by_id(db, suite_id)
     if suite is None or suite.deleted_at is not None:
         raise api_error(status.HTTP_404_NOT_FOUND, "SUITE_NOT_FOUND", "套件不存在")
     return suite
@@ -220,11 +220,7 @@ async def _validate_context_suite(
     case = await _get_case_or_404(target_ids[0], db)
     if suite.project_id != project_id or case.project_id != project_id:
         raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_CONTEXT_INVALID", "套件/用例/项目必须属于同一项目")
-    member = (
-        await db.execute(
-            select(TestSuiteCase).where(TestSuiteCase.suite_id == suite.id, TestSuiteCase.case_id == case.id)
-        )
-    ).scalar_one_or_none()
+    member = await suites_repo.get_case_relation(db, suite.id, case.id)
     if member is None:
         raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_CONTEXT_INVALID", "用例不属于该套件")
 
@@ -251,7 +247,7 @@ async def _validate_device_for_execution(
             code="DEVICE_BUSY",
             message="设备忙或已被其他执行占用",
         )
-    agent = await db.get(Agent, device.agent_id)
+    agent = await agents_repo.get_by_id(db, device.agent_id)
     if agent is None or agent.status != "online":
         raise api_error(
             status_code=status.HTTP_409_CONFLICT,
@@ -365,77 +361,25 @@ async def list_executions(
 ):
     if project_id is not None:
         await get_project_permission(project_id, user, db)
-        query = select(Execution).where(Execution.project_id == project_id)
     else:
         # Step 9：owner/member/public viewer 使用统一可见范围（公开项目执行可发现）
-        query = select(Execution).where(
-            Execution.project_id.in_(await visible_project_ids(db, user.id))
-        )
+        project_id = None
 
-    if status:
-        query = query.where(Execution.status == status)
-    if type:
-        query = query.where(Execution.type == type)
-    if device_id is not None:
-        query = query.where(Execution.device_id == device_id)
-    if created_from is not None:
-        query = query.where(Execution.created_at >= created_from)
-    if created_to is not None:
-        query = query.where(Execution.created_at <= created_to)
-    if keyword:
-        # 匹配执行 ID 或关联对象名（case/suite 名称）；先解析数字 ID
-        like = f"%{keyword}%"
-        name_cond = Execution.case_id.in_(
-            select(TestCase.id).where(TestCase.name.ilike(like))
-        ) | Execution.suite_id.in_(select(TestSuite.id).where(TestSuite.name.ilike(like)))
-        if keyword.isdigit():
-            query = query.where((Execution.id == int(keyword)) | name_cond)
-        else:
-            query = query.where(name_cond)
-
-    # CR-15：count 与 items 从同一过滤后的 base query 派生
-    count_query = select(func.count()).select_from(query.subquery())
-    total = await db.scalar(count_query)
-    rows = (
-        await db.execute(
-            query.order_by(Execution.id.desc()).offset(pagination.offset).limit(pagination.limit)
-        )
-    ).scalars().all()
-
-    case_ids = {r.case_id for r in rows if r.case_id}
-    suite_ids = {r.suite_id for r in rows if r.suite_id}
-    project_ids = {r.project_id for r in rows}
-    device_ids = {r.device_id for r in rows if r.device_id}
-    creator_ids = {r.created_by for r in rows if r.created_by}
-    case_names: dict[int, str] = {}
-    suite_names: dict[int, str] = {}
-    project_names: dict[int, str] = {}
-    device_names: dict[int, str] = {}
-    creator_names: dict[int, str] = {}
-    if case_ids:
-        cases = (await db.execute(select(TestCase).where(TestCase.id.in_(case_ids)))).scalars().all()
-        case_names = {c.id: c.name for c in cases}
-    if suite_ids:
-        suites = (await db.execute(select(TestSuite).where(TestSuite.id.in_(suite_ids)))).scalars().all()
-        suite_names = {s.id: s.name for s in suites}
-    if project_ids:
-        projects = (await db.execute(select(Project).where(Project.id.in_(project_ids)))).scalars().all()
-        project_names = {p.id: p.name for p in projects}
-    if device_ids:
-        devices = (await db.execute(select(Device).where(Device.id.in_(device_ids)))).scalars().all()
-        device_names = {d.id: d.name for d in devices}
-    if creator_ids:
-        creators = (await db.execute(select(User).where(User.id.in_(creator_ids)))).scalars().all()
-        creator_names = {u.id: u.username for u in creators}
+    total, rows, names = await executions_repo.list_page(
+        db, project_ids=await visible_project_ids(db, user.id), project_id=project_id,
+        status=status, type_=type, keyword=keyword, device_id=device_id,
+        created_from=created_from, created_to=created_to,
+        offset=pagination.offset, limit=pagination.limit,
+    )
 
     items = []
     for row in rows:
         item = ExecutionListItem.model_validate(row)
-        item.case_name = case_names.get(row.case_id) if row.case_id else None
-        item.suite_name = suite_names.get(row.suite_id) if row.suite_id else None
-        item.project_name = project_names.get(row.project_id)
-        item.device_name = device_names.get(row.device_id) if row.device_id else None
-        item.created_by_name = creator_names.get(row.created_by) if row.created_by else None
+        item.case_name = names["case"].get(row.case_id) if row.case_id else None
+        item.suite_name = names["suite"].get(row.suite_id) if row.suite_id else None
+        item.project_name = names["project"].get(row.project_id)
+        item.device_name = names["device"].get(row.device_id) if row.device_id else None
+        item.created_by_name = names["creator"].get(row.created_by) if row.created_by else None
         items.append(item)
     return {"total": total or 0, "page": pagination.page, "page_size": pagination.page_size, "items": items}
 
@@ -466,13 +410,13 @@ async def get_execution(
     detail = ExecutionDetail.model_validate(execution)
     detail.suites = suite_outs
     detail.summary = _execution_summary(suite_outs)
-    project = await db.get(Project, execution.project_id)
+    project = await projects_repo.get_by_id(db, execution.project_id)
     detail.project_name = project.name if project else None
     if execution.device_id:
-        device = await db.get(Device, execution.device_id)
+        device = await devices_repo.get_by_id(db, execution.device_id)
         detail.device_name = device.name if device else None
     if execution.created_by:
-        creator = await db.get(User, execution.created_by)
+        creator = await projects_repo.get_user(db, execution.created_by)
         detail.created_by_name = creator.username if creator else None
     return detail
 
@@ -503,16 +447,7 @@ async def get_execution_artifact(
 ):
     execution = await _get_execution_or_404(execution_id, db)
     await _require_execution_access(execution, user, db)
-    step = (
-        await db.execute(
-            select(ExecutionStep)
-            .join(ExecutionCase, ExecutionStep.execution_case_id == ExecutionCase.id)
-            .where(
-                ExecutionCase.execution_id == execution_id,
-                ExecutionStep.id == artifact_id,
-            )
-        )
-    ).scalar_one_or_none()
+    step = await executions_repo.get_artifact_step(db, execution_id, artifact_id)
     if step is None or not step.screenshot_path:
         raise api_error(status.HTTP_404_NOT_FOUND, "EXECUTION_ARTIFACT_NOT_FOUND", "执行附件不存在")
     target = resolve_screenshot_path(execution_id, step.screenshot_path)

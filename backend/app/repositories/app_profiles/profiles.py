@@ -16,6 +16,7 @@ from app.models import (
     AppProfileSkipRule,
     AppProfileVariableOverride,
     Execution,
+    Project,
 )
 
 
@@ -39,6 +40,18 @@ async def list_for_project(
 
 async def get_by_id(db: AsyncSession, profile_id: int) -> AppProfile | None:
     return await db.get(AppProfile, profile_id)
+
+
+async def find_default(db: AsyncSession, project_id: int) -> AppProfile | None:
+    return (await db.execute(select(AppProfile).where(AppProfile.project_id == project_id, AppProfile.name == "通用配置（待调整）", AppProfile.status == "active", AppProfile.deleted_at.is_(None)))).scalar_one_or_none()
+
+
+async def lock_revision(db: AsyncSession, profile_id: int) -> int | None:
+    return await db.scalar(select(AppProfile.revision).where(AppProfile.id == profile_id, AppProfile.deleted_at.is_(None)).with_for_update())
+
+
+async def get_project_revision(db: AsyncSession, project_id: int) -> int | None:
+    return await db.scalar(select(Project.test_asset_revision).where(Project.id == project_id, Project.deleted_at.is_(None)).with_for_update())
 
 
 async def find_name_or_code_conflict(

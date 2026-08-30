@@ -7,42 +7,17 @@
 随后在 Python 中按 execution_case_id / step_id 分组并保持 order。
 """
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import ExecutionAssertion, ExecutionCase, ExecutionStep, ExecutionSuite
+from app.models import ExecutionCase, ExecutionStep
+from app.repositories import execution_tree
 
 
 async def load_case_tree(db: AsyncSession, execution_id: int) -> list[dict]:
     """返回 execution 的 case tree（dict 形式，供 API 与报告聚合复用）。"""
-    case_rows = (
-        await db.execute(
-            select(ExecutionCase)
-            .where(ExecutionCase.execution_id == execution_id)
-            .order_by(ExecutionCase.id)
-        )
-    ).scalars().all()
+    case_rows, steps, assertion_rows = await execution_tree.load_case_tree_rows(db, execution_id)
     if not case_rows:
         return []
-
-    case_ids = [c.id for c in case_rows]
-    steps = (
-        await db.execute(
-            select(ExecutionStep)
-            .where(ExecutionStep.execution_case_id.in_(case_ids))
-            .order_by(ExecutionStep.execution_case_id, ExecutionStep.step_order)
-        )
-    ).scalars().all()
-    step_ids = [step.id for step in steps]
-    assertion_rows = ()
-    if step_ids:
-        assertion_rows = (
-            await db.execute(
-                select(ExecutionAssertion)
-                .where(ExecutionAssertion.execution_step_id.in_(step_ids))
-                .order_by(ExecutionAssertion.execution_step_id, ExecutionAssertion.assertion_order)
-            )
-        ).scalars().all()
 
     # 键中的 case_id 来自 ExecutionStep.execution_case_id（可空列：套件阶段步骤不挂用例）。
     # 本函数的 steps 已按 execution_case_id.in_(case_ids) 过滤，运行时不为 None，
@@ -154,46 +129,9 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
     每个 suite 含 setup_steps / teardown_steps（快照 JSON + ExecutionStep(套件阶段) 行合并状态）
     与 cases（steps/assertions）。常数级查询：套件、用例、用例步骤、套件步骤、断言各一次。
     """
-    suite_rows = (
-        await db.execute(
-            select(ExecutionSuite)
-            .where(ExecutionSuite.execution_id == execution_id)
-            .order_by(ExecutionSuite.suite_order)
-        )
-    ).scalars().all()
+    suite_rows, cases, suite_step_rows, case_step_rows, assertion_rows = await execution_tree.load_suite_tree_rows(db, execution_id)
     if not suite_rows:
         return []
-    suite_ids = [s.id for s in suite_rows]
-    cases = (
-        await db.execute(
-            select(ExecutionCase)
-            .where(ExecutionCase.execution_id == execution_id)
-            .order_by(ExecutionCase.execution_suite_id, ExecutionCase.case_order)
-        )
-    ).scalars().all()
-    case_ids = [c.id for c in cases]
-
-    suite_step_rows = (
-        await db.execute(
-            select(ExecutionStep)
-            .where(ExecutionStep.execution_suite_id.in_(suite_ids))
-            .order_by(ExecutionStep.execution_suite_id, ExecutionStep.phase, ExecutionStep.step_order)
-        )
-    ).scalars().all()
-    case_step_rows = (
-        await db.execute(
-            select(ExecutionStep)
-            .where(ExecutionStep.execution_case_id.in_(case_ids))
-            .order_by(ExecutionStep.execution_case_id, ExecutionStep.step_order)
-        )
-    ).scalars().all() if case_ids else []
-    assertion_rows = (
-        await db.execute(
-            select(ExecutionAssertion)
-            .where(ExecutionAssertion.execution_step_id.in_([step.id for step in case_step_rows]))
-            .order_by(ExecutionAssertion.execution_step_id, ExecutionAssertion.assertion_order)
-        )
-    ).scalars().all() if case_step_rows else []
 
     # 同 load_case_tree：键中的 case_id 来自可空列，运行时已过滤但类型系统无法感知
     snapshot_parameters: dict[tuple[int | None, int], dict] = {}

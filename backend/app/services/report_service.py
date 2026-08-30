@@ -3,16 +3,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import reports_dir, settings
 from app.models import (
     Execution,
-    ExecutionExclusion,
-    ExecutionLog,
-    Report,
 )
+from app.repositories import executions as executions_repo
+from app.repositories import reports as reports_repo
 from app.services.execution_detail_service import load_case_tree, load_suite_tree
 from app.services.screenshot_store import resolve_screenshot_path, validate_object_key
 
@@ -97,7 +95,7 @@ async def get_report_detail(db: AsyncSession, execution_id: int) -> dict:
     回退 load_case_tree，避免套件执行重复查询、组装和序列化全部用例。
     日志先 count，超限时只返回最后 report_max_logs 条并保持正序。
     """
-    execution = await db.get(Execution, execution_id)
+    execution = await executions_repo.get_by_id(db, execution_id)
     if execution is None:
         raise LookupError(f"执行不存在: {execution_id}")
 
@@ -131,33 +129,9 @@ async def get_report_detail(db: AsyncSession, execution_id: int) -> dict:
         ]
 
     # Step 8：报告日志上限——先 count，超限取最后 N 条保持正序
-    logs_total = (
-        await db.scalar(
-            select(func.count()).select_from(ExecutionLog).where(ExecutionLog.execution_id == execution_id)
-        )
-    ) or 0
+    logs_total, report, exclusion_rows = await reports_repo.load_detail_rows(db, execution_id)
     logs_truncated = logs_total > settings.report_max_logs
-    log_query = (
-        select(ExecutionLog)
-        .where(ExecutionLog.execution_id == execution_id)
-        .order_by(ExecutionLog.id.desc() if logs_truncated else ExecutionLog.id)
-    )
-    if logs_truncated:
-        log_query = log_query.limit(settings.report_max_logs)
-        log_rows = (await db.execute(log_query)).scalars().all()[::-1]
-    else:
-        log_rows = (await db.execute(log_query)).scalars().all()
-
-    report = (
-        await db.execute(select(Report).where(Report.execution_id == execution_id))
-    ).scalar_one_or_none()
-    exclusion_rows = (
-        await db.execute(
-            select(ExecutionExclusion)
-            .where(ExecutionExclusion.execution_id == execution_id)
-            .order_by(ExecutionExclusion.id)
-        )
-    ).scalars().all()
+    log_rows = await reports_repo.list_logs(db, execution_id, limit=settings.report_max_logs if logs_truncated else None, reverse=logs_truncated)
 
     return {
         "execution": _execution_dict(execution),
@@ -272,9 +246,7 @@ async def render_report_html(db: AsyncSession, execution_id: int) -> Path:
     if html_path.exists():
         # CR-26：命中缓存时也幂等同步 DB report_path，避免崩溃后列表长期显示“按需”
         if _cache_version_ok(html_path):
-            report = (
-                await db.execute(select(Report).where(Report.execution_id == execution_id))
-            ).scalar_one_or_none()
+            report = await reports_repo.get_by_execution(db, execution_id)
             if report is not None and report.report_path != str(html_path):
                 report.report_path = str(html_path)
                 await db.commit()
@@ -301,9 +273,7 @@ async def render_report_html(db: AsyncSession, execution_id: int) -> Path:
     target_dir.mkdir(parents=True, exist_ok=True)
     html_path.write_text(html, encoding="utf-8")
 
-    report = (
-        await db.execute(select(Report).where(Report.execution_id == execution_id))
-    ).scalar_one_or_none()
+    report = await reports_repo.get_by_execution(db, execution_id)
     if report is not None:
         report.report_path = str(html_path)
         await db.commit()

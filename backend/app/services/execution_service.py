@@ -1,23 +1,21 @@
 from datetime import UTC, datetime
 
 from fastapi import status
-from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import app_profile_required_for_project, settings
 from app.core.errors import ErrorCode, api_error
 from app.models import (
-    AppProfile,
-    AppProfileRelease,
     Execution,
-    ExecutionExclusion,
     ExecutionLog,
-    ExecutionQueue,
-    Project,
     TestCase,
     TestSuite,
     User,
 )
+from app.repositories import executions as executions_repo
+from app.repositories import projects as projects_repo
+from app.repositories.app_profiles import profiles as profiles_repo
+from app.repositories.app_profiles import releases as releases_repo
 from app.services.profile_resolver import (
     ProfileEmpty,
     ProfileRevisionConflict,
@@ -46,37 +44,15 @@ async def apply_app_profile_feature_mode(db: AsyncSession, project_id: int, body
             message="必须选择 APP 档案和发布版本",
         )
 
-    profile = (
-        await db.execute(
-            select(AppProfile).where(
-                AppProfile.project_id == project_id,
-                AppProfile.name == "通用配置（待调整）",
-                AppProfile.status == "active",
-                AppProfile.deleted_at.is_(None),
-            )
-        )
-    ).scalar_one_or_none()
+    profile = await profiles_repo.find_default(db, project_id)
     if profile is None:
         raise api_error(
             status_code=status.HTTP_409_CONFLICT,
             code="DEFAULT_APP_PROFILE_MISSING",
             message="灰度项目缺少通用配置档案，请先运行回填脚本",
         )
-    release = (
-        await db.execute(
-            select(AppProfileRelease).where(
-                AppProfileRelease.profile_id == profile.id,
-                AppProfileRelease.status == "active",
-                AppProfileRelease.deleted_at.is_(None),
-            ).order_by(
-                (AppProfileRelease.version == "未标注历史版本").desc(),
-                AppProfileRelease.id,
-            )
-        )
-    ).scalars().first()
-    project_revision = await db.scalar(
-        select(Project.test_asset_revision).where(Project.id == project_id)
-    )
+    release = await releases_repo.find_active_for_profile(db, profile.id)
+    project_revision = await profiles_repo.get_project_revision(db, project_id)
     if release is None or project_revision is None:
         raise api_error(
             status_code=status.HTTP_409_CONFLICT,
@@ -99,11 +75,7 @@ async def _lock_and_verify_resolution_revisions(
     resolved_release_version: str,
 ) -> None:
     """提交执行前锁定双 revision，封闭预检解析与快照落库之间的竞态。"""
-    asset_revision = await db.scalar(
-        select(Project.test_asset_revision)
-        .where(Project.id == request.project_id, Project.deleted_at.is_(None))
-        .with_for_update()
-    )
+    asset_revision = await profiles_repo.get_project_revision(db, request.project_id)
     if asset_revision != resolved_asset_revision:
         raise api_error(
             status.HTTP_409_CONFLICT,
@@ -111,11 +83,7 @@ async def _lock_and_verify_resolution_revisions(
             "测试资产版本已变化，请重新预检",
             {"current": asset_revision or 0, "expected": resolved_asset_revision},
         )
-    profile_revision = await db.scalar(
-        select(AppProfile.revision)
-        .where(AppProfile.id == request.profile_id, AppProfile.deleted_at.is_(None))
-        .with_for_update()
-    )
+    profile_revision = await profiles_repo.lock_revision(db, request.profile_id)
     if profile_revision != resolved_profile_revision:
         raise api_error(
             status.HTTP_409_CONFLICT,
@@ -123,17 +91,9 @@ async def _lock_and_verify_resolution_revisions(
             "APP 档案版本已变化，请重新预检",
             {"current": profile_revision or 0, "expected": resolved_profile_revision},
         )
-    release_row = (
-        await db.execute(
-            select(AppProfileRelease.status, AppProfileRelease.version)
-            .where(
-                AppProfileRelease.id == request.release_id,
-                AppProfileRelease.profile_id == request.profile_id,
-                AppProfileRelease.deleted_at.is_(None),
-            )
-            .with_for_update()
-        )
-    ).one_or_none()
+    release_row = await releases_repo.lock_for_resolution(
+        db, release_id=request.release_id, profile_id=request.profile_id
+    )
     if (
         release_row is None
         or release_row.status != "active"
@@ -245,62 +205,24 @@ async def _create_execution_with_profile(
             {"size": snapshot_bytes},
         )
 
-    execution = Execution(
-        project_id=project_id,
-        type=type_,
-        suite_id=suite_id,
-        case_id=case_id,
-        device_id=device_id,
-        status="queued",
-        parameters=parameters or {},
-        timeout_seconds=timeout_seconds or settings.default_execution_timeout,
-        created_by=user.id,
-        retry_of=retry_of,
-        app_profile_id=body.app_profile_id,
-        app_profile_name_snapshot=result.profile_name,
-        app_release_id=body.app_release_id,
-        app_release_version_snapshot=result.release_version or "",
-        profile_revision=result.profile_revision,
-        test_asset_revision=result.test_asset_revision,
-        profile_resolution_summary={**result.summary},
-    )
-    db.add(execution)
-    await db.flush()
-
-    # 同事务固化：执行用例快照 + 排除项 + 队列
     import time as _time
-
-    from app.services.execution_snapshot import materialize_snapshot
-
     _t0 = _time.monotonic()
-    await materialize_snapshot(db, execution, result)
-    _t1 = _time.monotonic()
-
-    observe_snapshot(snapshot_bytes, (_t1 - _t0) * 1000.0)
-    for ex in result.exclusions:
-        display = ex.display_snapshot or {}
-        if ex.phase is not None:
-            display = {**display, "phase": ex.phase}
-        db.add(
-            ExecutionExclusion(
-                execution_id=execution.id,
-                app_profile_id=body.app_profile_id,
-                target_type=ex.target_type,
-                suite_id_snapshot=ex.suite_id,
-                suite_name_snapshot=display.get("suite_name"),
-                case_id_snapshot=ex.case_id,
-                case_name_snapshot=display.get("case_name"),
-                node_key=ex.node_key,
-                node_name_snapshot=display.get("node_name"),
-                source_type=ex.source_type,
-                reason_code=ex.reason_code,
-                reason_note=ex.reason_note,
-                details=display,
-            )
-        )
-    db.add(ExecutionQueue(execution_id=execution.id))
+    execution = await executions_repo.create_profiled(
+        db,
+        fields={
+            "project_id": project_id, "type": type_, "suite_id": suite_id,
+            "case_id": case_id, "device_id": device_id, "status": "queued",
+            "parameters": parameters or {}, "timeout_seconds": timeout_seconds or settings.default_execution_timeout,
+            "created_by": user.id, "retry_of": retry_of, "app_profile_id": body.app_profile_id,
+            "app_profile_name_snapshot": result.profile_name, "app_release_id": body.app_release_id,
+            "app_release_version_snapshot": result.release_version or "", "profile_revision": result.profile_revision,
+            "test_asset_revision": result.test_asset_revision, "profile_resolution_summary": {**result.summary},
+        },
+        result=result, app_profile_id=body.app_profile_id,
+    )
+    observe_snapshot(snapshot_bytes, (_time.monotonic() - _t0) * 1000.0)
     await db.commit()
-    await db.refresh(execution)
+    await executions_repo.refresh(db, execution)
     return execution
 
 
@@ -317,23 +239,15 @@ async def _create_and_enqueue(
     case_id: int | None = None,
     retry_of: int | None = None,
 ) -> Execution:
-    execution = Execution(
-        project_id=project_id,
-        type=type_,
-        suite_id=suite_id,
-        case_id=case_id,
-        device_id=device_id,
-        status="queued",
-        parameters=parameters or {},
-        timeout_seconds=timeout_seconds or settings.default_execution_timeout,
-        created_by=user.id,
-        retry_of=retry_of,
-    )
-    db.add(execution)
-    await db.flush()
-    db.add(ExecutionQueue(execution_id=execution.id))
+    execution = await executions_repo.create(db, fields={
+        "project_id": project_id, "type": type_, "suite_id": suite_id, "case_id": case_id,
+        "device_id": device_id, "status": "queued", "parameters": parameters or {},
+        "timeout_seconds": timeout_seconds or settings.default_execution_timeout,
+        "created_by": user.id, "retry_of": retry_of,
+    })
+    await executions_repo.enqueue(db, execution.id)
     await db.commit()
-    await db.refresh(execution)
+    await executions_repo.refresh(db, execution)
     return execution
 
 
@@ -413,28 +327,15 @@ async def stop_execution(db: AsyncSession, execution: Execution) -> str:
     """
     if execution.status == "queued":
         now = datetime.now(UTC)
-        result = await db.execute(
-            update(Execution)
-            .where(Execution.id == execution.id, Execution.status == "queued")
-            .values(status="cancelled", finished_at=now, stop_requested_at=now, finalized_at=now)
-        )
-        await db.execute(
-            update(ExecutionQueue)
-            .where(ExecutionQueue.execution_id == execution.id)
-            .values(status="done")
-        )
+        rowcount = await executions_repo.stop_queued(db, execution.id, now)
         await db.commit()
-        if result.rowcount != 1:
+        if rowcount != 1:
             raise api_error(status.HTTP_409_CONFLICT, ErrorCode.EXECUTION_NOT_STOPPABLE, "执行已非排队态，无法取消")
         return "cancelled"
     if execution.status == "running":
-        result = await db.execute(
-            update(Execution)
-            .where(Execution.id == execution.id, Execution.status == "running")
-            .values(status="stopping", stop_requested_at=datetime.now(UTC))
-        )
+        rowcount = await executions_repo.stop_running(db, execution.id, datetime.now(UTC))
         await db.commit()
-        if result.rowcount != 1:
+        if rowcount != 1:
             raise api_error(status.HTTP_409_CONFLICT, ErrorCode.EXECUTION_NOT_STOPPABLE, "执行已非运行态，无需停止")
         return "stopping"
     if execution.status == "stopping":
@@ -470,12 +371,10 @@ async def retry_execution(
         )
     from types import SimpleNamespace
 
-    from app.models import AppProfile, Project
-
-    profile = await db.get(AppProfile, execution.app_profile_id)
+    profile = await profiles_repo.get_by_id(db, execution.app_profile_id)
     if profile is None or profile.deleted_at is not None:
         raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.APP_PROFILE_NOT_FOUND, "APP 档案不存在")
-    project = await db.get(Project, execution.project_id)
+    project = await projects_repo.get_by_id(db, execution.project_id)
     body = SimpleNamespace(
         app_profile_id=execution.app_profile_id,
         app_release_id=execution.app_release_id,
@@ -511,21 +410,4 @@ async def get_execution_logs(
     排序使用 (created_at, id)，避免同毫秒日志漏读（after 游标仅支持 timestamp，
     同毫秒边界以 id 次序稳定分页，见文档注明）。
     """
-    query = select(ExecutionLog).where(ExecutionLog.execution_id == execution_id)
-    count_query = (
-        select(func.count())
-        .select_from(ExecutionLog)
-        .where(ExecutionLog.execution_id == execution_id)
-    )
-    if after_timestamp is not None:
-        query = query.where(ExecutionLog.created_at > after_timestamp)
-        count_query = count_query.where(ExecutionLog.created_at > after_timestamp)
-    total = await db.scalar(count_query)
-    rows = (
-        await db.execute(
-            query.order_by(ExecutionLog.created_at.asc(), ExecutionLog.id.asc())
-            .offset(offset)
-            .limit(limit)
-        )
-    ).scalars().all()
-    return rows, total or 0
+    return await executions_repo.list_logs(db, execution_id, after_timestamp, offset, limit)
