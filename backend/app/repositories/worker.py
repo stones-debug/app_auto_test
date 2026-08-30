@@ -93,11 +93,12 @@ def render_value(value, variables: dict):
     return value
 
 
-async def build_variable_map(
-    db: AsyncSession,
-    execution: Execution,
-    case: TestCase | None = None,
-) -> dict:
+async def build_base_variable_map(db: AsyncSession, execution: Execution) -> dict:
+    """最低两层变量：全局 → 项目。
+
+    用例/套件/执行参数由调用方按 §10.6 的固定顺序叠加，避免各处自行合并时
+    出现"后写入者反而优先级更低"的逆序。
+    """
     merged: dict = {}
     for v in (
         await db.execute(select(Variable).where(Variable.scope == "global"))
@@ -109,12 +110,33 @@ async def build_variable_map(
         )
     ).scalars().all():
         merged[v.name] = v.value
+    return merged
+
+
+async def build_variable_map(
+    db: AsyncSession,
+    execution: Execution,
+    case: TestCase | None = None,
+    *,
+    suite_id: int | None = None,
+    use_execution_suite: bool = True,
+) -> dict:
+    """按 §10.6 优先级构造变量表：全局 → 项目 → 用例 → 套件 → 执行参数。
+
+    suite_id 显式传入时以它为准（批量执行会逐套件物化）；未传入且
+    use_execution_suite 为真时退回 execution.suite_id（仅单套件执行）。
+    需要"明确无套件上下文"时传 use_execution_suite=False。
+    """
+    merged = await build_base_variable_map(db, execution)
     if case is not None and case.variables:
         merged.update(case.variables)
-    if execution.type == "suite" and execution.suite_id is not None:
+    target_suite_id = suite_id
+    if target_suite_id is None and use_execution_suite and execution.type == "suite":
+        target_suite_id = execution.suite_id
+    if target_suite_id is not None:
         for v in (
             await db.execute(
-                select(Variable).where(Variable.scope == "suite", Variable.suite_id == execution.suite_id)
+                select(Variable).where(Variable.scope == "suite", Variable.suite_id == target_suite_id)
             )
         ).scalars().all():
             merged[v.name] = v.value
@@ -253,25 +275,39 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
         suite_specs = [(int(sid), None) for sid in parameters.get("suite_ids") or []]
 
     created: list[ExecutionCase] = []
+    # §10.6 固定顺序：global → project → case → suite → 执行参数。
+    # 基础两层与执行参数在循环外求一次值；套件变量随套件切换，逐层叠加即可，
+    # 避免"先复制完整映射再用低优先级覆盖高优先级"的逆序写法。
+    base_map = await build_base_variable_map(db, execution)
+    execution_variables = parameters.get("variables") or {}
     for suite_order, (suite_id, selected_case_ids) in enumerate(suite_specs, start=1):
         suite = await db.get(TestSuite, suite_id) if suite_id is not None else None
         if suite_id is not None and (suite is None or suite.deleted_at is not None):
             continue
-        suite_variable_map = await build_variable_map(db, execution)
+        suite_variables: dict = {}
         if suite is None:
             suite_name = "虚拟套件"
-            setup_snapshot: list[dict] = []
-            teardown_snapshot: list[dict] = []
         else:
             suite_name = suite.name
-            suite_variables = (
-                await db.execute(
-                    select(Variable).where(Variable.scope == "suite", Variable.suite_id == suite.id)
-                )
-            ).scalars().all()
-            suite_variable_map.update({item.name: item.value for item in suite_variables})
-            setup_snapshot = _suite_step_snapshots(suite.setup_steps, suite_variable_map, "suite_setup")
-            teardown_snapshot = _suite_step_snapshots(suite.teardown_steps, suite_variable_map, "suite_teardown")
+            suite_variables = {
+                item.name: item.value
+                for item in (
+                    await db.execute(
+                        select(Variable).where(Variable.scope == "suite", Variable.suite_id == suite.id)
+                    )
+                ).scalars().all()
+            }
+        suite_variable_map = {**base_map, **suite_variables, **execution_variables}
+        setup_snapshot = (
+            _suite_step_snapshots(suite.setup_steps, suite_variable_map, "suite_setup")
+            if suite is not None
+            else []
+        )
+        teardown_snapshot = (
+            _suite_step_snapshots(suite.teardown_steps, suite_variable_map, "suite_teardown")
+            if suite is not None
+            else []
+        )
 
         suite_steps = [*setup_snapshot, *teardown_snapshot]
         suite_element_ids = await _collect_element_ids(suite_steps)
@@ -308,11 +344,8 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
             case = await db.get(TestCase, case_id)
             if case is None or case.deleted_at is not None:
                 continue
-            variable_map = dict(suite_variable_map)
-            # 批量执行会逐套件物化；套件变量位于项目/全局之上，
-            # 但不能覆盖当前用例变量或执行参数。
-            variable_map.update(case.variables or {})
-            variable_map.update(parameters.get("variables") or {})
+            # 用例变量位于项目/全局之上、套件变量之下；执行参数始终最高。
+            variable_map = {**base_map, **(case.variables or {}), **suite_variables, **execution_variables}
             snapshot = await build_case_snapshot(
                 db, case, variable_map,
                 use_pre_steps=bool(parameters.get("use_pre_steps")),

@@ -1,6 +1,13 @@
 {
-  "include": ["app/core", "app/services/execution_detail_service.py"],
-  "typeCheckingMode": "basic",
+  "include": ["app", "tests", "worker.py", "scripts"],
+  "typeCheckingMode": "standard",
   "pythonVersion": "3.12",
-  "pythonPlatform": "Linux"
+  "pythonPlatform": "Linux",
+  "executionEnvironments": [
+    {
+      "root": "tests",
+      "extraPaths": ["."],
+      "reportOptionalMemberAccess": "none"
+    }
+  ]
 }

@@ -19,6 +19,7 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 - 迁移：`uv run alembic revision --autogenerate -m "..."` → 审阅生成的迁移 → `uv run alembic upgrade head`
 - 测试：`uv run pytest tests/ -q`（pytest-asyncio `asyncio_mode=auto`）
 - Lint：`uv run ruff check app/ tests/ worker.py scripts/ --fix`（选 `E,F,W,I,UP,B`，忽略 `E501,B008`；B008 是 FastAPI 的 `Depends` 默认参数惯例，勿"修复"）
+- 类型：`uv run pyright`（等价 `uv run pyright app tests worker.py scripts`），须 0 errors。配置在 `backend/pyrightconfig.json`：`standard` 模式 + 范围 `app/ tests/ worker.py scripts/`；`tests/` 通过 executionEnvironments 单独放宽 `reportOptionalMemberAccess`（用例中 `db.get()`/`db.scalar()` 取到的行由前置断言/fixture 保证存在，取到 None 会立即 AttributeError，不会静默通过）。**注意：`backend/pyrightconfig.json` 优先于 `pyproject.toml` 的 `[tool.pyright]`，改配置只改前者**
 - 种子：`uv run python -m app.seed`（创建 admin / admin123）
 - 清理：`uv run python scripts/cleanup_reports.py [--dry-run]`（按保留天数删报告/截图/日志，Worker 每日 3 点自动执行）
 
@@ -55,6 +56,9 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 - Worker 与 Agent **无直接 WS**：经 `/internal/ws/agents/{id}/send` 由 FastAPI 转发（`X-Internal-Token`）
 - 执行状态机**全小写**：`queued / running / stopping / passed / failed / error / stopped / cancelled`
 - Action/Assertion Registry 属于 agent 包，不属于 backend；废弃的 `backend/app/executor/` 空目录已删除，禁止恢复后端执行 Registry
+- **变量优先级（§10.6）固定为：执行参数 > 套件变量 > 用例变量 > 项目变量 > 全局变量**。无档案执行在 `app/repositories/worker.py::_materialize_unprofiled_tree` 里按此顺序逐层叠加（`base_map → case → suite → execution parameters`）；禁止"先复制完整映射再用低优先级覆盖高优先级"的写法，否则套件前后置与套件内用例会取到不同值
+- **Agent WS 一条连接只允许注册一次**：`app/ws/routes.py` 注册成功后拒绝后续 `register`（回 PROTOCOL_ERROR，不断连）。`AgentConnectionManager.connect()` 对同一 socket 幂等，且"先替换映射、后关闭旧连接"
+- WS 网关对 socket 的依赖用 `app/ws/managers.py` 的 `BroadcastSocket` / `AgentSocket` Protocol 表达（只声明 `send_json(data)` 等必需能力），测试替身无需 `cast(WebSocket, ...)` 即可传入
 
 ## 套件级执行（以测试套件为执行与结果汇总单位，实施中）
 - 执行结构分层：`Execution → ExecutionSuite → ExecutionCase → ExecutionStep → ExecutionAssertion`；套件前后置步也只存 `ExecutionStep`（`execution_suite_id` 非空、`execution_case_id` 为空）。

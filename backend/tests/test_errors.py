@@ -5,6 +5,8 @@
 - PageResult 统一携带 page/page_size。
 """
 
+from typing import cast
+
 from fastapi import HTTPException
 
 from app.core.errors import api_error, error_message
@@ -20,8 +22,10 @@ def test_api_error_structure():
 
 def test_api_error_with_field_errors():
     exc = api_error(422, "INVALID_SCOPE", "变量作用域不合法", {"scope": "必须提供 project_id"})
-    assert exc.detail["code"] == "INVALID_SCOPE"
-    assert exc.detail["context"] == {"scope": "必须提供 project_id"}
+    # starlette 把 detail 标注为 str；api_error 契约下此处一定是 dict
+    detail = cast("dict[str, object]", exc.detail)
+    assert detail["code"] == "INVALID_SCOPE"
+    assert detail["context"] == {"scope": "必须提供 project_id"}
 
 
 def test_error_message_string_detail():

@@ -246,6 +246,11 @@ def test_development_stays_silent_when_hardened(monkeypatch, caplog):
     assert caplog.records == []
 
 
+def _settings_with(**overrides: object) -> Settings:
+    """构造 Settings；覆盖值可以是任意类型（用例故意传入非法值触发 pydantic 校验）。"""
+    return Settings(**overrides)  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize("field", [
     "agent_ws_max_frame_bytes",
     "agent_ws_max_pre_register_messages",
@@ -254,9 +259,9 @@ def test_development_stays_silent_when_hardened(monkeypatch, caplog):
 def test_agent_ws_limits_must_be_positive(field):
     """Step 8：WS 资源上限不能被配置为零或负数。"""
     with pytest.raises(ValidationError):
-        Settings(**{field: 0})
+        _settings_with(**{field: 0})
     with pytest.raises(ValidationError):
-        Settings(**{field: -1})
+        _settings_with(**{field: -1})
 
 
 @pytest.mark.parametrize(

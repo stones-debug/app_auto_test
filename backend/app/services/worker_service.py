@@ -25,6 +25,7 @@ protocol_version = worker_repo.protocol_version
 min_agent_version = worker_repo.min_agent_version
 render_text = worker_repo.render_text
 render_value = worker_repo.render_value
+build_base_variable_map = worker_repo.build_base_variable_map
 build_variable_map = worker_repo.build_variable_map
 build_case_snapshot = worker_repo.build_case_snapshot
 _create_execution_cases = worker_repo.create_execution_cases_from_execution

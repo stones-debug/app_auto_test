@@ -27,7 +27,7 @@ from app.models import (
 )
 from app.services import worker_service, ws_ingest_service
 from app.ws import handlers
-from app.ws.managers import agent_manager, execution_manager
+from app.ws.managers import AgentConnectionManager, agent_manager, execution_manager
 from app.ws.routes import agent_ws
 from tests.helpers import create_bound_agent_device
 
@@ -727,6 +727,7 @@ async def test_execution_result_passed_cannot_override_suite_failure(
             )
         )
         expected_source = "套件步骤" if failure_source == "suite_step" else "套件"
+        assert isinstance(warning, str)
         assert expected_source in warning
 
 
@@ -833,6 +834,8 @@ async def test_assertion_failure_survives_teardown_and_overrides_agent_passed(
 
 
 class FailingWebSocket:
+    """只用于广播分组（send_json 即失败）；不可用于 agent 单连接。"""
+
     async def send_json(self, data: dict) -> None:
         raise ConnectionError("socket 已断开")
 
@@ -968,6 +971,145 @@ async def test_agent_registration_binds_real_socket_and_allows_send(monkeypatch)
     assert ws.sent[0]["type"] == "registered"
     assert {item["type"] for item in ws.sent} == {"registered", "start_test"}
     assert not agent_manager.is_online(17)
+
+
+async def test_agent_ws_rejects_duplicate_register(monkeypatch):
+    """已注册连接再次 register 必须被拒：避免 manager 关闭并重新保存当前 socket。"""
+    ws = _FakeAgentWS([
+        _text_frame(json.dumps({"type": "register", "agent_id": "agent-1", "agent_key": "key"})),
+        _text_frame(json.dumps({"type": "register", "agent_id": "agent-9", "agent_key": "other"})),
+        _text_frame(json.dumps({"type": "heartbeat"})),
+        {"type": "websocket.disconnect"},
+    ])
+    register_calls: list[str] = []
+
+    async def register(_websocket, payload):
+        register_calls.append(payload["agent_id"])
+        await agent_manager.connect(19, ws)
+        return {"type": "registered", "agent_id": 19, "status": "ok"}
+
+    async def handle_message(_agent_id, _payload):
+        await agent_manager.send(19, {"type": "start_test", "execution_id": 5})
+        return None
+
+    monkeypatch.setattr(ws_ingest_service, "register_agent", register)
+    monkeypatch.setattr(ws_ingest_service, "handle_agent_message", handle_message)
+    await agent_ws(cast(WebSocket, ws))
+
+    assert register_calls == ["agent-1"]  # 第二次 register 不进入生产注册逻辑
+    errors = [item for item in ws.sent if item["type"] == "error"]
+    assert [item["code"] for item in errors] == ["PROTOCOL_ERROR"]
+    # 拒绝重复注册不等于断开：连接仍可用于后续消息，且当前 socket 未被误关
+    assert ws.closed is None
+    assert any(item.get("type") == "start_test" for item in ws.sent)
+
+
+async def test_agent_registration_binds_socket_through_real_service(monkeypatch):
+    """不替换 register_agent：验证"数据库提交 → 真实 manager 绑定 → 断线置离线"完整链路。"""
+    raw_key = "sk-ws-real-register"
+    agent_id_str = f"pytest_ws_agent_{uuid.uuid4().hex[:6]}"
+    async with SessionLocal() as db:
+        agent = Agent(
+            agent_key=hash_psk(raw_key),
+            agent_id=agent_id_str,
+            hostname="ws-host",
+            status="offline",
+        )
+        db.add(agent)
+        await db.commit()
+        db_agent_id = agent.id
+
+    # 只观察心跳，不替换注册：连接存续期间的在线状态由此处采样
+    real_heartbeat = ws_ingest_service.HANDLERS["heartbeat"]
+    observed: dict[str, object] = {}
+
+    async def observing_heartbeat(db, agent_id: int, payload: dict):
+        stored = await db.get(Agent, agent_id)
+        observed["manager_online"] = agent_manager.is_online(agent_id)
+        observed["db_status"] = stored.status if stored is not None else None
+        return await real_heartbeat(db, agent_id, payload)
+
+    monkeypatch.setitem(ws_ingest_service.HANDLERS, "heartbeat", observing_heartbeat)
+
+    ws = _FakeAgentWS([
+        _text_frame(json.dumps({
+            "type": "register",
+            "agent_id": agent_id_str,
+            "agent_key": raw_key,
+            "hostname": "real-host",
+        })),
+        _text_frame(json.dumps({"type": "heartbeat"})),
+        {"type": "websocket.disconnect"},
+    ])
+    await agent_ws(cast(WebSocket, ws))
+
+    assert ws.sent[0] == {"type": "registered", "agent_id": db_agent_id, "status": "ok"}
+    # 提交成功后真实 socket 必须已在 manager 中（Worker 才能反向下发）
+    assert observed == {"manager_online": True, "db_status": "online"}
+    assert not agent_manager.is_online(db_agent_id)
+    async with SessionLocal() as db:
+        stored = await db.get(Agent, db_agent_id)
+        assert stored is not None
+        assert stored.status == "offline"  # 连接断开后 finally 置离线
+        assert stored.hostname == "real-host"
+
+
+async def test_agent_manager_connect_is_idempotent_for_same_socket():
+    """同一 socket 重复 connect 视为幂等：不得把自己关掉再保存已关闭的 socket。"""
+    manager = AgentConnectionManager()
+    ws = _FakeAgentWS([])
+    await manager.connect(23, cast(WebSocket, ws))
+    await manager.connect(23, cast(WebSocket, ws))
+    assert ws.closed is None
+    assert manager.is_online(23)
+
+
+async def test_agent_manager_connect_replaces_mapping_before_closing_old():
+    """重连抢占：先换映射再关旧连接，旧连接的断开清理不得摘掉新绑定。"""
+    manager = AgentConnectionManager()
+    old = _FakeAgentWS([])
+    new = _FakeAgentWS([])
+    await manager.connect(24, cast(WebSocket, old))
+    await manager.connect(24, cast(WebSocket, new))
+
+    assert old.closed == (4001, "新连接替换旧连接")
+    assert new.closed is None
+    # 旧连接 finally 触发的 disconnect 因映射已替换而不生效
+    assert await manager.disconnect(24, cast(WebSocket, old)) is False
+    assert manager.is_online(24)
+    assert await manager.send(24, {"type": "start_test", "execution_id": 6}) is True
+    assert new.sent == [{"type": "start_test", "execution_id": 6}]
+
+
+async def test_agent_manager_reconnect_race_does_not_report_removed():
+    """重连竞态：旧连接在 close() 内立刻执行断开清理时，不得判定"已移除"。
+
+    判定为已移除会让路由 finally 把 Agent 置为 offline，而它此刻其实已通过
+    新连接在线——即"映射/DB 状态与实际连接不一致"。
+    """
+    manager = AgentConnectionManager()
+
+    class _ReconnectingWS(_FakeAgentWS):
+        """close() 返回后旧连接协程立即执行 finally，同步调用 disconnect。"""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.removed: bool | None = None
+
+        async def close(self, code: int = 1000, reason: str = "") -> None:
+            self.closed = (code, reason)
+            self.removed = await manager.disconnect(26, self)
+
+    old: _ReconnectingWS = _ReconnectingWS()
+    new = _FakeAgentWS([])
+    await manager.connect(26, cast(WebSocket, old))
+    await manager.connect(26, cast(WebSocket, new))
+
+    assert old.closed == (4001, "新连接替换旧连接")
+    assert old.removed is False
+    assert manager.is_online(26)
+    assert await manager.send(26, {"type": "start_test"}) is True
+    assert new.sent == [{"type": "start_test"}]
 
 
 async def test_agent_ws_continues_after_one_message_failure(monkeypatch):

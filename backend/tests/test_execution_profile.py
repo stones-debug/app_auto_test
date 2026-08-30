@@ -58,7 +58,11 @@ async def _make_case(client: AsyncClient, base: dict) -> int:
 
 async def _asset_revision(project_id: int) -> int:
     async with SessionLocal() as db:
-        return int(await db.scalar(select(Project.test_asset_revision).where(Project.id == project_id)))
+        revision = await db.scalar(
+            select(Project.test_asset_revision).where(Project.id == project_id)
+        )
+        assert revision is not None
+        return int(revision)
 
 
 async def test_case_execution_materializes_snapshot(client: AsyncClient):

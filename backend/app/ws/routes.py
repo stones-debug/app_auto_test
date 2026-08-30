@@ -107,6 +107,16 @@ async def agent_ws(websocket: WebSocket, _legacy_db=None):
                 continue
             try:
                 if valid["type"] == "register":
+                    if current_agent_id is not None:
+                        # 一条连接只允许注册一次：重复 register 会让 manager 把当前
+                        # socket 当作"旧连接"关闭后再重新保存该已关闭 socket；
+                        # 注册为另一个 Agent 时还会留下旧 ID 指向本 socket 的脏映射。
+                        await websocket.send_json({
+                            "type": "error",
+                            "code": "PROTOCOL_ERROR",
+                            "message": "该连接已注册，拒绝重复 register",
+                        })
+                        continue
                     reply = await ws_ingest_service.register_agent(websocket, valid)
                     if reply is None:
                         await websocket.close(code=1008, reason="Agent 认证失败或版本不受支持")

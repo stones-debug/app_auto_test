@@ -1,7 +1,9 @@
 import json
+from collections.abc import Sequence
 from hashlib import sha256
 from io import BytesIO
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -835,13 +837,13 @@ async def test_element_list_detail_returns_locator_config(client: AsyncClient):
     assert detail["locator_config"] == SMART_CONFIG
 
 
-def _element_xlsx(rows: list[list[object]]) -> bytes:
+def _element_xlsx(rows: Sequence[Sequence[Any]]) -> bytes:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "元素"
     sheet.append(list(ELEMENT_HEADERS))
     for row in rows:
-        sheet.append(row)
+        sheet.append(list(row))
     output = BytesIO()
     workbook.save(output)
     return output.getvalue()
@@ -950,9 +952,9 @@ def test_element_excel_large_smart_config_round_trip():
     assert isinstance(main_value, str) and main_value.startswith(CONFIG_REF_PREFIX)
     assert len(main_value) <= EXCEL_CELL_MAX_CHARS
     assert all(
-        len(row[2]) <= CONFIG_CHUNK_SIZE <= EXCEL_CELL_MAX_CHARS
+        len(chunk) <= CONFIG_CHUNK_SIZE <= EXCEL_CELL_MAX_CHARS
         for row in workbook[CONFIG_SHEET_TITLE].iter_rows(min_row=2, values_only=True)
-        if row[2]
+        if isinstance(chunk := row[2], str)
     )
     workbook.close()
 

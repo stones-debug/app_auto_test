@@ -19,10 +19,14 @@ from app.models import (
     ExecutionStep,
     ExecutionSuite,
     Report,
+    User,
     Variable,
 )
 from app.models import (
     TestCase as CaseModel,
+)
+from app.models import (
+    TestElement as ElementModel,
 )
 from app.models import (
     TestSuite as SuiteModel,
@@ -419,6 +423,153 @@ async def test_unprofiled_suite_snapshot_contains_suite_elements_and_variables(c
         assert execution_case.elements_snapshot[str(element_id)]["locator_value"] == "suite-button"
 
 
+async def _seed_five_layer_variables(client: AsyncClient) -> tuple[int, int, int, int]:
+    """铺设五层同名变量 host：全局 / 项目 / 用例 / 套件 / 执行参数。
+
+    返回 (project_id, case_id, suite_id, execution_id)；执行参数固定为 from_exec。
+    """
+    _token, case_id = await _setup_case(client)
+    async with SessionLocal() as db:
+        case = await db.get(CaseModel, case_id)
+        assert case is not None
+        project_id = int(case.project_id)
+        element_id = int(case.steps[0]["element_id"])
+        element = await db.get(ElementModel, element_id)
+        assert element is not None
+        element.locator_value = "${host}"
+        # 用例步骤参数也引用同名变量，用于验证用例层与套件层的差异
+        case.steps = [
+            {
+                "order": 1,
+                "action": "click",
+                "element_id": element_id,
+                "params": {"text": "${host}"},
+                "assertions": [
+                    {"order": 1, "type": "element_exists", "element_id": element_id, "params": {}}
+                ],
+            }
+        ]
+        case.variables = {"host": "from_case"}
+        owner = (
+            await db.execute(select(User).where(User.username == REG["username"]))
+        ).scalar_one()
+        suite = SuiteModel(
+            project_id=project_id,
+            name="变量优先级套件",
+            setup_steps=[
+                {"order": 1, "action": "click", "element_id": element_id, "params": {"text": "${host}"}}
+            ],
+            teardown_steps=[
+                {"order": 1, "action": "click", "element_id": element_id, "params": {"text": "${host}"}}
+            ],
+        )
+        db.add(suite)
+        await db.flush()
+        db.add(SuiteCaseModel(suite_id=suite.id, case_id=case_id, sort_order=1))
+        db.add_all(
+            [
+                Variable(scope="global", name="host", value="from_global", created_by=owner.id),
+                Variable(
+                    scope="project", project_id=project_id, name="host", value="from_project"
+                ),
+                Variable(
+                    scope="suite",
+                    project_id=project_id,
+                    suite_id=suite.id,
+                    name="host",
+                    value="from_suite",
+                ),
+            ]
+        )
+        execution = Execution(
+            project_id=project_id,
+            type="suite",
+            suite_id=suite.id,
+            status="queued",
+            parameters={"variables": {"host": "from_exec"}},
+        )
+        db.add(execution)
+        await db.commit()
+        return project_id, case_id, suite.id, execution.id
+
+
+async def _materialized_with_parameters(
+    execution_id: int, parameters: dict
+) -> tuple[ExecutionSuite, ExecutionCase]:
+    """按给定执行参数重新物化快照，返回 (套件快照行, 用例快照行)。"""
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution is not None
+        execution.parameters = parameters
+        await db.flush()
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        await db.commit()
+        execution_suite = (
+            await db.execute(select(ExecutionSuite).where(ExecutionSuite.execution_id == execution_id))
+        ).scalar_one()
+        execution_case = (
+            await db.execute(
+                select(ExecutionCase).where(ExecutionCase.execution_suite_id == execution_suite.id)
+            )
+        ).scalar_one()
+        return execution_suite, execution_case
+
+
+async def test_unprofiled_variable_priority_execution_parameters_win(client: AsyncClient):
+    """§10.6：执行参数最高——套件前后置步骤与套件内用例步骤必须同时取到执行参数。"""
+    _project_id, _case_id, _suite_id, execution_id = await _seed_five_layer_variables(client)
+    exec_suite, exec_case = await _materialized_with_parameters(
+        execution_id, {"variables": {"host": "from_exec"}}
+    )
+    assert exec_suite.setup_steps_snapshot[0]["params"]["text"] == "from_exec"
+    assert exec_suite.teardown_steps_snapshot[0]["params"]["text"] == "from_exec"
+    assert exec_case.steps_snapshot[0]["params"]["text"] == "from_exec"
+    assert exec_case.elements_snapshot[
+        str(exec_case.steps_snapshot[0]["element_id"])
+    ]["locator_value"] == "from_exec"
+
+
+async def test_unprofiled_variable_priority_suite_beats_case(client: AsyncClient):
+    """§10.6：无执行参数时套件变量高于用例变量——套件步骤与用例步骤取值必须一致。"""
+    _project_id, _case_id, _suite_id, execution_id = await _seed_five_layer_variables(client)
+    exec_suite, exec_case = await _materialized_with_parameters(execution_id, {})
+    assert exec_suite.setup_steps_snapshot[0]["params"]["text"] == "from_suite"
+    assert exec_suite.teardown_steps_snapshot[0]["params"]["text"] == "from_suite"
+    assert exec_case.steps_snapshot[0]["params"]["text"] == "from_suite"
+    assert exec_case.elements_snapshot[
+        str(exec_case.steps_snapshot[0]["element_id"])
+    ]["locator_value"] == "from_suite"
+
+
+async def test_build_variable_map_layers(client: AsyncClient):
+    """build_variable_map 逐层降级：执行参数 > 套件 > 用例 > 项目 > 全局。"""
+    _project_id, case_id, suite_id, execution_id = await _seed_five_layer_variables(client)
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        case = await db.get(CaseModel, case_id)
+        assert execution is not None and case is not None
+
+        execution.parameters = {"variables": {"host": "from_exec"}}
+        assert (
+            await worker_service.build_variable_map(db, execution, case, suite_id=suite_id)
+        )["host"] == "from_exec"
+
+        execution.parameters = {}
+        assert (
+            await worker_service.build_variable_map(db, execution, case, suite_id=suite_id)
+        )["host"] == "from_suite"
+        # 无套件上下文时回落到用例变量
+        assert (
+            await worker_service.build_variable_map(db, execution, case, use_execution_suite=False)
+        )["host"] == "from_case"
+        assert (
+            await worker_service.build_variable_map(db, execution, None, use_execution_suite=False)
+        )["host"] == "from_project"
+        base = await worker_service.build_base_variable_map(db, execution)
+        assert base["host"] == "from_project"
+        await db.rollback()
+
+
 async def test_agent_sender_exception_finalizes_execution_and_releases_device(client: AsyncClient):
     """载荷发送抛错时必须走统一补偿事务，不能遗留 running/busy。"""
     token, case_id = await _setup_case(client)
@@ -505,6 +656,7 @@ async def test_suites_payload_injects_execution_node_ids(client: AsyncClient):
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
+        assert execution is not None
         assert execution.app_profile_id is None
         # 无档案 → 走 _rebuild_legacy_snapshot 重建用例（含断言 snapshot，但不预建断言行）
         await worker_service.create_execution_cases_from_execution(db, execution)
@@ -579,6 +731,7 @@ async def test_suites_payload_carries_suite_step_continue_on_failure(client: Asy
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
+        assert execution is not None
         await worker_service.create_execution_cases_from_execution(db, execution)
         await db.commit()
         suite = (
@@ -649,6 +802,7 @@ async def test_build_case_snapshot_smart_element_config_raw(client: AsyncClient)
 
     async with SessionLocal() as db:
         case_model = await db.get(CaseModel, case.json()["id"])
+        assert case_model is not None
         snapshot = await worker_service.build_case_snapshot(db, case_model, {})
 
     snap = snapshot["elements"][str(element_id)]
@@ -712,6 +866,7 @@ async def test_smart_locator_payload_contains_raw_config(client: AsyncClient):
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
+        assert execution is not None
         await worker_service.create_execution_cases_from_execution(db, execution)
         await db.commit()
         payload = await worker_service._build_suites_payload(db, execution)
