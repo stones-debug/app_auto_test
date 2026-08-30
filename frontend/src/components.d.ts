@@ -80,6 +80,9 @@ declare module 'vue' {
     SmartLocatorEditor: typeof import('./components/SmartLocatorEditor.vue')['default']
     StatCard: typeof import('./components/StatCard.vue')['default']
     StatusBadge: typeof import('./components/StatusBadge.vue')['default']
+    SuiteCasePicker: typeof import('./components/SuiteCasePicker.vue')['default']
+    SuiteModuleGroup: typeof import('./components/SuiteModuleGroup.vue')['default']
+    SuiteStepSection: typeof import('./components/SuiteStepSection.vue')['default']
   }
   export interface ComponentCustomProperties {
     vLoading: typeof import('element-plus/es')['ElLoadingDirective']
