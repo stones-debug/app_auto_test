@@ -17,6 +17,10 @@ async def find_active_for_profile(db: AsyncSession, profile_id: int) -> AppProfi
     return (await db.execute(select(AppProfileRelease).where(AppProfileRelease.profile_id == profile_id, AppProfileRelease.status == "active", AppProfileRelease.deleted_at.is_(None)).order_by((AppProfileRelease.version == "未标注历史版本").desc(), AppProfileRelease.id))).scalars().first()
 
 
+async def find_version(db: AsyncSession, profile_id: int, version: str) -> AppProfileRelease | None:
+    return (await db.execute(select(AppProfileRelease).where(AppProfileRelease.profile_id == profile_id, AppProfileRelease.version == version, AppProfileRelease.deleted_at.is_(None)))).scalar_one_or_none()
+
+
 async def lock_for_resolution(db: AsyncSession, *, release_id: int, profile_id: int):
     return (await db.execute(select(AppProfileRelease.status, AppProfileRelease.version).where(AppProfileRelease.id == release_id, AppProfileRelease.profile_id == profile_id, AppProfileRelease.deleted_at.is_(None)).with_for_update())).one_or_none()
 

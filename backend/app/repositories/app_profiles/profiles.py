@@ -46,6 +46,10 @@ async def find_default(db: AsyncSession, project_id: int) -> AppProfile | None:
     return (await db.execute(select(AppProfile).where(AppProfile.project_id == project_id, AppProfile.name == "通用配置（待调整）", AppProfile.status == "active", AppProfile.deleted_at.is_(None)))).scalar_one_or_none()
 
 
+async def find_named(db: AsyncSession, project_id: int, name: str) -> AppProfile | None:
+    return (await db.execute(select(AppProfile).where(AppProfile.project_id == project_id, AppProfile.name == name, AppProfile.deleted_at.is_(None)))).scalar_one_or_none()
+
+
 async def lock_revision(db: AsyncSession, profile_id: int) -> int | None:
     return await db.scalar(select(AppProfile.revision).where(AppProfile.id == profile_id, AppProfile.deleted_at.is_(None)).with_for_update())
 

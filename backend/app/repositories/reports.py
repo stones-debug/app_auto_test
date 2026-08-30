@@ -43,6 +43,15 @@ async def update_path(db: AsyncSession, report: Report, path: str) -> Report:
     return report
 
 
+async def clear_paths_for_executions(db: AsyncSession, execution_ids: list[int]) -> int:
+    if not execution_ids:
+        return 0
+    rows = list((await db.execute(select(Report).where(Report.execution_id.in_(execution_ids)))).scalars().all())
+    for report in rows:
+        report.report_path = None
+    return len(rows)
+
+
 async def list_page(
     db: AsyncSession, *, project_ids: list[int] | tuple[int, ...], project_id: int | None,
     execution_id: int | None, status: str, type_: str, app_profile_id: int | None,

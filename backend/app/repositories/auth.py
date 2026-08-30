@@ -19,6 +19,11 @@ async def get_user_by_username(db: AsyncSession, username: str) -> User | None:
     return (await db.execute(select(User).where(User.username == username))).scalar_one_or_none()
 
 
+async def set_admin(user: User) -> User:
+    user.is_admin = True
+    return user
+
+
 async def get_user_by_id(db: AsyncSession, user_id: int) -> User | None:
     return await db.get(User, user_id)
 

@@ -34,28 +34,10 @@ SESSION_FACTORY_NAMES = {"SessionLocal", "get_db"}
 # Step 16 的初始基线：这些文件在业务查询迁移前已经存在 DB 访问。
 # 只能列出明确文件，不能使用目录或 glob；后续 Step 迁移完相应文件后删除条目。
 LEGACY_DB_ACCESS_ALLOWLIST: dict[str, set[str]] = {
-    "sql": {
-        "app/api/dashboard.py",
-        "app/seed.py",
-        "app/services/access_scope.py",
-        "app/services/cleanup_service.py",
-    },
-    "session": {
-        "app/api/releases.py",
-        "app/seed.py",
-        "app/services/cleanup_service.py",
-        "app/services/element_excel.py",
-        "app/services/release_service.py",
-        "app/ws/managers.py",
-    },
-    "transaction": {
-        "app/seed.py",
-        "app/services/cleanup_service.py",
-    },
-    "session_factory": {
-        "app/seed.py",
-        "app/services/worker_runtime.py",
-    },
+    "sql": set(),
+    "session": set(),
+    "transaction": set(),
+    "session_factory": set(),
 }
 
 
@@ -111,6 +93,12 @@ def scan_runtime_tree(root: Path) -> list[Finding]:
 
 def _is_allowed(finding: Finding) -> bool:
     path = finding.path
+    if finding.category == "session_factory" and path in {
+        "app/seed.py",
+        "app/services/worker_runtime.py",
+        "app/ws/routes.py",
+    }:
+        return True
     if path == "app/core/database.py":
         return True
     if path.startswith("app/repositories/"):

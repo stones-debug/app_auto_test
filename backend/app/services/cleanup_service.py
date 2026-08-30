@@ -2,11 +2,11 @@ import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import reports_dir, settings
-from app.models import ExecutionLog, Report
+from app.repositories import executions as executions_repo
+from app.repositories import reports as reports_repo
 
 
 def _touch_mtime(path: Path) -> datetime:
@@ -46,12 +46,7 @@ async def cleanup_old_reports(db: AsyncSession, *, dry_run: bool = False) -> dic
                         removed_screens += 1
 
     if cleared_execution_ids and not dry_run:
-        for execution_id in cleared_execution_ids:
-            report = (
-                await db.execute(select(Report).where(Report.execution_id == execution_id))
-            ).scalar_one_or_none()
-            if report is not None:
-                report.report_path = None
+        await reports_repo.clear_paths_for_executions(db, cleared_execution_ids)
         await db.commit()
 
     return {
@@ -66,6 +61,6 @@ async def cleanup_old_logs(db: AsyncSession, *, dry_run: bool = False) -> dict:
     cutoff = datetime.now(UTC) - timedelta(days=settings.log_retention_days)
     if dry_run:
         return {"logs_deleted": 0}
-    result = await db.execute(delete(ExecutionLog).where(ExecutionLog.created_at < cutoff))
+    deleted = await executions_repo.delete_logs_before(db, cutoff)
     await db.commit()
-    return {"logs_deleted": result.rowcount}
+    return {"logs_deleted": deleted}

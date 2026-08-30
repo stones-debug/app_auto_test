@@ -2083,6 +2083,14 @@ RUNNING ←── Worker 认领后经内部接口通知 FastAPI 更新
 
 4. **OpenAPI**：后端 OpenAPI 必须包含 `ApiErrorResponse` schema，业务错误的 `detail` 形状与该 schema 一致；请求校验错误仍可由 FastAPI 返回 422 的标准 `detail` 数组，不视为业务错误码。
 
+### 10.16 数据访问层收口（Step 16–23）
+
+业务 SQL/ORM 操作统一位于 `backend/app/repositories/`；Service 负责用例编排、
+事务边界和外部副作用时序，API 与 WS 路由不直接操作 Session。Worker 的队列认领、
+设备锁、执行树和报告终态聚合由 Repository 提供，网络发送发生在事务提交之后。
+Agent WebSocket 连接不持有长生命周期数据库 Session：注册、心跳、设备同步和每条
+结果消息均使用短 Session，只有写入成功提交后才广播或发送 ACK。Seed、回填和清理
+脚本只创建 Session 并调用 Service；数据库访问边界由 AST 门禁持续校验。
 ---
 
 > **文档结束**。本方案基于原始设计进行了系统性修订，重点解决了执行引擎耦合、Agent 落地性、执行可靠性、报告可追溯性等核心问题，并经由 V1.1 评审补齐执行职责划分、Worker↔Agent 通信中转、元素快照、停止机制、设备原子锁、变量系统等缺口，可直接作为项目启动的技术基线。

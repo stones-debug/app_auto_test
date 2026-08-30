@@ -13,6 +13,10 @@ async def get_by_id(db: AsyncSession, case_id: int) -> TestCase | None:
     return await db.get(TestCase, case_id)
 
 
+async def list_all(db: AsyncSession) -> list[TestCase]:
+    return list((await db.execute(select(TestCase).order_by(TestCase.id))).scalars().all())
+
+
 async def module_belongs_to_project(
     db: AsyncSession, project_id: int, module_id: int | None
 ) -> bool:

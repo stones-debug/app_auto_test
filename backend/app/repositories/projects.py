@@ -84,6 +84,10 @@ async def get_by_id(db: AsyncSession, project_id: int) -> Project | None:
     return await db.get(Project, project_id)
 
 
+async def list_active(db: AsyncSession) -> list[Project]:
+    return list((await db.execute(select(Project).where(Project.deleted_at.is_(None), Project.status == "active"))).scalars().all())
+
+
 async def list_visible(
     db: AsyncSession,
     *,

@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -131,4 +131,9 @@ async def stop_queued(db: AsyncSession, execution_id: int, now) -> int:
 
 async def stop_running(db: AsyncSession, execution_id: int, now) -> int:
     result = await db.execute(update(Execution).where(Execution.id == execution_id, Execution.status == "running").values(status="stopping", stop_requested_at=now))
+    return result.rowcount
+
+
+async def delete_logs_before(db: AsyncSession, cutoff) -> int:
+    result = await db.execute(delete(ExecutionLog).where(ExecutionLog.created_at < cutoff))
     return result.rowcount
