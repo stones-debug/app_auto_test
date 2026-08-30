@@ -2,12 +2,13 @@
 
 from datetime import UTC, datetime
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
+from app.core.errors import api_error
 from app.models import AppProfileSkipRule, Project, TestCase, TestSuite, TestSuiteCase, User
 from app.schemas.app_profile import SkipBatchRequest
 from app.services.profile_audit import find_idempotent_replay, write_audit
@@ -114,10 +115,7 @@ async def skip_rules_batch(
     _project, role = modal_perm
     before = profile.revision
     if len(body.targets) > 500:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={"code": "PROFILE_RULE_INVALID", "message": "单次批量跳过目标上限 500"},
-        )
+        raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, "PROFILE_RULE_INVALID", "单次批量跳过目标上限 500")
     if body.request_id:
         replay = await find_idempotent_replay(db, profile_id, body.request_id)
         if replay is not None:
@@ -143,15 +141,14 @@ async def skip_rules_batch(
         seen.add(dedup_key)
         target_fields.append((idx, fields))
     if field_errors:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"code": "PROFILE_RULE_INVALID", "field_errors": field_errors},
+        raise api_error(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "PROFILE_RULE_INVALID",
+            "批量跳过目标存在校验错误",
+            {"field_errors": field_errors},
         )
     if body.operation == "skip" and body.reason is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"code": "PROFILE_RULE_INVALID", "message": "skip 操作必须提供 reason"},
-        )
+        raise api_error(status.HTTP_422_UNPROCESSABLE_ENTITY, "PROFILE_RULE_INVALID", "skip 操作必须提供 reason")
 
 
     results: list[dict] = []
@@ -161,9 +158,11 @@ async def skip_rules_batch(
     try:
         new_revision = await bump_profile_revision(db, profile_id, body.expected_revision, user.id)
     except RevisionConflictError as err:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": err.code, "current": err.current, "expected": err.expected},
+        raise api_error(
+            status.HTTP_409_CONFLICT,
+            err.code,
+            "APP 档案版本已变化，请重新加载后再保存",
+            {"current": err.current, "expected": err.expected},
         ) from None
 
     for idx, fields in target_fields:

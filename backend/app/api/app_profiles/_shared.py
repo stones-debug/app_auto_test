@@ -4,13 +4,14 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, Request, status
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_project_permission
 from app.core.database import get_db
+from app.core.errors import api_error
 from app.models import (
     AppProfile,
     AppProfileElementOverride,
@@ -112,7 +113,7 @@ def require_profile_manager():
     ) -> tuple[Project, str | None]:
         _project, role = perm
         if role not in ("owner", "admin"):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="需要 Owner/Admin 权限")
+            raise api_error(status.HTTP_403_FORBIDDEN, "PROFILE_MANAGER_REQUIRED", "需要 Owner/Admin 权限")
         return perm
 
     return _checker
@@ -244,7 +245,7 @@ def require_profile_manager_by_profile():
         perm = await get_project_permission(profile.project_id, user, db)
         _project, role = perm
         if role not in ("owner", "admin"):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="需要 Owner/Admin 权限")
+            raise api_error(status.HTTP_403_FORBIDDEN, "PROFILE_MANAGER_REQUIRED", "需要 Owner/Admin 权限")
         return perm
 
     return _checker
@@ -314,9 +315,11 @@ async def _bump_and_audit(
     try:
         new_revision = await bump_profile_revision(db, profile.id, body.expected_revision, user.id)
     except RevisionConflictError as err:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": err.code, "current": err.current, "expected": err.expected},
+        raise api_error(
+            status.HTTP_409_CONFLICT,
+            err.code,
+            "APP 档案版本已变化，请重新加载后再保存",
+            {"current": err.current, "expected": err.expected},
         ) from None
     audit_response = {"revision": new_revision, **(response_data or {})}
     await write_audit(
@@ -412,7 +415,7 @@ async def _profiles_out(profiles: list[AppProfile], db: AsyncSession) -> list[di
 async def _get_profile_or_404(profile_id: int, db: AsyncSession) -> AppProfile:
     profile = await db.get(AppProfile, profile_id)
     if profile is None or profile.deleted_at is not None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="APP 档案不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, "APP_PROFILE_NOT_FOUND", "APP 档案不存在")
     return profile
 
 def _audit_client(request: Request) -> dict[str, str | None]:
@@ -431,12 +434,12 @@ def require_release_manager():
     ) -> tuple[Project, str | None]:
         release = await db.get(AppProfileRelease, release_id)
         if release is None or release.deleted_at is not None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="发布版本不存在")
+            raise api_error(status.HTTP_404_NOT_FOUND, "APP_RELEASE_NOT_FOUND", "发布版本不存在")
         profile = await _get_profile_or_404(release.profile_id, db)
         perm = await get_project_permission(profile.project_id, user, db)
         _project, role = perm
         if role not in ("owner", "admin"):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="需要 Owner/Admin 权限")
+            raise api_error(status.HTTP_403_FORBIDDEN, "PROFILE_MANAGER_REQUIRED", "需要 Owner/Admin 权限")
         return perm
 
     return _checker

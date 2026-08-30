@@ -1,11 +1,12 @@
 import secrets
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import reports_dir, settings
 from app.core.database import get_db
+from app.core.errors import api_error
 from app.core.ratelimit import rate_limit, rate_limit_check
 from app.core.security import hash_psk, parse_user_agent_key, verify_psk, verify_user_key
 from app.models import Agent, AgentUser, Device, Execution, User, UserAgentKey
@@ -22,7 +23,7 @@ _BIND_KEY_LIMIT_PER_MINUTE = 5
 
 async def _verify_agent(key: str, agent_id: str, db: AsyncSession) -> Agent:
     if not key:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="缺少 X-Agent-Key")
+        raise api_error(status.HTTP_401_UNAUTHORIZED, "AGENT_KEY_REQUIRED", "缺少 X-Agent-Key")
     if agent_id:
         agent = (
             await db.execute(select(Agent).where(Agent.agent_id == agent_id))
@@ -33,7 +34,7 @@ async def _verify_agent(key: str, agent_id: str, db: AsyncSession) -> Agent:
             and verify_psk(key, agent.agent_key)
         ):
             return agent
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Agent 认证失败")
+    raise api_error(status.HTTP_401_UNAUTHORIZED, "AGENT_AUTH_INVALID", "Agent 认证失败")
 
 
 async def _load_user_key(db: AsyncSession, user_key: str) -> UserAgentKey | None:
@@ -65,15 +66,15 @@ async def bind_agent(
     user_key = body.user_key.strip()
     public_id = parse_user_agent_key(user_key)
     if public_id is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="用户 Key 格式无效")
+        raise api_error(status.HTTP_400_BAD_REQUEST, "AGENT_USER_KEY_INVALID", "用户 Key 格式无效")
     # Key 维度限流（IP + public_id 双维度，§3.2）
     rate_limit_check("bind", f"pk:{public_id[0]}", _BIND_KEY_LIMIT_PER_MINUTE, 60)
 
     key_row = await _load_user_key(db, user_key)
     if key_row is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户 Key 无效")
+        raise api_error(status.HTTP_401_UNAUTHORIZED, "AGENT_USER_KEY_INVALID", "用户 Key 无效")
     if not body.install_id or not body.install_id.strip():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="缺少 install_id")
+        raise api_error(status.HTTP_400_BAD_REQUEST, "AGENT_INSTALL_ID_REQUIRED", "缺少 install_id")
 
     install_id = body.install_id.strip()
     agent = (
@@ -84,9 +85,9 @@ async def bind_agent(
     if body.machine_psk:
         # 追加绑定 / 软注销实例重新激活：机器 PSK 认证
         if agent is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="机器 PSK 无效")
+            raise api_error(status.HTTP_401_UNAUTHORIZED, "AGENT_MACHINE_PSK_INVALID", "机器 PSK 无效")
         if not verify_psk(body.machine_psk, agent.agent_key):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="机器 PSK 无效")
+            raise api_error(status.HTTP_401_UNAUTHORIZED, "AGENT_MACHINE_PSK_INVALID", "机器 PSK 无效")
         if agent.deleted_at is not None:
             # Step 6：软注销安装实例重新激活——必须携带仍匹配的旧 machine PSK，
             # 旋转 PSK、清空 deleted_at、更新 hostname/platform/version
@@ -105,14 +106,12 @@ async def bind_agent(
         if agent is not None:
             if agent.deleted_at is not None:
                 # Step 6：软注销实例无旧 PSK 时拒绝仅凭 install_id 激活，提示管理员彻底重置
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="该安装实例已被注销，需要携带原机器 PSK 重新激活；如已丢失请联系平台管理员彻底重置",
+                raise api_error(
+                    status.HTTP_409_CONFLICT,
+                    "AGENT_REACTIVATION_REQUIRED",
+                    "该安装实例已被注销，需要携带原机器 PSK 重新激活；如已丢失请联系平台管理员彻底重置",
                 )
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="该 Agent 已存在，请携带 machine_psk 追加绑定",
-            )
+            raise api_error(status.HTTP_409_CONFLICT, "AGENT_ALREADY_EXISTS", "该 Agent 已存在，请携带 machine_psk 追加绑定")
         machine_psk = f"sk-{secrets.token_hex(24)}"
         agent = Agent(
             agent_id=install_id,
@@ -134,7 +133,7 @@ async def bind_agent(
         )
     ).scalar_one_or_none()
     if existing is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该用户已绑定此 Agent")
+        raise api_error(status.HTTP_409_CONFLICT, "AGENT_USER_ALREADY_BOUND", "该用户已绑定此 Agent")
 
     revoke_credential = secrets.token_urlsafe(24)
     db.add(
@@ -188,7 +187,7 @@ async def unbind_agent_binding(
     agent = await _verify_agent(request.headers.get("x-agent-key") or "", agent_id, db)
     revoke = request.headers.get("x-revoke-credential") or ""
     if not revoke:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="缺少撤销凭据")
+        raise api_error(status.HTTP_401_UNAUTHORIZED, "AGENT_REVOKE_CREDENTIAL_REQUIRED", "缺少撤销凭据")
     binding = (
         await db.execute(
             select(AgentUser).where(
@@ -198,9 +197,9 @@ async def unbind_agent_binding(
         )
     ).scalar_one_or_none()
     if binding is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="绑定不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, "AGENT_BINDING_NOT_FOUND", "绑定不存在")
     if not verify_psk(revoke, binding.revoke_credential_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="撤销凭据无效")
+        raise api_error(status.HTTP_401_UNAUTHORIZED, "AGENT_REVOKE_CREDENTIAL_INVALID", "撤销凭据无效")
     await db.delete(binding)
     await db.commit()
 
@@ -211,14 +210,14 @@ async def _verify_execution_binding(
     """CR-05：上传必须绑定到分配给当前 Agent 的执行，并校验 session_token。"""
     execution = await db.get(Execution, execution_id)
     if execution is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="执行不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, "EXECUTION_NOT_FOUND", "执行不存在")
     device = await db.get(Device, execution.device_id) if execution.device_id else None
     if device is None or device.agent_id != agent.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="执行未分配给当前 Agent")
+        raise api_error(status.HTTP_403_FORBIDDEN, "AGENT_EXECUTION_FORBIDDEN", "执行未分配给当前 Agent")
     if execution.session_token is not None and session_token != execution.session_token:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="session_token 不匹配")
+        raise api_error(status.HTTP_403_FORBIDDEN, "AGENT_SESSION_INVALID", "session_token 不匹配")
     if execution.status not in ("running", "stopping"):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="执行当前不可接收结果")
+        raise api_error(status.HTTP_409_CONFLICT, "EXECUTION_RESULT_NOT_ACCEPTED", "执行当前不可接收结果")
 
 
 @router.post("/agent/upload")
@@ -237,15 +236,17 @@ async def upload_agent_file(
     await _verify_execution_binding(db, agent, execution_id, session_token)
     ext = "." + (file.filename or "").rsplit(".", 1)[-1].lower() if file.filename and "." in file.filename else ""
     if ext not in _ALLOWED_EXTS:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"不支持的扩展名: {ext or '无'}")
+        raise api_error(status.HTTP_400_BAD_REQUEST, "AGENT_UPLOAD_TYPE_INVALID", f"不支持的扩展名: {ext or '无'}")
 
     content = await file.read()
     if not content:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文件为空")
+        raise api_error(status.HTTP_400_BAD_REQUEST, "AGENT_UPLOAD_EMPTY", "文件为空")
     if len(content) > settings.max_screenshot_size:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"截图超过大小限制（{settings.max_screenshot_size // 1024 // 1024}MB）",
+        raise api_error(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            "AGENT_UPLOAD_TOO_LARGE",
+            f"截图超过大小限制（{settings.max_screenshot_size // 1024 // 1024}MB）",
+            {"max_bytes": settings.max_screenshot_size},
         )
 
     safe_name = new_screenshot_filename(file.filename)

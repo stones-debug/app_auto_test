@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -23,6 +24,7 @@ from app.api.reports import router as reports_router
 from app.api.suites import router as suites_router
 from app.api.variables import router as variables_router
 from app.core.config import BASE_DIR, settings, validate_security_baseline
+from app.core.errors import ApiErrorDetail, ApiErrorResponse
 from app.core.security import is_loopback_host
 from app.services.worker_runtime import WorkerRuntime
 from app.ws.managers import agent_manager
@@ -93,6 +95,46 @@ app.include_router(releases_router, prefix="/api")
 app.include_router(reports_router, prefix="/api")
 app.include_router(internal_router)
 app.include_router(ws_router)
+
+
+def _custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    components = schema.setdefault("components", {}).setdefault("schemas", {})
+    components["ApiErrorDetail"] = ApiErrorDetail.model_json_schema()
+    components["ApiErrorResponse"] = {
+        "type": "object",
+        "properties": {
+            "detail": {"$ref": "#/components/schemas/ApiErrorDetail"},
+        },
+        "required": ["detail"],
+        "title": ApiErrorResponse.__name__,
+    }
+    error_response = {
+        "description": "统一业务错误",
+        "content": {
+            "application/json": {
+                "schema": {"$ref": "#/components/schemas/ApiErrorResponse"},
+            }
+        },
+    }
+    for path_item in schema.get("paths", {}).values():
+        for operation in path_item.values():
+            if not isinstance(operation, dict) or "responses" not in operation:
+                continue
+            for status_code in ("400", "401", "403", "404", "409"):
+                operation["responses"].setdefault(status_code, error_response)
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = _custom_openapi
 
 
 @app.get("/metrics")

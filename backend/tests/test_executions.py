@@ -224,7 +224,7 @@ async def test_current_screen_mode_only_allows_single_case(client: AsyncClient):
         json={"device_id": device_id, "parameters": {"attach_to_current_app": True}},
     )
     assert suite_run.status_code == 400
-    assert "仅支持执行单个用例" in suite_run.json()["detail"]
+    assert "仅支持执行单个用例" in suite_run.json()["detail"]["message"]
 
     invalid = await client.post(
         f"/api/executions/cases/{case_id}",

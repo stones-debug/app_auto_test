@@ -2,6 +2,7 @@ import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
 
 import { getDefaultDevice, listDevices, setDefaultDevice, type Device } from '@/api/agents'
+import { apiErrorDetail } from '@/utils/request'
 import {
   createCaseExecution,
   createBatchExecution,
@@ -30,8 +31,7 @@ export interface ProfileRunContext {
 
 /** 从 axios 错误中提取后端业务码（detail.code，如 DEVICE_REQUIRED / DEVICE_BUSY / AGENT_OFFLINE）。 */
 export function apiErrorCode(error: unknown): string | null {
-  const detail = (error as { response?: { data?: { detail?: { code?: string } } } })?.response?.data?.detail
-  return detail?.code ?? null
+  return apiErrorDetail(error)?.code ?? null
 }
 
 export const CONFLICT_CODES = new Set(['DEVICE_BUSY', 'AGENT_OFFLINE', 'DEVICE_REQUIRED'])

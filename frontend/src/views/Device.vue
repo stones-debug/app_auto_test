@@ -21,6 +21,7 @@ import { createMyAgentKey, getMyAgentKey, regenerateMyAgentKey, type AgentKey } 
 import { getDownloadToken, getLatestRelease, releaseDownloadUrl, type ReleaseManifest } from '@/api/releases'
 import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/utils/format'
+import { apiErrorDetail } from '@/utils/request'
 
 const auth = useAuthStore()
 const isAdmin = ref(auth.user?.is_admin ?? false)
@@ -154,7 +155,7 @@ async function remove(agent: Agent) {
     ElMessage.success('已注销')
   } catch (error) {
     // Step 6：活动执行时返回 409 AGENT_HAS_ACTIVE_EXECUTIONS，展示具体执行信息
-    const detail = (error as { response?: { data?: { detail?: { code?: string; message?: string } } } })?.response?.data?.detail
+    const detail = apiErrorDetail(error)
     if (detail?.code === 'AGENT_HAS_ACTIVE_EXECUTIONS' && detail.message) {
       ElMessage.warning(detail.message)
       return

@@ -2061,4 +2061,28 @@ RUNNING ←── Worker 认领后经内部接口通知 FastAPI 更新
 
 ---
 
+### 10.15 HTTP 机器可读错误码（V1.6 增量）
+
+> 本节为 HTTP 业务错误响应的最终契约；与前文零散的字符串 `detail` 示例冲突时以本节为准。
+
+1. **响应结构**：业务错误统一返回 HTTP 状态码和以下 JSON 结构；`context` 无上下文时为 `{}`，不得把业务字段放在 `detail` 外层。
+
+   ```json
+   {
+     "detail": {
+       "code": "EXECUTION_DEVICE_BUSY",
+       "message": "设备正在执行其他任务",
+       "context": {"device_id": 12}
+     }
+   }
+   ```
+
+2. **错误码范围**：认证使用 `AUTH_REQUIRED`、`AUTH_TOKEN_INVALID`、`AUTH_CREDENTIALS_INVALID`、`AUTH_USER_EXISTS`、`AUTH_USER_DISABLED`、`AUTH_REFRESH_INVALID`；权限使用 `PROJECT_FORBIDDEN`、`AGENT_FORBIDDEN`、`DEVICE_FORBIDDEN`、`PLATFORM_ADMIN_REQUIRED`；执行使用 `DEVICE_REQUIRED`、`DEVICE_BUSY`、`AGENT_OFFLINE`、`EXECUTION_NOT_STOPPABLE`；档案使用 `APP_PROFILE_REQUIRED`、`APP_PROFILE_NOT_FOUND`、`APP_RELEASE_NOT_FOUND`、`APP_RELEASE_EXISTS`、`PROFILE_REVISION_CONFLICT`、`TEST_ASSET_REVISION_CONFLICT`、`APP_RELEASE_CHANGED`、`PROFILE_EMPTY`、`PROFILE_RULE_INVALID`、`SNAPSHOT_TOO_LARGE`。其他资源错误应使用同样的稳定大写编码规则。
+
+3. **前后端约束**：前端只按 `detail.code` 分支，按 `detail.message` 展示，`detail.context` 仅用于补充动态信息；禁止以中文文案判断业务分支。后端同一端点不得混用字符串和结构化业务错误。
+
+4. **OpenAPI**：后端 OpenAPI 必须包含 `ApiErrorResponse` schema，业务错误的 `detail` 形状与该 schema 一致；请求校验错误仍可由 FastAPI 返回 422 的标准 `detail` 数组，不视为业务错误码。
+
+---
+
 > **文档结束**。本方案基于原始设计进行了系统性修订，重点解决了执行引擎耦合、Agent 落地性、执行可靠性、报告可追溯性等核心问题，并经由 V1.1 评审补齐执行职责划分、Worker↔Agent 通信中转、元素快照、停止机制、设备原子锁、变量系统等缺口，可直接作为项目启动的技术基线。

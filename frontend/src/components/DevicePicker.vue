@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 
 import { getExecution, type Execution, type ExecutionRunSettings } from '@/api/executions'
 import { apiErrorCode, buildRunParameters, useDeviceSelect, type ProfileRunContext, type RunTarget } from '@/composables/useDeviceSelect'
+import { apiErrorMessage } from '@/utils/request'
 import { getAppProfile, listReleases, previewExecution, type ExecutionPreview } from '@/api/appProfiles'
 import { useAppProfileStore } from '@/stores/appProfile'
 import { ElMessage } from 'element-plus'
@@ -76,7 +77,7 @@ async function run() {
       await doPreview()
       return
     }
-    ElMessage.error((error as Error).message || '创建执行失败')
+    ElMessage.error(apiErrorMessage(error, '创建执行失败'))
   }
 }
 

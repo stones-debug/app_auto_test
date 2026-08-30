@@ -3,6 +3,30 @@ import axios, { type AxiosError, type AxiosRequestConfig, type InternalAxiosRequ
 const TOKEN_KEY = 'access_token'
 const REFRESH_KEY = 'refresh_token'
 
+export interface ApiErrorDetail {
+  code: string
+  message: string
+  context: Record<string, unknown>
+}
+
+export function apiErrorDetail(error: unknown): ApiErrorDetail | null {
+  const detail = (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return null
+  const value = detail as { code?: unknown; message?: unknown; context?: unknown }
+  if (typeof value.code !== 'string') return null
+  return {
+    code: value.code,
+    message: typeof value.message === 'string' ? value.message : '',
+    context: value.context && typeof value.context === 'object' && !Array.isArray(value.context)
+      ? value.context as Record<string, unknown>
+      : {},
+  }
+}
+
+export function apiErrorMessage(error: unknown, fallback = '请求失败'): string {
+  return apiErrorDetail(error)?.message || fallback
+}
+
 // V2 §5.1：记住我——勾选用 localStorage（持久），否则 refresh token 放 sessionStorage。
 let persistRefresh = localStorage.getItem('remember_me') !== '0'
 

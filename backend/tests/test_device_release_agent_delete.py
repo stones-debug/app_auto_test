@@ -306,7 +306,7 @@ async def test_soft_deleted_agent_reactivation_rotates_psk(client: AsyncClient):
     # 无旧 PSK → 409 拒绝（不允许仅凭 install_id 劫持）
     no_psk = await client.post("/api/agent/bind", json={"user_key": user_key, "install_id": install_id})
     assert no_psk.status_code == 409
-    assert "重置" in no_psk.json()["detail"]
+    assert "重置" in no_psk.json()["detail"]["message"]
 
     # 携带旧 PSK → 重新激活，返回新 PSK 并旋转数据库哈希
     reactivated = await client.post(

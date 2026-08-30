@@ -83,4 +83,5 @@ async def test_register_duplicate_username(client: AsyncClient):
         json={"username": REG["username"], "password": "test456"},
     )
     assert reg.status_code == 409
-    assert reg.json()["detail"] == "用户名已存在"
+    assert reg.json()["detail"]["code"] == "AUTH_USER_EXISTS"
+    assert reg.json()["detail"]["message"] == "用户名已存在"

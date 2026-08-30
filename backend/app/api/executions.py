@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +13,7 @@ from app.api.deps import (
 )
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.errors import api_error
+from app.core.errors import ErrorCode, api_error
 from app.core.ratelimit import rate_limit
 from app.models import (
     Agent,
@@ -107,7 +107,7 @@ async def preview_execution(
     """执行预检（方案 §4.7）：只读解析，不创建执行、不抢设备。"""
     project, role = await get_project_permission(body.project_id, user, db)
     if role not in ("owner", "admin", "member"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权执行")
+        raise api_error(status.HTTP_403_FORBIDDEN, ErrorCode.PROJECT_FORBIDDEN, "无权执行")
     # 方案 §10.3：预检按 user+project 限流
     from app.core.ratelimit import rate_limit_check
 
@@ -115,7 +115,7 @@ async def preview_execution(
     # 读取当前档案/项目 revision 作为 expected（预检返回给前端，供提交时二次校验）
     profile = await db.get(AppProfile, body.app_profile_id)
     if profile is None or profile.deleted_at is not None or profile.project_id != body.project_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="APP 档案不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.APP_PROFILE_NOT_FOUND, "APP 档案不存在")
     expected_profile_rev = profile.revision
     expected_asset_rev = project.test_asset_revision
     await _validate_context_suite(
@@ -140,14 +140,21 @@ async def preview_execution(
     try:
         result = await get_resolver().preview(request, db)
     except ProfileRevisionConflict as err:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": err.code, "current": err.current, "expected": err.expected}) from None
+        raise api_error(
+            status.HTTP_409_CONFLICT,
+            err.code,
+            "档案或测试资产版本已变化，请重新预检",
+            {"current": err.current, "expected": err.expected},
+        ) from None
     except ProfileEmpty as err:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"code": "PROFILE_EMPTY", "exclusions": [{"target_type": e.target_type, "name": e.display_snapshot.get("name")} for e in err.exclusions]},
+        raise api_error(
+            status.HTTP_400_BAD_REQUEST,
+            ErrorCode.PROFILE_EMPTY,
+            "解析后没有可执行用例",
+            {"exclusions": [{"target_type": e.target_type, "name": e.display_snapshot.get("name")} for e in err.exclusions]},
         ) from None
     except ProfileRuleError as err:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail={"code": err.code, "message": err.message}) from None
+        raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, err.code, err.message) from None
 
     return ExecutionPreviewResponse(
         profile_revision=result.profile_revision,
@@ -171,7 +178,7 @@ async def preview_execution(
 async def _get_execution_or_404(execution_id: int, db: AsyncSession) -> Execution:
     execution = await db.get(Execution, execution_id)
     if execution is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="执行记录不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, "EXECUTION_NOT_FOUND", "执行记录不存在")
     return execution
 
 
@@ -188,14 +195,14 @@ async def _require_execution_write(execution: Execution, user: User, db: AsyncSe
 async def _get_case_or_404(case_id: int, db: AsyncSession) -> TestCase:
     case = await db.get(TestCase, case_id)
     if case is None or case.deleted_at is not None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用例不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, "CASE_NOT_FOUND", "用例不存在")
     return case
 
 
 async def _get_suite_or_404(suite_id: int, db: AsyncSession) -> TestSuite:
     suite = await db.get(TestSuite, suite_id)
     if suite is None or suite.deleted_at is not None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="套件不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, "SUITE_NOT_FOUND", "套件不存在")
     return suite
 
 
@@ -206,20 +213,20 @@ async def _validate_context_suite(
     if context_suite_id is None:
         return
     if target_type != "case":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="context_suite_id 仅支持执行单个用例")
+        raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_CONTEXT_INVALID", "context_suite_id 仅支持执行单个用例")
     if len(target_ids) != 1:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="context_suite_id 仅支持单个用例")
+        raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_CONTEXT_INVALID", "context_suite_id 仅支持单个用例")
     suite = await _get_suite_or_404(context_suite_id, db)
     case = await _get_case_or_404(target_ids[0], db)
     if suite.project_id != project_id or case.project_id != project_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="套件/用例/项目必须属于同一项目")
+        raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_CONTEXT_INVALID", "套件/用例/项目必须属于同一项目")
     member = (
         await db.execute(
             select(TestSuiteCase).where(TestSuiteCase.suite_id == suite.id, TestSuiteCase.case_id == case.id)
         )
     ).scalar_one_or_none()
     if member is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="用例不属于该套件")
+        raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_CONTEXT_INVALID", "用例不属于该套件")
 
 
 async def _validate_device_for_execution(
@@ -256,10 +263,7 @@ async def _validate_device_for_execution(
 
 def _reject_current_screen_for_non_case(parameters: dict) -> None:
     if parameters.get("attach_to_current_app"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="复用当前设备界面仅支持执行单个用例",
-        )
+        raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_TARGET_INVALID", "复用当前设备界面仅支持执行单个用例")
 
 
 @router.post(
@@ -311,7 +315,7 @@ async def create_batch_execution(
         if project_id is None:
             project_id = suite.project_id
         elif suite.project_id != project_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="批量执行的套件必须属于同一项目")
+            raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_TARGET_INVALID", "批量执行的套件必须属于同一项目")
         suites.append(suite)
     if project_id is not None:
         await require_project_write(project_id, user, db)
@@ -510,10 +514,10 @@ async def get_execution_artifact(
         )
     ).scalar_one_or_none()
     if step is None or not step.screenshot_path:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="执行附件不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, "EXECUTION_ARTIFACT_NOT_FOUND", "执行附件不存在")
     target = resolve_screenshot_path(execution_id, step.screenshot_path)
     if target is None or not target.is_file():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="执行附件不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, "EXECUTION_ARTIFACT_NOT_FOUND", "执行附件不存在")
     return FileResponse(target)
 
 

@@ -2,7 +2,7 @@ import logging
 import secrets
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,7 +14,7 @@ from app.api.deps import (
     require_platform_admin,
 )
 from app.core.database import get_db
-from app.core.errors import api_error
+from app.core.errors import ErrorCode, api_error
 from app.core.security import hash_psk
 from app.models import Agent, AgentUser, Device, DevicePreference, Execution, User
 from app.schemas.agent import (
@@ -38,14 +38,14 @@ router = APIRouter(tags=["设备与 Agent 管理"])
 async def _get_agent_or_404(agent_id: int, db: AsyncSession) -> Agent:
     agent = await db.get(Agent, agent_id)
     if agent is None or agent.deleted_at is not None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent 不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.AGENT_NOT_FOUND, "Agent 不存在")
     return agent
 
 
 async def _get_device_or_404(device_id: int, db: AsyncSession) -> Device:
     device = await db.get(Device, device_id)
     if device is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="设备不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.DEVICE_NOT_FOUND, "设备不存在")
     return device
 
 
@@ -112,7 +112,7 @@ async def delete_agent(
         await db.execute(select(Agent).where(Agent.id == agent_id).with_for_update())
     ).scalar_one_or_none()
     if agent is None or agent.deleted_at is not None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent 不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.AGENT_NOT_FOUND, "Agent 不存在")
     devices = (
         await db.execute(select(Device).where(Device.agent_id == agent_id).with_for_update())
     ).scalars().all()
@@ -326,7 +326,7 @@ async def release_device(
         await db.execute(select(Device).where(Device.id == device_id).with_for_update())
     ).scalar_one_or_none()
     if device is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="设备不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.DEVICE_NOT_FOUND, "设备不存在")
     now = datetime.now(UTC)
 
     execution: Execution | None = None

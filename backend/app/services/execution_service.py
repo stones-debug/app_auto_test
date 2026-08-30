@@ -1,11 +1,11 @@
 from datetime import UTC, datetime
 
-from fastapi import HTTPException, status
+from fastapi import status
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import app_profile_required_for_project, settings
-from app.core.errors import api_error
+from app.core.errors import ErrorCode, api_error
 from app.models import (
     AppProfile,
     AppProfileRelease,
@@ -105,13 +105,11 @@ async def _lock_and_verify_resolution_revisions(
         .with_for_update()
     )
     if asset_revision != resolved_asset_revision:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "code": "TEST_ASSET_REVISION_CONFLICT",
-                "current": asset_revision or 0,
-                "expected": resolved_asset_revision,
-            },
+        raise api_error(
+            status.HTTP_409_CONFLICT,
+            ErrorCode.TEST_ASSET_REVISION_CONFLICT,
+            "测试资产版本已变化，请重新预检",
+            {"current": asset_revision or 0, "expected": resolved_asset_revision},
         )
     profile_revision = await db.scalar(
         select(AppProfile.revision)
@@ -119,13 +117,11 @@ async def _lock_and_verify_resolution_revisions(
         .with_for_update()
     )
     if profile_revision != resolved_profile_revision:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "code": "PROFILE_REVISION_CONFLICT",
-                "current": profile_revision or 0,
-                "expected": resolved_profile_revision,
-            },
+        raise api_error(
+            status.HTTP_409_CONFLICT,
+            ErrorCode.PROFILE_REVISION_CONFLICT,
+            "APP 档案版本已变化，请重新预检",
+            {"current": profile_revision or 0, "expected": resolved_profile_revision},
         )
     release_row = (
         await db.execute(
@@ -143,10 +139,7 @@ async def _lock_and_verify_resolution_revisions(
         or release_row.status != "active"
         or release_row.version != resolved_release_version
     ):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "APP_RELEASE_CHANGED", "message": "发布版本已变化，请重新预检"},
-        )
+        raise api_error(status.HTTP_409_CONFLICT, ErrorCode.APP_RELEASE_CHANGED, "发布版本已变化，请重新预检")
 
 
 async def _build_resolution_request(
@@ -211,26 +204,22 @@ async def _create_execution_with_profile(
 
         type_ = "profile" if "PROFILE_REVISION" in err.code else "asset"
         inc_conflict(type_)
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": err.code, "current": err.current, "expected": err.expected},
+        raise api_error(
+            status.HTTP_409_CONFLICT,
+            err.code,
+            "档案或测试资产版本已变化，请重新预检",
+            {"current": err.current, "expected": err.expected},
         ) from None
     except ProfileEmpty:
         from app.services.metrics import inc_resolve
 
         inc_resolve("empty")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"code": "PROFILE_EMPTY"},
-        ) from None
+        raise api_error(status.HTTP_400_BAD_REQUEST, ErrorCode.PROFILE_EMPTY, "解析后没有可执行用例") from None
     except ProfileRuleError as err:
         from app.services.metrics import inc_resolve
 
         inc_resolve("invalid")
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={"code": err.code, "message": err.message},
-        ) from None
+        raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, err.code, err.message) from None
 
     from app.services.metrics import inc_resolve, observe_snapshot
 
@@ -249,9 +238,11 @@ async def _create_execution_with_profile(
 
     snapshot_bytes = len(_json.dumps([c.__dict__ for c in result.cases], default=str).encode("utf-8"))
     if snapshot_bytes > settings.max_execution_snapshot_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail={"code": "SNAPSHOT_TOO_LARGE", "message": f"快照超过上限 {settings.max_execution_snapshot_bytes // (1024 * 1024)} MB"},
+        raise api_error(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            ErrorCode.SNAPSHOT_TOO_LARGE,
+            f"快照超过上限 {settings.max_execution_snapshot_bytes // (1024 * 1024)} MB",
+            {"size": snapshot_bytes},
         )
 
     execution = Execution(
@@ -434,7 +425,7 @@ async def stop_execution(db: AsyncSession, execution: Execution) -> str:
         )
         await db.commit()
         if result.rowcount != 1:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="执行已非排队态，无法取消")
+            raise api_error(status.HTTP_409_CONFLICT, ErrorCode.EXECUTION_NOT_STOPPABLE, "执行已非排队态，无法取消")
         return "cancelled"
     if execution.status == "running":
         result = await db.execute(
@@ -444,11 +435,16 @@ async def stop_execution(db: AsyncSession, execution: Execution) -> str:
         )
         await db.commit()
         if result.rowcount != 1:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="执行已非运行态，无需停止")
+            raise api_error(status.HTTP_409_CONFLICT, ErrorCode.EXECUTION_NOT_STOPPABLE, "执行已非运行态，无需停止")
         return "stopping"
     if execution.status == "stopping":
         return "stopping"
-    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"执行状态为 {execution.status}，无法停止")
+    raise api_error(
+        status.HTTP_409_CONFLICT,
+        ErrorCode.EXECUTION_NOT_STOPPABLE,
+        f"执行状态为 {execution.status}，无法停止",
+        {"status": execution.status},
+    )
 
 
 async def retry_execution(
@@ -478,7 +474,7 @@ async def retry_execution(
 
     profile = await db.get(AppProfile, execution.app_profile_id)
     if profile is None or profile.deleted_at is not None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="APP 档案不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.APP_PROFILE_NOT_FOUND, "APP 档案不存在")
     project = await db.get(Project, execution.project_id)
     body = SimpleNamespace(
         app_profile_id=execution.app_profile_id,

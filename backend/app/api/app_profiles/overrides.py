@@ -3,12 +3,13 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_project_permission
 from app.core.database import get_db
+from app.core.errors import api_error
 from app.models import (
     AppProfileElementOverride,
     AppProfileNodeOverride,
@@ -119,7 +120,7 @@ async def upsert_element_override(
 
     el = await db.get(TestElement, element_id)
     if el is None or el.deleted_at is not None or el.project_id != profile.project_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="元素不存在或跨项目")
+        raise api_error(status.HTTP_404_NOT_FOUND, "ELEMENT_NOT_FOUND", "元素不存在或跨项目")
     existing = (
         await db.execute(
             select(AppProfileElementOverride).where(
@@ -285,11 +286,11 @@ async def upsert_node_override(
         if replay is not None:
             return replay
     if node_type not in ("step", "assertion"):
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="node_type 只允许 step|assertion")
+        raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, "PROFILE_TARGET_INVALID", "node_type 只允许 step|assertion")
 
     case = await db.get(TestCase, case_id)
     if case is None or case.deleted_at is not None or case.project_id != profile.project_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用例不存在或跨项目")
+        raise api_error(status.HTTP_404_NOT_FOUND, "CASE_NOT_FOUND", "用例不存在或跨项目")
     membership = await db.scalar(
         select(TestSuiteCase.id).where(
             TestSuiteCase.suite_id == suite_id,
@@ -303,13 +304,10 @@ async def upsert_node_override(
         or suite.project_id != profile.project_id
         or membership is None
     ):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="套件用例关系不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, "SUITE_CASE_NOT_FOUND", "套件用例关系不存在")
     found = _find_case_node(case, node_type, node_key)
     if found is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={"code": "PROFILE_TARGET_NOT_FOUND", "message": "节点不存在或 node_key 非法"},
-        )
+        raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, "PROFILE_TARGET_NOT_FOUND", "节点不存在或 node_key 非法")
     normalized_key, source_node = found
     # 白名单合并校验（禁止改身份/顺序）
     from app.services.profile_resolver import (
@@ -321,16 +319,13 @@ async def upsert_node_override(
 
     for key in body.patch:
         if key in NODE_IDENTITY_FIELDS:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"禁止修改节点字段: {key}")
+            raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, "PROFILE_OVERRIDE_INVALID", f"禁止修改节点字段: {key}")
         if key not in NODE_PATCH_ALLOWED:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"不允许覆盖字段: {key}")
+            raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, "PROFILE_OVERRIDE_INVALID", f"不允许覆盖字段: {key}")
     try:
         validate_node_patch(node_type, source_node, body.patch)
     except ProfileRuleError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={"code": exc.code, "message": exc.message},
-        ) from None
+        raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.code, exc.message) from None
     existing = (
         await db.execute(
             select(AppProfileNodeOverride).where(
@@ -435,13 +430,10 @@ async def upsert_suite_step_override(
             return replay
     suite = await db.get(TestSuite, suite_id)
     if suite is None or suite.deleted_at is not None or suite.project_id != profile.project_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="套件不存在或跨项目")
+        raise api_error(status.HTTP_404_NOT_FOUND, "SUITE_NOT_FOUND", "套件不存在或跨项目")
     found = _find_suite_step(suite, node_key)
     if found is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={"code": "PROFILE_TARGET_NOT_FOUND", "message": "套件步骤节点不存在或 node_key 非法"},
-        )
+        raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, "PROFILE_TARGET_NOT_FOUND", "套件步骤节点不存在或 node_key 非法")
     normalized_key, source_node, _phase = found
     # 白名单合并校验（禁止改身份/顺序）；套件步骤是 Action Step，验证逻辑与 step 一致
     from app.services.profile_resolver import (
@@ -453,16 +445,13 @@ async def upsert_suite_step_override(
 
     for key in body.patch:
         if key in NODE_IDENTITY_FIELDS:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"禁止修改节点字段: {key}")
+            raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, "PROFILE_OVERRIDE_INVALID", f"禁止修改节点字段: {key}")
         if key not in NODE_PATCH_ALLOWED:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"不允许覆盖字段: {key}")
+            raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, "PROFILE_OVERRIDE_INVALID", f"不允许覆盖字段: {key}")
     try:
         validate_node_patch("step", source_node, body.patch)
     except ProfileRuleError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={"code": exc.code, "message": exc.message},
-        ) from None
+        raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.code, exc.message) from None
     existing = (
         await db.execute(
             select(AppProfileNodeOverride).where(

@@ -1,10 +1,11 @@
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.errors import ErrorCode, api_error
 from app.core.security import constant_time_equals, decode_token
 from app.models import Agent, AgentUser, Device, Project, ProjectMember, User
 
@@ -16,29 +17,20 @@ async def get_current_user(
     db: AsyncSession = Depends(get_db),
 ) -> User:
     if credentials is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="未提供认证凭据",
-        )
+        raise api_error(status.HTTP_401_UNAUTHORIZED, ErrorCode.AUTH_REQUIRED, "未提供认证凭据")
     payload = decode_token(credentials.credentials)
     if payload is None or payload.get("type") != "access":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="无效或过期的 Token",
-        )
+        raise api_error(status.HTTP_401_UNAUTHORIZED, ErrorCode.AUTH_TOKEN_INVALID, "无效或过期的 Token")
     user = await db.get(User, int(payload["sub"]))
     if user is None or user.status != "active":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户不存在或已禁用",
-        )
+        raise api_error(status.HTTP_401_UNAUTHORIZED, ErrorCode.AUTH_USER_DISABLED, "用户不存在或已禁用")
     return user
 
 
 async def _get_project_or_404(project_id: int, db: AsyncSession) -> Project:
     project = await db.get(Project, project_id)
     if project is None or project.deleted_at is not None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.PROJECT_NOT_FOUND, "项目不存在")
     return project
 
 
@@ -67,7 +59,7 @@ async def get_project_permission(
 
     if project.visibility == "public":
         return project, "viewer"
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问该项目")
+    raise api_error(status.HTTP_403_FORBIDDEN, ErrorCode.PROJECT_FORBIDDEN, "无权访问该项目")
 
 
 def require_project_role(*roles: str):
@@ -81,7 +73,7 @@ def require_project_role(*roles: str):
     ) -> tuple[Project, str | None]:
         _project, role = perm
         if role not in roles:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+            raise api_error(status.HTTP_403_FORBIDDEN, ErrorCode.PROJECT_FORBIDDEN, "权限不足")
         return perm
 
     return _checker
@@ -92,7 +84,7 @@ def require_platform_admin():
 
     async def _checker(user: User = Depends(get_current_user)) -> User:
         if not user.is_admin:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="需要平台管理员权限")
+            raise api_error(status.HTTP_403_FORBIDDEN, ErrorCode.PLATFORM_ADMIN_REQUIRED, "需要平台管理员权限")
         return user
 
     return _checker
@@ -109,7 +101,7 @@ async def require_project_write(
     """
     project, role = await get_project_permission(project_id, user, db)
     if role not in ("owner", "admin", "member"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+        raise api_error(status.HTTP_403_FORBIDDEN, ErrorCode.PROJECT_FORBIDDEN, "权限不足")
     return project, role
 
 
@@ -127,7 +119,7 @@ async def require_agent_access(agent_id: int, user: User, db: AsyncSession) -> A
     """Agent 访问校验：平台管理员或已绑定该 Agent 的用户；软注销 Agent 视为不存在。"""
     agent = await db.get(Agent, agent_id)
     if agent is None or agent.deleted_at is not None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent 不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.AGENT_NOT_FOUND, "Agent 不存在")
     if user.is_admin:
         return agent
     bound = await db.execute(
@@ -137,7 +129,7 @@ async def require_agent_access(agent_id: int, user: User, db: AsyncSession) -> A
         )
     )
     if bound.scalar_one_or_none() is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问该 Agent")
+        raise api_error(status.HTTP_403_FORBIDDEN, ErrorCode.AGENT_FORBIDDEN, "无权访问该 Agent")
     return agent
 
 
@@ -148,10 +140,10 @@ async def require_device_access(device_id: int, user: User, db: AsyncSession) ->
     """
     device = await db.get(Device, device_id)
     if device is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="设备不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.DEVICE_NOT_FOUND, "设备不存在")
     agent = await db.get(Agent, device.agent_id)
     if agent is None or agent.deleted_at is not None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="设备不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.DEVICE_NOT_FOUND, "设备不存在")
     if user.is_admin:
         return device
     bound = await db.execute(
@@ -161,7 +153,7 @@ async def require_device_access(device_id: int, user: User, db: AsyncSession) ->
         )
     )
     if bound.scalar_one_or_none() is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权使用该设备")
+        raise api_error(status.HTTP_403_FORBIDDEN, ErrorCode.DEVICE_FORBIDDEN, "无权使用该设备")
     return device
 
 
@@ -188,5 +180,5 @@ def require_internal_token(x_internal_token: str | None = Header(default=None)) 
     if x_internal_token is None or not constant_time_equals(
         x_internal_token, settings.internal_token
     ):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="内部令牌无效")
+        raise api_error(status.HTTP_401_UNAUTHORIZED, ErrorCode.INTERNAL_TOKEN_INVALID, "内部令牌无效")
     return x_internal_token

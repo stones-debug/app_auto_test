@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, Request, status
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_project_permission
 from app.core.database import get_db
+from app.core.errors import api_error
 from app.models import AppProfile, Execution, Project, User
 from app.schemas.app_profile import AppProfileCreate, AppProfileDelete, AppProfileUpdate
 from app.services.profile_audit import (
@@ -77,7 +78,7 @@ async def create_app_profile(
         )
     ).scalar_one_or_none()
     if existing is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="同名 APP 档案已存在")
+        raise api_error(status.HTTP_409_CONFLICT, "APP_PROFILE_NAME_EXISTS", "同名 APP 档案已存在")
     duplicate_code = await db.scalar(
         select(AppProfile.id).where(
             AppProfile.project_id == project_id,
@@ -86,7 +87,7 @@ async def create_app_profile(
         )
     )
     if duplicate_code is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="同编码 APP 档案已存在")
+        raise api_error(status.HTTP_409_CONFLICT, "APP_PROFILE_CODE_EXISTS", "同编码 APP 档案已存在")
     profile = AppProfile(
         project_id=project_id,
         name=body.name,
@@ -102,7 +103,7 @@ async def create_app_profile(
         await db.flush()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="APP 档案名称或编码已存在") from None
+        raise api_error(status.HTTP_409_CONFLICT, "APP_PROFILE_EXISTS", "APP 档案名称或编码已存在") from None
     response = {**await _profile_out(profile, db), "request_id": body.request_id}
     await write_audit(
         db,
@@ -150,9 +151,11 @@ async def update_app_profile(
     try:
         new_revision = await bump_profile_revision(db, profile_id, body.expected_revision, user.id)
     except RevisionConflictError as err:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": err.code, "current": err.current, "expected": err.expected},
+        raise api_error(
+            status.HTTP_409_CONFLICT,
+            err.code,
+            "APP 档案版本已变化，请重新加载后再保存",
+            {"current": err.current, "expected": err.expected},
         ) from None
     for field in ("name", "description", "status", "inherit_all"):
         if field in body.model_fields_set and getattr(body, field) is not None:
@@ -202,14 +205,16 @@ async def delete_app_profile(
         )
     )
     if active:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="档案仍有非终态执行")
+        raise api_error(status.HTTP_409_CONFLICT, "APP_PROFILE_HAS_ACTIVE_EXECUTIONS", "档案仍有非终态执行")
     before = profile.revision
     try:
         new_revision = await bump_profile_revision(db, profile_id_, body.expected_revision, user.id)
     except RevisionConflictError as err:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": err.code, "current": err.current, "expected": err.expected},
+        raise api_error(
+            status.HTTP_409_CONFLICT,
+            err.code,
+            "APP 档案版本已变化，请重新加载后再保存",
+            {"current": err.current, "expected": err.expected},
         ) from None
     profile.deleted_at = datetime.now(UTC)
     profile.status = "disabled"

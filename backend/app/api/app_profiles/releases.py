@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from fastapi import Depends, HTTPException, Query, Request, status
+from fastapi import Depends, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_project_permission
 from app.core.database import get_db
+from app.core.errors import ErrorCode, api_error
 from app.models import AppProfileRelease, Project, User
 from app.schemas.app_profile import ReleaseCreate, ReleaseDelete, ReleaseUpdate
 from app.services.profile_audit import find_idempotent_replay, write_audit
@@ -79,7 +80,7 @@ async def create_release(
         )
     ).scalar_one_or_none()
     if existing is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="同版本号发布版本已存在")
+        raise api_error(status.HTTP_409_CONFLICT, ErrorCode.APP_RELEASE_EXISTS, "同版本号发布版本已存在")
     release = AppProfileRelease(
         profile_id=profile_id,
         version=body.version,
@@ -119,7 +120,7 @@ async def update_release(
 ):
     release = await db.get(AppProfileRelease, release_id)
     if release is None or release.deleted_at is not None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="发布版本不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.APP_RELEASE_NOT_FOUND, "发布版本不存在")
     profile = await _get_profile_or_404(release.profile_id, db)
     _project, role = modal_perm
     if body.request_id:
@@ -134,7 +135,7 @@ async def update_release(
         await db.flush()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="同版本号发布版本已存在") from None
+        raise api_error(status.HTTP_409_CONFLICT, ErrorCode.APP_RELEASE_EXISTS, "同版本号发布版本已存在") from None
     await db.refresh(release)
     response = {**_release_out(release), "request_id": body.request_id}
     await write_audit(
@@ -165,7 +166,7 @@ async def delete_release(
 ):
     release = await db.get(AppProfileRelease, release_id)
     if release is None or release.deleted_at is not None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="发布版本不存在")
+        raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.APP_RELEASE_NOT_FOUND, "发布版本不存在")
     profile = await _get_profile_or_404(release.profile_id, db)
     _project, role = modal_perm
     if body.request_id:

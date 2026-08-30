@@ -3,23 +3,22 @@ import { describe, expect, it } from 'vitest'
 import { apiErrorDetail, type ProfileRunParams } from '@/api/appProfiles'
 
 describe('appProfiles API 契约', () => {
-  it('apiErrorDetail 解析结构化后端错误码', () => {
+  it('apiErrorDetail 解析 code/message/context', () => {
     const error = {
       response: {
-        data: { detail: { code: 'PROFILE_REVISION_CONFLICT', current: 18, expected: 17 } },
+        data: { detail: { code: 'PROFILE_REVISION_CONFLICT', message: '版本已变化', context: { current: 18, expected: 17 } } },
       },
     }
     const detail = apiErrorDetail(error)
     expect(detail).not.toBeNull()
     expect(detail?.code).toBe('PROFILE_REVISION_CONFLICT')
-    expect(detail?.current).toBe(18)
-    expect(detail?.expected).toBe(17)
+    expect(detail?.context.current).toBe(18)
+    expect(detail?.context.expected).toBe(17)
   })
 
-  it('apiErrorDetail 解析字符串 detail', () => {
+  it('apiErrorDetail 拒绝字符串 detail，业务分支必须使用机器码', () => {
     const error = { response: { data: { detail: 'APP 档案不存在' } } }
-    expect(apiErrorDetail(error)?.code).toBe('HTTP_ERROR')
-    expect(apiErrorDetail(error)?.message).toBe('APP 档案不存在')
+    expect(apiErrorDetail(error)).toBeNull()
   })
 
   it('apiErrorDetail 无 detail 返回 null', () => {

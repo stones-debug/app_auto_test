@@ -1,4 +1,6 @@
 import request from '@/utils/request'
+export { apiErrorDetail } from '@/utils/request'
+export type { ApiErrorDetail } from '@/utils/request'
 
 import type { SmartLocatorConfig } from '@/utils/smartLocator'
 import type { PageData } from './projects'
@@ -249,21 +251,4 @@ export function previewExecution(data: {
   parameters?: Record<string, unknown>
 }) {
   return request.post<ExecutionPreview>('/executions/preview', data)
-}
-
-// ---------- 后端错误码解析 ----------
-
-export interface ApiErrorDetail {
-  code: string
-  message?: string
-  current?: number
-  expected?: number
-  field_errors?: unknown[]
-}
-
-export function apiErrorDetail(error: unknown): ApiErrorDetail | null {
-  const detail = (error as { response?: { data?: { detail?: ApiErrorDetail | { code?: string } | string } } })?.response?.data?.detail
-  if (!detail) return null
-  if (typeof detail === 'string') return { code: 'HTTP_ERROR', message: detail }
-  return (detail as ApiErrorDetail).code ? (detail as ApiErrorDetail) : null
 }
