@@ -8,6 +8,7 @@ from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AppProfile, Project
+from app.repositories import projects as projects_repo
 
 REVISION_CONFLICT = "PROFILE_REVISION_CONFLICT"
 ASSET_REVISION_CONFLICT = "TEST_ASSET_REVISION_CONFLICT"
@@ -79,28 +80,12 @@ async def touch_project_asset_revision(db: AsyncSession, project_id: int) -> int
     工作台的乐观锁语义；但每个成功的资产写事务都必须至少推进一次修订号，
     使预检/执行提交能够发现两次操作之间发生的公共资产变化。
     """
-    result = await db.execute(
-        update(Project)
-        .where(Project.id == project_id, Project.deleted_at.is_(None))
-        .values(
-            test_asset_revision=Project.test_asset_revision + 1,
-            updated_at=func.now(),
-        )
-        .returning(Project.test_asset_revision)
-    )
-    new_revision = result.scalar_one_or_none()
-    if new_revision is None:
-        raise RevisionConflictError("PROJECT_NOT_FOUND", 0, 0)
-    return new_revision
+    try:
+        return await projects_repo.touch_asset_revision(db, project_id)
+    except ValueError as exc:
+        raise RevisionConflictError("PROJECT_NOT_FOUND", 0, 0) from exc
 
 
 async def touch_all_project_asset_revisions(db: AsyncSession) -> None:
     """全局变量变化时使所有有效项目的资产快照失效。"""
-    await db.execute(
-        update(Project)
-        .where(Project.deleted_at.is_(None))
-        .values(
-            test_asset_revision=Project.test_asset_revision + 1,
-            updated_at=func.now(),
-        )
-    )
+    await projects_repo.touch_all_asset_revisions(db)

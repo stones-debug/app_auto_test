@@ -2,10 +2,37 @@
 
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project, ProjectMember, TestCase, TestElement, TestSuite, User
+
+
+async def touch_asset_revision(db: AsyncSession, project_id: int) -> int:
+    result = await db.execute(
+        update(Project)
+        .where(Project.id == project_id, Project.deleted_at.is_(None))
+        .values(
+            test_asset_revision=Project.test_asset_revision + 1,
+            updated_at=func.now(),
+        )
+        .returning(Project.test_asset_revision)
+    )
+    new_revision = result.scalar_one_or_none()
+    if new_revision is None:
+        raise ValueError(f"项目不存在: {project_id}")
+    return new_revision
+
+
+async def touch_all_asset_revisions(db: AsyncSession) -> None:
+    await db.execute(
+        update(Project)
+        .where(Project.deleted_at.is_(None))
+        .values(
+            test_asset_revision=Project.test_asset_revision + 1,
+            updated_at=func.now(),
+        )
+    )
 
 
 async def load_asset_counts(
