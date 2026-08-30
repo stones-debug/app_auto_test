@@ -51,6 +51,7 @@ Thumbs.db
 .opencode
 .omo
 # deepwork session state
+/session-*.md
 .slim/deepwork/
 .slim/
 .reasonix/*

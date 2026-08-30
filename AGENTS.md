@@ -54,7 +54,7 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 - 报告：查看由前端渲染 `GET /api/reports/{id}/detail` 聚合数据；HTML 仅用户点下载时按需生成（`report_service.render_report_html`，截图 base64 内嵌、幂等缓存）
 - Worker 与 Agent **无直接 WS**：经 `/internal/ws/agents/{id}/send` 由 FastAPI 转发（`X-Internal-Token`）
 - 执行状态机**全小写**：`queued / running / stopping / passed / failed / error / stopped / cancelled`
-- Action/Assertion Registry 属于 agent 包，不属于 backend（backend/app/executor 目录可能废弃）
+- Action/Assertion Registry 属于 agent 包，不属于 backend；废弃的 `backend/app/executor/` 空目录已删除，禁止恢复后端执行 Registry
 
 ## 套件级执行（以测试套件为执行与结果汇总单位，实施中）
 - 执行结构分层：`Execution → ExecutionSuite → ExecutionCase → ExecutionStep → ExecutionAssertion`；套件前后置步也只存 `ExecutionStep`（`execution_suite_id` 非空、`execution_case_id` 为空）。
