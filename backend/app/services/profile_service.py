@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 from datetime import UTC, datetime
 from typing import Any
 
@@ -33,7 +34,7 @@ def to_dict(profile: AppProfile, counts: dict[str, Any] | None = None) -> dict:
     }
 
 
-async def list(db: AsyncSession, *, project_id: int, include_disabled: bool, keyword: str) -> list[dict]:
+async def list(db: AsyncSession, *, project_id: int, include_disabled: bool, keyword: str) -> builtins.list[dict]:
     rows = await profiles_repo.list_for_project(db, project_id=project_id, include_disabled=include_disabled, keyword=keyword)
     counts = await profiles_repo.profile_counts(db, [row.id for row in rows])
     return [to_dict(row, counts[row.id]) for row in rows]
@@ -133,7 +134,7 @@ async def delete(db: AsyncSession, *, profile: AppProfile, body, user_id: int, r
 
 async def bump_and_audit(
     db: AsyncSession, *, profile: AppProfile, body, action: str, user_id: int,
-    role: str | None, audit: dict, changes: list | None = None, response_data: dict | None = None
+    role: str | None, audit: dict, changes: builtins.list | None = None, response_data: dict | None = None
 ) -> int:
     before = profile.revision
     try:
@@ -153,7 +154,7 @@ async def bump_and_audit(
 
 async def commit_bump_and_audit(
     db: AsyncSession, *, profile: AppProfile, body, action: str, user_id: int,
-    role: str | None, audit: dict, changes: list | None = None, response_data: dict | None = None
+    role: str | None, audit: dict, changes: builtins.list | None = None, response_data: dict | None = None
 ) -> int:
     """完成一次档案修改的 revision、审计和提交；失败统一回滚。"""
     try:

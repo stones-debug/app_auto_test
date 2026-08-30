@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal, cast
 
 from fastapi import APIRouter, Depends, status
 from fastapi.responses import FileResponse
@@ -121,7 +122,7 @@ async def preview_execution(
     await _validate_context_suite(
         db,
         project_id=body.project_id,
-        target_type=body.target.type,
+        target_type=cast(Literal["case", "suite", "batch"], body.target.type),
         target_ids=body.target.ids,
         context_suite_id=body.context_suite_id,
     )
@@ -129,7 +130,7 @@ async def preview_execution(
         project_id=body.project_id,
         profile_id=body.app_profile_id,
         release_id=body.app_release_id,
-        target_type=body.target.type,
+        target_type=cast(Literal["case", "suite", "batch"], body.target.type),
         target_ids=body.target.ids,
         expected_profile_revision=expected_profile_rev,
         expected_test_asset_revision=expected_asset_rev,
@@ -313,8 +314,9 @@ async def create_batch_execution(
         elif suite.project_id != project_id:
             raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_TARGET_INVALID", "批量执行的套件必须属于同一项目")
         suites.append(suite)
-    if project_id is not None:
-        await require_project_write(project_id, user, db)
+    if project_id is None:
+        raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_TARGET_INVALID", "至少选择一个套件")
+    await require_project_write(project_id, user, db)
     await _validate_device_for_execution(body.device_id, user, db)
     profile_body = await execution_service.apply_app_profile_feature_mode(db, project_id, body)
     return await execution_service.create_batch_execution(
@@ -366,7 +368,7 @@ async def list_executions(
         project_id = None
 
     total, rows, names = await executions_repo.list_page(
-        db, project_ids=await visible_project_ids(db, user.id), project_id=project_id,
+        db, project_ids=list(await visible_project_ids(db, user.id)), project_id=project_id,
         status=status, type_=type, keyword=keyword, device_id=device_id,
         created_from=created_from, created_to=created_to,
         offset=pagination.offset, limit=pagination.limit,

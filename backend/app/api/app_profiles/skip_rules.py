@@ -105,7 +105,7 @@ async def skip_rules_batch(
         if replay is not None:
             return replay
 
-    target_fields: list[dict] = []
+    target_fields: list[tuple[int, dict]] = []
     field_errors: list[dict] = []
     seen: set[tuple] = set()
     for idx, target in enumerate(body.targets):

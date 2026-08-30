@@ -36,6 +36,8 @@ async def workspace(
     profile = await _get_profile_or_404(profile_id, db)
     await get_project_permission(profile.project_id, user, db)
     project = await projects_repo.get_by_id(db, profile.project_id)
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目不存在")
 
     suites = await resolution_repo.list_suites(db, profile.project_id)
     skip = await resolution_repo.load_skip_index(db, profile_id)

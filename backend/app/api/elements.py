@@ -391,10 +391,12 @@ async def create_element_legacy(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    element, project, _creator = await element_service.create(
+    element, created_project, _creator = await element_service.create(
         db, body=body, project_id=project_id, user_id=user.id
     )
-    return _element_out(element, project, user)
+    if created_project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目不存在")
+    return _element_out(element, created_project, user)
 
 
 @router.get("/projects/{project_id}/element-pages", response_model=list[ElementPageCount])

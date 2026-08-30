@@ -9,10 +9,9 @@ from app.repositories import auth as auth_repo
 from app.repositories import executions as executions_repo
 from app.repositories import projects as projects_repo
 from app.repositories import ws_handlers
-from app.ws.managers import execution_manager
+from app.ws.managers import agent_manager, execution_manager
 
 HANDLERS = {
-    "register": ws_handlers.handle_register,
     "heartbeat": ws_handlers.handle_heartbeat,
     "device_list": ws_handlers.handle_device_list,
     "log": ws_handlers.handle_log,
@@ -94,6 +93,17 @@ async def handle_agent_message(agent_id: int, payload: dict) -> dict | None:
             "session_token": payload.get("session_token"),
         }
     return None
+
+
+async def register_agent(websocket, payload: dict) -> dict | None:
+    """在短事务中认证并更新 Agent，提交后再绑定真实 WebSocket。"""
+    async with session_scope() as db:
+        result = await ws_handlers.handle_register(db, payload)
+        await db.commit()
+    if result is None:
+        return None
+    await agent_manager.connect(result["agent_id"], websocket)
+    return result
 
 
 async def mark_agent_offline(agent_id: int) -> None:

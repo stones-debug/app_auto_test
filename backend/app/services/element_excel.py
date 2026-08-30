@@ -275,6 +275,8 @@ def _write_instructions(sheet, project_id: int | None, project_name: str | None)
 def _new_workbook(project_id: int | None = None, project_name: str | None = None) -> Workbook:
     workbook = Workbook()
     data = workbook.active
+    if data is None:
+        raise RuntimeError("无法创建 Excel 工作表")
     data.title = "元素"
     data.append(list(ELEMENT_HEADERS))
     _style_data_sheet(data)
@@ -329,7 +331,7 @@ def build_export(rows: Iterable[tuple[Any, Any]]) -> bytes:
         ]
         sheet.append(values)
         for cell in sheet[sheet.max_row]:
-            if cell.column >= 3:
+            if cell.column is not None and cell.column >= 3:
                 cell.number_format = "@"
                 cell.data_type = "s"
         _style_data_row(sheet[sheet.max_row])

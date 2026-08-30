@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from datetime import UTC, datetime
+from typing import cast
 from uuid import uuid4
 
 from fastapi import HTTPException, status
@@ -123,7 +124,7 @@ async def create(db: AsyncSession, *, project_id: int, body: CaseCreate, user_id
             name=body.name,
             description=body.description,
             status=body.status,
-            steps=body.steps,
+            steps=cast(list[dict], body.steps),
             variables=body.variables,
             user_id=user_id,
         )
@@ -209,6 +210,5 @@ async def clone(db: AsyncSession, *, source: TestCase, user_id: int) -> TestCase
         await cases_repo.refresh(db, cloned)
         return cloned
     except Exception:
-        if not db.rollback.await_count:
-            await db.rollback()
+        await db.rollback()
         raise

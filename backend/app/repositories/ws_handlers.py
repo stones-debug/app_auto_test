@@ -1,7 +1,6 @@
 import re
 from datetime import UTC, datetime
 
-from fastapi import WebSocket
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,7 +18,6 @@ from app.models import (
 )
 from app.services.screenshot_store import validate_object_key
 from app.services.worker_service import min_agent_version
-from app.ws.managers import agent_manager
 
 TERMINAL_STATES = {"passed", "failed", "error", "stopped", "cancelled"}
 WRITE_STATES = {"running", "stopping"}
@@ -212,26 +210,20 @@ def version_supported(version: str | None, minimum: str) -> bool:
     return _parts(version) >= _parts(minimum)
 
 
-async def handle_register(db: AsyncSession, ws: WebSocket, payload: dict) -> dict | None:
+async def handle_register(db: AsyncSession, payload: dict) -> dict | None:
     agent_id_str = payload.get("agent_id")
     agent_key = payload.get("agent_key")
     if not agent_id_str or not agent_key:
-        await ws.close(code=1008, reason="缺少 agent_id 或 agent_key")
         return None
     agent = (
         await db.execute(select(Agent).where(Agent.agent_id == agent_id_str))
     ).scalar_one_or_none()
     if agent is None or agent.deleted_at is not None or not verify_psk(agent_key, agent.agent_key):
         # Step 6：软注销 Agent 不接受 WS 注册
-        await ws.close(code=1008, reason="Agent 认证失败")
         return None
     # CR-21：注册时语义化版本比较（min_agent_version，来自 Registry 生成产物）
     _min_agent = min_agent_version()
     if not version_supported(payload.get("version"), _min_agent):
-        await ws.close(
-            code=1008,
-            reason=f"Agent 版本过低，最低要求 {_min_agent}",
-        )
         return None
 
     agent.status = "online"
@@ -243,7 +235,6 @@ async def handle_register(db: AsyncSession, ws: WebSocket, payload: dict) -> dic
     if payload.get("version"):
         agent.version = payload["version"]
     await db.flush()
-    await agent_manager.connect(agent.id, ws)
     return {"type": "registered", "agent_id": agent.id, "status": "ok"}
 
 

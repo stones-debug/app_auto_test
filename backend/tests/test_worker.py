@@ -19,8 +19,17 @@ from app.models import (
     ExecutionStep,
     ExecutionSuite,
     Report,
+    Variable,
 )
-from app.models import TestCase as CaseModel
+from app.models import (
+    TestCase as CaseModel,
+)
+from app.models import (
+    TestSuite as SuiteModel,
+)
+from app.models import (
+    TestSuiteCase as SuiteCaseModel,
+)
 from app.services import worker_service
 from app.services.worker_runtime import WorkerRuntime
 from tests.helpers import create_bound_agent_device
@@ -368,6 +377,117 @@ async def test_create_execution_snapshots_idempotent(client: AsyncClient):
         )).scalars().all()
         assert len(steps) == len(ecs[0].steps_snapshot)
         assert all(step.status == "pending" for step in steps)
+
+
+async def test_unprofiled_suite_snapshot_contains_suite_elements_and_variables(client: AsyncClient):
+    """无档案套件也必须固化 setup/teardown 所引用的元素及套件变量。"""
+    _token, case_id = await _setup_case(client)
+    async with SessionLocal() as db:
+        case = await db.get(CaseModel, case_id)
+        project_id = case.project_id
+        element_id = int(case.steps[0]["element_id"])
+        suite = SuiteModel(
+            project_id=project_id,
+            name="无档案套件",
+            setup_steps=[{"order": 1, "action": "click", "element_id": element_id, "params": {}}],
+            teardown_steps=[{"order": 1, "action": "click", "element_id": element_id, "params": {}}],
+        )
+        db.add(suite)
+        await db.flush()
+        db.add(SuiteCaseModel(suite_id=suite.id, case_id=case_id, sort_order=1))
+        db.add(Variable(scope="suite", project_id=project_id, suite_id=suite.id, name="btn_id", value="suite-button"))
+        execution = Execution(
+            project_id=project_id,
+            type="suite",
+            suite_id=suite.id,
+            status="queued",
+            parameters={},
+        )
+        db.add(execution)
+        await db.flush()
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        await db.commit()
+
+        execution_suite = (
+            await db.execute(select(ExecutionSuite).where(ExecutionSuite.execution_id == execution.id))
+        ).scalar_one()
+        assert execution_suite.elements_snapshot[str(element_id)]["locator_value"] == "suite-button"
+        assert execution_suite.setup_steps_snapshot[0]["element_id"] == element_id
+        execution_case = (
+            await db.execute(select(ExecutionCase).where(ExecutionCase.execution_suite_id == execution_suite.id))
+        ).scalar_one()
+        assert execution_case.elements_snapshot[str(element_id)]["locator_value"] == "suite-button"
+
+
+async def test_agent_sender_exception_finalizes_execution_and_releases_device(client: AsyncClient):
+    """载荷发送抛错时必须走统一补偿事务，不能遗留 running/busy。"""
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "button"}}, device_id)
+
+    async with SessionLocal() as db:
+        assert await worker_service.claim_next_queue(db, "worker-test") is not None
+
+    async def broken_sender(_agent_id, _payload):
+        raise RuntimeError("agent unavailable")
+
+    await worker_service.run_execution(None, execution_id, "worker-test", agent_sender=broken_sender)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        device = await db.get(Device, device_id)
+        queue = (await db.execute(select(ExecutionQueue).where(ExecutionQueue.execution_id == execution_id))).scalar_one()
+        report = (await db.execute(select(Report).where(Report.execution_id == execution_id))).scalar_one()
+        assert execution.status == "error"
+        assert device.status == "idle"
+        assert device.locked_by_execution is None
+        assert queue.status == "done"
+        assert report.total == 1
+
+
+async def test_worker_closes_each_session_before_agent_send(monkeypatch, client: AsyncClient):
+    """Agent 网络 I/O 期间不得持有阶段 Session 或活动事务。"""
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(
+        client, token, case_id, {"variables": {"btn_id": "button"}}, device_id
+    )
+    async with SessionLocal() as db:
+        assert await worker_service.claim_next_queue(db, "worker-test") is not None
+
+    real_factory = SessionLocal
+    sessions = []
+
+    class TrackingContext:
+        def __init__(self):
+            self.inner = real_factory()
+
+        async def __aenter__(self):
+            db = await self.inner.__aenter__()
+            sessions.append(db)
+            return db
+
+        async def __aexit__(self, *args):
+            return await self.inner.__aexit__(*args)
+
+    class TrackingFactory:
+        def __call__(self):
+            return TrackingContext()
+
+    monkeypatch.setattr(worker_service, "SessionLocal", TrackingFactory())
+
+    async def sender(_agent_id, _payload):
+        assert len(sessions) >= 3
+        assert all(not session.in_transaction() for session in sessions)
+        async with real_factory() as db:
+            execution = await db.get(Execution, execution_id)
+            execution.status = "passed"
+            execution.finished_at = datetime.now(UTC)
+            await db.commit()
+        return True
+
+    await worker_service.run_execution(None, execution_id, "worker-test", agent_sender=sender, poll_interval=0)
+    assert len({id(session) for session in sessions}) >= 3
 
 
 async def test_suites_payload_injects_execution_node_ids(client: AsyncClient):

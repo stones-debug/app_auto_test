@@ -91,7 +91,7 @@ class CaseCreate(BaseModel):
     @model_validator(mode="after")
     def _dump_nested(self):
         # 校验后转回 dict，供 ORM JSON 列直接存储
-        self.steps = _dump_steps(self.steps)
+        object.__setattr__(self, "steps", _dump_steps(self.steps))
         return self
 
 
@@ -106,7 +106,7 @@ class CaseUpdate(BaseModel):
     @model_validator(mode="after")
     def _dump_nested(self):
         if self.steps is not None:
-            self.steps = _dump_steps(self.steps)
+            object.__setattr__(self, "steps", _dump_steps(self.steps))
         return self
 
 

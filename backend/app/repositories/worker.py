@@ -257,6 +257,7 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
         suite = await db.get(TestSuite, suite_id) if suite_id is not None else None
         if suite_id is not None and (suite is None or suite.deleted_at is not None):
             continue
+        suite_variable_map = await build_variable_map(db, execution)
         if suite is None:
             suite_name = "虚拟套件"
             setup_snapshot: list[dict] = []
@@ -268,16 +269,25 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
                     select(Variable).where(Variable.scope == "suite", Variable.suite_id == suite.id)
                 )
             ).scalars().all()
-            suite_variable_map = await build_variable_map(db, execution)
             suite_variable_map.update({item.name: item.value for item in suite_variables})
             setup_snapshot = _suite_step_snapshots(suite.setup_steps, suite_variable_map, "suite_setup")
             teardown_snapshot = _suite_step_snapshots(suite.teardown_steps, suite_variable_map, "suite_teardown")
+
+        suite_steps = [*setup_snapshot, *teardown_snapshot]
+        suite_element_ids = await _collect_element_ids(suite_steps)
+        suite_elements: dict = {}
+        if suite_element_ids:
+            suite_element_rows = (
+                await db.execute(select(TestElement).where(TestElement.id.in_(suite_element_ids)))
+            ).scalars().all()
+            for element in suite_element_rows:
+                suite_elements[str(element.id)] = _element_snapshot(element, suite_variable_map)
 
         exec_suite = ExecutionSuite(
             execution_id=execution.id, suite_id=suite_id, suite_name=suite_name,
             suite_order=suite_order, is_virtual=suite_id is None, status="pending",
             setup_steps_snapshot=setup_snapshot, teardown_steps_snapshot=teardown_snapshot,
-            elements_snapshot={},
+            elements_snapshot=suite_elements,
         )
         db.add(exec_suite)
         await db.flush()
@@ -298,7 +308,11 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
             case = await db.get(TestCase, case_id)
             if case is None or case.deleted_at is not None:
                 continue
-            variable_map = await build_variable_map(db, execution, case)
+            variable_map = dict(suite_variable_map)
+            # 批量执行会逐套件物化；套件变量位于项目/全局之上，
+            # 但不能覆盖当前用例变量或执行参数。
+            variable_map.update(case.variables or {})
+            variable_map.update(parameters.get("variables") or {})
             snapshot = await build_case_snapshot(
                 db, case, variable_map,
                 use_pre_steps=bool(parameters.get("use_pre_steps")),

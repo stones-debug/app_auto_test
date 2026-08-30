@@ -25,7 +25,7 @@ from app.models import (
     Project,
     User,
 )
-from app.services import worker_service
+from app.services import worker_service, ws_ingest_service
 from app.ws import handlers
 from app.ws.managers import agent_manager, execution_manager
 from app.ws.routes import agent_ws
@@ -943,6 +943,103 @@ class _FakeAgentWS:
 
     async def close(self, code: int = 1000, reason: str = "") -> None:
         self.closed = (code, reason)
+
+
+async def test_agent_registration_binds_real_socket_and_allows_send(monkeypatch):
+    """注册提交后必须把真实 socket 放入 manager，Worker 才能反向下发消息。"""
+    ws = _FakeAgentWS([
+        _text_frame(json.dumps({"type": "register", "agent_id": "agent-1", "agent_key": "key"})),
+        _text_frame(json.dumps({"type": "heartbeat"})),
+        {"type": "websocket.disconnect"},
+    ])
+
+    async def register(_websocket, _payload):
+        await agent_manager.connect(17, ws)
+        return {"type": "registered", "agent_id": 17, "status": "ok"}
+
+    async def handle_message(_agent_id, _payload):
+        assert await agent_manager.send(17, {"type": "start_test", "execution_id": 3})
+        return None
+
+    monkeypatch.setattr(ws_ingest_service, "register_agent", register)
+    monkeypatch.setattr(ws_ingest_service, "handle_agent_message", handle_message)
+    await agent_ws(cast(WebSocket, ws))
+
+    assert ws.sent[0]["type"] == "registered"
+    assert {item["type"] for item in ws.sent} == {"registered", "start_test"}
+    assert not agent_manager.is_online(17)
+
+
+async def test_agent_ws_continues_after_one_message_failure(monkeypatch):
+    """单条落库失败只返回错误包，后续消息仍在同一连接处理。"""
+    ws = _FakeAgentWS([
+        _text_frame(json.dumps({"type": "register", "agent_id": "agent-2", "agent_key": "key"})),
+        _text_frame(json.dumps({"type": "heartbeat"})),
+        _text_frame(json.dumps({"type": "heartbeat"})),
+        {"type": "websocket.disconnect"},
+    ])
+    calls = 0
+
+    async def register(_websocket, _payload):
+        await agent_manager.connect(18, ws)
+        return {"type": "registered", "agent_id": 18, "status": "ok"}
+
+    async def handle_message(_agent_id, _payload):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("transient database error")
+        await agent_manager.send(18, {"type": "start_test", "execution_id": 4})
+        return None
+
+    monkeypatch.setattr(ws_ingest_service, "register_agent", register)
+    monkeypatch.setattr(ws_ingest_service, "handle_agent_message", handle_message)
+    await agent_ws(cast(WebSocket, ws))
+
+    assert calls == 2
+    assert {item["code"] for item in ws.sent if item["type"] == "error"} == {"INGEST_ERROR"}
+    assert any(item.get("type") == "start_test" for item in ws.sent)
+
+
+async def test_agent_message_commit_failure_does_not_poison_next_message(monkeypatch):
+    """当前短事务提交失败后，下一条消息必须使用新 Session 继续处理。"""
+    sessions = []
+
+    class FakeSession:
+        def __init__(self, fail_commit: bool):
+            self.fail_commit = fail_commit
+            self.rolled_back = False
+
+        async def __aenter__(self):
+            sessions.append(self)
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def commit(self):
+            if self.fail_commit:
+                raise RuntimeError("commit failed")
+
+        async def rollback(self):
+            self.rolled_back = True
+
+    factory_sessions = iter([FakeSession(True), FakeSession(False)])
+    monkeypatch.setattr(ws_ingest_service, "SessionLocal", lambda: next(factory_sessions))
+    handled = []
+
+    async def handler(_db, agent_id, payload):
+        handled.append((agent_id, payload["type"]))
+        return None
+
+    monkeypatch.setitem(ws_ingest_service.HANDLERS, "heartbeat", handler)
+    with pytest.raises(RuntimeError, match="commit failed"):
+        await ws_ingest_service.handle_agent_message(17, {"type": "heartbeat"})
+    await ws_ingest_service.handle_agent_message(17, {"type": "heartbeat"})
+
+    assert sessions[0].rolled_back
+    assert len(sessions) == 2
+    assert handled == [(17, "heartbeat"), (17, "heartbeat")]
 
 
 def _text_frame(text: str) -> dict:

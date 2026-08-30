@@ -91,6 +91,8 @@ async def _lock_and_verify_resolution_revisions(
             "APP 档案版本已变化，请重新预检",
             {"current": profile_revision or 0, "expected": resolved_profile_revision},
         )
+    if request.release_id is None:
+        raise api_error(status.HTTP_400_BAD_REQUEST, ErrorCode.APP_RELEASE_NOT_FOUND, "缺少 APP 发布版本")
     release_row = await releases_repo.lock_for_resolution(
         db, release_id=request.release_id, profile_id=request.profile_id
     )
@@ -375,6 +377,8 @@ async def retry_execution(
     if profile is None or profile.deleted_at is not None:
         raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.APP_PROFILE_NOT_FOUND, "APP 档案不存在")
     project = await projects_repo.get_by_id(db, execution.project_id)
+    if project is None:
+        raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.PROJECT_NOT_FOUND, "项目不存在")
     body = SimpleNamespace(
         app_profile_id=execution.app_profile_id,
         app_release_id=execution.app_release_id,

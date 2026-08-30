@@ -61,7 +61,7 @@ async def list_projects(
             items.append((project, resolved_role))
     counts = await projects_repo.load_asset_counts(db, [project.id for project, _ in items])
     output = [_project_out(project, role_, counts.get(project.id)) for project, role_ in items]
-    return await paginate(output, total, pagination)
+    return PageResult.model_validate(await paginate(output, total, pagination))
 
 
 async def resolve_role(db: AsyncSession, project: Project, user: User) -> str:

@@ -105,18 +105,33 @@ async def agent_ws(websocket: WebSocket, _legacy_db=None):
             if valid is None:
                 await websocket.send_json({"type": "error", "code": "PROTOCOL_ERROR", "message": f"Agent 消息无效或未知 type: {data.get('type')!r}"})
                 continue
-            if valid["type"] == "register":
-                reply = await ws_ingest_service.handle_agent_message(0, valid)
-                if reply is None:
+            try:
+                if valid["type"] == "register":
+                    reply = await ws_ingest_service.register_agent(websocket, valid)
+                    if reply is None:
+                        await websocket.close(code=1008, reason="Agent 认证失败或版本不受支持")
+                        return
+                    current_agent_id = reply["agent_id"]
+                elif current_agent_id is None:
+                    continue
+                else:
+                    reply = await ws_ingest_service.handle_agent_message(current_agent_id, valid)
+                if reply is not None:
+                    await websocket.send_json(reply)
+            except WebSocketDisconnect:
+                raise
+            except Exception:
+                # 单条消息失败不得污染连接的后续处理；service 已回滚当前短事务。
+                try:
+                    await websocket.send_json({
+                        "type": "error",
+                        "code": "INGEST_ERROR",
+                        "message": "消息处理失败，请稍后重试",
+                    })
+                except WebSocketDisconnect:
+                    raise
+                except Exception:
                     return
-                current_agent_id = reply["agent_id"]
-                await websocket.send_json(reply)
-                continue
-            if current_agent_id is None:
-                continue
-            reply = await ws_ingest_service.handle_agent_message(current_agent_id, valid)
-            if reply is not None:
-                await websocket.send_json(reply)
     except WebSocketDisconnect:
         pass
     finally:

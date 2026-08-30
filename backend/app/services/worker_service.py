@@ -136,14 +136,8 @@ async def run_execution(
     session_factory=None,
 ) -> None:
     """按认领、启动、载荷、发送、补偿和轮询阶段使用短 Session。"""
-    factory = session_factory
-    if factory is None and db is None:
-        factory = SessionLocal
-    if factory is None:
-        @asynccontextmanager
-        async def same_session():
-            yield db
-        factory = same_session
+    # db 仅保留为旧调用方的兼容参数；执行生命周期必须始终通过工厂切分短 Session。
+    factory = session_factory or SessionLocal
     sender = agent_sender or _default_agent_sender
 
     async with _session_scope(factory) as claim_db:

@@ -52,6 +52,7 @@ from app.repositories.ws_handlers import (
     mark_agent_offline as _mark_agent_offline,
 )
 from app.services.ws_ingest_service import commit_session, publish_handler_result
+from app.ws.managers import agent_manager
 
 
 async def _run_compat(db: AsyncSession, handler: Callable[..., Awaitable[Any]], *args: Any) -> Any:
@@ -66,7 +67,13 @@ async def _run_compat(db: AsyncSession, handler: Callable[..., Awaitable[Any]], 
 
 
 async def handle_register(db: AsyncSession, ws: Any, payload: dict) -> dict | None:
-    return await _run_compat(db, _handle_register, ws, payload)
+    result = await _handle_register(db, payload)
+    await commit_session(db)
+    if result is None:
+        await ws.close(code=1008, reason="Agent 认证失败或版本不受支持")
+    else:
+        await agent_manager.connect(result["agent_id"], ws)
+    return result
 
 
 async def handle_heartbeat(db: AsyncSession, agent_id: int, payload: dict) -> Any:

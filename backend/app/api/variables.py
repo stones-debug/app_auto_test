@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -58,6 +58,8 @@ async def create_variable(
     if body.scope == "global":
         await require_platform_admin()(user=user)
     else:
+        if resolved_project_id is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="变量作用域缺少项目")
         project, _role = await require_project_write(resolved_project_id, user, db)
         resolved_project_id = project.id
     return await variable_service.create(
@@ -74,12 +76,12 @@ async def update_variable(
 ):
     variable = await variable_service.get_or_none(db, variable_id)
     if variable is None:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="变量不存在")
     if variable.scope == "global":
         await require_platform_admin()(user=user)
     else:
+        if variable.project_id is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="变量作用域缺少项目")
         await require_project_write(variable.project_id, user, db)
     return await variable_service.update(db, variable=variable, body=body)
 
@@ -96,5 +98,7 @@ async def delete_variable(
     if variable.scope == "global":
         await require_platform_admin()(user=user)
     else:
+        if variable.project_id is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="变量作用域缺少项目")
         await require_project_write(variable.project_id, user, db)
     await variable_service.delete(db, variable=variable)

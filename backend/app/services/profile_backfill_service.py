@@ -44,7 +44,7 @@ async def backfill_profiles(db, *, dry_run: bool) -> tuple[dict[str, int], list[
             stats["cases_changed"] += 1
             backup_rows.append({"case_id": case.id, "steps": case.steps or [], "assertions": old_assertions})
             case.steps = steps
-            case.__dict__["assertions"] = assertions
+            vars(case)["assertions"] = assertions
     for project in await projects_repo.list_active(db):
         profile = await profiles_repo.find_named(db, project.id, DEFAULT_PROFILE_NAME)
         if profile is None:

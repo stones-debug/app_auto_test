@@ -117,7 +117,7 @@ _AGENT_MODELS: dict[str, type[BaseModel]] = {
 def validate_agent_message(payload: dict) -> dict | None:
     """按 type 验证 Agent 入站消息；非法返回 None（调用方回结构化协议错误）。"""
     msg_type = payload.get("type")
-    model = _AGENT_MODELS.get(msg_type)
+    model = _AGENT_MODELS.get(msg_type) if isinstance(msg_type, str) else None
     if model is None:
         return None
     validated = model.model_validate(payload)
