@@ -39,7 +39,6 @@ LEGACY_DB_ACCESS_ALLOWLIST: dict[str, set[str]] = {
         "app/seed.py",
         "app/services/access_scope.py",
         "app/services/cleanup_service.py",
-        "app/services/worker_service.py",
         "app/ws/handlers.py",
         "app/ws/routes.py",
     },
@@ -49,7 +48,6 @@ LEGACY_DB_ACCESS_ALLOWLIST: dict[str, set[str]] = {
         "app/services/cleanup_service.py",
         "app/services/element_excel.py",
         "app/services/release_service.py",
-        "app/services/worker_service.py",
         "app/ws/handlers.py",
         "app/ws/managers.py",
         "app/ws/routes.py",
@@ -57,7 +55,6 @@ LEGACY_DB_ACCESS_ALLOWLIST: dict[str, set[str]] = {
     "transaction": {
         "app/seed.py",
         "app/services/cleanup_service.py",
-        "app/services/worker_service.py",
         "app/ws/handlers.py",
     },
     "session_factory": {
@@ -122,6 +119,8 @@ def _is_allowed(finding: Finding) -> bool:
     if path == "app/core/database.py":
         return True
     if path.startswith("app/repositories/"):
+        if path == "app/repositories/worker.py" and finding.category == "transaction":
+            return True
         return finding.category != "transaction" and finding.category != "session_factory"
     if path.startswith("app/services/") and finding.category == "transaction":
         return finding.operation in {"commit", "rollback"}
