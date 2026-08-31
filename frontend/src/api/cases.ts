@@ -1,4 +1,5 @@
 import request from '@/utils/request'
+import { createUuid } from '@/utils/uuid'
 import type { PageData } from './projects'
 
 // Step 10：Registry 元数据单一来源（generated from agent/executor/protocol_manifest.yaml）
@@ -162,7 +163,7 @@ export function normalizeStep(step: Step): Step {
 
 function normalizeNodeKey(raw: string | undefined): string {
   if (raw) return raw
-  return crypto.randomUUID()
+  return createUuid()
 }
 
 export function normalizeAssertion(assertion: Assertion): Assertion {

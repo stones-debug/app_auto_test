@@ -15,6 +15,7 @@ import {
 } from '@/api/cases'
 import ElementSelector from '@/components/ElementSelector.vue'
 import { stepActionLabel, stepSummaryText, type ElementNameMap } from '@/utils/stepEditorSummary'
+import { createUuid } from '@/utils/uuid'
 
 const props = defineProps<{
   modelValue: Step[]
@@ -120,7 +121,7 @@ function onDragEnd() {
 function addAssertion(step: Step) {
   const assertions = step.assertions ?? (step.assertions = [])
   assertions.push({
-    key: crypto.randomUUID(),
+    key: createUuid(),
     order: assertions.length + 1,
     type: 'element_exists',
     params: defaultParams(assertionMeta('element_exists').fields),
