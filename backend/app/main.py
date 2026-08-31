@@ -175,6 +175,13 @@ if _FRONTEND_DIST.exists():
     if _assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
 
+    _favicon = _FRONTEND_DIST / "favicon.svg"
+    if _favicon.exists():
+
+        @app.get("/favicon.svg", include_in_schema=False)
+        async def favicon():
+            return FileResponse(_favicon, media_type="image/svg+xml")
+
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
         # /api、/ws 由路由处理，未匹配的返回 404 而非回退 index.html
