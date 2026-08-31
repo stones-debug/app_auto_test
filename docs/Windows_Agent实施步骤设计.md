@@ -87,9 +87,9 @@
 - `POST /api/me/agent-key`：首次生成；已存在返回 409。
 - `POST /api/me/agent-key/regenerate`：生成新 Key（旧 Key 不可再新增绑定）；不删已有 `agent_users`。
 - `POST /api/agent/bind`（**限流：按 IP + 按 public_id**）：
-  - body：`{user_key, install_id, hostname, version, platform, machine_psk?}`；
-  - 首次绑定：校验 `user_key` → 按 `install_id`（或 hostname+随机）创建 `Agent`（`agent_id=install_id` 或 `agent-<hash>`）、生成机器 PSK（返回一次）、创建 `AgentUser` + 撤销凭据（返回给该用户）；
-  - 后续绑定：body 含 `machine_psk` + 新 `user_key` → 校验 PSK → 只加 `AgentUser`；返回新绑定撤销凭据；
+  - body：`{user_key, install_id, hostname, version, platform}`，绑定请求不携带机器 PSK；
+  - 首次绑定：校验 `user_key` → 按 `install_id` 创建 `Agent`、生成机器 PSK、创建 `AgentUser` + 撤销凭据并返回；
+  - 后续、恢复或重复绑定：只校验 `user_key`，创建或保留 `AgentUser`，同时旋转机器 PSK 和当前用户撤销凭据并返回；旧机器 PSK 不参与绑定授权且立即失效；
   - 原始 user_key 不写日志（log 中脱敏 `uak_***`）。
 - `GET /api/agent/bindings`（机器 PSK 认证）：返回该 Agent 已绑定用户名列表。
 - `DELETE /api/agent/bindings/{id}`（机器 PSK + revoke_credential 认证）：解绑。
@@ -104,7 +104,7 @@
 - `backend/app/ws/handlers.py`：`handle_device_list` 快照更新时，`status == 'busy'`（被锁）设备不允许普通快照覆盖（保留 busy + 保留 locked_by_execution）。
 
 ### 2.5 测试
-- `tests/test_agent_binding.py`：Key 生成/查看/重置、首次绑定、追加绑定（第二用户）、解绑（双方）、管理员可见、第三用户不可见、限流 429、机器 PSK 认证失败。
+- `tests/test_agent_binding.py`：Key 生成/查看/重置、首次/重复/恢复绑定、追加绑定（第二用户）、绑定后机器 PSK 旋转、解绑（双方）、管理员可见、第三用户不可见、限流 429、后续机器通信 PSK 认证失败。
 - `tests/test_device_permission.py`：越权设备访问 403/404、默认设备设置/清除/越权、DEVICE_REQUIRED、busy 快照不被覆盖。
 - 权限矩阵测试扩充：普通用户看不到他人 Agent/设备。
 

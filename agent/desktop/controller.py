@@ -492,9 +492,19 @@ class DesktopController:
             messagebox.showwarning("提示", "服务器地址必须以 ws:// 或 wss:// 开头")
             return
         save_server_url(self.state_dir, url)
+        update_server_url = getattr(self.app, "update_server_url", None)
+        if update_server_url is not None:
+            try:
+                self.bridge.call(lambda: update_server_url(url))
+            except Exception as exc:
+                logger.warning("服务器地址已保存，但当前连接切换失败: %s", exc)
+                from tkinter import messagebox
+
+                messagebox.showwarning("提示", f"服务器地址已保存，请重启 Agent：{exc}")
+                return
         from tkinter import messagebox
 
-        messagebox.showinfo("提示", "服务器地址已保存，重启 Agent 后生效")
+        messagebox.showinfo("提示", "服务器地址已保存，当前绑定和连接已切换")
 
     def _on_bind(self) -> None:
         from tkinter import messagebox

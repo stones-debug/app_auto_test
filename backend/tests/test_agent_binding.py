@@ -33,11 +33,10 @@ async def _make_key(client: AsyncClient, token: str) -> str:
     return resp.json()["key"]
 
 
-async def _bind(client: AsyncClient, user_key: str, install_id: str, machine_psk: str | None = None) -> dict:
-    body: dict = {"user_key": user_key, "install_id": install_id}
-    if machine_psk:
-        body["machine_psk"] = machine_psk
-    resp = await client.post("/api/agent/bind", json=body)
+async def _bind(client: AsyncClient, user_key: str, install_id: str) -> dict:
+    resp = await client.post(
+        "/api/agent/bind", json={"user_key": user_key, "install_id": install_id}
+    )
     assert resp.status_code == 201, f"bind 失败: {resp.status_code} {resp.text}"
     return resp.json()
 
@@ -90,16 +89,26 @@ async def test_first_and_additional_binding(client: AsyncClient):
     assert first["agent_id"] == install_id
     assert first["machine_psk"]
     assert first["revoke_credential"]
-    machine_psk = first["machine_psk"]
+    first_psk = first["machine_psk"]
 
-    # 重复首绑 → 409
-    dup = await client.post("/api/agent/bind", json={"user_key": alice_key, "install_id": install_id})
-    assert dup.status_code == 409
+    # 旧版 Agent 即使夹带错误 machine_psk，服务端也完全忽略，只校验用户 Key。
+    rebound_resp = await client.post(
+        "/api/agent/bind",
+        json={
+            "user_key": alice_key,
+            "install_id": install_id,
+            "machine_psk": "sk-stale-from-old-agent",
+        },
+    )
+    assert rebound_resp.status_code == 201
+    rebound = rebound_resp.json()
+    assert rebound["machine_psk"] != first_psk
 
-    # 追加绑定（Bob）：携带机器 PSK
-    second = await _bind(client, bob_key, install_id, machine_psk=machine_psk)
-    assert second["machine_psk"] is None  # 只有首次绑定返回机器 PSK
+    # 追加绑定 Bob 同样只需要有效用户 Key，再次刷新机器 PSK。
+    second = await _bind(client, bob_key, install_id)
+    assert second["machine_psk"] != rebound["machine_psk"]
     assert second["revoke_credential"]
+    machine_psk = second["machine_psk"]
 
     # 机器 PSK 认证查询绑定列表
     listed = await client.get(
@@ -109,6 +118,13 @@ async def test_first_and_additional_binding(client: AsyncClient):
     assert listed.status_code == 200
     usernames = {item["username"] for item in listed.json()}
     assert usernames == {ALICE["username"], BOB["username"]}
+
+    # 每次绑定都会旋转凭据，旧机器 PSK 立即失效。
+    stale = await client.get(
+        f"/api/agent/bindings?agent_id={install_id}",
+        headers={"X-Agent-Key": first_psk},
+    )
+    assert stale.status_code == 401
 
     # 错误机器 PSK → 401
     bad = await client.get(
@@ -144,8 +160,9 @@ async def test_unbind_machine_and_user_sides(client: AsyncClient):
     install_id = "install-win-002"
 
     first = await _bind(client, alice_key, install_id)
-    machine_psk = first["machine_psk"]
-    second = await _bind(client, bob_key, install_id, machine_psk=machine_psk)
+    assert first["machine_psk"]
+    second = await _bind(client, bob_key, install_id)
+    machine_psk = second["machine_psk"]
     bob_revoke = second["revoke_credential"]
 
     listed = await client.get(

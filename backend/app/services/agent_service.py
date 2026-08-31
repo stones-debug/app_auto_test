@@ -76,34 +76,9 @@ async def bind_agent(db: AsyncSession, body: BindRequest) -> BindResponse:
         raise api_error(status.HTTP_400_BAD_REQUEST, "AGENT_INSTALL_ID_REQUIRED", "缺少 install_id")
 
     install_id = body.install_id.strip()
-    agent = await agents_repo.get_by_install_id(db, install_id)
-    machine_psk: str | None = None
-    if body.machine_psk:
-        if agent is None or not verify_psk(body.machine_psk, agent.agent_key):
-            raise api_error(status.HTTP_401_UNAUTHORIZED, "AGENT_MACHINE_PSK_INVALID", "机器 PSK 无效")
-        if agent.deleted_at is not None:
-            machine_psk = f"sk-{secrets.token_hex(24)}"
-            await agents_repo.reactivate(
-                agent,
-                agent_key=hash_psk(machine_psk),
-                hostname=body.hostname,
-                platform=body.platform,
-                version=body.version,
-            )
-    else:
-        if agent is not None:
-            if agent.deleted_at is not None:
-                raise api_error(
-                    status.HTTP_409_CONFLICT,
-                    "AGENT_REACTIVATION_REQUIRED",
-                    "该安装实例已被注销，需要携带原机器 PSK 重新激活；如已丢失请联系平台管理员彻底重置",
-                )
-            raise api_error(
-                status.HTTP_409_CONFLICT,
-                "AGENT_ALREADY_EXISTS",
-                "该 Agent 已存在，请携带 machine_psk 追加绑定",
-            )
-        machine_psk = f"sk-{secrets.token_hex(24)}"
+    agent = await agents_repo.lock_by_install_id(db, install_id)
+    machine_psk = f"sk-{secrets.token_hex(24)}"
+    if agent is None:
         agent = await agents_repo.create(
             db,
             agent_id=install_id,
@@ -112,17 +87,29 @@ async def bind_agent(db: AsyncSession, body: BindRequest) -> BindResponse:
             platform=body.platform,
             version=body.version,
         )
+    else:
+        await agents_repo.refresh_identity(
+            agent,
+            agent_key=hash_psk(machine_psk),
+            hostname=body.hostname,
+            platform=body.platform,
+            version=body.version,
+        )
 
     existing = await agents_repo.get_binding(db, agent_id=agent.id, user_id=key_row.user_id)
-    if existing is not None:
-        raise api_error(status.HTTP_409_CONFLICT, "AGENT_USER_ALREADY_BOUND", "该用户已绑定此 Agent")
     revoke_credential = secrets.token_urlsafe(24)
-    await agents_repo.create_binding(
-        db,
-        agent_id=agent.id,
-        user_id=key_row.user_id,
-        revoke_credential_hash=hash_psk(revoke_credential),
-    )
+    revoke_hash = hash_psk(revoke_credential)
+    if existing is None:
+        await agents_repo.create_binding(
+            db,
+            agent_id=agent.id,
+            user_id=key_row.user_id,
+            revoke_credential_hash=revoke_hash,
+        )
+    else:
+        await agents_repo.refresh_binding_credential(
+            existing, revoke_credential_hash=revoke_hash
+        )
     await db.commit()
     return BindResponse(
         agent_id=agent.agent_id,

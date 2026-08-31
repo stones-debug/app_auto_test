@@ -6,6 +6,8 @@ from collections.abc import Awaitable, Callable
 
 import websockets
 
+from request_logging import format_for_log
+
 logger = logging.getLogger("agent.ws")
 
 MAX_SIZE = 10 * 1024 * 1024  # 10MB
@@ -50,23 +52,27 @@ class AgentWSClient:
 
     async def connect(self) -> None:
         self._registered.clear()
-        ws = await websockets.connect(self.url, max_size=MAX_SIZE, ping_interval=20, ping_timeout=60)
+        register_payload = {
+            "type": "register",
+            "agent_key": self._resolve_key(),
+            "agent_id": self.agent_id,
+            "hostname": platform.node(),
+            "platform": platform.system().lower(),
+            "version": self.version,
+        }
+        logger.info("WS 请求连接 %s params=%s", self.url, format_for_log(register_payload))
+        ws = await websockets.connect(
+            self.url,
+            max_size=MAX_SIZE,
+            ping_interval=20,
+            ping_timeout=60,
+            proxy=None,
+        )
         self.ws = ws
         try:
-            await ws.send(
-                json.dumps(
-                    {
-                        "type": "register",
-                        "agent_key": self._resolve_key(),
-                        "agent_id": self.agent_id,
-                        "hostname": platform.node(),
-                        "platform": platform.system().lower(),
-                        "version": self.version,
-                    },
-                    ensure_ascii=False,
-                )
-            )
+            await ws.send(json.dumps(register_payload, ensure_ascii=False))
             reply = json.loads(await ws.recv())
+            logger.info("WS 响应 %s params=%s", self.url, format_for_log(reply))
             if reply.get("status") != "ok":
                 raise AuthError(f"注册失败: {reply}")
             self._registered.set()
@@ -90,6 +96,7 @@ class AgentWSClient:
         步骤顺序，也不会因一次 ConnectionClosed 把整次执行异常终止。
         """
         encoded = json.dumps(payload, ensure_ascii=False)
+        logger.info("WS 请求发送 %s params=%s", self.url, format_for_log(payload))
         while not self._stop.is_set():
             try:
                 await asyncio.wait_for(self._registered.wait(), timeout=1)
@@ -158,6 +165,7 @@ class AgentWSClient:
                 message = json.loads(raw)
             except json.JSONDecodeError:
                 continue
+            logger.info("WS 响应接收 %s params=%s", self.url, format_for_log(message))
             msg_type = message.get("type")
             if msg_type == "ping":
                 await self.send({"type": "pong"})

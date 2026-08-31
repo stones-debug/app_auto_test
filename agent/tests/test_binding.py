@@ -16,16 +16,16 @@ def _handler_factory(requests_log: list[dict]):
         requests_log.append({"method": request.method, "url": str(request.url), "headers": dict(request.headers), "body": request.content})
         if request.url.path.endswith("/api/agent/bind"):
             body = json.loads(request.content)
-            if body.get("machine_psk"):
-                if body["machine_psk"] != "sk-first":
-                    return httpx.Response(401, json={"detail": "机器 PSK 无效"})
-                return httpx.Response(
-                    201,
-                    json={"agent_id": INSTALL_ID, "user_id": 2, "revoke_credential": "rev-2", "machine_psk": None},
-                )
+            user_id = 2 if body["user_key"] == "uak_pub2_sec" else 1
+            sequence = len([item for item in requests_log if item["url"].endswith("/api/agent/bind")])
             return httpx.Response(
                 201,
-                json={"agent_id": INSTALL_ID, "machine_psk": "sk-first", "revoke_credential": "rev-1", "user_id": 1},
+                json={
+                    "agent_id": INSTALL_ID,
+                    "machine_psk": f"sk-rotated-{sequence}",
+                    "revoke_credential": f"rev-{user_id}",
+                    "user_id": user_id,
+                },
             )
         if "/api/agent/bindings" in request.url.path:
             if request.method == "DELETE":
@@ -50,8 +50,8 @@ async def test_first_bind_stores_machine_psk_and_revoke(tmp_path):
     manager, creds = _make_manager(tmp_path, requests_log)
 
     result = await manager.bind("uak_pub_sec")
-    assert result["machine_psk"] == "sk-first"
-    assert creds.load("machine_psk") == "sk-first"
+    assert result["machine_psk"] == "sk-rotated-1"
+    assert creds.load("machine_psk") == "sk-rotated-1"
     assert creds.load("revoke_1") == "rev-1"
     # 首次绑定请求不含 machine_psk，且走 {origin}/api/agent/bind
     bind_req = json.loads(requests_log[0]["body"])
@@ -59,7 +59,7 @@ async def test_first_bind_stores_machine_psk_and_revoke(tmp_path):
     assert requests_log[0]["url"] == "http://test-server/api/agent/bind"
 
 
-async def test_second_bind_sends_machine_psk(tmp_path):
+async def test_second_bind_only_sends_user_key_and_refreshes_machine_psk(tmp_path):
     requests_log: list[dict] = []
     manager, creds = _make_manager(tmp_path, requests_log)
     creds.save("machine_psk", "sk-first")
@@ -68,16 +68,19 @@ async def test_second_bind_sends_machine_psk(tmp_path):
     assert result["user_id"] == 2
     assert creds.load("revoke_2") == "rev-2"
     bind_req = json.loads(requests_log[0]["body"])
-    assert bind_req["machine_psk"] == "sk-first"
+    assert "machine_psk" not in bind_req
+    assert creds.load("machine_psk") == "sk-rotated-1"
 
 
-async def test_bind_rejects_invalid_machine_psk(tmp_path):
+async def test_bind_replaces_stale_machine_psk(tmp_path):
     requests_log: list[dict] = []
     manager, creds = _make_manager(tmp_path, requests_log)
     creds.save("machine_psk", "sk-wrong")
 
-    with pytest.raises(BindingError, match="机器 PSK 无效"):
-        await manager.bind("uak_pub_sec")
+    result = await manager.bind("uak_pub_sec")
+    assert result["machine_psk"] == "sk-rotated-1"
+    assert creds.load("machine_psk") == "sk-rotated-1"
+    assert "machine_psk" not in json.loads(requests_log[0]["body"])
 
 
 async def test_list_users_requires_machine_psk(tmp_path):

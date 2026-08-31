@@ -86,7 +86,6 @@ class AgentKeyCreateResponse(BaseModel):
 
 class BindRequest(BaseModel):
     user_key: str = Field(min_length=1, description="用户 Key（uak_<public_id>_<secret>）")
-    machine_psk: str | None = None  # 首次绑定为空；追加绑定必填
     install_id: str | None = None  # 安装实例 ID（Agent 首次启动生成并持久化）
     hostname: str | None = None
     version: str | None = None
@@ -95,7 +94,7 @@ class BindRequest(BaseModel):
 
 class BindResponse(BaseModel):
     agent_id: str
-    machine_psk: str | None = None  # 仅首次绑定返回一次
+    machine_psk: str  # 每次绑定成功后旋转并返回，供后续机器通信认证
     revoke_credential: str  # 该用户绑定的撤销凭据（仅返回一次）
     user_id: int
 

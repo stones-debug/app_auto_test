@@ -4,8 +4,8 @@
 
 .DESCRIPTION
 适用于 Windows + 原生 PostgreSQL 的单机部署：
-  1. 检查 uv、Python 项目和 .env；
-  2. 用 uv.lock 同步生产依赖；
+  1. 检查 Python、requirements.txt 和 .env；
+  2. 用 Python 虚拟环境和 pip 安装依赖；
   3. 创建报告、Agent 发布包和运行时目录；
   4. 执行 Alembic 迁移及迁移漂移检查；
   5. 可选创建默认 admin 账号；
@@ -42,7 +42,8 @@ param(
     [string]$ListenHost = "0.0.0.0",
     [string]$WorkerId = "",
     [switch]$Seed,
-    [switch]$SkipSync,
+    [Alias("SkipSync")]
+    [switch]$SkipInstall,
     [switch]$SkipMigrate,
     [switch]$NoStart,
     [switch]$Restart,
@@ -75,10 +76,26 @@ function Stop-ManagedProcess([string]$PidFile, [string]$Name) {
     if ([int]::TryParse($rawPid, [ref]$processId) -and $processId -gt 0) {
         $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
         if ($null -ne $process) {
+            # PID 文件可能来自已删除/重装的部署。先核对进程路径和命令行，
+            # 避免 PID 被系统复用后误停止无关或受保护的进程。
+            $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+            $expectedPython = Join-Path $BackendDir ".venv\Scripts\python.exe"
+            $executablePath = if ($null -ne $processInfo) { [string]$processInfo.ExecutablePath } else { "" }
+            $commandLine = if ($null -ne $processInfo) { [string]$processInfo.CommandLine } else { "" }
+            $isManaged =
+                ($executablePath -and ([StringComparer]::OrdinalIgnoreCase.Equals(
+                    [IO.Path]::GetFullPath($executablePath),
+                    [IO.Path]::GetFullPath($expectedPython)))) -and
+                ($commandLine -and $commandLine.IndexOf($BackendDir, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+            if (-not $isManaged) {
+                Write-Warning "$Name PID $processId 已失效或不属于当前部署，跳过停止并清理 PID 文件。"
+                Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+                return
+            }
             Write-Step "停止已有 $Name (PID $processId)"
             & taskkill.exe /PID $processId /T /F | Out-Null
             if ($LASTEXITCODE -ne 0) {
-                throw "无法停止 $Name (PID $processId)"
+                throw "无法停止 $Name (PID $processId)。请使用管理员身份运行 PowerShell，再执行 -StopOnly 或 -Restart。"
             }
         }
     }
@@ -100,23 +117,68 @@ function Assert-ProcessSlot([string]$PidFile, [string]$Name) {
     Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
 }
 
-function Invoke-Uv([string[]]$Arguments) {
-    & $script:UvExe @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "命令失败: uv $($Arguments -join ' ')"
+function Invoke-Python([string[]]$Arguments) {
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # PowerShell 5.1 会把原生程序 stderr 转成 NativeCommandError；
+        # 暂时放宽错误偏好，才能保留 Python 的完整错误输出并自行检查退出码。
+        $ErrorActionPreference = "Continue"
+        & $script:PythonExe @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($exitCode -ne 0) {
+        throw "命令失败: $($script:PythonExe) $($Arguments -join ' ')"
     }
 }
 
-function Get-UvValue([string]$Code) {
-    $output = & $script:UvExe run python -c $Code 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "无法读取应用配置"
+function Get-PythonValue([string]$Code) {
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = @(& $script:PythonExe -c $Code 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($exitCode -ne 0) {
+        $details = ($output | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
+        throw "无法读取应用配置：$details"
     }
     $value = ($output | Select-Object -Last 1).ToString().Trim()
     if ([string]::IsNullOrWhiteSpace($value)) {
         throw "应用配置返回空值"
     }
     return $value
+}
+
+function Ensure-Pip {
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $script:PythonExe -m pip --version *> $null
+        $pipExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($pipExitCode -eq 0) {
+        return
+    }
+
+    Write-Step "虚拟环境中未检测到 pip，正在初始化"
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = @(& $script:PythonExe -m ensurepip --upgrade 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($exitCode -ne 0) {
+        $details = ($output | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
+        throw "虚拟环境中没有 pip，且 ensurepip 初始化失败：$details。请安装包含 pip/ensurepip 的 Python。"
+    }
 }
 
 Set-Location -LiteralPath $BackendDir
@@ -129,20 +191,33 @@ if ($StopOnly) {
 }
 
 New-Item -ItemType Directory -Force -Path $DataDir, $RuntimeDir, $LogDir | Out-Null
-$env:UV_CACHE_DIR = Join-Path $DataDir "uv-cache"
-New-Item -ItemType Directory -Force -Path $env:UV_CACHE_DIR | Out-Null
+$pipCacheDir = Join-Path $DataDir "pip-cache"
+New-Item -ItemType Directory -Force -Path $pipCacheDir | Out-Null
+$env:PIP_CACHE_DIR = $pipCacheDir
 
-$uvCommand = Get-Command uv -ErrorAction SilentlyContinue
-if ($null -ne $uvCommand) {
-    $script:UvExe = $uvCommand.Source
-} else {
-    $userUv = Join-Path $env:USERPROFILE ".local\bin\uv.exe"
-    if (Test-Path -LiteralPath $userUv) {
-        $script:UvExe = $userUv
-    } else {
-        throw "未找到 uv。请先安装 uv，或执行：irm https://astral.sh/uv/install.ps1 | iex"
+$pythonCommand = Get-Command python -CommandType Application -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+if ($null -eq $pythonCommand) {
+    throw "未找到 Python。请先安装 Python 3.11 或更高版本，并确保 python 已加入 PATH。"
+}
+$basePython = $pythonCommand.Path
+if ([string]::IsNullOrWhiteSpace($basePython)) {
+    $basePython = $pythonCommand.Source
+}
+if ([string]::IsNullOrWhiteSpace($basePython) -or -not (Test-Path -LiteralPath $basePython)) {
+    throw "无法解析 Python 可执行文件路径，请确认 python 已加入 PATH。"
+}
+$venvDir = Join-Path $BackendDir ".venv"
+$venvPython = Join-Path $venvDir "Scripts\python.exe"
+if (-not (Test-Path -LiteralPath $venvPython)) {
+    Write-Step "创建 Python 虚拟环境"
+    & $basePython -m venv $venvDir
+    if ($LASTEXITCODE -ne 0) {
+        throw "创建 Python 虚拟环境失败"
     }
 }
+$script:PythonExe = $venvPython
+Ensure-Pip
 
 if (-not (Test-Path -LiteralPath ".env")) {
     if ($Environment -eq "production") {
@@ -157,8 +232,17 @@ if (-not (Test-Path -LiteralPath ".env")) {
 
 # 环境变量覆盖 .env，确保本次部署的安全基线与启动进程一致。
 $env:ENVIRONMENT = $Environment
+
+if (-not $SkipInstall) {
+    if (-not (Test-Path -LiteralPath "requirements.txt")) {
+        throw "缺少 requirements.txt，无法安装依赖"
+    }
+    Write-Step "使用 pip 安装依赖"
+    Invoke-Python @("-m", "pip", "install", "--requirement", "requirements.txt")
+}
+
 if ([string]::IsNullOrWhiteSpace($WorkerId)) {
-    $WorkerId = Get-UvValue 'from app.core.config import settings; print(settings.worker_id)'
+    $WorkerId = Get-PythonValue 'from app.core.config import settings; print(settings.worker_id)'
 }
 
 if ($Restart) {
@@ -168,29 +252,24 @@ if ($Restart) {
 Assert-ProcessSlot $BackendPidFile "FastAPI"
 Assert-ProcessSlot $WorkerPidFile "Worker"
 
-if (-not $SkipSync) {
-    Write-Step "同步锁定的生产依赖"
-    Invoke-Uv @("sync", "--frozen", "--no-dev")
-}
-
 Write-Step "检查生产安全配置"
-Invoke-Uv @("run", "python", "-c", "from app.core.config import validate_security_baseline; validate_security_baseline()")
+Invoke-Python @("-c", "from app.core.config import validate_security_baseline; validate_security_baseline()")
 
-$reportsPath = Get-UvValue 'from app.core.config import reports_dir; print(reports_dir())'
-$releasesPath = Get-UvValue 'from app.core.config import releases_dir; print(releases_dir())'
+$reportsPath = Get-PythonValue 'from app.core.config import reports_dir; print(reports_dir())'
+$releasesPath = Get-PythonValue 'from app.core.config import releases_dir; print(releases_dir())'
 New-Item -ItemType Directory -Force -Path $reportsPath, $releasesPath | Out-Null
 
 if (-not $SkipMigrate) {
     Write-Step "执行数据库迁移"
-    Invoke-Uv @("run", "alembic", "upgrade", "head")
+    Invoke-Python @("-m", "alembic", "upgrade", "head")
 }
 
 Write-Step "检查数据库迁移漂移"
-Invoke-Uv @("run", "alembic", "check")
+Invoke-Python @("-m", "alembic", "check")
 
 if ($Seed) {
     Write-Step "初始化 admin/admin123（首次登录后必须改密）"
-    Invoke-Uv @("run", "python", "-m", "app.seed")
+    Invoke-Python @("-m", "app.seed")
 }
 
 if ($NoStart) {
@@ -198,8 +277,8 @@ if ($NoStart) {
     exit 0
 }
 
-$wsMaxSize = [int](Get-UvValue 'from app.core.config import settings; print(settings.agent_ws_max_frame_bytes)')
-$workerMode = Get-UvValue 'from app.core.config import settings; print(settings.worker_mode)'
+$wsMaxSize = [int](Get-PythonValue 'from app.core.config import settings; print(settings.agent_ws_max_frame_bytes)')
+$workerMode = Get-PythonValue 'from app.core.config import settings; print(settings.worker_mode)'
 if ($workerMode -eq "external") {
     if ($Environment -eq "production" -and $WorkerId -eq "") {
         throw "external Worker 必须有非空 WorkerId"
@@ -211,13 +290,13 @@ if ($workerMode -eq "external") {
 
 Write-Step "启动 FastAPI（单进程，Worker mode=$workerMode）"
 $backendArguments = @(
-    "run", "uvicorn", "app.main:app",
+    "-m", "uvicorn", "app.main:app",
     "--host", $ListenHost,
     "--port", $Port.ToString(),
     "--ws-max-size", $wsMaxSize.ToString()
 )
 $backendProcess = Start-Process `
-    -FilePath $script:UvExe `
+    -FilePath $script:PythonExe `
     -ArgumentList $backendArguments `
     -WorkingDirectory $BackendDir `
     -RedirectStandardOutput $BackendStdout `
@@ -228,9 +307,9 @@ $backendProcess.Id | Set-Content -LiteralPath $BackendPidFile -Encoding ascii
 
 if ($workerMode -eq "external") {
     Write-Step "启动独立 Worker ($workerId)"
-    $workerArguments = @("run", "python", "worker.py", "--worker-id", $workerId, "--enable-scans")
+    $workerArguments = @("worker.py", "--worker-id", $workerId, "--enable-scans")
     $workerProcess = Start-Process `
-        -FilePath $script:UvExe `
+        -FilePath $script:PythonExe `
         -ArgumentList $workerArguments `
         -WorkingDirectory $BackendDir `
         -RedirectStandardOutput $WorkerStdout `

@@ -20,6 +20,7 @@ import {
 import { createMyAgentKey, getMyAgentKey, regenerateMyAgentKey, type AgentKey } from '@/api/me'
 import { getDownloadToken, getLatestRelease, releaseDownloadUrl, type ReleaseManifest } from '@/api/releases'
 import { useAuthStore } from '@/stores/auth'
+import { copyText } from '@/utils/clipboard'
 import { formatDateTime } from '@/utils/format'
 import { apiErrorDetail } from '@/utils/request'
 
@@ -59,10 +60,16 @@ async function resetKey() {
   ElMessage.success('Key 已重置')
 }
 
-function copyKey() {
-  if (!myKey.value?.key) return
-  navigator.clipboard.writeText(myKey.value.key)
-  ElMessage.success('已复制到剪贴板')
+async function copyKey() {
+  const key = myKey.value?.key
+  if (!key) return
+
+  try {
+    await copyText(key)
+    ElMessage.success('已复制到剪贴板')
+  } catch {
+    ElMessage.error('复制失败，请手动复制')
+  }
 }
 
 async function loadRelease() {
@@ -141,7 +148,7 @@ async function submitCreate() {
   dialogOpen.value = false
   form.value = { hostname: '', platform: 'windows' }
   ElMessageBox.alert(
-    `agent_id: ${agent.agent_id}\nagent_key: ${agent.agent_key}\n\n请复制 agent_key 到 Agent 的 config.yaml。`,
+    `agent_id: ${agent.agent_id}\nagent_key: ${agent.agent_key}\n\n旧版手工配置可使用 agent_key。\n新版桌面 Agent 请到“个人中心”生成以 uak_ 开头的用户 Key，再在 Agent 界面绑定。`,
     'Agent 已创建',
     { confirmButtonText: '我已复制' },
   )

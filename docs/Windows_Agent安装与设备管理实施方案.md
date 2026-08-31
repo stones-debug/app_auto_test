@@ -48,9 +48,9 @@
 - `POST /api/me/agent-key`：首次生成 Key。
 - `POST /api/me/agent-key/regenerate`：生成新 Key；旧 Key 不能再新增绑定，但已有 Agent 绑定继续有效。
 - `POST /api/agent/bind`：
-  - 第一次绑定提交用户 Key、`install_id`、主机名、版本和平台，创建 Agent、机器 PSK 和 `agent_users`。
-  - 后续绑定同时提交机器 PSK 和另一个用户 Key，只新增关联。
-  - 返回 Agent 身份和该用户绑定的撤销凭据；原始用户 Key 不写日志、不保存在 Agent 配置文件。桌面端绑定成功后将最近使用的 Key 明文保存到运行目录 `user_key.txt`，下次启动以掩码回填。
+  - 所有绑定只提交用户 Key、`install_id`、主机名、版本和平台；用户 Key 有效即可创建、恢复、追加或重复绑定。
+  - 绑定请求不提交、不校验旧机器 PSK；每次成功绑定都旋转并返回新机器 PSK，同时创建或刷新该用户的撤销凭据。
+  - 返回 Agent 身份、机器 PSK 和该用户绑定的撤销凭据；原始用户 Key 不写日志、不保存在 Agent 配置文件。桌面端绑定成功后将最近使用的 Key 明文保存到运行目录 `user_key.txt`，下次启动以掩码回填。
 - `GET /api/agent/bindings`：机器 PSK 认证，返回本机已绑定用户名。
 - `DELETE /api/agent/bindings/{id}`：机器 PSK + 对应撤销凭据解绑。
 - `DELETE /api/agents/{id}/bindings/me`：用户从前端撤销自己对该 Agent 的授权。

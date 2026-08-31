@@ -1,11 +1,15 @@
 import logging
+import time
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import Headers
 
 from app.api.agent import router as agent_router
 from app.api.agents import router as agents_router
@@ -25,6 +29,7 @@ from app.api.suites import router as suites_router
 from app.api.variables import router as variables_router
 from app.core.config import BASE_DIR, settings, validate_security_baseline
 from app.core.errors import ApiErrorDetail, ApiErrorResponse
+from app.core.request_logging import format_for_log, parse_body_for_log
 from app.core.security import is_loopback_host
 from app.services.worker_runtime import WorkerRuntime
 from app.ws.managers import agent_manager
@@ -71,6 +76,80 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+class RequestLoggingMiddleware:
+    """记录 HTTP 请求参数，并回放已读取的 body 给下游应用。"""
+
+    def __init__(self, app: Callable) -> None:
+        self.app = app
+
+    async def __call__(
+        self,
+        scope: dict[str, Any],
+        receive: Callable[[], Awaitable[dict[str, Any]]],
+        send: Callable[[dict[str, Any]], Awaitable[None]],
+    ) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        raw_body = bytearray()
+        while True:
+            message = await receive()
+            if message.get("type") == "http.disconnect":
+                return
+            raw_body.extend(message.get("body", b""))
+            if not message.get("more_body", False):
+                break
+
+        body_sent = False
+
+        async def replay_receive() -> dict[str, Any]:
+            nonlocal body_sent
+            if not body_sent:
+                body_sent = True
+                return {"type": "http.request", "body": bytes(raw_body), "more_body": False}
+            # StreamingResponse/FileResponse 会并行监听客户端断开。这里若立即伪造
+            # disconnect，会在响应体发送前取消流任务；回放完成后应继续等待原始连接。
+            return await receive()
+
+        request = Request(scope, receive=replay_receive)
+        request_logger = logging.getLogger("app.request")
+        started = time.perf_counter()
+        request_logger.info(
+            "HTTP 请求 %s %s query=%s body=%s",
+            request.method,
+            request.url.path,
+            format_for_log(dict(request.query_params)),
+            format_for_log(parse_body_for_log(bytes(raw_body), Headers(scope=scope).get("content-type", ""))),
+        )
+
+        response_status = 500
+
+        async def log_response(message: dict[str, Any]) -> None:
+            nonlocal response_status
+            if message.get("type") == "http.response.start":
+                response_status = int(message.get("status", 500))
+            await send(message)
+
+        try:
+            await self.app(scope, replay_receive, log_response)
+        except Exception:
+            request_logger.exception(
+                "HTTP 请求异常 %s %s duration_ms=%.1f",
+                request.method,
+                request.url.path,
+                (time.perf_counter() - started) * 1000,
+            )
+            raise
+        request_logger.info(
+            "HTTP 响应 %s %s status=%s duration_ms=%.1f",
+            request.method,
+            request.url.path,
+            response_status,
+            (time.perf_counter() - started) * 1000,
+        )
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -78,6 +157,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RequestLoggingMiddleware)
 
 app.include_router(auth_router, prefix="/api")
 app.include_router(projects_router, prefix="/api")

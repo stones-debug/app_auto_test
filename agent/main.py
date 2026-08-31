@@ -121,6 +121,19 @@ class AgentApp:
         self._pending_execution_results: dict[int, ExecutionResultMessage] = {}
         self._result_replay_task: asyncio.Task | None = None
 
+    async def update_server_url(self, server_url: str) -> None:
+        """切换桌面端修改的服务器地址，并让现有连接尽快重连。"""
+        base_url = http_origin(server_url)
+        self.config["server"] = server_url
+        if self.bindings is not None:
+            self.bindings.base_url = base_url
+        if self.uploader is not None:
+            self.uploader.base_url = base_url
+        if self.client is not None:
+            self.client.url = server_url
+            if self.client.ws is not None:
+                await self.client.ws.close()
+
     # ---------- Windows 方案 §4.1：设备上报与 Appium 生命周期 ----------
 
     async def start_device_reporting(self, _reply: dict | None = None) -> None:
@@ -580,6 +593,14 @@ async def main() -> None:
         config["server"] = load_server_url(state or state_dir(state), "ws://127.0.0.1:8001/ws/agent")
         config.setdefault("driver", "appium")
         logger.info("未找到配置文件，使用状态目录服务器地址: %s", config["server"])
+    elif state is not None and not args.self_check:
+        # 桌面端保存的地址优先于随包携带的 config.yaml，避免重启后又回到旧地址。
+        from desktop.controller import load_server_url
+
+        saved_server = load_server_url(state, "")
+        if saved_server:
+            config["server"] = saved_server
+            logger.info("使用状态目录中保存的服务器地址: %s", saved_server)
 
     if args.self_check:
         from selfcheck import run_self_check

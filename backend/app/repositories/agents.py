@@ -18,6 +18,15 @@ async def get_by_install_id(db: AsyncSession, install_id: str) -> Agent | None:
     ).scalar_one_or_none()
 
 
+async def lock_by_install_id(db: AsyncSession, install_id: str) -> Agent | None:
+    """锁定安装实例，串行化同一 Agent 的凭据旋转与绑定更新。"""
+    return (
+        await db.execute(
+            select(Agent).where(Agent.agent_id == install_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+
+
 async def create(
     db: AsyncSession,
     *,
@@ -46,7 +55,7 @@ async def refresh(db: AsyncSession, agent: Agent) -> Agent:
     return agent
 
 
-async def reactivate(
+async def refresh_identity(
     agent: Agent,
     *,
     agent_key: str,
@@ -54,9 +63,12 @@ async def reactivate(
     platform: str | None,
     version: str | None,
 ) -> Agent:
+    """使用有效用户 Key 重绑安装实例，并刷新机器通信凭据。"""
+    was_deleted = agent.deleted_at is not None
     agent.agent_key = agent_key
     agent.deleted_at = None
-    agent.status = "offline"
+    if was_deleted:
+        agent.status = "offline"
     if hostname:
         agent.hostname = hostname
     if platform:
@@ -111,6 +123,14 @@ async def create_binding(
         revoke_credential_hash=revoke_credential_hash,
     )
     db.add(binding)
+    return binding
+
+
+async def refresh_binding_credential(
+    binding: AgentUser, *, revoke_credential_hash: str
+) -> AgentUser:
+    """重复绑定同一用户时刷新其机器侧撤销凭据。"""
+    binding.revoke_credential_hash = revoke_credential_hash
     return binding
 
 
