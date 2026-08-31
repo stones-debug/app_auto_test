@@ -29,7 +29,7 @@
 - 确认 `test_platform_test` 可创建、迁移和清理，测试不得连接开发库。
 - 导出开发库 schema-only 备份，用于审阅 DDL 差异。
 - 确认权威架构文档第 10 章仍为当前最终口径。
-- 确认 Node 18.16、Vite 5、Python 3.12 和 uv 路径符合项目约束。
+- 确认 Node 18.16、Vite 5、Python 3.11 和 uv 路径符合项目约束。
 
 基线命令：
 

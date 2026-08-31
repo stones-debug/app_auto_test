@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [
     { name = "shijinsong", email = "jsshi@tl-tek.com" }
 ]
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",

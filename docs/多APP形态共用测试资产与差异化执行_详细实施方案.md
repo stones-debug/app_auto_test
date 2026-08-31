@@ -20,7 +20,7 @@
 
 | 领域 | 当前项目实际口径 | 本方案决策 |
 |---|---|---|
-| 后端 | Python 3.12、FastAPI、Pydantic 2、SQLAlchemy 2.0 Async、asyncpg | 不引入 Django |
+| 后端 | Python 3.11、FastAPI、Pydantic 2、SQLAlchemy 2.0 Async、asyncpg | 不引入 Django |
 | 前端 | Vue 3、TypeScript、Vite 5、Element Plus、Pinia | 不使用 React、Redux 或 Zustand |
 | 队列 | PostgreSQL `execution_queue`，`FOR UPDATE SKIP LOCKED` | 本期不引入 Celery/Redis |
 | Worker | 默认嵌入 FastAPI，也可切换独立 Python Worker | 解析逻辑放共享 service，两个模式复用 |
