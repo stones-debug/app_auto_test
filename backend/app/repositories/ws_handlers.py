@@ -17,6 +17,7 @@ from app.models import (
     ExecutionSuite,
     Report,
 )
+from app.services.execution_summary import merge_runtime_status
 from app.services.screenshot_store import validate_object_key
 from app.services.worker_service import min_agent_version
 
@@ -423,7 +424,7 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
         "actual_value": step.actual_value,
         "error_message": step.error_message,
         "screenshot_url": step.screenshot_path,
-        "artifact_id": step.id if step.screenshot_path else None,
+        "artifact_id": f"step:{step.id}" if step.screenshot_path else None,
         "timestamp": now.isoformat(),
     }
 
@@ -458,10 +459,16 @@ async def handle_node_started(db: AsyncSession, agent_id: int, payload: dict) ->
     if node is None:
         return
     now = datetime.now(UTC)
-    node.status = "running"
+    node.status = merge_runtime_status(node.status, "running")
     node.started_at = node.started_at or now
     if payload.get("attempt") is not None:
         node.attempt_count = max(node.attempt_count or 0, int(payload["attempt"]))
+    if case is not None and case.status not in TERMINAL_STATES:
+        case.status = merge_runtime_status(case.status, "running")
+        case.started_at = case.started_at or node.started_at or now
+    if suite is not None and suite.status not in TERMINAL_STATES:
+        suite.status = merge_runtime_status(suite.status, "running")
+        suite.started_at = suite.started_at or node.started_at or now
     await db.flush()
     return {
         "type": "node_started", "execution_id": execution_id, "execution_node_id": node.id,
@@ -482,7 +489,7 @@ async def handle_node_result(db: AsyncSession, agent_id: int, payload: dict) -> 
     if node is None:
         return
     now = datetime.now(UTC)
-    node.status = payload.get("status") or "error"
+    node.status = str(payload.get("status") or "error").lower()
     node.finished_at = now
     node.duration = payload.get("duration")
     node.actual_value = payload.get("actual_value")
@@ -496,21 +503,17 @@ async def handle_node_result(db: AsyncSession, agent_id: int, payload: dict) -> 
     if case is not None:
         if case.started_at is None:
             case.started_at = node.started_at or now
+        parent_status = node.status if node.status in {"failed", "error", "stopped", "skipped"} else "running"
+        case.status = merge_runtime_status(case.status, parent_status)
         if node.kind == "assertion" and node.status in {"failed", "error"}:
-            case.status = node.status
             case.error_message = case.error_message or (
                 "断言执行错误" if node.status == "error" else "断言失败"
             )
-        elif node.kind == "action" and node.status in {"failed", "error"} and not node.continue_on_failure:
-            case.status = node.status
+        elif node.kind == "action" and node.status in {"failed", "error"}:
             case.error_message = node.error_message
-        elif case.status not in TERMINAL_STATES:
-            case.status = "running"
     if suite is not None and suite.status not in TERMINAL_STATES:
-        if node.status in {"failed", "error"} and not node.continue_on_failure:
-            suite.status = node.status
-        else:
-            suite.status = "running"
+        parent_status = node.status if node.status in {"failed", "error", "stopped", "skipped"} else "running"
+        suite.status = merge_runtime_status(suite.status, parent_status)
     await db.flush()
     return {
         "type": "node_result", "execution_id": execution_id, "execution_node_id": node.id,
@@ -519,6 +522,7 @@ async def handle_node_result(db: AsyncSession, agent_id: int, payload: dict) -> 
         "duration": node.duration, "actual_value": node.actual_value,
         "expected_value": node.expected_value, "error_message": node.error_message,
         "attempt_count": node.attempt_count, "screenshot_url": node.screenshot_path,
+        "artifact_id": f"node:{node.id}" if node.screenshot_path else None,
         "timestamp": now.isoformat(),
     }
 
@@ -566,7 +570,7 @@ async def handle_assertion_result(db: AsyncSession, agent_id: int, payload: dict
     if any(item["status"] == "fail" for item in normalized_assertions):
         step.status = "failed"
         step.error_message = step.error_message or "步骤后断言失败"
-        execution_case.status = "failed"
+        execution_case.status = merge_runtime_status(execution_case.status, "failed")
     now = datetime.now(UTC)
     await db.flush()
     # V2 §8.2：assertion 广播（前端按 execution_id+case_id+assertions 幂等合并）
@@ -602,7 +606,11 @@ async def handle_case_status(db: AsyncSession, agent_id: int, payload: dict) -> 
     now = datetime.now(UTC)
     terminal = _parse_terminal_status(payload.get("status"))
     if terminal is not None:
-        parent_case.status = terminal
+        parent_case.status = (
+            merge_runtime_status(parent_case.status, terminal)
+            if parent_case.status in TERMINAL_STATES
+            else terminal
+        )
         parent_case.finished_at = now
         if parent_case.started_at is not None:
             parent_case.duration = int((now - parent_case.started_at).total_seconds() * 1000)
@@ -643,7 +651,11 @@ async def handle_suite_status(db: AsyncSession, agent_id: int, payload: dict) ->
     now = datetime.now(UTC)
     terminal = _parse_terminal_status(payload.get("status"))
     if terminal is not None:
-        suite.status = terminal
+        suite.status = (
+            merge_runtime_status(suite.status, terminal)
+            if suite.status in TERMINAL_STATES
+            else terminal
+        )
         suite.finished_at = now
         if suite.started_at is not None:
             suite.duration = int((now - suite.started_at).total_seconds() * 1000)

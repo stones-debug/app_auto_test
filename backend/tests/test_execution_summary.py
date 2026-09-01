@@ -12,6 +12,7 @@ from app.services.execution_summary import (
     compute_exclusion_summary,
     merge_case_status,
     merge_execution_status,
+    merge_runtime_status,
     rate_percent,
 )
 
@@ -49,6 +50,23 @@ def test_aggregate_statuses_is_order_independent():
 )
 def test_merge_execution_status(agent_status: str, stored_statuses: tuple[str, ...], expected: str):
     assert merge_execution_status(agent_status, stored_statuses) == expected
+
+
+@pytest.mark.parametrize(
+    ("current", "incoming", "expected"),
+    [
+        ("pending", "running", "running"),
+        ("running", "passed", "running"),
+        ("error", "failed", "error"),
+        ("failed", "passed", "failed"),
+        ("stopped", "skipped", "stopped"),
+        ("pending", "passed", "passed"),
+    ],
+)
+def test_merge_runtime_status_preserves_priority(
+    current: str, incoming: str, expected: str
+):
+    assert merge_runtime_status(current, incoming) == expected
 
 
 @pytest.mark.parametrize(

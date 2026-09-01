@@ -20,11 +20,13 @@ from app.models import (
     ExecutionAssertion,
     ExecutionCase,
     ExecutionLog,
+    ExecutionNode,
     ExecutionStep,
     ExecutionSuite,
     Project,
     User,
 )
+from app.repositories.executions import parse_artifact_reference
 from app.services import worker_service, ws_ingest_service
 from app.ws import handlers
 from app.ws.managers import AgentConnectionManager, agent_manager, execution_manager
@@ -32,6 +34,14 @@ from app.ws.routes import agent_ws
 from tests.helpers import create_bound_agent_device
 
 REG = {"username": "pytest_ws_user", "email": "ws@tl-tek.com", "password": "test123"}
+
+
+def test_parse_typed_artifact_reference():
+    assert parse_artifact_reference("step:12") == ("step", 12)
+    assert parse_artifact_reference("node:34") == ("node", 34)
+    assert parse_artifact_reference("12") is None
+    assert parse_artifact_reference("node:0") is None
+    assert parse_artifact_reference("step:not-a-number") is None
 
 
 class FakeWebSocket:
@@ -162,6 +172,85 @@ async def _snapshot_ids(
         ).scalars()
     )
     return execution_case, steps, assertions
+
+
+async def test_node_started_updates_case_and_suite_runtime_state(client: AsyncClient):
+    _token, _case_id, execution_id = await _setup_case_execution(client)
+
+    async with SessionLocal() as db:
+        agent_id = await _create_agent()
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        execution_case = await db.scalar(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )
+        node = await db.scalar(
+            select(ExecutionNode).where(ExecutionNode.execution_case_id == execution_case.id)
+        )
+        await _bind_execution_to_agent(db, execution_id, agent_id)
+        assert execution_case.status == "pending"
+        suite = await db.get(ExecutionSuite, execution_case.execution_suite_id)
+
+        message = await handlers.handle_node_started(
+            db,
+            agent_id,
+            {
+                "execution_id": execution_id,
+                "session_token": "sess-token",
+                "execution_case_id": execution_case.id,
+                "execution_suite_id": suite.id,
+                "execution_node_id": node.id,
+                "kind": node.kind,
+            },
+        )
+        assert message["type"] == "node_started"
+        assert node.status == "running"
+        assert execution_case.status == "running"
+        assert suite.status == "running"
+        assert execution_case.started_at is not None
+        assert suite.started_at is not None
+
+
+async def test_node_result_keeps_error_over_later_failed_status(client: AsyncClient):
+    _token, _case_id, execution_id = await _setup_case_execution(client)
+
+    async with SessionLocal() as db:
+        agent_id = await _create_agent()
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        execution_case = await db.scalar(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )
+        nodes = list(
+            (
+                await db.execute(
+                    select(ExecutionNode)
+                    .where(ExecutionNode.execution_case_id == execution_case.id)
+                    .order_by(ExecutionNode.node_order)
+                )
+            ).scalars()
+        )
+        assert len(nodes) >= 2
+        await _bind_execution_to_agent(db, execution_id, agent_id)
+
+        base = {
+            "execution_id": execution_id,
+            "session_token": "sess-token",
+            "execution_case_id": execution_case.id,
+        }
+        await handlers.handle_node_result(
+            db,
+            agent_id,
+            {**base, "execution_node_id": nodes[0].id, "status": "error", "error_message": "会话异常"},
+        )
+        assert execution_case.status == "error"
+
+        await handlers.handle_node_result(
+            db,
+            agent_id,
+            {**base, "execution_node_id": nodes[1].id, "status": "failed"},
+        )
+        assert execution_case.status == "error"
 
 
 # ---------- managers ----------

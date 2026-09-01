@@ -12,6 +12,7 @@ from decimal import Decimal
 _STATUS_PRIORITY = ("error", "failed", "stopped", "skipped", "passed")
 _STORED_EXECUTION_TERMINAL_STATUSES = {"error", "failed", "stopped"}
 _EXCLUSION_KEYS = ("na_suites", "na_cases", "na_steps", "na_assertions", "na_suite_steps")
+_RUNTIME_TERMINAL_STATUSES = {"passed", "failed", "error", "stopped", "skipped", "cancelled"}
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,33 @@ def aggregate_statuses(statuses: Iterable[str]) -> str:
     if remaining == {"passed"}:
         return "passed"
     return "error" if remaining else "skipped"
+
+
+def merge_runtime_status(current: str | None, incoming: str | None) -> str:
+    """合并运行时父节点状态，不允许低优先级消息覆盖已有状态。
+
+    终态统一使用 :func:`aggregate_statuses` 的
+    ``error > failed > stopped > skipped > passed`` 优先级；终态之外，
+    ``running`` 优先于 ``pending``，用于节点结果到达但同级后续节点尚未完成的窗口。
+    ``cancelled`` 在分层状态中按 ``stopped`` 参与比较。
+    """
+    values = [str(value or "").lower() for value in (current, incoming)]
+    if current == "running" and incoming in {"passed", "skipped"}:
+        return "running"
+    terminal = [
+        "stopped" if value == "cancelled" else value
+        for value in values
+        if value in _RUNTIME_TERMINAL_STATUSES
+    ]
+    if terminal:
+        return aggregate_statuses(terminal)
+    if "running" in values:
+        return "running"
+    if "stopping" in values:
+        return "stopping"
+    if "pending" in values:
+        return "pending"
+    return "error"
 
 
 def merge_execution_status(agent_status: str, stored_statuses: Iterable[str]) -> str:

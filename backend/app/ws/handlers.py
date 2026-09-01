@@ -40,6 +40,12 @@ from app.repositories.ws_handlers import (
     handle_log as _handle_log,
 )
 from app.repositories.ws_handlers import (
+    handle_node_result as _handle_node_result,
+)
+from app.repositories.ws_handlers import (
+    handle_node_started as _handle_node_started,
+)
+from app.repositories.ws_handlers import (
     handle_register as _handle_register,
 )
 from app.repositories.ws_handlers import (
@@ -104,6 +110,14 @@ async def handle_suite_status(db: AsyncSession, agent_id: int, payload: dict) ->
     return await _run_compat(db, _handle_suite_status, agent_id, payload)
 
 
+async def handle_node_started(db: AsyncSession, agent_id: int, payload: dict) -> Any:
+    return await _run_compat(db, _handle_node_started, agent_id, payload)
+
+
+async def handle_node_result(db: AsyncSession, agent_id: int, payload: dict) -> Any:
+    return await _run_compat(db, _handle_node_result, agent_id, payload)
+
+
 async def handle_execution_result(db: AsyncSession, agent_id: int, payload: dict) -> bool:
     return bool(await _run_compat(db, _handle_execution_result, agent_id, payload))
 
@@ -118,5 +132,5 @@ __all__ = [
     "_settle_execution_cases", "_step_belongs_to", "_stored_execution_terminal", "_upsert_assertion",
     "handle_assertion_result", "handle_case_status", "handle_device_list", "handle_execution_result",
     "handle_heartbeat", "handle_log", "handle_register", "handle_step_result", "handle_suite_status",
-    "mark_agent_offline", "version_supported",
+    "handle_node_started", "handle_node_result", "mark_agent_offline", "version_supported",
 ]

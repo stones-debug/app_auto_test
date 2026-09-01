@@ -33,7 +33,7 @@ async def load_case_tree(db: AsyncSession, execution_id: int) -> list[dict]:
             "duration": node.duration, "attempt_count": node.attempt_count,
             "actual_value": node.actual_value, "expected_value": node.expected_value,
             "error_message": node.error_message, "screenshot_path": node.screenshot_path,
-            "artifact_id": node.id if node.screenshot_path else None,
+            "artifact_id": f"node:{node.id}" if node.screenshot_path else None,
         })
 
     # 键中的 case_id 来自 ExecutionStep.execution_case_id（可空列：套件阶段步骤不挂用例）。
@@ -168,7 +168,7 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
             "duration": node.duration, "attempt_count": node.attempt_count,
             "actual_value": node.actual_value, "expected_value": node.expected_value,
             "error_message": node.error_message, "screenshot_path": node.screenshot_path,
-            "artifact_id": node.id if node.screenshot_path else None,
+            "artifact_id": f"node:{node.id}" if node.screenshot_path else None,
         }
         if node.execution_case_id is not None:
             nodes_by_case.setdefault(node.execution_case_id, []).append(item)
@@ -293,6 +293,7 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
             "actual_value": s.actual_value,
             "error_message": s.error_message,
             "screenshot_path": s.screenshot_path,
+            "artifact_id": f"step:{s.id}" if s.screenshot_path else None,
         }
 
     def _mk_suite_node_step(node: dict) -> dict:
@@ -310,6 +311,7 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
             "actual_value": node.get("actual_value"),
             "error_message": node.get("error_message"),
             "screenshot_path": node.get("screenshot_path"),
+            "artifact_id": node.get("artifact_id"),
         }
 
     result: list[dict] = []

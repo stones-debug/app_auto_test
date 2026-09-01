@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from .driver import BaseDriver, DriverError
@@ -49,6 +50,26 @@ class AppiumDriver(BaseDriver):
         self.device = device or {}
         self.command_timeout = command_timeout
         self.driver: WebDriver | None = None
+        self._http_timeout_default: float | None = None
+
+    def _remember_http_timeout_default(self) -> None:
+        driver = self.driver
+        executor = getattr(driver, "command_executor", None)
+        client_config = getattr(executor, "_client_config", None)
+        self._http_timeout_default = getattr(client_config, "timeout", None)
+
+    def set_command_timeout(self, timeout: float | None) -> None:
+        """设置当前 Appium HTTP 请求超时，避免请求越过断言共享 deadline。"""
+        driver = self.driver
+        executor = getattr(driver, "command_executor", None)
+        client_config = getattr(executor, "_client_config", None)
+        if client_config is None:
+            return
+        client_config.timeout = (
+            self._http_timeout_default
+            if timeout is None
+            else max(0.05, float(timeout))
+        )
 
     def _device_caps(self) -> dict:
         """由 Worker 下发的设备信息构造平台能力（CR-08）。"""
@@ -131,6 +152,7 @@ class AppiumDriver(BaseDriver):
                 command_executor=self.command_executor,
                 options=self._build_current_app_options(),
             )
+            self._remember_http_timeout_default()
         except Exception as exc:
             raise DriverError(f"Appium 连接当前设备界面失败：{exc}") from exc
         logger.info("Appium 当前界面会话已创建: %s", self.driver.session_id)
@@ -208,6 +230,7 @@ class AppiumDriver(BaseDriver):
                 command_executor=self.command_executor,
                 options=options,
             )
+            self._remember_http_timeout_default()
         except Exception as exc:
             target = package if platform == "ios" else f"{package}/{resolved_activity}"
             raise DriverError(f"Appium 启动应用失败（{target}）：{exc}") from exc
@@ -230,7 +253,6 @@ class AppiumDriver(BaseDriver):
         from appium.webdriver.common.appiumby import AppiumBy
         from selenium.common.exceptions import TimeoutException
         from selenium.webdriver.common.by import By
-        from selenium.webdriver.support import expected_conditions as EC
         from selenium.webdriver.support.ui import WebDriverWait
 
         from .driver import ElementNotFound
@@ -244,17 +266,24 @@ class AppiumDriver(BaseDriver):
         else:
             by = getattr(AppiumBy, normalized_type.upper(), None) or By.XPATH
 
-        timeout = wait_timeout if wait_timeout is not None else 10
-        if timeout <= 0:
+        timeout = float(wait_timeout if wait_timeout is not None else 10)
+        timeout_label = int(timeout) if timeout.is_integer() else timeout
+        operation_deadline = time.monotonic() + max(0.0, timeout)
+
+        def locate(_driver):
+            self.set_command_timeout(max(0.05, operation_deadline - time.monotonic()))
             return driver.find_element(by, normalized_value)
+
         try:
-            return WebDriverWait(driver, timeout).until(
-                EC.presence_of_element_located((by, normalized_value))
-            )
+            if timeout <= 0:
+                return locate(driver)
+            return WebDriverWait(driver, timeout).until(locate)
         except TimeoutException:
             raise ElementNotFound(
-                f"元素等待超时: {normalized_type}={normalized_value} ({timeout}s)"
+                f"元素等待超时: {normalized_type}={normalized_value} ({timeout_label}s)"
             ) from None
+        finally:
+            self.set_command_timeout(None)
 
     def find_elements(self, locator_type: str, locator_value: str, wait_timeout: int = 10):
         """多匹配查询（智能定位用）：返回当前页面全部匹配元素。

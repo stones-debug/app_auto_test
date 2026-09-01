@@ -98,7 +98,7 @@ function toTimelineStep(s: {
   duration: number | null
   actual_value: string | null
   error_message: string | null
-  artifact_id?: number | null
+  artifact_id?: string | null
   assertions?: Array<{
     id: number
     assertion_order?: number | null

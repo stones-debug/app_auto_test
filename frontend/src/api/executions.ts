@@ -39,7 +39,7 @@ export interface ExecutionStep {
   duration: number | null
   actual_value: string | null
   error_message: string | null
-  artifact_id?: number | null
+  artifact_id?: string | null
   assertions?: ExecutionAssertion[]
 }
 
@@ -74,7 +74,7 @@ export interface ExecutionNode {
   actual_value?: string | null
   expected_value?: string | null
   error_message?: string | null
-  artifact_id?: number | null
+  artifact_id?: string | null
 }
 
 export interface ExecutionCase {

@@ -62,7 +62,11 @@ router = APIRouter(tags=["执行管理"])
 
 
 def _apply_artifact(step_out: ExecutionStepOut, src: dict) -> ExecutionStepOut:
-    step_out.artifact_id = src["id"] if src.get("screenshot_path") else None
+    step_out.artifact_id = (
+        str(src.get("artifact_id") or f"step:{src['id']}")
+        if src.get("screenshot_path")
+        else None
+    )
     return step_out
 
 
@@ -443,16 +447,16 @@ async def get_execution_logs(
 @router.get("/executions/{execution_id}/artifacts/{artifact_id}")
 async def get_execution_artifact(
     execution_id: int,
-    artifact_id: int,
+    artifact_id: str,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     execution = await _get_execution_or_404(execution_id, db)
     await _require_execution_access(execution, user, db)
-    step = await executions_repo.get_artifact_step(db, execution_id, artifact_id)
-    if step is None or not step.screenshot_path:
+    artifact = await executions_repo.get_artifact(db, execution_id, artifact_id)
+    if artifact is None or not artifact.screenshot_path:
         raise api_error(status.HTTP_404_NOT_FOUND, "EXECUTION_ARTIFACT_NOT_FOUND", "执行附件不存在")
-    target = resolve_screenshot_path(execution_id, step.screenshot_path)
+    target = resolve_screenshot_path(execution_id, artifact.screenshot_path)
     if target is None or not target.is_file():
         raise api_error(status.HTTP_404_NOT_FOUND, "EXECUTION_ARTIFACT_NOT_FOUND", "执行附件不存在")
     return FileResponse(target)

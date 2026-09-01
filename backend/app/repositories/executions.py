@@ -1,6 +1,7 @@
 """内部执行状态和 Agent 执行绑定查询。"""
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +18,9 @@ from app.models import (
     User,
 )
 from app.repositories import execution_tree
+
+if TYPE_CHECKING:
+    from app.models import ExecutionNode, ExecutionStep
 
 
 async def get_by_id(
@@ -120,9 +124,39 @@ async def list_logs(db: AsyncSession, execution_id: int, after_timestamp, offset
     return rows, total or 0
 
 
-async def get_artifact_step(db: AsyncSession, execution_id: int, artifact_id: int):
-    from app.models import ExecutionCase, ExecutionStep
-    return (await db.execute(select(ExecutionStep).join(ExecutionCase, ExecutionStep.execution_case_id == ExecutionCase.id).where(ExecutionCase.execution_id == execution_id, ExecutionStep.id == artifact_id))).scalar_one_or_none()
+def parse_artifact_reference(reference: str) -> tuple[str, int] | None:
+    """解析带类型的执行附件标识（``step:123`` / ``node:456``）。"""
+    kind, separator, raw_id = str(reference or "").partition(":")
+    if not separator or kind not in {"step", "node"}:
+        return None
+    try:
+        artifact_id = int(raw_id)
+    except (TypeError, ValueError):
+        return None
+    return (kind, artifact_id) if artifact_id > 0 else None
+
+
+async def get_artifact(
+    db: AsyncSession, execution_id: int, reference: str
+) -> "ExecutionStep | ExecutionNode | None":
+    """按带类型标识读取属于当前执行的步骤或统一节点附件。"""
+    from app.models import ExecutionCase, ExecutionNode, ExecutionStep, ExecutionSuite
+
+    parsed = parse_artifact_reference(reference)
+    if parsed is None:
+        return None
+    kind, artifact_id = parsed
+    model = ExecutionStep if kind == "step" else ExecutionNode
+    artifact = await db.get(model, artifact_id)
+    if artifact is None:
+        return None
+    if artifact.execution_case_id is not None:
+        parent = await db.get(ExecutionCase, artifact.execution_case_id)
+    elif artifact.execution_suite_id is not None:
+        parent = await db.get(ExecutionSuite, artifact.execution_suite_id)
+    else:
+        return None
+    return artifact if parent is not None and parent.execution_id == execution_id else None
 
 
 async def stop_queued(db: AsyncSession, execution_id: int, now) -> int:

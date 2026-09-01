@@ -49,6 +49,33 @@ describe('Step 7 执行详情：日志去重与 WS 状态', () => {
     expect(suites[0].cases[0].nodes?.[1].status).toBe('pending')
   })
 
+  it('节点通过时不会因后续 pending 节点把用例或套件回退为 pending', () => {
+    const suites = [{
+      id: 5,
+      suite_id: null,
+      suite_name: '虚拟套件',
+      status: 'running',
+      setup_steps: [],
+      cases: [{
+        id: 1,
+        case_id: 10,
+        case_name: '登录',
+        status: 'running',
+        steps: [],
+        nodes: [
+          { id: 11, kind: 'action' as const, node_order: 1, phase: 'case_main', status: 'running', parameters: {} },
+          { id: 12, kind: 'action' as const, node_order: 2, phase: 'case_main', status: 'pending', parameters: {} },
+        ],
+      }],
+      teardown_steps: [],
+    }]
+
+    applyNodeResult(suites, { execution_case_id: 1, execution_node_id: 11, status: 'passed' })
+
+    expect(suites[0].cases[0].status).toBe('running')
+    expect(suites[0].status).toBe('running')
+  })
+
   it('后续节点通过时不会覆盖已有 failed/error 用例状态', () => {
     const suites = [{
       id: 5,

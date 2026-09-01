@@ -481,7 +481,7 @@ class SmartElementResolver:
                 logger.info(
                     "智能定位候选 %s/%s: %s=%s", alt_index, len(alternatives), locator_type, locator_value
                 )
-                matches = self._find_all(driver, locator_type, locator_value)
+                matches = self._find_all(driver, locator_type, locator_value, deadline)
                 count = len(matches)
                 logger.info("候选 %s 匹配 %s 个元素", alt_index, count)
                 if count >= 1:
@@ -499,8 +499,12 @@ class SmartElementResolver:
             self._check_stop(context)
             self._check_deadline(deadline)
             if prev_sig is None:
-                prev_sig = self._page_signature(driver)
-            driver.swipe(search["direction"], duration=search["duration_ms"])
+                prev_sig = self._page_signature(driver, deadline)
+            self._run_with_deadline(
+                driver,
+                deadline,
+                lambda: driver.swipe(search["direction"], duration=search["duration_ms"]),
+            )
             swipes_done += 1
             scrolled = True
             settle = search["settle_ms"] / 1000.0
@@ -508,7 +512,7 @@ class SmartElementResolver:
                 self._sleep_with_budget(context, settle, deadline)
             self._check_stop(context)
             self._check_deadline(deadline)
-            cur_sig = self._page_signature(driver)
+            cur_sig = self._page_signature(driver, deadline)
             sig_changed = cur_sig != prev_sig
             logger.info(
                 "滚动 %s/%s 次后全部候选仍未命中（指纹变化=%s）",
@@ -575,9 +579,25 @@ class SmartElementResolver:
             time.sleep(min(0.1, remaining))
 
     @staticmethod
-    def _find_all(driver, locator_type: str, locator_value: str):
-        return driver.find_elements(locator_type, locator_value, wait_timeout=0)
+    def _find_all(driver, locator_type: str, locator_value: str, deadline: float):
+        return SmartElementResolver._run_with_deadline(
+            driver,
+            deadline,
+            lambda: driver.find_elements(locator_type, locator_value, wait_timeout=0),
+        )
 
     @staticmethod
-    def _page_signature(driver) -> str:
-        return driver.page_signature()
+    def _page_signature(driver, deadline: float) -> str:
+        return SmartElementResolver._run_with_deadline(driver, deadline, driver.page_signature)
+
+    @staticmethod
+    def _run_with_deadline(driver, deadline: float, operation):
+        """让单次 Appium HTTP 调用也受共享 deadline 约束。"""
+        set_timeout = getattr(driver, "set_command_timeout", None)
+        if callable(set_timeout):
+            set_timeout(max(0.05, deadline - time.monotonic()))
+        try:
+            return operation()
+        finally:
+            if callable(set_timeout):
+                set_timeout(None)

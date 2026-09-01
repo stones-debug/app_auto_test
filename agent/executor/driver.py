@@ -144,6 +144,10 @@ class BaseDriver:
         """CR-06：stop_test 时尝试终止阻塞中的操作（Appium 终止 app 会话；Mock 无操作）。"""
         pass
 
+    def set_command_timeout(self, timeout: float | None) -> None:
+        """临时设置驱动 HTTP 命令超时；不支持的驱动实现为空操作。"""
+        _ = timeout
+
 
 class MockDriver(BaseDriver):
     """确定性模拟驱动：以 locator_value 为 key 维护应用状态，供本地联调/测试。

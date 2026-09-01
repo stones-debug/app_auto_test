@@ -86,7 +86,7 @@ class ReportNodeOut(BaseModel):
     expected_value: str | None = None
     error_message: str | None = None
     screenshot: str | None = None
-    artifact_id: int | None = None
+    artifact_id: str | None = None
 
 
 class ReportCaseOut(BaseModel):

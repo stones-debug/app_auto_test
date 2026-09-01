@@ -61,7 +61,7 @@ async def test_zero_wait_assertion_performs_one_immediate_lookup():
     assert driver.wait_timeouts == [0.0]
 
 
-async def test_verify_with_wait_interrupts_blocking_attempt_at_deadline():
+async def test_verify_with_wait_does_not_interrupt_driver_at_deadline():
     release = threading.Event()
 
     def blocking_verify(_deadline: float):
@@ -80,6 +80,8 @@ async def test_verify_with_wait_interrupts_blocking_attempt_at_deadline():
     assert result["status"] == "failed"
     assert result["attempt_count"] == 1
     assert "最大等待时间" in result["error_message"]
+    assert not release.is_set()
+    release.set()
 
 
 class BlockingLookupDriver(RecordingDriver):
@@ -98,7 +100,7 @@ class BlockingLookupDriver(RecordingDriver):
         self.release.set()
 
 
-async def test_runner_v3_assertion_has_hard_deadline_for_blocking_lookup():
+async def test_runner_v3_assertion_timeout_does_not_interrupt_driver():
     driver = BlockingLookupDriver()
     sent: list[dict] = []
 
@@ -129,7 +131,7 @@ async def test_runner_v3_assertion_has_hard_deadline_for_blocking_lookup():
 
     assert time.monotonic() - started < 0.5
     assert status == "failed"
-    assert driver.interrupted.is_set()
+    assert not driver.interrupted.is_set()
     node_result = next(item for item in sent if item["type"] == "node_result")
     assert node_result["status"] == "failed"
     driver.release.set()

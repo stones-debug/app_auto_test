@@ -55,8 +55,11 @@ async def verify_with_wait(
             # 中断只是尽力而为，原始的停止/超时结果不能被中断失败覆盖。
             pass
 
-    async def cancel_attempt(task: asyncio.Task) -> None:
-        request_interrupt()
+    async def cancel_attempt(task: asyncio.Task, *, interrupt: bool = False) -> None:
+        # 只有用户停止才允许打断驱动。普通断言超时不能调用 driver.interrupt，
+        # 因为 AppiumDriver.interrupt 会 terminate_app，破坏后续节点执行。
+        if interrupt:
+            request_interrupt()
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -86,7 +89,7 @@ async def verify_with_wait(
             while not attempt_task.done():
                 remaining = deadline - time.monotonic()
                 if should_stop is not None and should_stop():
-                    await cancel_attempt(attempt_task)
+                    await cancel_attempt(attempt_task, interrupt=True)
                     raise StopRequested("执行被用户停止")
                 if remaining <= 0:
                     if immediate_attempt_pending:

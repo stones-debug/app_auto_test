@@ -32,7 +32,7 @@ export interface TimelineStep {
   duration?: number | null
   actual_value?: string | null
   error_message?: string | null
-  artifact_id?: number | null
+  artifact_id?: string | null
   assertions?: TimelineAssertion[]
 }
 
@@ -63,7 +63,7 @@ export interface TimelineNode {
   actual_value?: string | null
   expected_value?: string | null
   error_message?: string | null
-  artifact_id?: number | null
+  artifact_id?: string | null
 }
 
 export interface TimelineCase {
@@ -171,7 +171,7 @@ function collapseAll() {
 
 defineExpose({ expandAll, collapseAll })
 
-function artifactUrl(artifactId: number): string {
+function artifactUrl(artifactId: string): string {
   return `/api/executions/${executionId.value}/artifacts/${artifactId}`
 }
 

@@ -132,7 +132,7 @@ class ExecutionStepOut(BaseModel):
     duration: int | None
     actual_value: str | None
     error_message: str | None
-    artifact_id: int | None = None
+    artifact_id: str | None = None
     assertions: list["ExecutionAssertionOut"] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
@@ -157,7 +157,7 @@ class ExecutionNodeOut(BaseModel):
     actual_value: str | None = None
     expected_value: str | None = None
     error_message: str | None = None
-    artifact_id: int | None = None
+    artifact_id: str | None = None
 
     model_config = {"from_attributes": True}
 

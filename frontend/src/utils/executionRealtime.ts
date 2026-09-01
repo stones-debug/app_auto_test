@@ -11,7 +11,7 @@ interface RealtimeStep {
   duration?: number | null
   actual_value?: string | null
   error_message?: string | null
-  artifact_id?: number | null
+  artifact_id?: string | null
   phase?: string | null
   assertions?: RealtimeAssertion[]
 }
@@ -38,7 +38,7 @@ interface RealtimeNode {
   expected_value?: string | null
   error_message?: string | null
   attempt_count?: number
-  artifact_id?: number | null
+  artifact_id?: string | null
 }
 
 interface RealtimeCase {
@@ -215,25 +215,24 @@ function updateStepFromNodeMessage(step: RealtimeStep, message: RealtimeMessage)
   if (message.duration != null) step.duration = Number(message.duration)
   if (message.actual_value != null) step.actual_value = String(message.actual_value)
   if (message.error_message != null) step.error_message = String(message.error_message)
-  if (message.artifact_id != null) step.artifact_id = Number(message.artifact_id)
+  if (message.artifact_id != null) step.artifact_id = String(message.artifact_id)
 }
 
 function aggregateCaseNodeStatus(executionCase: RealtimeCase, fallback: string): string {
   if (!executionCase.nodes?.length) return fallback
   const nodeStatus = aggregateRealtimeStatuses(executionCase.nodes.map((node) => node.status))
-  // case_status 可能先于节点结果到达；已有 error/failed/stopped 不能被后续
-  // node_started 或通过消息降级。
-  return ['error', 'failed', 'stopped'].includes(fallback)
-    ? aggregateRealtimeStatuses([fallback, nodeStatus])
-    : nodeStatus
+  // case_status 可能先于节点结果到达；已有 running 也不能被剩余 pending
+  // 节点降级。终态则按统一优先级与节点聚合结果合并。
+  return mergeRealtimeStatus(fallback, nodeStatus)
 }
 
 function aggregateSuiteStatus(suite: RealtimeSuite): string {
-  return aggregateRealtimeStatuses([
+  const childStatus = aggregateRealtimeStatuses([
     ...(suite.setup_steps ?? []).map((step) => step.status),
     ...suite.cases.map((executionCase) => executionCase.status),
     ...(suite.teardown_steps ?? []).map((step) => step.status),
   ])
+  return mergeRealtimeStatus(suite.status, childStatus)
 }
 
 export function applyStepResult(suites: RealtimeSuite[], message: RealtimeMessage): void {
@@ -301,13 +300,13 @@ export function applyNodeResult(suites: RealtimeSuite[], message: RealtimeMessag
   const nodeId = message.execution_node_id == null ? null : Number(message.execution_node_id)
   const node = executionCase.nodes.find((item) => nodeId != null && item.id === nodeId)
   if (!node) return
-  node.status = String(message.status ?? node.status)
+  node.status = mergeRealtimeStatus(node.status, String(message.status ?? node.status))
   if (message.duration != null) node.duration = Number(message.duration)
   if (message.actual_value != null) node.actual_value = String(message.actual_value)
   if (message.expected_value != null) node.expected_value = String(message.expected_value)
   if (message.error_message != null) node.error_message = String(message.error_message)
   if (message.attempt_count != null) node.attempt_count = Number(message.attempt_count)
-  if (message.artifact_id != null) node.artifact_id = Number(message.artifact_id)
+  if (message.artifact_id != null) node.artifact_id = String(message.artifact_id)
   executionCase.status = aggregateCaseNodeStatus(executionCase, executionCase.status)
 }
 

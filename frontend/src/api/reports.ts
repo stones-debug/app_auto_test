@@ -105,7 +105,7 @@ export interface ReportNode {
   expected_value?: string | null
   error_message?: string | null
   screenshot?: string | null
-  artifact_id?: number | null
+  artifact_id?: string | null
 }
 
 export interface ReportCase {
