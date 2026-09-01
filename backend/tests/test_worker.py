@@ -1628,13 +1628,56 @@ async def test_mark_terminal_pending_case_under_stopped_is_skipped(client: Async
         ec = (await db.execute(
             select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
         )).scalar_one()
+        suite = await db.get(ExecutionSuite, ec.execution_suite_id)
         assert ec.status == "skipped"
+        assert suite.status == "skipped"
         steps = (await db.execute(
             select(ExecutionStep).where(ExecutionStep.execution_case_id == ec.id)
         )).scalars().all()
         assert all(s.status == "skipped" for s in steps)
         report = (await db.execute(select(Report).where(Report.execution_id == execution_id))).scalar_one()
         assert report.skipped == 1
+
+
+async def test_mark_terminal_suite_setup_failure_skips_case(client: AsyncClient):
+    """套件前置失败时，未开始的套件内用例仍应是 skipped。"""
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        ec = (await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )).scalar_one()
+        suite = await db.get(ExecutionSuite, ec.execution_suite_id)
+        db.add(
+            ExecutionNode(
+                execution_suite_id=suite.id,
+                phase="suite_setup",
+                node_order=1,
+                node_key="suite_setup_1",
+                kind="action",
+                action="click",
+                parameters={},
+                status="failed",
+                error_message="套件前置失败",
+            )
+        )
+        execution.status = "running"
+        execution.started_at = datetime.now(UTC)
+        await db.commit()
+
+        await worker_service._mark_terminal(db, execution, "failed")
+
+    async with SessionLocal() as db:
+        ec = (await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+        )).scalar_one()
+        suite = await db.get(ExecutionSuite, ec.execution_suite_id)
+        assert ec.status == "skipped"
+        assert suite.status == "failed"
 
 
 @pytest.mark.parametrize("case_count", [1, 10, 50])

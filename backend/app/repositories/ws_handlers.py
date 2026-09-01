@@ -21,7 +21,7 @@ from app.services.execution_summary import merge_runtime_status
 from app.services.screenshot_store import validate_object_key
 from app.services.worker_service import min_agent_version
 
-TERMINAL_STATES = {"passed", "failed", "error", "stopped", "cancelled"}
+TERMINAL_STATES = {"passed", "failed", "error", "stopped", "skipped", "cancelled"}
 WRITE_STATES = {"running", "stopping"}
 
 

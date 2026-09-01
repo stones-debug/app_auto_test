@@ -27,7 +27,7 @@ _test_reports_dir = Path(__file__).resolve().parents[1] / "data" / "reports_test
 os.environ["REPORTS_BASE_PATH"] = str(_test_reports_dir)
 
 import pytest  # noqa: E402
-from sqlalchemy import delete, select, text, update  # noqa: E402
+from sqlalchemy import delete, or_, select, text, update  # noqa: E402
 
 from app.core.config import settings  # noqa: E402
 
@@ -143,6 +143,20 @@ async def _cleanup_test_data():
     reset_rate_limits()  # CR-21：每个测试前清空限流计数
     async with SessionLocal() as session:
         users = (await session.execute(select(User).where(User.username.like("pytest_%")))).scalars().all()
+        # 元素可以被复制到其他用户拥有的项目，但 created_by/updated_by 仍指向
+        # 创建它的 pytest 用户。先解除这些可空外键，避免按用户删除时受清理顺序影响。
+        pytest_user_ids = [user.id for user in users]
+        if pytest_user_ids:
+            await session.execute(
+                update(TestElement)
+                .where(
+                    or_(
+                        TestElement.created_by.in_(pytest_user_ids),
+                        TestElement.updated_by.in_(pytest_user_ids),
+                    )
+                )
+                .values(created_by=None, updated_by=None)
+            )
         for user in users:
             project_ids = (
                 await session.execute(select(Project.id).where(Project.owner_id == user.id))

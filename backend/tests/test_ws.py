@@ -767,6 +767,43 @@ async def test_case_and_suite_status_broadcast_full_realtime_fields(client: Asyn
     await execution_manager.disconnect(execution_id, front)
 
 
+async def test_case_and_suite_skipped_status_is_terminal(client: AsyncClient):
+    """跳过状态必须按分层终态落库，不能被当作 running。"""
+    _token, _case_id, execution_id = await _setup_case_execution(client)
+    async with SessionLocal() as db:
+        agent_id = await _create_agent()
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        await _bind_execution_to_agent(db, execution_id, agent_id)
+        execution_case, _steps, _assertions = await _snapshot_ids(db, execution_id)
+        suite = await db.get(ExecutionSuite, execution_case.execution_suite_id)
+
+        case_message = await handlers.handle_case_status(
+            db,
+            agent_id,
+            {
+                "execution_id": execution_id,
+                "session_token": "sess-token",
+                "execution_case_id": execution_case.id,
+                "status": "skipped",
+            },
+        )
+        suite_message = await handlers.handle_suite_status(
+            db,
+            agent_id,
+            {
+                "session_token": "sess-token",
+                "execution_suite_id": suite.id,
+                "status": "skipped",
+            },
+        )
+
+        assert execution_case.status == "skipped"
+        assert suite.status == "skipped"
+        assert case_message["status"] == "skipped"
+        assert suite_message["status"] == "skipped"
+
+
 @pytest.mark.parametrize("failure_source", ["suite", "suite_step"])
 async def test_execution_result_passed_cannot_override_suite_failure(
     client: AsyncClient, failure_source: str
