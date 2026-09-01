@@ -16,6 +16,8 @@ HANDLERS = {
     "device_list": ws_handlers.handle_device_list,
     "log": ws_handlers.handle_log,
     "step_result": ws_handlers.handle_step_result,
+    "node_started": ws_handlers.handle_node_started,
+    "node_result": ws_handlers.handle_node_result,
     "assertion_result": ws_handlers.handle_assertion_result,
     "case_status": ws_handlers.handle_case_status,
     "suite_status": ws_handlers.handle_suite_status,

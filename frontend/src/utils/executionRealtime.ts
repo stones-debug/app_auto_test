@@ -28,6 +28,19 @@ interface RealtimeAssertion {
   description?: string | null
 }
 
+interface RealtimeNode {
+  id?: number
+  kind: 'action' | 'assertion'
+  node_order: number
+  status: string
+  duration?: number | null
+  actual_value?: string | null
+  expected_value?: string | null
+  error_message?: string | null
+  attempt_count?: number
+  artifact_id?: number | null
+}
+
 interface RealtimeCase {
   id?: number
   case_id: number
@@ -35,6 +48,7 @@ interface RealtimeCase {
   duration?: number | null
   error_message?: string | null
   steps?: RealtimeStep[]
+  nodes?: RealtimeNode[]
   /** 兼容旧消息消费者；新的 UI 从步骤 assertions 渲染。 */
   assertions?: RealtimeAssertion[]
 }
@@ -177,6 +191,26 @@ export function applyStepResult(suites: RealtimeSuite[], message: RealtimeMessag
   } else {
     caseRow.status = 'running'
   }
+}
+
+/** V3：按 execution_node_id 合并统一节点结果，不依赖节点数组位置。 */
+export function applyNodeResult(suites: RealtimeSuite[], message: RealtimeMessage): void {
+  const executionCase = findCase(suites, message)
+  if (!executionCase?.nodes) return
+  const nodeId = message.execution_node_id == null ? null : Number(message.execution_node_id)
+  const node = executionCase.nodes.find((item) => nodeId != null && item.id === nodeId)
+  if (!node) return
+  node.status = String(message.status ?? node.status)
+  if (message.duration != null) node.duration = Number(message.duration)
+  if (message.actual_value != null) node.actual_value = String(message.actual_value)
+  if (message.expected_value != null) node.expected_value = String(message.expected_value)
+  if (message.error_message != null) node.error_message = String(message.error_message)
+  if (message.attempt_count != null) node.attempt_count = Number(message.attempt_count)
+  if (message.artifact_id != null) node.artifact_id = Number(message.artifact_id)
+  const caseStatus = message.case_status
+  if (typeof caseStatus === 'string' && caseStatus) executionCase.status = caseStatus
+  else if (node.status !== 'passed') executionCase.status = node.status
+  else executionCase.status = 'running'
 }
 
 export function applyCaseStatus(suites: RealtimeSuite[], message: RealtimeMessage): void {

@@ -12,6 +12,7 @@ from app.models import (
     ExecutionAssertion,
     ExecutionCase,
     ExecutionLog,
+    ExecutionNode,
     ExecutionStep,
     ExecutionSuite,
     Report,
@@ -423,6 +424,99 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
         "error_message": step.error_message,
         "screenshot_url": step.screenshot_path,
         "artifact_id": step.id if step.screenshot_path else None,
+        "timestamp": now.isoformat(),
+    }
+
+
+async def _locate_node(db: AsyncSession, execution: Execution, node_id: int):
+    node = await db.get(ExecutionNode, node_id)
+    if node is None:
+        return None, None, None
+    if node.execution_case_id is not None:
+        case = await db.get(ExecutionCase, node.execution_case_id)
+        if case is None or case.execution_id != execution.id:
+            return None, None, None
+        suite = await db.get(ExecutionSuite, case.execution_suite_id)
+        return node, case, suite
+    if node.execution_suite_id is not None:
+        suite = await db.get(ExecutionSuite, node.execution_suite_id)
+        if suite is None or suite.execution_id != execution.id:
+            return None, None, None
+        return node, None, suite
+    return None, None, None
+
+
+async def handle_node_started(db: AsyncSession, agent_id: int, payload: dict) -> dict | None:
+    execution_id = payload.get("execution_id")
+    node_id = payload.get("execution_node_id")
+    if execution_id is None or node_id is None:
+        return
+    execution = await _bound_execution(db, agent_id, execution_id, payload.get("session_token"))
+    if execution is None:
+        return
+    node, case, suite = await _locate_node(db, execution, node_id)
+    if node is None:
+        return
+    now = datetime.now(UTC)
+    node.status = "running"
+    node.started_at = node.started_at or now
+    if payload.get("attempt") is not None:
+        node.attempt_count = max(node.attempt_count or 0, int(payload["attempt"]))
+    await db.flush()
+    return {
+        "type": "node_started", "execution_id": execution_id, "execution_node_id": node.id,
+        "execution_case_id": case.id if case else None, "execution_suite_id": suite.id if suite else None,
+        "node_order": node.node_order, "kind": node.kind, "timestamp": now.isoformat(),
+    }
+
+
+async def handle_node_result(db: AsyncSession, agent_id: int, payload: dict) -> dict | None:
+    execution_id = payload.get("execution_id")
+    node_id = payload.get("execution_node_id")
+    if execution_id is None or node_id is None:
+        return
+    execution = await _bound_execution(db, agent_id, execution_id, payload.get("session_token"))
+    if execution is None:
+        return
+    node, case, suite = await _locate_node(db, execution, node_id)
+    if node is None:
+        return
+    now = datetime.now(UTC)
+    node.status = payload.get("status") or "error"
+    node.finished_at = now
+    node.duration = payload.get("duration")
+    node.actual_value = payload.get("actual_value")
+    node.expected_value = payload.get("expected_value") or node.expected_value
+    node.error_message = payload.get("error_message")
+    attempt_count = payload.get("attempt_count")
+    if isinstance(attempt_count, int):
+        node.attempt_count = attempt_count
+    screenshot_path = payload.get("screenshot_path")
+    node.screenshot_path = screenshot_path if validate_object_key(execution_id, screenshot_path) else None
+    if case is not None:
+        if case.started_at is None:
+            case.started_at = node.started_at or now
+        if node.kind == "assertion" and node.status == "failed":
+            case.status = "failed"
+            case.error_message = case.error_message or "断言失败"
+        elif node.kind == "action" and node.status in {"failed", "error"} and not node.continue_on_failure:
+            case.status = node.status
+            case.error_message = node.error_message
+        elif case.status not in TERMINAL_STATES:
+            case.status = "running"
+    if suite is not None and suite.status not in TERMINAL_STATES:
+        if node.status in {"failed", "error"} and not node.continue_on_failure:
+            suite.status = node.status
+        else:
+            suite.status = "running"
+    await db.flush()
+    return {
+        "type": "node_result", "execution_id": execution_id, "execution_node_id": node.id,
+        "execution_case_id": case.id if case else None, "execution_suite_id": suite.id if suite else None,
+        "node_order": node.node_order, "kind": node.kind, "status": node.status,
+        "duration": node.duration, "actual_value": node.actual_value,
+        "expected_value": node.expected_value, "error_message": node.error_message,
+        "attempt_count": node.attempt_count, "screenshot_url": node.screenshot_path,
         "timestamp": now.isoformat(),
     }
 

@@ -88,6 +88,26 @@ export interface ReportAssertion {
   description?: string | null
 }
 
+export interface ReportNode {
+  id: number
+  kind: 'action' | 'assertion'
+  node_order: number
+  phase?: ReportStepPhase
+  action?: string | null
+  assertion_type?: string | null
+  description?: string | null
+  parameters: Record<string, unknown>
+  max_wait_seconds?: number | null
+  status: string
+  duration?: number | null
+  attempt_count?: number
+  actual_value?: string | null
+  expected_value?: string | null
+  error_message?: string | null
+  screenshot?: string | null
+  artifact_id?: number | null
+}
+
 export interface ReportCase {
   id: number
   case_id: number
@@ -98,6 +118,7 @@ export interface ReportCase {
   error_message: string | null
   elements: Record<string, unknown>
   steps: ReportStep[]
+  nodes?: ReportNode[]
   /** @deprecated 新数据将断言挂在 ReportStep.assertions 下。 */
   assertions?: ReportAssertion[]
 }
@@ -114,6 +135,7 @@ export interface ReportSuite {
   setup_steps: ReportStep[]
   cases: ReportCase[]
   teardown_steps: ReportStep[]
+  nodes?: ReportNode[]
 }
 
 export interface ReportLog {
@@ -149,6 +171,12 @@ export interface ReportSummary {
   step_skipped?: number
   step_success_rate?: number
   not_applicable_suites?: number
+  assertion_total?: number
+  assertion_passed?: number
+  assertion_failed?: number
+  assertion_error_count?: number
+  assertion_skipped?: number
+  assertion_success_rate?: number
 }
 
 export interface ReportExclusion {

@@ -48,6 +48,24 @@ export interface TimelineAssertion {
   description?: string | null
 }
 
+export interface TimelineNode {
+  id?: number
+  kind: 'action' | 'assertion'
+  node_order: number
+  phase?: TimelineStepPhase | string
+  action?: string | null
+  assertion_type?: string | null
+  parameters: Record<string, unknown>
+  max_wait_seconds?: number | null
+  status: string
+  duration?: number | null
+  attempt_count?: number
+  actual_value?: string | null
+  expected_value?: string | null
+  error_message?: string | null
+  artifact_id?: number | null
+}
+
 export interface TimelineCase {
   id?: number
   case_id: number
@@ -56,6 +74,7 @@ export interface TimelineCase {
   duration?: number | null
   error_message?: string | null
   steps: TimelineStep[]
+  nodes?: TimelineNode[]
 }
 
 export interface TimelineSuite {
@@ -175,6 +194,31 @@ function suiteItems(s: TimelineSuite, steps: TimelineStep[], prefix: string): Ke
 }
 
 function executionItems(c: TimelineCase): KeyedExecutionItem<TimelineStep, TimelineAssertion>[] {
+  if (c.nodes?.length) {
+    return c.nodes.map((node) => node.kind === 'action'
+      ? {
+          kind: 'step' as const,
+          index: node.node_order,
+          value: {
+            id: node.id, step_order: node.node_order, action: node.action ?? '', phase: node.phase as TimelineStepPhase,
+            parameters: node.parameters, status: node.status, duration: node.duration ?? null,
+            actual_value: node.actual_value ?? null, error_message: node.error_message ?? null,
+            artifact_id: node.artifact_id ?? null,
+          },
+          key: `node-${node.id ?? node.node_order}`,
+        }
+      : {
+          kind: 'assertion' as const,
+          index: node.node_order,
+          value: {
+            id: node.id, assertion_order: node.node_order, assertion_type: node.assertion_type ?? '',
+            expected_value: node.expected_value ?? null, actual_value: node.actual_value ?? null,
+            status: node.status, error_message: node.error_message ?? null,
+            params: node.parameters, description: node.max_wait_seconds == null ? null : `最大等待 ${node.max_wait_seconds}s`,
+          },
+          key: `node-${node.id ?? node.node_order}`,
+        })
+  }
   return c.steps.flatMap((step, stepIndex) => [
     {
       kind: 'step' as const,

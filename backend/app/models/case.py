@@ -24,7 +24,10 @@ class TestCase(Base, TimestampMixin, SoftDeleteMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="draft")  # draft / active / disabled
-    steps: Mapped[list] = mapped_column(JSON, default=list)
+    # 统一执行流：动作和断言按同一个 order 顺序保存。
+    flow_nodes: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    # 旧列保留到一次性迁移完成；新代码只读写 flow_nodes。
+    steps: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     variables: Mapped[dict] = mapped_column(JSON, default=dict)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))

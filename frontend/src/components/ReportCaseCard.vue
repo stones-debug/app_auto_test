@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { executionStatusMeta } from '@/api/executions'
 import ReportStepTable from '@/components/ReportStepTable.vue'
+import ReportNodeTable from '@/components/ReportNodeTable.vue'
 import type { PreparedReportCase } from '@/utils/reportDisclosure'
 
 defineProps<{
@@ -45,8 +46,9 @@ function statusMeta(status: string) {
 
     <div v-if="expanded" class="case-body">
       <div v-if="caseItem.error_message" class="error-box">{{ caseItem.error_message }}</div>
+      <ReportNodeTable v-if="caseItem.nodes?.length" :nodes="caseItem.nodes" />
       <ReportStepTable
-        v-if="caseItem.steps.length"
+        v-else-if="caseItem.steps.length"
         :steps="caseItem.steps"
         :report-id="reportId"
       />

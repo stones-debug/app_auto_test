@@ -67,6 +67,28 @@ class ReportAssertionOut(BaseModel):
     description: str | None = None
 
 
+class ReportNodeOut(BaseModel):
+    id: int
+    kind: str
+    node_order: int
+    phase: str | None = None
+    node_key: str | None = None
+    action: str | None = None
+    assertion_type: str | None = None
+    description: str | None = None
+    element_id: int | None = None
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    max_wait_seconds: float | None = None
+    status: str
+    duration: int | None = None
+    attempt_count: int = 0
+    actual_value: str | None = None
+    expected_value: str | None = None
+    error_message: str | None = None
+    screenshot: str | None = None
+    artifact_id: int | None = None
+
+
 class ReportCaseOut(BaseModel):
     id: int
     case_id: int
@@ -77,6 +99,7 @@ class ReportCaseOut(BaseModel):
     error_message: str | None
     elements: dict[str, Any]
     steps: list[ReportStepOut]
+    nodes: list[ReportNodeOut] = Field(default_factory=list)
 
 
 class ReportLogOut(BaseModel):
@@ -98,6 +121,7 @@ class ReportSuiteOut(BaseModel):
     setup_steps: list[ReportStepOut]
     cases: list[ReportCaseOut]
     teardown_steps: list[ReportStepOut]
+    nodes: list[ReportNodeOut] = Field(default_factory=list)
 
 
 class ReportSummaryOut(BaseModel):
@@ -124,6 +148,12 @@ class ReportSummaryOut(BaseModel):
     step_skipped: int = 0
     step_success_rate: float = 0
     not_applicable_suites: int = 0
+    assertion_total: int = 0
+    assertion_passed: int = 0
+    assertion_failed: int = 0
+    assertion_error_count: int = 0
+    assertion_skipped: int = 0
+    assertion_success_rate: float = 0
 
 
 class ReportExclusionOut(BaseModel):

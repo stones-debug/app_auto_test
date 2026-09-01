@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest'
 
 import {
   LOCATOR_TYPES,
+  createElementGroup,
   downloadElementImportTemplate,
   elementPageFilter,
+  isReservedElementPageGroupName,
   exportElements,
   importElements,
   totalElementCount,
+  updateElementGroup,
 } from '@/api/elements'
 
 describe('元素库页面分组', () => {
@@ -37,5 +40,18 @@ describe('元素库页面分组', () => {
     expect(typeof downloadElementImportTemplate).toBe('function')
     expect(typeof exportElements).toBe('function')
     expect(typeof importElements).toBe('function')
+  })
+
+  it('提供分组重命名 API', () => {
+    expect(typeof createElementGroup).toBe('function')
+    expect(typeof updateElementGroup).toBe('function')
+  })
+
+  it('拒绝页面分组保留名称', () => {
+    expect(isReservedElementPageGroupName('all')).toBe(true)
+    expect(isReservedElementPageGroupName(' ALL ')).toBe(true)
+    expect(isReservedElementPageGroupName('全部')).toBe(true)
+    expect(isReservedElementPageGroupName('未分组')).toBe(true)
+    expect(isReservedElementPageGroupName('登录页')).toBe(false)
   })
 })

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
+import { Delete, Edit, Folder, Plus } from '@element-plus/icons-vue'
 
 import { useAuthStore } from '@/stores/auth'
 import { listProjects } from '@/api/projects'
@@ -18,9 +19,11 @@ import {
   elementUsage,
   exportElements,
   importElements,
+  isReservedElementPageGroupName,
   listElements,
   totalElementCount,
   updateElement,
+  updateElementGroup,
   type ElementImportError,
   type ElementPageCount,
   type TestElement,
@@ -47,6 +50,39 @@ const pageGroups = ref<ElementPageCount[]>([])
 const allTotal = computed(() => totalElementCount(pageGroups.value))
 const selectedPage = ref('all')
 const projects = ref<{ id: number; name: string }[]>([])
+const collapsedGroups = ref<Set<number>>(new Set())
+
+type PageTreeNode = ElementPageCount & { children: PageTreeNode[] }
+type PageTreeRow = { node: PageTreeNode; level: number }
+
+const pageTree = computed<PageTreeNode[]>(() => {
+  const nodes = new Map<number, PageTreeNode>()
+  const roots: PageTreeNode[] = []
+  for (const group of pageGroups.value) {
+    if (group.group_id == null) continue
+    nodes.set(group.group_id, { ...group, children: [] })
+  }
+  for (const node of nodes.values()) {
+    const parent = node.parent_id != null ? nodes.get(node.parent_id) : undefined
+    if (parent) parent.children.push(node)
+    else roots.push(node)
+  }
+  const implicitPages = pageGroups.value
+    .filter((group) => group.group_id == null)
+    .map((group) => ({ ...group, children: [] }))
+  return [...roots, ...implicitPages]
+})
+
+function flattenPageTree(nodes: PageTreeNode[], level = 0): PageTreeRow[] {
+  return nodes.flatMap((node) => [
+    { node, level },
+    ...(node.group_id != null && collapsedGroups.value.has(node.group_id)
+      ? []
+      : flattenPageTree(node.children, level + 1)),
+  ])
+}
+
+const visiblePageGroups = computed(() => flattenPageTree(pageTree.value))
 
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
@@ -73,7 +109,18 @@ const form = ref<{
 })
 
 const groupDialogVisible = ref(false)
+const editingGroupId = ref<number | null>(null)
+const creatingParentId = ref<number | null>(null)
 const groupName = ref('')
+const creatingParentName = computed(
+  () => pageGroups.value.find((group) => group.group_id === creatingParentId.value)?.page_name ?? '',
+)
+const groupContextMenu = ref<{
+  visible: boolean
+  left: number
+  top: number
+  group: ElementPageCount | null
+}>({ visible: false, left: 0, top: 0, group: null })
 
 const usageDialogVisible = ref(false)
 const usageCases = ref<{ case_id: number; case_name: string }[]>([])
@@ -86,6 +133,38 @@ const importInput = ref<HTMLInputElement>()
 
 function canEdit(row: TestElement) {
   return !!auth.user && row.created_by === auth.user.id
+}
+
+function canManageGroup(group: ElementPageCount) {
+  return !!auth.user && group.group_id != null && !isReservedElementPageGroupName(group.page_name)
+}
+
+function isCollapsed(group: ElementPageCount) {
+  return group.group_id != null && collapsedGroups.value.has(group.group_id)
+}
+
+function toggleGroup(group: ElementPageCount) {
+  if (group.group_id == null) return
+  const next = new Set(collapsedGroups.value)
+  if (next.has(group.group_id)) next.delete(group.group_id)
+  else next.add(group.group_id)
+  collapsedGroups.value = next
+}
+
+function closeGroupContextMenu() {
+  groupContextMenu.value.visible = false
+}
+
+function openGroupContextMenu(event: MouseEvent, group: ElementPageCount) {
+  if (!canManageGroup(group) || group.group_id == null) return
+  event.preventDefault()
+  event.stopPropagation()
+  groupContextMenu.value = {
+    visible: true,
+    left: Math.min(event.clientX, Math.max(8, window.innerWidth - 190)),
+    top: Math.min(event.clientY, Math.max(8, window.innerHeight - 90)),
+    group,
+  }
 }
 
 async function load() {
@@ -210,8 +289,9 @@ async function save() {
   }
   dialogVisible.value = false
   if (isCreate) {
-    // 新建后回到「全部」并刷新分组树/第 1 页，保证新元素立即可见
-    selectedPage.value = 'all'
+    // 新建元素属于当前分组时保留筛选上下文，否则回到「全部」保证新元素可见。
+    const createdPage = form.value.page_name.trim() || '未分组'
+    if (selectedPage.value !== createdPage) selectedPage.value = 'all'
     page.value = 1
     await Promise.all([loadPages(), load()])
   } else {
@@ -266,6 +346,10 @@ async function exportExcel() {
 function openImport() {
   if (!isProjectMode.value || !projectFilter.value) {
     ElMessage.warning('请从具体项目的元素库进入批量导入')
+    return
+  }
+  if (form.value.page_name && isReservedElementPageGroupName(form.value.page_name)) {
+    ElMessage.warning('页面分组名称不能使用“all”“全部”或“未分组”')
     return
   }
   importFile.value = null
@@ -339,31 +423,77 @@ async function submitImport() {
   }
 }
 
-async function addGroup() {
+function openCreateGroup() {
+  editingGroupId.value = null
+  creatingParentId.value = null
+  groupName.value = ''
+  groupDialogVisible.value = true
+}
+
+function openCreateChildGroup(parent: ElementPageCount) {
+  closeGroupContextMenu()
+  editingGroupId.value = null
+  creatingParentId.value = parent.group_id ?? null
+  groupName.value = ''
+  groupDialogVisible.value = true
+}
+
+function openEditGroup(group: ElementPageCount) {
+  if (!group.group_id) return
+  closeGroupContextMenu()
+  editingGroupId.value = group.group_id
+  creatingParentId.value = null
+  groupName.value = group.page_name
+  groupDialogVisible.value = true
+}
+
+async function saveGroup() {
   const name = groupName.value.trim()
   if (!name) {
     ElMessage.warning('请输入分组名称')
     return
   }
-  await createElementGroup(name)
+  if (isReservedElementPageGroupName(name)) {
+    ElMessage.warning('页面分组名称不能使用“all”“全部”或“未分组”')
+    return
+  }
+  const oldName = pageGroups.value.find((group) => group.group_id === editingGroupId.value)?.page_name
+  if (editingGroupId.value) {
+    await updateElementGroup(editingGroupId.value, name)
+    if (selectedPage.value === oldName) selectedPage.value = name
+    ElMessage.success('分组已更新')
+  } else {
+    await createElementGroup(name, creatingParentId.value)
+    if (creatingParentId.value != null) {
+      const next = new Set(collapsedGroups.value)
+      next.delete(creatingParentId.value)
+      collapsedGroups.value = next
+    }
+    selectedPage.value = name
+    ElMessage.success('分组已创建')
+  }
   groupDialogVisible.value = false
+  editingGroupId.value = null
+  creatingParentId.value = null
   groupName.value = ''
-  selectedPage.value = name
   page.value = 1
   await Promise.all([loadPages(), load()])
 }
 
 async function removeGroup(g: ElementPageCount) {
-  if (!g.group_id || g.count > 0) return
-  await ElMessageBox.confirm(`确认删除自定义分组「${g.page_name}」？`, '提示', { type: 'warning' })
+  if (!g.group_id) return
+  closeGroupContextMenu()
+  const detail = g.count > 0 ? `其中 ${g.count} 个元素将自动变为“未分组”` : '该分组当前没有元素'
+  await ElMessageBox.confirm(`确认删除自定义分组「${g.page_name}」？${detail}`, '提示', { type: 'warning' })
   await deleteElementGroup(g.group_id)
   if (selectedPage.value === g.page_name) {
     selectedPage.value = 'all'
-    page.value = 1
-    await Promise.all([loadPages(), load()])
-    return
   }
-  await loadPages()
+  const next = new Set(collapsedGroups.value)
+  next.delete(g.group_id)
+  collapsedGroups.value = next
+  page.value = 1
+  await Promise.all([loadPages(), load()])
 }
 
 function locatorLabel(type: string) {
@@ -396,6 +526,11 @@ onMounted(() => {
   loadPages()
   loadProjects()
   load()
+  window.addEventListener('click', closeGroupContextMenu)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('click', closeGroupContextMenu)
 })
 </script>
 
@@ -407,17 +542,46 @@ onMounted(() => {
       <div class="tree-item" :class="{ active: selectedPage === 'all' }" @click="selectPage('all')">
         <span>全部</span><span class="count">{{ allTotal }}</span>
       </div>
-      <div v-for="g in pageGroups" :key="g.page_name" class="tree-item tree-group" :class="{ active: selectedPage === g.page_name }" @click="selectPage(g.page_name)">
-        <span>{{ g.page_name }}</span>
+      <div
+        v-for="row in visiblePageGroups"
+        :key="row.node.page_name"
+        class="tree-item tree-group"
+        :class="{ active: selectedPage === row.node.page_name }"
+        :style="{ paddingLeft: `${12 + row.level * 18}px` }"
+        @click="selectPage(row.node.page_name)"
+        @contextmenu="openGroupContextMenu($event, row.node)"
+      >
+        <span class="tree-label">
+          <span
+            class="tree-chevron"
+            :class="{ expanded: !isCollapsed(row.node) }"
+            :style="{ visibility: row.node.children.length ? 'visible' : 'hidden' }"
+            title="展开/折叠"
+            @click.stop="toggleGroup(row.node)"
+          >›</span>
+          <el-icon class="group-folder-icon"><Folder /></el-icon>
+          <span class="group-name">{{ row.node.page_name }}</span>
+        </span>
         <span class="group-right">
-          <el-icon v-if="g.group_id && g.count === 0" class="group-del-icon" title="删除分组" @click.stop="removeGroup(g)"><Delete /></el-icon>
-          <span class="count">{{ g.count }}</span>
+          <span v-if="canManageGroup(row.node)" class="group-actions">
+            <el-icon class="group-action-icon" title="编辑页面" @click.stop="openEditGroup(row.node)"><Edit /></el-icon>
+            <el-icon class="group-action-icon group-del-icon" title="删除页面" @click.stop="removeGroup(row.node)"><Delete /></el-icon>
+          </span>
+          <span class="count">{{ row.node.count }}</span>
         </span>
       </div>
-      <el-button class="add-group-btn" text type="primary" @click="groupDialogVisible = true">
+      <el-button class="add-group-btn" text type="primary" @click="openCreateGroup">
         <el-icon><Plus /></el-icon>
         <span>新增分组</span>
       </el-button>
+      <div
+        v-if="groupContextMenu.visible && groupContextMenu.group"
+        class="group-context-menu"
+        :style="{ left: `${groupContextMenu.left}px`, top: `${groupContextMenu.top}px` }"
+        @click.stop
+      >
+        <button type="button" @click="openCreateChildGroup(groupContextMenu.group)">新建页面</button>
+      </div>
     </div>
 
     <!-- 右：元素列表 -->
@@ -546,11 +710,12 @@ onMounted(() => {
       </template>
     </el-dialog>
 
-    <el-dialog v-model="groupDialogVisible" title="新增页面分组" width="420px">
-      <el-input v-model="groupName" placeholder="输入分组名称，如 登录页" @keyup.enter="addGroup" />
+    <el-dialog v-model="groupDialogVisible" :title="editingGroupId ? '编辑页面' : creatingParentId ? '新建子页面' : '新增页面分组'" width="420px">
+      <div v-if="creatingParentId" class="group-parent-hint">归属层级：{{ creatingParentName }}</div>
+      <el-input v-model="groupName" placeholder="输入分组名称，如 登录页" @keyup.enter="saveGroup" />
       <template #footer>
         <el-button @click="groupDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="addGroup">创建</el-button>
+        <el-button type="primary" @click="saveGroup">{{ editingGroupId ? '保存' : '创建' }}</el-button>
       </template>
     </el-dialog>
 
@@ -590,7 +755,7 @@ onMounted(() => {
   gap: 16px;
 }
 .page-tree {
-  width: 220px;
+  width: 260px;
   flex-shrink: 0;
   background: var(--card-bg);
   border: 1px solid var(--border);
@@ -619,6 +784,35 @@ onMounted(() => {
   color: var(--primary);
   font-weight: 600;
 }
+.tree-label {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 4px;
+}
+.tree-chevron {
+  width: 14px;
+  flex: 0 0 14px;
+  color: var(--text-2);
+  font-size: 20px;
+  line-height: 12px;
+  text-align: center;
+  cursor: pointer;
+  transform: rotate(0deg);
+  transition: transform 0.15s ease;
+}
+.tree-chevron.expanded {
+  transform: rotate(90deg);
+}
+.group-folder-icon {
+  color: #e6b800;
+  flex: 0 0 auto;
+}
+.group-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .tree-item .count {
   font-size: 12px;
   color: var(--text-2);
@@ -631,12 +825,55 @@ onMounted(() => {
   align-items: center;
   gap: 6px;
 }
-.group-del-icon {
+.group-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.group-action-icon {
   font-size: 13px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.group-action-icon:hover {
+  color: var(--primary);
+}
+.group-del-icon {
   color: var(--text-2);
 }
 .group-del-icon:hover {
   color: var(--el-color-danger);
+}
+.group-context-menu {
+  position: fixed;
+  z-index: 3000;
+  min-width: 150px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card-bg);
+  box-shadow: var(--shadow-md);
+}
+.group-context-menu button {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-1);
+  text-align: left;
+  cursor: pointer;
+  font-size: 13px;
+}
+.group-context-menu button:hover {
+  background: var(--primary-light);
+  color: var(--primary);
+}
+.group-parent-hint {
+  margin-bottom: 10px;
+  color: var(--text-2);
+  font-size: 12px;
 }
 .el-button {
   margin-left: 0px;

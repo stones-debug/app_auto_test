@@ -22,8 +22,10 @@ export {
 
 export type StepPhase = 'setup' | 'main' | 'teardown'
 
-export interface Step {
-  // 方案 §2.8：稳定标识 UUID；新建前端生成，缺失由 normalizeStep 兜底
+export type FlowNodeKind = 'action' | 'assertion'
+
+export interface ActionNode {
+  kind: 'action'
   key?: string
   order: number
   action: string
@@ -31,11 +33,35 @@ export interface Step {
   element_id?: number | null
   params?: Record<string, unknown>
   description?: string
-  // Step 4：失败后继续为 Step 顶层字段（不入 params）
+  continue_on_failure: boolean
+}
+
+export interface AssertionNode {
+  kind: 'assertion'
+  key?: string
+  order: number
+  phase?: StepPhase
+  type: string
+  element_id?: number | null
+  params?: Record<string, unknown>
+  description?: string
+  max_wait_seconds: number
+  continue_on_failure: boolean
+}
+
+export type FlowNode = ActionNode | AssertionNode
+// 旧显示组件/历史测试的静态类型；新接口只使用 FlowNode。
+export interface Step {
+  key?: string
+  order: number
+  action: string
+  phase?: StepPhase
+  element_id?: number | null
+  params?: Record<string, unknown>
+  description?: string
   continue_on_failure: boolean
   assertions?: Assertion[]
 }
-
 export interface Assertion {
   key?: string
   order: number
@@ -43,6 +69,8 @@ export interface Assertion {
   element_id?: number | null
   params?: Record<string, unknown>
   description?: string
+  max_wait_seconds?: number
+  continue_on_failure?: boolean
 }
 
 export interface TestCase {
@@ -52,7 +80,8 @@ export interface TestCase {
   name: string
   description?: string | null
   status: string
-  steps: Step[]
+  flow_nodes: FlowNode[]
+  steps?: Step[]
   variables: Record<string, unknown>
   created_by?: number | null
   created_at: string
@@ -119,18 +148,20 @@ export function validateActionParams(action: string, params: Record<string, unkn
 }
 
 /** 保存前统一校验一个步骤：需要元素时必带 element_id，再校验动作参数。 */
-export function validateStep(step: Step): string | null {
+export function validateActionNode(step: ActionNode): string | null {
   const meta = actionMeta(step.action)
   if (meta.needsElement && (step.element_id == null)) {
     return `请选择“${meta.elementLabel ?? '元素'}”`
   }
   const actionError = validateActionParams(step.action, step.params)
   if (actionError) return actionError
-  for (let index = 0; index < (step.assertions ?? []).length; index += 1) {
-    const error = validateAssertion(step.assertions![index])
-    if (error) return `断言 ${index + 1}：${error}`
-  }
   return null
+}
+
+export function validateStep(step: Step): string | null {
+  const meta = actionMeta(step.action)
+  if (meta.needsElement && step.element_id == null) return `请选择“${meta.elementLabel ?? '元素'}”`
+  return validateActionParams(step.action, step.params)
 }
 
 export function validateAssertion(assertion: Assertion): string | null {
@@ -142,13 +173,16 @@ export function validateAssertion(assertion: Assertion): string | null {
       return `请填写“${field.label}”`
     }
   }
+  if ((assertion.max_wait_seconds ?? 10) < 0 || (assertion.max_wait_seconds ?? 10) > 300) {
+    return '最大等待时间必须在 0 到 300 秒之间'
+  }
   return null
 }
 
 // Step 4：continue_on_failure 是 Step 顶层字段；加载旧数据/历史 params 时归一化，
 // 并把历史遗留塞入 params 的同名字段剔除
 // 方案 §2.8：步骤稳定 key 缺失/非法时兜底生成 UUID（后端同样兜底，读写一致）
-export function normalizeStep(step: Step): Step {
+export function normalizeActionNode(step: ActionNode): ActionNode {
   const { continue_on_failure: legacy, ...params } = (step.params ?? {}) as Record<string, unknown>
   void legacy
   return {
@@ -157,8 +191,12 @@ export function normalizeStep(step: Step): Step {
     phase: step.phase ?? 'main',
     params,
     continue_on_failure: step.continue_on_failure ?? false,
-    assertions: (step.assertions ?? []).map(normalizeAssertion),
   }
+}
+
+export function normalizeStep(step: Step): Step {
+  const { continue_on_failure: _legacy, ...params } = (step.params ?? {}) as Record<string, unknown>
+  return { ...step, key: normalizeNodeKey(step.key), phase: step.phase ?? 'main', params, continue_on_failure: step.continue_on_failure ?? false }
 }
 
 function normalizeNodeKey(raw: string | undefined): string {
@@ -167,7 +205,24 @@ function normalizeNodeKey(raw: string | undefined): string {
 }
 
 export function normalizeAssertion(assertion: Assertion): Assertion {
-  return { ...assertion, key: normalizeNodeKey(assertion.key) }
+  return {
+    ...assertion,
+    key: normalizeNodeKey(assertion.key),
+    max_wait_seconds: assertion.max_wait_seconds ?? 10,
+    continue_on_failure: assertion.continue_on_failure ?? false,
+  }
+}
+
+export function normalizeFlowNode(node: FlowNode): FlowNode {
+  if (node.kind === 'assertion') {
+    return {
+      ...normalizeAssertion(node),
+      kind: 'assertion',
+      max_wait_seconds: node.max_wait_seconds ?? 10,
+      continue_on_failure: node.continue_on_failure ?? false,
+    }
+  }
+  return normalizeActionNode(node)
 }
 
 export function listCases(

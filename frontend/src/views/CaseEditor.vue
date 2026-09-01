@@ -6,18 +6,18 @@ import {
   CASE_STATUS,
   createCase,
   getCase,
-  normalizeStep,
+  normalizeFlowNode,
   updateCase,
   validateStep,
-  type Step,
+  validateAssertion,
+  type FlowNode,
   type StepPhase,
   type TestCase,
 } from '@/api/cases'
-import { listElements, listModules } from '@/api/elements'
-import CaseStepEditor from '@/components/CaseStepEditor.vue'
+import { getElement, listElements, listModules } from '@/api/elements'
+import CaseFlowEditor from '@/components/CaseFlowEditor.vue'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 import { buildCaseEditorSummary, caseEditorSummaryText } from '@/utils/caseEditorSummary'
-import { mergePhaseSteps } from '@/utils/mergePhaseSteps'
 
 const route = useRoute()
 const router = useRouter()
@@ -38,7 +38,7 @@ const form = reactive<Partial<TestCase>>({
   module_id: null,
   description: '',
   status: 'draft',
-  steps: [] as Step[],
+  flow_nodes: [] as FlowNode[],
   variables: {} as Record<string, unknown>,
 })
 
@@ -56,19 +56,19 @@ watch(
 )
 const loadedOnce = ref(false)
 
-function phaseSteps(phase: StepPhase) {
-  return computed<Step[]>({
-    get: () => (form.steps as Step[]).filter((step) => (step.phase ?? 'main') === phase),
-    set: (steps) => {
-      // 保留步骤对象身份，使 CaseStepEditor 的纯 UI 折叠状态在编辑/拖拽后仍对应原步骤。
-      form.steps = mergePhaseSteps(form.steps as Step[], phase, steps)
+function phaseNodes(phase: StepPhase) {
+  return computed<FlowNode[]>({
+    get: () => (form.flow_nodes as FlowNode[]).filter((node) => (node.phase ?? 'main') === phase),
+    set: (nodes) => {
+      const others = (form.flow_nodes as FlowNode[]).filter((node) => (node.phase ?? 'main') !== phase)
+      form.flow_nodes = [...others, ...nodes].map((node, index) => ({ ...node, order: index + 1 }))
     },
   })
 }
 
-const setupSteps = phaseSteps('setup')
-const mainSteps = phaseSteps('main')
-const teardownSteps = phaseSteps('teardown')
+const setupNodes = phaseNodes('setup')
+const mainNodes = phaseNodes('main')
+const teardownNodes = phaseNodes('teardown')
 
 // 收起/展开：编辑完成后可折叠为一行简略信息，点击展开
 const collapsed = ref(false)
@@ -80,7 +80,7 @@ const moduleName = computed(() => {
 
 const summaryMeta = computed(() => {
   return buildCaseEditorSummary(
-    (form.steps as Step[]) ?? [],
+    (form.flow_nodes as FlowNode[]) ?? [],
     variableEntries.value,
   )
 })
@@ -122,11 +122,11 @@ async function save() {
     ElMessage.warning('请输入用例名称')
     return
   }
-  const invalidStep = (form.steps as Step[])
-    .map((step, index) => ({ index, message: validateStep(step) }))
+  const invalidNode = (form.flow_nodes as FlowNode[])
+    .map((node, index) => ({ index, message: node.kind === 'action' ? validateStep(node) : validateAssertion(node) }))
     .find((item) => item.message)
-  if (invalidStep?.message) {
-    ElMessage.warning(`第 ${invalidStep.index + 1} 步：${invalidStep.message}`)
+  if (invalidNode?.message) {
+    ElMessage.warning(`第 ${invalidNode.index + 1} 个节点：${invalidNode.message}`)
     return
   }
   loading.value = true
@@ -136,7 +136,7 @@ async function save() {
       module_id: form.module_id,
       description: form.description,
       status: form.status,
-      steps: (form.steps as Step[]).map(normalizeStep),
+      flow_nodes: (form.flow_nodes as FlowNode[]).map(normalizeFlowNode),
       variables: collectVariables(),
     }
     if (isEdit.value) {
@@ -158,14 +158,36 @@ async function save() {
 // 元素 id → 名称映射：收起摘要显示元素名（而非编号），加载失败时回退为编号展示
 const elementNames = ref(new Map<number, string>())
 
+function elementIds(nodes: FlowNode[]): number[] {
+  const ids = new Set<number>()
+  for (const node of nodes) {
+    if (node.element_id != null) ids.add(node.element_id)
+  }
+  return [...ids]
+}
+
+async function loadElementNames(nodes: FlowNode[]) {
+  const data = await listElements({ page: 1, page_size: 200, project_id: projectId })
+  const map = new Map(data.items.map((element) => [element.id, element.name]))
+  const missingIds = elementIds(nodes).filter((id) => !map.has(id))
+  const missingElements = await Promise.all(
+    missingIds.map(async (id) => {
+      try {
+        const element = await getElement(id)
+        return element.project_id === projectId ? element : null
+      } catch {
+        return null
+      }
+    }),
+  )
+  for (const element of missingElements) {
+    if (element) map.set(element.id, element.name)
+  }
+  elementNames.value = map
+}
+
 onMounted(async () => {
   modules.value = await listModules(projectId)
-  try {
-    const data = await listElements({ page: 1, page_size: 200 })
-    elementNames.value = new Map(data.items.map((e) => [e.id, e.name]))
-  } catch {
-    // 元素列表加载失败不影响用例编辑，摘要回退显示元素编号
-  }
   if (isEdit.value) {
     const data = await getCase(caseId.value!)
     form.name = data.name
@@ -173,12 +195,17 @@ onMounted(async () => {
     form.description = data.description ?? ''
     form.status = data.status
     // Step 4：加载旧数据时归一化 continue_on_failure，且清理历史留在 params 里的字段
-    form.steps = data.steps.map(normalizeStep)
+    form.flow_nodes = (data.flow_nodes ?? data.steps ?? []).map((node) => normalizeFlowNode(node as FlowNode))
     form.variables = data.variables
     variableEntries.value = Object.entries(data.variables).map(([key, value]) => ({
       key,
       value: String(value),
     }))
+  }
+  try {
+    await loadElementNames((form.flow_nodes as FlowNode[]) ?? [])
+  } catch {
+    // 元素列表加载失败不影响用例编辑，摘要回退显示元素编号
   }
   loadedOnce.value = true
 })
@@ -228,8 +255,9 @@ onMounted(async () => {
         </el-form>
       </div>
 
-    <CaseStepEditor
-      v-model="setupSteps"
+    <CaseFlowEditor
+      v-model="setupNodes"
+      :project-id="projectId"
       phase="setup"
       title="前置操作"
       description="运行时勾选后，在每个用例主体步骤之前执行"
@@ -237,8 +265,9 @@ onMounted(async () => {
       :element-names="elementNames"
     />
 
-    <CaseStepEditor
-      v-model="mainSteps"
+    <CaseFlowEditor
+      v-model="mainNodes"
+      :project-id="projectId"
       phase="main"
       title="执行步骤"
       description="用例的主体操作，始终执行"
@@ -246,8 +275,9 @@ onMounted(async () => {
       :element-names="elementNames"
     />
 
-    <CaseStepEditor
-      v-model="teardownSteps"
+    <CaseFlowEditor
+      v-model="teardownNodes"
+      :project-id="projectId"
       phase="teardown"
       title="后置操作"
       description="运行时勾选后，在主体步骤之后执行；主体失败时仍会尝试清理"

@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
 
 from fastapi import HTTPException, status
@@ -11,16 +11,38 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import TestCase
 from app.repositories import cases as cases_repo
 from app.schemas.case import CaseCreate, CaseUpdate
+from app.schemas.generated_case_params import ASSERTION_NEEDS_ELEMENT
 from app.services import asset_service
 
 
-def _nested_assertions(steps: list | None):
-    for step in steps or []:
-        assertions = step.get("assertions", []) if isinstance(step, dict) else []
-        yield from assertions or []
+def _legacy_steps_from_nodes(flow_nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """生成旧客户端只读所需的嵌套投影，不参与执行和解析。"""
+    steps: list[dict[str, Any]] = []
+    for node in flow_nodes:
+        if node.get("kind") == "assertion":
+            if steps:
+                assertion = {
+                    key: value
+                    for key, value in node.items()
+                    if key not in {"kind", "order", "phase"}
+                }
+                assertion["order"] = len(steps[-1].get("assertions") or []) + 1
+                steps[-1].setdefault("assertions", []).append(assertion)
+            continue
+        action = {
+            key: value
+            for key, value in node.items()
+            if key not in {"kind", "order"}
+        }
+        action["order"] = len(steps) + 1
+        steps.append(action)
+    return steps
 
 
 def validate_orders(steps: list | None) -> None:
+    legacy_shape = any(
+        isinstance(step, dict) and "kind" not in step for step in (steps or [])
+    )
     step_orders = [
         (str(step.get("phase") or "main"), int(step["order"]))
         for step in (steps or [])
@@ -29,25 +51,33 @@ def validate_orders(steps: list | None) -> None:
     if len(step_orders) != len(set(step_orders)):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="同一阶段内步骤 order 不得重复",
+            detail="同一阶段内执行节点 order 不得重复",
         )
-    for step in steps or []:
-        assertions = step.get("assertions", []) if isinstance(step, dict) else []
-        orders = [int(item["order"]) for item in assertions if isinstance(item, dict) and "order" in item]
-        if len(orders) != len(set(orders)):
+    nested_assertion_orders = [
+        (str(step.get("phase") or "main"), int(assertion["order"]))
+        for step in (steps or [])
+        if isinstance(step, dict)
+        for assertion in (step.get("assertions") or [])
+        if isinstance(assertion, dict) and "order" in assertion
+    ]
+    if len(nested_assertion_orders) != len(set(nested_assertion_orders)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="同一阶段内执行节点 order 不得重复",
+        )
+    if legacy_shape:
+        return
+    for phase in {phase for phase, _order in step_orders}:
+        orders = sorted(order for current_phase, order in step_orders if current_phase == phase)
+        if orders != list(range(1, len(orders) + 1)):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="同一步骤内断言 order 不得重复",
+                detail=f"{phase} 阶段执行节点 order 必须从 1 连续递增",
             )
 
 
 def validate_keys(steps: list | None) -> None:
     keys = [step.get("key") for step in (steps or []) if isinstance(step, dict) and step.get("key")]
-    keys.extend(
-        item.get("key")
-        for item in _nested_assertions(steps)
-        if isinstance(item, dict) and item.get("key")
-    )
     if len(keys) != len(set(keys)):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -55,8 +85,22 @@ def validate_keys(steps: list | None) -> None:
         )
 
 
+def validate_node_requirements(nodes: list | None) -> None:
+    for node in nodes or []:
+        if (
+            isinstance(node, dict)
+            and node.get("kind") == "assertion"
+            and node.get("type") in ASSERTION_NEEDS_ELEMENT
+            and node.get("element_id") is None
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="该断言需要元素",
+            )
+
+
 def _element_ids(steps: list | None, extra: list | None = None) -> set[int]:
-    items = [*(steps or []), *(extra or []), *_nested_assertions(steps), *_nested_assertions(extra)]
+    items = [*(steps or []), *(extra or [])]
     ids: set[int] = set()
     for item in items:
         value = item.get("element_id") if isinstance(item, dict) else None
@@ -113,9 +157,10 @@ async def list_page(
 async def create(db: AsyncSession, *, project_id: int, body: CaseCreate, user_id: int) -> TestCase:
     if not await cases_repo.module_belongs_to_project(db, project_id, body.module_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="模块不存在")
-    await validate_elements(db, project_id=project_id, steps=body.steps)
-    validate_orders(body.steps)
-    validate_keys(body.steps)
+    await validate_elements(db, project_id=project_id, steps=body.flow_nodes)
+    validate_orders(body.steps if body.steps is not None else body.flow_nodes)
+    validate_keys(body.flow_nodes)
+    validate_node_requirements(body.flow_nodes)
     try:
         case = await cases_repo.create(
             db,
@@ -124,7 +169,8 @@ async def create(db: AsyncSession, *, project_id: int, body: CaseCreate, user_id
             name=body.name,
             description=body.description,
             status=body.status,
-            steps=cast(list[dict], body.steps),
+            flow_nodes=cast(list[dict], body.flow_nodes),
+            steps=_legacy_steps_from_nodes(cast(list[dict], body.flow_nodes)),
             variables=body.variables,
             user_id=user_id,
         )
@@ -141,13 +187,24 @@ async def update(db: AsyncSession, *, case: TestCase, body: CaseUpdate, user_id:
         db, case.project_id, body.module_id
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="模块不存在")
-    if body.steps is not None:
-        await validate_elements(db, project_id=case.project_id, steps=body.steps)
-    validate_orders(body.steps)
-    validate_keys(body.steps)
-    values = {field: getattr(body, field) for field in body.model_fields_set}
+    if body.flow_nodes is not None:
+        await validate_elements(db, project_id=case.project_id, steps=body.flow_nodes)
+    validate_orders(body.steps if body.steps is not None else body.flow_nodes)
+    validate_keys(body.flow_nodes)
+    validate_node_requirements(body.flow_nodes)
+    allowed_fields = {"name", "module_id", "description", "status", "flow_nodes", "variables"}
+    values = {
+        field: getattr(body, field)
+        for field in body.model_fields_set
+        if field in allowed_fields
+    }
+    fields = set(values)
+    if "flow_nodes" in fields:
+        values["flow_nodes"] = cast(list[dict], values["flow_nodes"] or [])
+        values["steps"] = _legacy_steps_from_nodes(cast(list[dict], values["flow_nodes"] or []))
+        fields.add("steps")
     try:
-        await cases_repo.update_fields(case, fields=body.model_fields_set, values=values, user_id=user_id)
+        await cases_repo.update_fields(case, fields=fields, values=values, user_id=user_id)
         await asset_service.commit_asset_change(db, [case.project_id])
         await cases_repo.refresh(db, case)
         return case
@@ -199,13 +256,17 @@ async def soft_delete(db: AsyncSession, *, case: TestCase) -> None:
 
 
 async def clone(db: AsyncSession, *, source: TestCase, user_id: int) -> TestCase:
-    steps = deepcopy(source.steps or [])
-    for step in steps:
-        step["key"] = str(uuid4())
-        for assertion in step.get("assertions") or []:
-            assertion["key"] = str(uuid4())
+    flow_nodes = deepcopy(source.flow_nodes or [])
+    for node in flow_nodes:
+        node["key"] = str(uuid4())
     try:
-        cloned = await cases_repo.clone(db, source, steps=steps, user_id=user_id)
+        cloned = await cases_repo.clone(
+            db,
+            source,
+            flow_nodes=flow_nodes,
+            steps=_legacy_steps_from_nodes(flow_nodes),
+            user_id=user_id,
+        )
         await asset_service.commit_asset_change(db, [source.project_id])
         await cases_repo.refresh(db, cloned)
         return cloned

@@ -18,6 +18,21 @@ async def load_case_tree(db: AsyncSession, execution_id: int) -> list[dict]:
     case_rows, steps, assertion_rows = await execution_tree.load_case_tree_rows(db, execution_id)
     if not case_rows:
         return []
+    node_rows = await execution_tree.load_case_nodes(db, [case.id for case in case_rows])
+    nodes_by_case: dict[int, list[dict]] = {}
+    for node in node_rows:
+        if node.execution_case_id is None:
+            continue
+        nodes_by_case.setdefault(node.execution_case_id, []).append({
+            "id": node.id, "kind": node.kind, "node_order": node.node_order, "phase": node.phase,
+            "node_key": node.node_key, "action": node.action, "assertion_type": node.assertion_type,
+            "description": node.description,
+            "element_id": node.element_id, "parameters": node.parameters or {},
+            "max_wait_seconds": node.max_wait_seconds, "continue_on_failure": node.continue_on_failure,
+            "status": node.status, "duration": node.duration, "attempt_count": node.attempt_count,
+            "actual_value": node.actual_value, "expected_value": node.expected_value,
+            "error_message": node.error_message, "artifact_id": node.id if node.screenshot_path else None,
+        })
 
     # 键中的 case_id 来自 ExecutionStep.execution_case_id（可空列：套件阶段步骤不挂用例）。
     # 本函数的 steps 已按 execution_case_id.in_(case_ids) 过滤，运行时不为 None，
@@ -118,6 +133,7 @@ async def load_case_tree(db: AsyncSession, execution_id: int) -> list[dict]:
                 "error_message": c.error_message,
                 "elements": c.elements_snapshot or {},
                 "steps": steps_out,
+                "nodes": nodes_by_case.get(c.id, []),
             }
         )
     return result
@@ -132,6 +148,28 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
     suite_rows, cases, suite_step_rows, case_step_rows, assertion_rows = await execution_tree.load_suite_tree_rows(db, execution_id)
     if not suite_rows:
         return []
+    node_rows = await execution_tree.load_suite_nodes(
+        db,
+        [suite.id for suite in suite_rows],
+        [case.id for case in cases],
+    )
+    nodes_by_case: dict[int, list[dict]] = {}
+    nodes_by_suite: dict[int, list[dict]] = {}
+    for node in node_rows:
+        item = {
+            "id": node.id, "kind": node.kind, "node_order": node.node_order, "phase": node.phase,
+            "node_key": node.node_key, "action": node.action, "assertion_type": node.assertion_type,
+            "description": node.description,
+            "element_id": node.element_id, "parameters": node.parameters or {},
+            "max_wait_seconds": node.max_wait_seconds, "continue_on_failure": node.continue_on_failure,
+            "status": node.status, "duration": node.duration, "attempt_count": node.attempt_count,
+            "actual_value": node.actual_value, "expected_value": node.expected_value,
+            "error_message": node.error_message, "artifact_id": node.id if node.screenshot_path else None,
+        }
+        if node.execution_case_id is not None:
+            nodes_by_case.setdefault(node.execution_case_id, []).append(item)
+        elif node.execution_suite_id is not None:
+            nodes_by_suite.setdefault(node.execution_suite_id, []).append(item)
 
     # 同 load_case_tree：键中的 case_id 来自可空列，运行时已过滤但类型系统无法感知
     snapshot_parameters: dict[tuple[int | None, int], dict] = {}
@@ -233,6 +271,7 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
             "error_message": c.error_message,
             "elements": c.elements_snapshot or {},
             "steps": steps_out,
+            "nodes": nodes_by_case.get(c.id, []),
         }
 
     def _mk_suite_step(s: ExecutionStep) -> dict:
@@ -270,6 +309,7 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
                 "setup_steps": [_mk_suite_step(s) for s in suite_steps if s.phase == "suite_setup"],
                 "teardown_steps": [_mk_suite_step(s) for s in suite_steps if s.phase == "suite_teardown"],
                 "cases": [_mk_case(c) for c in cases_by_suite.get(suite.id, [])],
+                "nodes": nodes_by_suite.get(suite.id, []),
             }
         )
     return result

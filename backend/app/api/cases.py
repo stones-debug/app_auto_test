@@ -52,10 +52,8 @@ async def list_cases(
     for case in rows:
         item = CaseListItem.model_validate(case)
         item.module_name = modules.get(case.module_id) if case.module_id else None
-        item.step_count = len(case.steps or [])
-        item.assertion_count = sum(
-            len(step.get("assertions") or []) for step in (case.steps or [])
-        )
+        item.step_count = sum(1 for node in (case.flow_nodes or []) if node.get("kind", "action") == "action")
+        item.assertion_count = sum(1 for node in (case.flow_nodes or []) if node.get("kind") == "assertion")
         if case.id in last_execution:
             item.last_execution_status, item.last_execution_at = last_execution[case.id]
         items.append(item)

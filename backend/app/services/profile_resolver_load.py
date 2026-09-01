@@ -46,8 +46,7 @@ async def merge_suite_variables(db: AsyncSession, project_id: int, suite_id: int
 
 async def resolve_element_snapshots(db: AsyncSession, project_id: int, steps: list[dict], element_overrides: dict[int, AppProfileElementOverride], variables: dict) -> dict[str, dict[str, Any]]:
     ids: set[int] = set()
-    assertions = [assertion for step in steps for assertion in (step.get("assertions") or [])]
-    for item in [*steps, *assertions]:
+    for item in steps:
         element_id = item.get("element_id") if isinstance(item, dict) else None
         if element_id is not None:
             try:

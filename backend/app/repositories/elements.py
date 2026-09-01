@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ElementGroup, Project, TestCase, TestElement, TestModule, User
@@ -262,9 +262,21 @@ async def list_pages(db: AsyncSession, project_id: int | None = None):
     return counts, list(groups.scalars().all())
 
 
-async def create_group(db: AsyncSession, *, name: str, user_id: int) -> ElementGroup:
-    group = ElementGroup(name=name, created_by=user_id)
+async def create_group(
+    db: AsyncSession, *, name: str, parent_id: int | None, user_id: int | None
+) -> ElementGroup:
+    group = ElementGroup(name=name, parent_id=parent_id, created_by=user_id)
     db.add(group)
+    return group
+
+
+async def rename_group(db: AsyncSession, *, group: ElementGroup, name: str) -> ElementGroup:
+    await db.execute(
+        update(TestElement)
+        .where(func.btrim(TestElement.page_name) == group.name, TestElement.deleted_at.is_(None))
+        .values(page_name=name)
+    )
+    group.name = name
     return group
 
 
@@ -278,6 +290,16 @@ async def get_group(db: AsyncSession, group_id: int) -> ElementGroup | None:
 
 
 async def delete_group(db: AsyncSession, group: ElementGroup) -> None:
+    await db.execute(
+        update(TestElement)
+        .where(func.btrim(TestElement.page_name) == group.name, TestElement.deleted_at.is_(None))
+        .values(page_name=None)
+    )
+    await db.execute(
+        update(ElementGroup)
+        .where(ElementGroup.parent_id == group.id)
+        .values(parent_id=group.parent_id)
+    )
     await db.delete(group)
 
 

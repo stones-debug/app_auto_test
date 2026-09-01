@@ -139,11 +139,78 @@ class ExecutionCase(Base, TimestampMixin):
     case_order: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     steps_snapshot: Mapped[list] = mapped_column(JSON, nullable=False)
+    # V3：动作和断言按同一个顺序固化。
+    flow_snapshot: Mapped[list] = mapped_column(JSON, nullable=False, default=list, server_default="[]")
     elements_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     duration: Mapped[int | None] = mapped_column(Integer)
     error_message: Mapped[str | None] = mapped_column(Text)
+
+
+class ExecutionNode(Base, TimestampMixin):
+    """执行快照中的统一节点；一个节点只属于套件或用例。"""
+
+    __tablename__ = "execution_nodes"
+    __table_args__ = (
+        Index(
+            "uq_execution_nodes_suite_order",
+            "execution_suite_id", "phase", "node_order", unique=True,
+            postgresql_where=text("execution_suite_id IS NOT NULL AND execution_case_id IS NULL"),
+        ),
+        Index(
+            "uq_execution_nodes_case_order",
+            "execution_case_id", "phase", "node_order", unique=True,
+            postgresql_where=text("execution_suite_id IS NULL AND execution_case_id IS NOT NULL"),
+        ),
+        CheckConstraint("kind IN ('action','assertion')", name="ck_execution_nodes_kind"),
+        CheckConstraint(
+            "(kind = 'action' AND action IS NOT NULL AND assertion_type IS NULL)"
+            " OR (kind = 'assertion' AND action IS NULL AND assertion_type IS NOT NULL)",
+            name="ck_execution_nodes_payload",
+        ),
+        CheckConstraint(
+            "max_wait_seconds IS NULL OR max_wait_seconds BETWEEN 0 AND 300",
+            name="ck_execution_nodes_max_wait",
+        ),
+        CheckConstraint(
+            "phase IN ('suite_setup','case_setup','case_main','case_teardown','suite_teardown')",
+            name="ck_execution_nodes_phase",
+        ),
+        CheckConstraint(
+            "(phase IN ('suite_setup','suite_teardown') AND execution_suite_id IS NOT NULL AND execution_case_id IS NULL)"
+            " OR (phase IN ('case_setup','case_main','case_teardown') AND execution_suite_id IS NULL AND execution_case_id IS NOT NULL)",
+            name="ck_execution_nodes_parent_phase",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    execution_suite_id: Mapped[int | None] = mapped_column(
+        ForeignKey("execution_suites.id", ondelete="CASCADE")
+    )
+    execution_case_id: Mapped[int | None] = mapped_column(
+        ForeignKey("execution_cases.id", ondelete="CASCADE")
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    node_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    phase: Mapped[str] = mapped_column(String(20), nullable=False, default="case_main")
+    node_key: Mapped[str | None] = mapped_column(String(255))
+    action: Mapped[str | None] = mapped_column(String(50))
+    assertion_type: Mapped[str | None] = mapped_column(String(50))
+    description: Mapped[str | None] = mapped_column(Text)
+    element_id: Mapped[int | None] = mapped_column(Integer)
+    parameters: Mapped[dict] = mapped_column(JSON, default=dict)
+    max_wait_seconds: Mapped[float | None] = mapped_column(Numeric(6, 2))
+    continue_on_failure: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration: Mapped[int | None] = mapped_column(Integer)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    actual_value: Mapped[str | None] = mapped_column(Text)
+    expected_value: Mapped[str | None] = mapped_column(Text)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    screenshot_path: Mapped[str | None] = mapped_column(Text)
 
 
 class ExecutionStep(Base, TimestampMixin):
@@ -281,6 +348,12 @@ class Report(Base, TimestampMixin):
     step_skipped: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     step_success_rate: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("0"))
     not_applicable_suites: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    assertion_total: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    assertion_passed: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    assertion_failed: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    assertion_error_count: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    assertion_skipped: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    assertion_success_rate: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("0"), server_default=text("0"))
 
 
 class ExecutionQueue(Base, TimestampMixin):

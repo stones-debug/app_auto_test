@@ -176,7 +176,7 @@ ASSERTION_PARAM_MODELS: dict[str, type[ParamsBase]] = {
 KNOWN_ACTIONS = frozenset(STEP_PARAM_MODELS)
 KNOWN_ASSERTIONS = frozenset(ASSERTION_PARAM_MODELS)
 
-PROTOCOL_VERSION = '2.2.0'
+PROTOCOL_VERSION = '3.0.0'
 
 STEP_NEEDS_ELEMENT = frozenset({
     'click',
@@ -188,6 +188,17 @@ STEP_NEEDS_ELEMENT = frozenset({
     'scroll',
     'get_text',
     'get_attribute',
+})
+
+ASSERTION_NEEDS_ELEMENT = frozenset({
+    'element_exists',
+    'text_equals',
+    'text_contains',
+    'text_not_contains',
+    'attribute_equals',
+    'attribute_contains',
+    'value_equals',
+    'regex_match',
 })
 
 ELEMENT_LABELS: dict[str, str] = {

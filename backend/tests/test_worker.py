@@ -762,6 +762,57 @@ async def test_suites_payload_carries_suite_step_continue_on_failure(client: Asy
         assert setup_steps[0]["continue_on_failure"] is True
 
 
+async def test_suites_payload_carries_suite_step_element_id(client: AsyncClient):
+    """回归：套件前置/后置步骤下发时必须携带元素快照对应的 element_id。"""
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution is not None
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        await db.commit()
+        suite = (
+            await db.execute(
+                select(ExecutionSuite).where(
+                    ExecutionSuite.execution_id == execution_id,
+                    ExecutionSuite.is_virtual.is_(True),
+                )
+            )
+        ).scalars().first()
+        assert suite is not None
+        suite.setup_steps_snapshot = [
+            {"order": 1, "action": "click", "element_id": 9, "params": {}}
+        ]
+        suite.teardown_steps_snapshot = [
+            {"order": 1, "action": "click", "element_id": 10, "params": {}}
+        ]
+        db.add_all(
+            [
+                ExecutionStep(
+                    execution_suite_id=suite.id,
+                    phase="suite_setup",
+                    step_order=1,
+                    action="click",
+                    status="pending",
+                ),
+                ExecutionStep(
+                    execution_suite_id=suite.id,
+                    phase="suite_teardown",
+                    step_order=1,
+                    action="click",
+                    status="pending",
+                ),
+            ]
+        )
+        await db.commit()
+
+        payload = await worker_service._build_suites_payload(db, execution)
+        assert payload[0]["setup_steps"][0]["element_id"] == 9
+        assert payload[0]["teardown_steps"][0]["element_id"] == 10
+
+
 # ---------- 智能元素定位（无档案 build_case_snapshot） ----------
 
 

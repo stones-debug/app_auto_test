@@ -9,7 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ElementGroup, Project, TestElement, TestModule, User
 from app.repositories import elements as elements_repo
-from app.schemas.element import ElementCreate, ElementUpdate, ModuleCreate, ModuleUpdate
+from app.schemas.element import (
+    ElementCreate,
+    ElementGroupUpdate,
+    ElementUpdate,
+    ModuleCreate,
+    ModuleUpdate,
+)
 from app.services import asset_service
 
 
@@ -134,12 +140,23 @@ async def get_enriched_or_404(
     return row
 
 
+async def _ensure_page_group(
+    db: AsyncSession, *, page_name: str | None
+) -> None:
+    """Ensure every named page shown in the tree has a manageable group node."""
+    if page_name is None:
+        return
+    if await elements_repo.get_group_by_name(db, page_name) is None:
+        await elements_repo.create_group(db, name=page_name, parent_id=None, user_id=None)
+
+
 async def create(
     db: AsyncSession, *, body: ElementCreate, user_id: int, project_id: int | None = None
 ) -> tuple[TestElement, Project | None, User | None]:
     target_project_id = project_id if project_id is not None else body.project_id
     if target_project_id is None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="project_id 必填")
+    await _ensure_page_group(db, page_name=body.page_name)
     element = await elements_repo.create(
         db,
         project_id=target_project_id,
@@ -176,6 +193,7 @@ async def update(
         fields["project_id"] = body.project_id
     if "page_name" in body.model_fields_set:
         fields["page_name"] = body.page_name
+        await _ensure_page_group(db, page_name=body.page_name)
     for field in ("name", "platform", "scope", "locator_type", "locator_value", "locator_config", "description"):
         if field in body.model_fields_set and getattr(body, field) is not None:
             value = getattr(body, field)
@@ -211,6 +229,7 @@ async def copy(
     db: AsyncSession, *, source: TestElement, user_id: int
 ) -> tuple[TestElement, Project | None, User | None]:
     try:
+        await _ensure_page_group(db, page_name=source.page_name)
         element = await elements_repo.copy(db, source, user_id=user_id)
         await asset_service.commit_asset_change(db, [source.project_id])
         await elements_repo.refresh_element(db, element)
@@ -235,6 +254,7 @@ async def import_elements(
         for row, model in rows:
             data = model.model_dump()
             data["locator_config"] = model.locator_config.model_dump() if model.locator_config else None
+            await _ensure_page_group(db, page_name=model.page_name)
             if row.element_id is None:
                 await elements_repo.add_imported(db, data=data, user_id=user_id)
                 created_count += 1
@@ -295,11 +315,52 @@ async def pages(db: AsyncSession, *, project_id: int | None = None):
     return await elements_repo.list_pages(db, project_id)
 
 
-async def create_group(db: AsyncSession, *, name: str, user_id: int) -> ElementGroup:
+async def create_group(
+    db: AsyncSession, *, name: str, parent_id: int | None, user_id: int
+) -> ElementGroup:
     if await elements_repo.get_group_by_name(db, name) is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="分组已存在")
-    group = await elements_repo.create_group(db, name=name, user_id=user_id)
+    if parent_id is not None and await elements_repo.get_group(db, parent_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="父级页面不存在")
+    group = await elements_repo.create_group(
+        db, name=name, parent_id=parent_id, user_id=user_id
+    )
     try:
+        await db.commit()
+        await elements_repo.refresh_group(db, group)
+        return group
+    except IntegrityError:
+        await _rollback_on_error(db)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="分组已存在") from None
+    except Exception:
+        await _rollback_on_error(db)
+        raise
+
+
+async def update_group(
+    db: AsyncSession, *, group: ElementGroup, body: ElementGroupUpdate, user_id: int
+) -> ElementGroup:
+    if body.name != group.name and await elements_repo.get_group_by_name(db, body.name) is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="分组已存在")
+    parent_id = group.parent_id
+    if "parent_id" in body.model_fields_set:
+        parent_id = body.parent_id
+        if parent_id == group.id:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="父级页面不能是自身")
+        if parent_id is not None:
+            parent = await elements_repo.get_group(db, parent_id)
+            if parent is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="父级页面不存在")
+            ancestor_id = parent.id
+            while ancestor_id is not None:
+                if ancestor_id == group.id:
+                    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="不能移动到自身的子页面下")
+                ancestor = await elements_repo.get_group(db, ancestor_id)
+                ancestor_id = ancestor.parent_id if ancestor is not None else None
+    try:
+        if parent_id != group.parent_id:
+            group.parent_id = parent_id
+        await elements_repo.rename_group(db, group=group, name=body.name)
         await db.commit()
         await elements_repo.refresh_group(db, group)
         return group
@@ -319,8 +380,6 @@ async def get_group_or_404(db: AsyncSession, group_id: int) -> ElementGroup:
 
 
 async def delete_group(db: AsyncSession, *, group: ElementGroup, user_id: int) -> None:
-    if group.created_by != user_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅分组创建者可删除")
     try:
         await elements_repo.delete_group(db, group)
         await db.commit()
@@ -336,7 +395,7 @@ async def usage(db: AsyncSession, *, element: TestElement, element_id: int):
     for case in await elements_repo.list_usage_cases(db, element.project_id):
         orders = [
             int(step["order"])
-            for step in (case.steps or [])
+            for step in (case.flow_nodes or case.steps or [])
             if isinstance(step, dict)
             and str(step.get("element_id")) == str(element_id)
             and step.get("order") is not None

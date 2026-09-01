@@ -3,6 +3,7 @@ import type { Step } from '@/api/cases'
 import CaseStepEditor from '@/components/CaseStepEditor.vue'
 
 defineProps<{
+  projectId?: number
   setupSteps: Step[]
   teardownSteps: Step[]
   dirty: boolean
@@ -38,6 +39,7 @@ const emit = defineEmits<{
         :model-value="setupSteps"
         @update:model-value="emit('update:setup-steps', $event)"
         phase="setup"
+        :project-id="projectId"
         title="前置操作"
         description="运行时在套件内每个用例主体之前执行"
         tone="warning"
@@ -46,6 +48,7 @@ const emit = defineEmits<{
         :model-value="teardownSteps"
         @update:model-value="emit('update:teardown-steps', $event)"
         phase="teardown"
+        :project-id="projectId"
         title="后置操作"
         description="运行时在套件内每个用例完成后执行；失败时仍会尝试清理"
         tone="success"

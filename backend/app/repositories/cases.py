@@ -104,7 +104,8 @@ async def create(
     name: str,
     description: str | None,
     status: str,
-    steps: list[dict[str, Any]],
+    flow_nodes: list[dict[str, Any]],
+    steps: list[dict[str, Any]] | None = None,
     variables: dict[str, Any],
     user_id: int,
 ) -> TestCase:
@@ -114,7 +115,8 @@ async def create(
         name=name,
         description=description,
         status=status,
-        steps=steps,
+        flow_nodes=flow_nodes,
+        steps=steps or [],
         variables=variables,
         created_by=user_id,
         updated_by=user_id,
@@ -126,7 +128,7 @@ async def create(
 async def update_fields(
     case: TestCase, *, fields: set[str], values: dict[str, Any], user_id: int
 ) -> TestCase:
-    for field in ("name", "module_id", "description", "status", "steps", "variables"):
+    for field in ("name", "module_id", "description", "status", "flow_nodes", "steps", "variables"):
         if field in fields:
             setattr(case, field, values[field])
     case.updated_by = user_id
@@ -173,7 +175,8 @@ async def clone(
     db: AsyncSession,
     source: TestCase,
     *,
-    steps: list[dict[str, Any]],
+    flow_nodes: list[dict[str, Any]],
+    steps: list[dict[str, Any]] | None = None,
     user_id: int,
 ) -> TestCase:
     case = TestCase(
@@ -182,7 +185,9 @@ async def clone(
         name=f"{source.name} (副本)",
         description=source.description,
         status="draft",
-        steps=steps,
+        flow_nodes=flow_nodes,
+        # 保留一份旧字段的只读投影，避免旧列表/详情接口在升级期间出现空数据。
+        steps=steps or [],
         variables=dict(source.variables or {}),
         created_by=user_id,
         updated_by=user_id,

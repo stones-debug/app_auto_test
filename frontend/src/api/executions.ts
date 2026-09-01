@@ -55,6 +55,28 @@ export interface ExecutionAssertion {
   description?: string | null
 }
 
+export interface ExecutionNode {
+  id: number
+  kind: 'action' | 'assertion'
+  node_order: number
+  phase?: ExecutionStepPhase | string
+  node_key?: string | null
+  action?: string | null
+  assertion_type?: string | null
+  description?: string | null
+  element_id?: number | null
+  parameters: Record<string, unknown>
+  max_wait_seconds?: number | null
+  continue_on_failure?: boolean
+  status: string
+  duration?: number | null
+  attempt_count?: number
+  actual_value?: string | null
+  expected_value?: string | null
+  error_message?: string | null
+  artifact_id?: number | null
+}
+
 export interface ExecutionCase {
   id: number
   case_id: number
@@ -66,6 +88,7 @@ export interface ExecutionCase {
   duration: number | null
   error_message: string | null
   steps?: ExecutionStep[]
+  nodes?: ExecutionNode[]
 }
 
 export interface ExecutionSuite {
@@ -80,6 +103,7 @@ export interface ExecutionSuite {
   setup_steps: ExecutionStep[]
   cases: ExecutionCase[]
   teardown_steps: ExecutionStep[]
+  nodes?: ExecutionNode[]
 }
 
 // 执行摘要：可执行的套件/用例计数（后端 _execution_summary）

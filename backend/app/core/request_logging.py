@@ -21,7 +21,8 @@ _SENSITIVE_MARKERS = (
     "jwt",
     "private_key",
 )
-_MAX_TEXT_LENGTH = 16 * 1024
+MAX_BODY_LOG_BYTES = 16 * 1024
+_MAX_TEXT_LENGTH = MAX_BODY_LOG_BYTES
 
 
 def _is_sensitive_key(key: object) -> bool:

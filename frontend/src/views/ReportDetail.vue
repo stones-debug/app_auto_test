@@ -389,6 +389,17 @@ function viewExecution() {
         </div>
       </div>
 
+      <div v-if="detail.report.assertion_total != null" class="stat-group">
+        <div class="stat-title">断言统计</div>
+        <div class="stats">
+          <div class="stat-card"><div class="num blue">{{ detail.report.assertion_total }}</div><div class="label">断言总数</div></div>
+          <div class="stat-card"><div class="num green">{{ detail.report.assertion_passed }}</div><div class="label">断言通过</div></div>
+          <div class="stat-card"><div class="num red">{{ detail.report.assertion_failed }}</div><div class="label">断言失败</div></div>
+          <div class="stat-card"><div class="num orange">{{ detail.report.assertion_error_count }}</div><div class="label">断言异常</div></div>
+          <div class="stat-card"><div class="num gray">{{ detail.report.assertion_skipped }}</div><div class="label">断言跳过</div></div>
+        </div>
+      </div>
+
       <div class="card">
         <div class="log-toolbar">
           <h2>执行日志（{{ detail.logs_total ?? detail.logs.length }}）</h2>

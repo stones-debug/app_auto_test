@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from .actions import ACTION_REGISTRY
+from .assertion_wait import verify_with_wait
 from .assertions import ASSERTION_REGISTRY
 from .context import ExecutionContext
 from .driver import StopRequested
@@ -13,6 +14,8 @@ from .protocol_messages import (
     CaseStatusMessage,
     ExecutionResultMessage,
     LogMessage,
+    NodeResultMessage,
+    NodeStartedMessage,
     StepResultMessage,
     SuiteStatusMessage,
 )
@@ -26,6 +29,8 @@ Message = (
     | LogMessage
     | SuiteStatusMessage
     | CaseStatusMessage
+    | NodeStartedMessage
+    | NodeResultMessage
 )
 SendFn = Callable[[Message], Awaitable[None]]
 
@@ -133,6 +138,48 @@ class RunnerReporter:
             "execution_step_id": execution_step_id,
             "assertions": assertions,
         }
+        await self.send(msg)
+
+    async def node_started(
+        self,
+        execution_node_id: int,
+        attempt: int | None = None,
+        *,
+        execution_case_id: int | None = None,
+        kind: str | None = None,
+    ) -> None:
+        msg: NodeStartedMessage = {
+            "type": "node_started", "execution_id": self.execution_id,
+            "session_token": self.session_token, "execution_node_id": execution_node_id,
+        }
+        if attempt is not None:
+            msg["attempt"] = attempt
+        if execution_case_id is not None:
+            msg["execution_case_id"] = execution_case_id
+        if kind is not None:
+            msg["kind"] = kind
+        await self.send(msg)
+
+    async def node_result(
+        self, execution_node_id: int, *, status: str, duration: int,
+        actual_value: str | None = None, expected_value: str | None = None,
+        error_message: str | None = None, screenshot_path: str | None = None,
+        attempt_count: int | None = None, execution_case_id: int | None = None,
+        kind: str | None = None,
+    ) -> None:
+        msg: NodeResultMessage = {
+            "type": "node_result", "execution_id": self.execution_id,
+            "session_token": self.session_token, "execution_node_id": execution_node_id,
+            "status": status, "duration": duration, "actual_value": actual_value,
+            "expected_value": expected_value, "error_message": error_message,
+            "screenshot_path": screenshot_path,
+        }
+        if attempt_count is not None:
+            msg["attempt_count"] = attempt_count
+        if execution_case_id is not None:
+            msg["execution_case_id"] = execution_case_id
+        if kind is not None:
+            msg["kind"] = kind
         await self.send(msg)
 
     async def suite_status(
@@ -337,6 +384,92 @@ class TestRunner:
                     break
         return failed, halted
 
+    async def _run_flow_nodes(
+        self,
+        nodes: list[dict],
+        context: ExecutionContext,
+        reporter: RunnerReporter,
+        phase: str,
+        execution_case_id: int,
+    ) -> tuple[bool, bool]:
+        """V3：动作/断言共用一个有序节点流。"""
+        failed = False
+        for node in nodes:
+            if self.should_stop():
+                raise StopRequested("执行被用户停止")
+            node_id = int(node.get("execution_node_id") or 0)
+            if node_id <= 0:
+                raise ValueError("协议 V3 快照缺少有效 execution_node_id")
+            kind = node.get("kind") or ("assertion" if node.get("type") else "action")
+            await reporter.node_started(
+                node_id,
+                execution_case_id=execution_case_id,
+                kind=str(kind),
+            )
+            start = time.monotonic()
+            result: dict = {"status": "passed"}
+            try:
+                if kind == "assertion":
+                    assertion_cls = ASSERTION_REGISTRY.get(str(node.get("type") or node.get("assertion_type")))
+                    if assertion_cls is None:
+                        raise ValueError(f"未知断言: {node.get('type') or node.get('assertion_type')}")
+                    effective = dict(node.get("params") or node.get("parameters") or {})
+                    if node.get("element_id") is not None:
+                        effective.setdefault("element_id", node["element_id"])
+
+                    async def verify_once(assertion_type=assertion_cls, params=effective) -> dict:
+                        return await asyncio.to_thread(
+                            _run_assertion_in_thread, assertion_type, self.driver, context, params
+                        )
+
+                    result = await verify_with_wait(
+                        verify_once,
+                        max_wait_seconds=float(node.get("max_wait_seconds", 10)),
+                        should_stop=self.should_stop,
+                    )
+                else:
+                    action_name = str(node.get("action") or "unknown")
+                    if self.parameters.get("attach_to_current_app") and action_name == "launch_app":
+                        result = {"status": "passed", "actual_value": "已复用当前设备界面，跳过启动 APP"}
+                    else:
+                        action_cls = ACTION_REGISTRY.get(action_name)
+                        if action_cls is None:
+                            raise ValueError(f"未知动作: {action_name}")
+                        effective = dict(node.get("params") or node.get("parameters") or {})
+                        if node.get("element_id") is not None:
+                            effective.setdefault("element_id", node["element_id"])
+                        result = await asyncio.to_thread(
+                            _run_action_in_thread, action_cls, self.driver, context, effective
+                        )
+            except StopRequested:
+                raise
+            except Exception as exc:
+                result = {"status": "error", "error_message": str(exc), "attempt_count": 1}
+            duration = int((time.monotonic() - start) * 1000)
+            await self._resolve_screenshot(result)
+            expected = result.get("expected") or (node.get("params") or {}).get("expected")
+            status = str(result.get("status") or "error")
+            await reporter.node_result(
+                node_id, status=status, duration=duration,
+                actual_value=str(result.get("actual")) if result.get("actual") is not None else result.get("actual_value"),
+                expected_value=str(expected) if expected is not None else None,
+                error_message=str(result.get("error_message")) if result.get("error_message") else None,
+                screenshot_path=result.get("screenshot_path"),
+                attempt_count=result.get("attempt_count"),
+                execution_case_id=execution_case_id,
+                kind=str(kind),
+            )
+            await reporter.log(
+                "INFO" if status == "passed" else "ERROR",
+                f"{phase} 节点 {node.get('order')} 执行{'通过' if status == 'passed' else '失败'}（{duration}ms）",
+                int(node.get("order") or 0),
+            )
+            if status != "passed":
+                failed = True
+                if not node.get("continue_on_failure", False):
+                    return failed, True
+        return failed, False
+
     async def run_case(self, case: dict, reporter: RunnerReporter | None = None) -> str:
         execution_case_id = int(case.get("execution_case_id") or 0)
         if execution_case_id <= 0:
@@ -351,7 +484,26 @@ class TestRunner:
         reporter = reporter or RunnerReporter(self.send, self.execution_id, self.session_token)
         case_status = "passed"
 
-        all_steps = case.get("steps_snapshot") or []
+        all_steps = case.get("flow_snapshot") or case.get("steps_snapshot") or []
+        if "flow_snapshot" in case:
+            setup_nodes = [node for node in all_steps if _case_phase_bucket(node.get("phase")) == "setup"]
+            main_nodes = [node for node in all_steps if _case_phase_bucket(node.get("phase")) == "main"]
+            teardown_nodes = [node for node in all_steps if _case_phase_bucket(node.get("phase")) == "teardown"]
+            case_failed = False
+            setup_failed, setup_halted = await self._run_flow_nodes(
+                setup_nodes, context, reporter, "setup", execution_case_id
+            )
+            case_failed = case_failed or setup_failed
+            if not setup_halted:
+                main_failed, _main_halted = await self._run_flow_nodes(
+                    main_nodes, context, reporter, "main", execution_case_id
+                )
+                case_failed = case_failed or main_failed
+            teardown_failed, _teardown_halted = await self._run_flow_nodes(
+                teardown_nodes, context, reporter, "teardown", execution_case_id
+            )
+            case_failed = case_failed or teardown_failed
+            return "failed" if case_failed else "passed"
         setup_steps = [s for s in all_steps if _case_phase_bucket(s.get("phase")) == "setup"]
         main_steps = [s for s in all_steps if _case_phase_bucket(s.get("phase")) == "main"]
         teardown_steps = [s for s in all_steps if _case_phase_bucket(s.get("phase")) == "teardown"]

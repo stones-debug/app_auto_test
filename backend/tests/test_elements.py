@@ -428,8 +428,8 @@ async def test_element_update_can_move_project(client: AsyncClient):
 
 
 async def test_element_group_custom(client: AsyncClient):
-    """V3：自定义分组创建/重名 409/删除仅创建者；空分组出现在分组统计。"""
-    h1, _ = await _setup(client)
+    """自定义分组支持创建、重命名和删除后自动转为未分组。"""
+    h1, project_id = await _setup(client)
     g = (await client.post("/api/elements/groups", headers=h1, json={"name": "我的新分组"})).json()
     group_id = g["id"]
     assert g["name"] == "我的新分组"
@@ -437,15 +437,115 @@ async def test_element_group_custom(client: AsyncClient):
     conflict = await client.post("/api/elements/groups", headers=h1, json={"name": "我的新分组"})
     assert conflict.status_code == 409
 
+    child = await client.post(
+        "/api/elements/groups",
+        headers=h1,
+        json={"name": "子页面", "parent_id": group_id},
+    )
+    assert child.status_code == 201
+    child_id = child.json()["id"]
+    assert child.json()["parent_id"] == group_id
+
+    renamed = await client.put(
+        f"/api/elements/groups/{group_id}",
+        headers=h1,
+        json={"name": "重命名分组"},
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["name"] == "重命名分组"
+
+    duplicate = await client.post(
+        "/api/elements/groups", headers=h1, json={"name": "已有分组"}
+    )
+    assert duplicate.status_code == 201
+    rename_conflict = await client.put(
+        f"/api/elements/groups/{group_id}",
+        headers=h1,
+        json={"name": "已有分组"},
+    )
+    assert rename_conflict.status_code == 409
+
+    element = await client.post(
+        "/api/elements",
+        headers=h1,
+        json={
+            "project_id": project_id,
+            "name": "分组内元素",
+            "page_name": "重命名分组",
+            "locator_type": "id",
+            "locator_value": "grouped",
+        },
+    )
+    assert element.status_code == 201
+    element_id = element.json()["id"]
+
+    renamed_element = await client.get(f"/api/elements/{element_id}", headers=h1)
+    assert renamed_element.status_code == 200
+    assert renamed_element.json()["page_name"] == "重命名分组"
+
     pages = (await client.get("/api/elements/pages", headers=h1)).json()
     names = {p["page_name"]: p["count"] for p in pages}
-    assert names["我的新分组"] == 0
+    assert names["重命名分组"] == 1
 
     h_other = await _register_user(client, "pytest_group2", "group2@tl-tek.com")
-    assert (await client.delete(f"/api/elements/groups/{group_id}", headers=h_other)).status_code == 403
-    assert (await client.delete(f"/api/elements/groups/{group_id}", headers=h1)).status_code == 204
+    other_renamed = await client.put(
+        f"/api/elements/groups/{group_id}",
+        headers=h_other,
+        json={"name": "他人重命名"},
+    )
+    assert other_renamed.status_code == 200
+    assert other_renamed.json()["name"] == "他人重命名"
+    assert (await client.delete(f"/api/elements/groups/{group_id}", headers=h_other)).status_code == 204
+    ungrouped = await client.get(f"/api/elements/{element_id}", headers=h1)
+    assert ungrouped.status_code == 200
+    assert ungrouped.json()["page_name"] is None
     pages_after = (await client.get("/api/elements/pages", headers=h1)).json()
-    assert "我的新分组" not in {p["page_name"] for p in pages_after}
+    assert "他人重命名" not in {p["page_name"] for p in pages_after}
+    child_page = next(p for p in pages_after if p["page_name"] == "子页面")
+    assert child_page["parent_id"] is None
+    assert (
+        await client.delete(f"/api/elements/groups/{duplicate.json()['id']}", headers=h1)
+    ).status_code == 204
+    assert (
+        await client.delete(f"/api/elements/groups/{child_id}", headers=h1)
+    ).status_code == 204
+
+
+async def test_element_page_group_reserved_names_are_rejected(client: AsyncClient):
+    """页面分组保留名不能创建，也不能通过元素页面名称间接创建。"""
+    headers, project_id = await _setup(client)
+    for name in ("all", "ALL", "全部", "未分组", "  all  "):
+        response = await client.post(
+            "/api/elements/groups", headers=headers, json={"name": name}
+        )
+        assert response.status_code == 422
+
+    element = await client.post(
+        "/api/elements",
+        headers=headers,
+        json={
+            "project_id": project_id,
+            "name": "保留名测试元素",
+            "page_name": "all",
+            "locator_type": "id",
+            "locator_value": "reserved",
+        },
+    )
+    assert element.status_code == 422
+
+    group = (
+        await client.post("/api/elements/groups", headers=headers, json={"name": "普通分组"})
+    ).json()
+    for name in ("全部", "未分组", "ALL"):
+        response = await client.put(
+            f"/api/elements/groups/{group['id']}",
+            headers=headers,
+            json={"name": name},
+        )
+        assert response.status_code == 422
+    assert (
+        await client.delete(f"/api/elements/groups/{group['id']}", headers=headers)
+    ).status_code == 204
 
 
 async def test_global_ungrouped_handles_null_blank_and_whitespace(client: AsyncClient):

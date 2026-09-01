@@ -35,6 +35,7 @@ export interface TestElement {
 export interface ElementGroup {
   id: number
   name: string
+  parent_id?: number | null
   created_by?: number | null
   created_at: string
 }
@@ -56,6 +57,8 @@ export interface ElementPageCount {
   page_name: string
   count: number
   group_id?: number | null
+  created_by?: number | null
+  parent_id?: number | null
 }
 
 export interface ElementUsage {
@@ -74,6 +77,13 @@ export interface ElementImportError {
   row: number
   field: string
   message: string
+}
+
+export const RESERVED_ELEMENT_PAGE_GROUP_NAMES = ['all', '全部', '未分组'] as const
+
+export function isReservedElementPageGroupName(name: string): boolean {
+  const normalized = name.trim()
+  return normalized.toLowerCase() === 'all' || normalized === '全部' || normalized === '未分组'
 }
 
 export function listModules(projectId: number, parentId?: number | null) {
@@ -120,8 +130,15 @@ export function copyElement(id: number) {
   return request.post<TestElement>(`/elements/${id}/copy`)
 }
 
-export function createElementGroup(name: string) {
-  return request.post<ElementGroup>('/elements/groups', { name })
+export function createElementGroup(name: string, parentId?: number | null) {
+  return request.post<ElementGroup>('/elements/groups', { name, parent_id: parentId ?? null })
+}
+
+export function updateElementGroup(groupId: number, name: string, parentId?: number | null) {
+  return request.put<ElementGroup>(`/elements/groups/${groupId}`, {
+    name,
+    ...(parentId === undefined ? {} : { parent_id: parentId }),
+  })
 }
 
 export function deleteElementGroup(groupId: number) {

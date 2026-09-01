@@ -1,6 +1,6 @@
 [project]
 name = "app-auto-test-agent"
-version = "2.2.0"
+version = "3.0.0"
 description = "APP 自动化测试平台 Device Agent（WS 注册 + 心跳 + Appium/Mock 执行）"
 requires-python = ">=3.11"
 dependencies = [

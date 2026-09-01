@@ -30,6 +30,7 @@ import {
 import {
   applyAssertionResult,
   applyCaseStatus,
+  applyNodeResult,
   applyStepResult,
   applySuiteStatus,
   settleExecutionSuites,
@@ -80,6 +81,7 @@ function toTimelineSuites(suites: ExecutionDetail['suites']): TimelineSuite[] {
       duration: c.duration,
       error_message: c.error_message,
       steps: (c.steps ?? []).map(toTimelineStep),
+      nodes: c.nodes,
     })),
     teardown_steps: (s.teardown_steps ?? []).map(toTimelineStep),
   }))
@@ -256,6 +258,10 @@ function subscribe(id: number) {
     } else if (type === 'assertion_result') {
       realtimeVersion += 1
       applyAssertionResult(timelineSuites.value, msg)
+      notifyTimelineChanged()
+    } else if (type === 'node_result') {
+      realtimeVersion += 1
+      applyNodeResult(timelineSuites.value, msg)
       notifyTimelineChanged()
     } else if (type === 'case_status') {
       realtimeVersion += 1

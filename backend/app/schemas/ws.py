@@ -66,6 +66,32 @@ class StepResultIn(BaseModel):
     screenshot_path: str | None = None
 
 
+class NodeStartedIn(BaseModel):
+    type: Literal["node_started"]
+    execution_id: int
+    session_token: str | None = None
+    execution_node_id: int
+    execution_case_id: int | None = None
+    kind: Literal["action", "assertion"] | None = None
+    attempt: int | None = Field(default=None, ge=1)
+
+
+class NodeResultIn(BaseModel):
+    type: Literal["node_result"]
+    execution_id: int
+    session_token: str | None = None
+    execution_node_id: int
+    execution_case_id: int | None = None
+    kind: Literal["action", "assertion"] | None = None
+    status: Literal["passed", "failed", "error", "stopped", "skipped"] = "passed"
+    duration: int | None = None
+    actual_value: str | None = None
+    expected_value: str | None = None
+    error_message: str | None = None
+    screenshot_path: str | None = None
+    attempt_count: int | None = Field(default=None, ge=0)
+
+
 class AssertionResultIn(BaseModel):
     type: Literal["assertion_result"]
     execution_id: int
@@ -107,6 +133,8 @@ _AGENT_MODELS: dict[str, type[BaseModel]] = {
     "device_list": DeviceListIn,
     "log": AgentLogIn,
     "step_result": StepResultIn,
+    "node_started": NodeStartedIn,
+    "node_result": NodeResultIn,
     "assertion_result": AssertionResultIn,
     "case_status": CaseStatusIn,
     "suite_status": SuiteStatusIn,

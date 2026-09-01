@@ -91,6 +91,29 @@
 </table>
 {%- endmacro %}
 
+{% macro render_nodes(nodes, margin_top=false) -%}
+<table{% if margin_top %} style="margin-top:8px"{% endif %}>
+  <thead><tr><th>#</th><th>阶段</th><th>类型</th><th>节点</th><th>参数</th><th>状态</th><th>尝试</th><th>耗时</th><th>期望/实际</th><th>错误</th><th>截图</th></tr></thead>
+  <tbody>
+  {% for node in nodes %}
+    <tr>
+      <td>{{ node.node_order }}</td>
+      <td>{{ phase_labels.get(node.phase, '主体') }}</td>
+      <td>{{ '操作' if node.kind == 'action' else '断言' }}</td>
+      <td>{{ node.action if node.kind == 'action' else node.assertion_type }}</td>
+      <td style="word-break:break-all">{{ node.parameters }}</td>
+      <td class="{{ 'step-ok' if node.status == 'passed' else 'step-fail' }}">{{ node.status }}</td>
+      <td>{{ node.attempt_count or 0 }}</td>
+      <td>{{ node.duration if node.duration is not none else '-' }}ms</td>
+      <td style="word-break:break-all">{{ node.expected_value or '' }}{% if node.actual_value %} / {{ node.actual_value }}{% endif %}</td>
+      <td style="word-break:break-all">{{ node.error_message or '' }}</td>
+      <td>{% if node.screenshot_base64 %}<img class="step-screenshot" src="data:image/png;base64,{{ node.screenshot_base64 }}" alt="截图">{% elif node.screenshot %}{{ node.screenshot }}{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{%- endmacro %}
+
 {% macro render_case(case) -%}
 <details class="case">
   <summary class="case-head">
@@ -99,7 +122,7 @@
   </summary>
   <div class="case-body">
     {% if case.error_message %}<div class="error-box">{{ case.error_message }}</div>{% endif %}
-    {% if case.steps %}{{ render_steps(case.steps) }}{% else %}<div class="empty">无步骤</div>{% endif %}
+    {% if case.nodes %}{{ render_nodes(case.nodes) }}{% elif case.steps %}{{ render_steps(case.steps) }}{% else %}<div class="empty">无步骤</div>{% endif %}
   </div>
 </details>
 {%- endmacro %}

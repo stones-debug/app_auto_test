@@ -20,6 +20,7 @@ from app.models import (
     ExecutionCase,
     ExecutionExclusion,
     ExecutionLog,
+    ExecutionNode,
     ExecutionQueue,
     ExecutionStep,
     ExecutionSuite,
@@ -49,6 +50,51 @@ _PHASE_MAP = {"setup": "case_setup", "main": "case_main", "teardown": "case_tear
 
 def _numeric_order(value: object) -> int:
     return int(str(value)) if isinstance(value, (int, float, str)) else 0
+
+
+def _legacy_steps_from_flow(nodes: list[dict]) -> list[dict]:
+    """只为旧执行明细字段生成嵌套投影，V3 下发使用原始 flow_nodes。"""
+    steps: list[dict] = []
+    for node in nodes:
+        if node.get("kind") == "assertion":
+            if steps:
+                assertion = {
+                    key: value for key, value in node.items() if key not in {"kind", "order", "phase"}
+                }
+                assertion["order"] = len(steps[-1].get("assertions") or []) + 1
+                steps[-1].setdefault("assertions", []).append(assertion)
+            continue
+        step = {key: value for key, value in node.items() if key != "kind"}
+        step["order"] = len(steps) + 1
+        steps.append(step)
+    return steps
+
+
+def _flatten_legacy_steps(nodes: list[dict]) -> list[dict]:
+    """仅兼容尚未通过用例 API 更新的旧数据库行。"""
+    result: list[dict] = []
+    phase_counters: dict[str, int] = {}
+    for raw_step in nodes:
+        if not isinstance(raw_step, dict):
+            continue
+        phase = str(raw_step.get("phase") or "main")
+        phase_counters[phase] = phase_counters.get(phase, 0) + 1
+        action = {key: value for key, value in raw_step.items() if key != "assertions"}
+        action.update(kind="action", order=phase_counters[phase], phase=phase)
+        result.append(action)
+        for raw_assertion in raw_step.get("assertions") or []:
+            if not isinstance(raw_assertion, dict):
+                continue
+            phase_counters[phase] += 1
+            assertion = dict(raw_assertion)
+            assertion.update(
+                kind="assertion",
+                order=phase_counters[phase],
+                phase=phase,
+                max_wait_seconds=raw_assertion.get("max_wait_seconds", 10),
+            )
+            result.append(assertion)
+    return result
 # Step 10：协议版本来自 Registry 生成产物（单一来源）
 _PROTOCOL_JSON = Path(__file__).resolve().parents[1] / "protocol" / "action_registry.json"
 
@@ -149,8 +195,7 @@ async def build_variable_map(
 
 async def _collect_element_ids(steps: list) -> set[int]:
     ids: set[int] = set()
-    assertions = [a for step in steps for a in (step.get("assertions") or [])]
-    for item in [*steps, *assertions]:
+    for item in steps:
         element_id = item.get("element_id") if isinstance(item, dict) else None
         if element_id is not None:
             try:
@@ -173,7 +218,12 @@ async def build_case_snapshot(
     存储态的三个阶段各自独立排序；下发前按 setup → main → teardown
     重排为执行级唯一顺序，以兼容 execution_steps 唯一约束和实时消息。
     """
-    stored_steps = render_value(deepcopy(case.steps or []), variable_map)
+    stored_flow = list(case.flow_nodes or [])
+    # 新写入的数据始终以 flow_nodes 为准；只有发现旧 steps 被独立修改时，
+    # 才将其一次性展开，避免历史管理脚本改过 steps 后整条执行链读到旧快照。
+    if case.steps and (not stored_flow or _legacy_steps_from_flow(stored_flow) != case.steps):
+        stored_flow = _flatten_legacy_steps(case.steps)
+    stored_steps = render_value(deepcopy(stored_flow), variable_map)
     selected_steps: list[dict] = []
     for phase in ("setup", "main", "teardown"):
         if phase == "setup" and not use_pre_steps:
@@ -186,13 +236,15 @@ async def build_case_snapshot(
             if isinstance(step, dict) and str(step.get("phase") or "main") == phase
         ]
         phase_steps.sort(key=lambda step: _numeric_order(step.get("order")))
+        phase_order = 0
         for step in phase_steps:
+            phase_order += 1
             selected_steps.append(
                 {
                     **step,
                     "phase": phase,
                     "source_order": step.get("order"),
-                    "order": len(selected_steps) + 1,
+                    "order": phase_order,
                 }
             )
     steps = selected_steps
@@ -204,7 +256,7 @@ async def build_case_snapshot(
         ).scalars().all()
         for el in rows:
             elements[str(el.id)] = _element_snapshot(el, variable_map)
-    return {"steps": steps, "elements": elements}
+    return {"flow_nodes": steps, "steps": _legacy_steps_from_flow(steps), "elements": elements}
 
 
 def _element_snapshot(el: TestElement, variables: dict) -> dict:
@@ -327,7 +379,15 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
         )
         db.add(exec_suite)
         await db.flush()
-        for step in [*setup_snapshot, *teardown_snapshot]:
+        for node_order, step in enumerate([*setup_snapshot, *teardown_snapshot], start=1):
+            db.add(ExecutionNode(
+                execution_suite_id=exec_suite.id, kind="action", node_order=node_order,
+                phase=step["phase"], node_key=step.get("source_key") or step.get("key"),
+                action=step.get("action") or "", description=step.get("description"),
+                element_id=step.get("element_id"),
+                parameters=step.get("params") or {},
+                continue_on_failure=bool(step.get("continue_on_failure", False)), status="pending",
+            ))
             db.add(ExecutionStep(
                 execution_suite_id=exec_suite.id, phase=step["phase"],
                 step_order=int(step.get("order") or 0), action=step.get("action") or "",
@@ -354,10 +414,23 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
             exec_case = ExecutionCase(
                 execution_id=execution.id, execution_suite_id=exec_suite.id, case_id=case.id,
                 case_name=case.name, module_name=None, case_order=case_order, status="pending",
-                steps_snapshot=snapshot["steps"], elements_snapshot=snapshot["elements"],
+                steps_snapshot=snapshot["steps"], flow_snapshot=snapshot["flow_nodes"], elements_snapshot=snapshot["elements"],
             )
             db.add(exec_case)
             await db.flush()
+            for node in snapshot["flow_nodes"]:
+                node_kind = node.get("kind") or ("assertion" if node.get("type") else "action")
+                db.add(ExecutionNode(
+                    execution_case_id=exec_case.id, kind=node_kind,
+                    node_order=int(node.get("order") or 0),
+                    phase={"setup": "case_setup", "main": "case_main", "teardown": "case_teardown"}.get(str(node.get("phase")), "case_main"),
+                    node_key=node.get("source_key") or node.get("key"), action=node.get("action"),
+                    assertion_type=node.get("type") or node.get("assertion_type"),
+                    description=node.get("description"),
+                    element_id=node.get("element_id"), parameters=node.get("params") or {},
+                    max_wait_seconds=node.get("max_wait_seconds"),
+                    continue_on_failure=bool(node.get("continue_on_failure", False)), status="pending",
+                ))
             for step in snapshot["steps"]:
                 exec_step = ExecutionStep(
                     execution_case_id=exec_case.id, phase={"setup": "case_setup", "main": "case_main", "teardown": "case_teardown"}.get(str(step.get("phase")), "case_main"),
@@ -717,6 +790,14 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
     all_steps, case_steps_by_case, suite_steps_by_suite, all_assertions, assertions_by_case = (
         await _load_terminal_children(db, suite_ids, case_ids)
     )
+    node_filters = []
+    if suite_ids:
+        node_filters.append(ExecutionNode.execution_suite_id.in_(suite_ids))
+    if case_ids:
+        node_filters.append(ExecutionNode.execution_case_id.in_(case_ids))
+    all_nodes = list((await db.execute(select(ExecutionNode).where(or_(*node_filters)))).scalars().all()) if node_filters else []
+    for node in all_nodes:
+        node.status = _normalize_stuck_status(node.status, status_)
     await _merge_cases_and_skip_pending(
         db,
         cases,
@@ -761,10 +842,17 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
         suite_counts.passed + suite_counts.failed + suite_counts.error_count,
     )
 
-    step_counts = compute_counts(tuple(s.status for s in all_steps))
+    action_nodes = [node for node in all_nodes if node.kind == "action"]
+    assertion_nodes = [node for node in all_nodes if node.kind == "assertion"]
+    step_counts = compute_counts(tuple(node.status for node in action_nodes)) if action_nodes else compute_counts(tuple(s.status for s in all_steps))
     step_rate = rate_percent(
         step_counts.passed,
         step_counts.passed + step_counts.failed + step_counts.error_count,
+    )
+    assertion_counts = compute_counts(tuple(node.status for node in assertion_nodes))
+    assertion_rate = rate_percent(
+        assertion_counts.passed,
+        assertion_counts.passed + assertion_counts.failed + assertion_counts.error_count,
     )
 
     # ---------- 排除项统计：not_applicable（用例）与 not_applicable_suites（套件） ----------
@@ -799,6 +887,12 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
             step_skipped=step_counts.skipped,
             step_success_rate=step_rate,
             not_applicable_suites=exclusion.na_suites,
+            assertion_total=assertion_counts.total,
+            assertion_passed=assertion_counts.passed,
+            assertion_failed=assertion_counts.failed,
+            assertion_error_count=assertion_counts.error_count,
+            assertion_skipped=assertion_counts.skipped,
+            assertion_success_rate=assertion_rate,
         )
         .on_conflict_do_nothing(constraint="uq_reports_execution_id")
     )
@@ -844,9 +938,22 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
     cases_by_suite: dict[int, list[ExecutionCase]] = {}
     for c in cases:
         cases_by_suite.setdefault(c.execution_suite_id, []).append(c)
-
-    # 预建步骤/断言：按父节点、阶段和顺序建立 id 映射，供 Agent 精确回传。
     _case_ids = [c.id for c in cases]
+
+    # V3 预建统一节点按父节点、阶段和 node_order 建立 id 映射。
+    _node_rows = (
+        await db.execute(
+            select(ExecutionNode)
+            .where(ExecutionNode.execution_case_id.in_(_case_ids))
+            .order_by(ExecutionNode.execution_case_id, ExecutionNode.phase, ExecutionNode.node_order)
+        )
+    ).scalars().all() if _case_ids else []
+    node_id_by_key: dict[tuple[int, str, int], int] = {
+        (node.execution_case_id, node.phase, node.node_order): node.id
+        for node in _node_rows if node.execution_case_id is not None
+    }
+
+    # 旧步骤/断言映射保留给旧快照；新的 flow_snapshot 不依赖它。
     _case_step_rows = (
         await db.execute(
             select(ExecutionStep)
@@ -899,6 +1006,22 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
             out.append(entry)
         return out
 
+    def _inject_node_ids(case: ExecutionCase, nodes: list) -> list:
+        out: list[dict] = []
+        for raw_node in nodes:
+            entry = dict(raw_node)
+            order = int(entry.get("order") or 0)
+            phase = str(entry.get("phase") or "case_main")
+            phase = _PHASE_MAP.get(phase, phase)
+            node_id = node_id_by_key.get((case.id, phase, order))
+            if node_id is None:
+                raise RuntimeError(
+                    f"执行快照缺少统一节点行 execution_case_id={case.id}, phase={phase}, order={order}"
+                )
+            entry["execution_node_id"] = node_id
+            out.append(entry)
+        return out
+
     suite_steps = (
         await db.execute(
             select(ExecutionStep)
@@ -917,8 +1040,26 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
 
     payload_suites: list[dict] = []
     for s in suites:
-        setup_steps = [
-            {
+        suite_step_snapshots = {
+            "suite_setup": s.setup_steps_snapshot or [],
+            "suite_teardown": s.teardown_steps_snapshot or [],
+        }
+
+        def _suite_step_payload(
+            st: ExecutionStep, snapshots: dict[str, list] = suite_step_snapshots
+        ) -> dict:
+            """将执行步骤行与原始步骤快照合并，保留元素引用供 Agent 定位。"""
+            phase = st.phase
+            snapshot = next(
+                (
+                    item
+                    for item in snapshots.get(phase, [])
+                    if isinstance(item, dict)
+                    and int(item.get("order") or item.get("step_order") or 0) == st.step_order
+                ),
+                {},
+            )
+            payload = {
                 "execution_step_id": st.id,
                 "action": st.action,
                 "order": st.step_order,
@@ -927,19 +1068,17 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
                 "source_order": st.source_order,
                 "continue_on_failure": st.continue_on_failure,
             }
+            if snapshot.get("element_id") is not None:
+                payload["element_id"] = snapshot["element_id"]
+            return payload
+
+        setup_steps = [
+            _suite_step_payload(st)
             for st in steps_by_suite.get(s.id, [])
             if st.phase == "suite_setup"
         ]
         teardown_steps = [
-            {
-                "execution_step_id": st.id,
-                "action": st.action,
-                "order": st.step_order,
-                "params": st.parameters or {},
-                "source_key": st.source_key,
-                "source_order": st.source_order,
-                "continue_on_failure": st.continue_on_failure,
-            }
+            _suite_step_payload(st)
             for st in steps_by_suite.get(s.id, [])
             if st.phase == "suite_teardown"
         ]
@@ -950,6 +1089,7 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
                 "case_name": c.case_name,
                 "case_order": c.case_order,
                 "module_name": c.module_name,
+                "flow_snapshot": _inject_node_ids(c, c.flow_snapshot or []),
                 "steps_snapshot": _inject_step_ids(c, c.steps_snapshot or []),
                 "elements_snapshot": c.elements_snapshot,
             }

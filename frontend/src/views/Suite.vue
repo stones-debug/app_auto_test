@@ -286,6 +286,7 @@ onMounted(loadSuites)
           </section>
 
           <SuiteStepSection
+            :project-id="projectId"
             :setup-steps="setupSteps"
             :teardown-steps="teardownSteps"
             :dirty="dirty"

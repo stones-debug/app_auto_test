@@ -1,4 +1,4 @@
-import type { Assertion, Step } from '@/api/cases'
+import type { FlowNode, Step } from '@/api/cases'
 
 export interface CaseEditorSummary {
   setup: number
@@ -9,18 +9,24 @@ export interface CaseEditorSummary {
 }
 
 export function buildCaseEditorSummary(
-  steps: Step[],
-  variablesOrAssertions: Array<{ key: string }> | Assertion[],
-  legacyVariables?: Array<{ key: string }>,
+  steps: Array<FlowNode | Step>,
+  variablesOrAssertions: Array<{ key?: string; order?: number; type?: string }>,
+  legacyVariables?: Array<{ key?: string; order?: number; type?: string }>,
 ): CaseEditorSummary {
   const variables = legacyVariables ?? variablesOrAssertions as Array<{ key: string }>
-  const assertions = legacyVariables ? variablesOrAssertions as Assertion[] : []
+  const flatAssertions = steps.filter((node) => 'kind' in node && node.kind === 'assertion')
+  const nestedAssertions = steps.reduce(
+    (total, step) => total + (('assertions' in step ? step.assertions?.length : 0) ?? 0),
+    0,
+  )
+  // 旧调用方把 assertions 单独传入；V3 调用方只传 flow_nodes 和变量。
+  const legacyAssertions = legacyVariables !== undefined ? variablesOrAssertions.length : 0
   return {
-    setup: steps.filter((step) => (step.phase ?? 'main') === 'setup').length,
-    main: steps.filter((step) => (step.phase ?? 'main') === 'main').length,
-    teardown: steps.filter((step) => (step.phase ?? 'main') === 'teardown').length,
-    assertions: steps.reduce((total, step) => total + (step.assertions?.length ?? 0), 0) + assertions.length,
-    variables: variables.filter((entry) => entry.key.trim().length > 0).length,
+    setup: steps.filter((step) => (step.phase ?? 'main') === 'setup' && (!('kind' in step) || step.kind !== 'assertion')).length,
+    main: steps.filter((step) => (step.phase ?? 'main') === 'main' && (!('kind' in step) || step.kind !== 'assertion')).length,
+    teardown: steps.filter((step) => (step.phase ?? 'main') === 'teardown' && (!('kind' in step) || step.kind !== 'assertion')).length,
+    assertions: flatAssertions.length || nestedAssertions || legacyAssertions,
+    variables: variables.filter((entry) => (entry.key ?? '').trim().length > 0).length,
   }
 }
 

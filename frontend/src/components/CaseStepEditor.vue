@@ -23,6 +23,8 @@ const props = defineProps<{
   title: string
   description: string
   tone?: 'primary' | 'warning' | 'success'
+  /** 当前项目 ID，用于限制元素选择范围并回查已选元素。 */
+  projectId?: number
   /** 元素 id → 名称映射（收起摘要显示元素名而非编号；未提供时回退编号） */
   elementNames?: ElementNameMap
 }>()
@@ -195,7 +197,7 @@ function onAssertionTypeChange(assertion: Assertion) {
           <div v-show="!isStepCollapsed(element)" class="step-body">
             <div v-if="actionMeta(element.action).needsElement" class="step-row">
               <span class="field-label">{{ actionMeta(element.action).elementLabel ?? '元素' }}</span>
-              <ElementSelector v-model="element.element_id" />
+              <ElementSelector v-model="element.element_id" :project-id="projectId" />
             </div>
             <div v-for="field in actionMeta(element.action).fields" :key="field.key" class="step-row">
               <span class="field-label">{{ field.label }}</span>
@@ -244,7 +246,7 @@ function onAssertionTypeChange(assertion: Assertion) {
                 </div>
                 <div v-if="assertionMeta(assertion.type).needsElement" class="step-row">
                   <span class="field-label">元素</span>
-                  <ElementSelector v-model="assertion.element_id" />
+                  <ElementSelector v-model="assertion.element_id" :project-id="projectId" />
                 </div>
                 <div v-for="field in assertionMeta(assertion.type).fields" :key="field.key" class="step-row">
                   <span class="field-label">{{ field.label }}</span>

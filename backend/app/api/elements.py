@@ -12,6 +12,7 @@ from app.schemas.element import (
     ElementCreate,
     ElementGroupCreate,
     ElementGroupOut,
+    ElementGroupUpdate,
     ElementOut,
     ElementPage,
     ElementPageCount,
@@ -267,7 +268,13 @@ async def element_pages(
 ):
     counts, groups = await element_service.pages(db)
     items = [
-        ElementPageCount(page_name=group.name, count=counts.pop(group.name, 0), group_id=group.id)
+        ElementPageCount(
+            page_name=group.name,
+            count=counts.pop(group.name, 0),
+            group_id=group.id,
+            created_by=group.created_by,
+            parent_id=group.parent_id,
+        )
         for group in groups
     ]
     items.extend(ElementPageCount(page_name=name, count=counts[name]) for name in sorted(counts))
@@ -280,7 +287,20 @@ async def create_element_group(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    return await element_service.create_group(db, name=body.name, user_id=user.id)
+    return await element_service.create_group(
+        db, name=body.name, parent_id=body.parent_id, user_id=user.id
+    )
+
+
+@router.put("/elements/groups/{group_id}", response_model=ElementGroupOut)
+async def update_element_group(
+    group_id: int,
+    body: ElementGroupUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    group = await element_service.get_group_or_404(db, group_id)
+    return await element_service.update_group(db, group=group, body=body, user_id=user.id)
 
 
 @router.delete("/elements/groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)

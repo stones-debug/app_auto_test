@@ -29,7 +29,11 @@ from app.api.suites import router as suites_router
 from app.api.variables import router as variables_router
 from app.core.config import BASE_DIR, settings, validate_security_baseline
 from app.core.errors import ApiErrorDetail, ApiErrorResponse
-from app.core.request_logging import format_for_log, parse_body_for_log
+from app.core.request_logging import (
+    MAX_BODY_LOG_BYTES,
+    format_for_log,
+    parse_body_for_log,
+)
 from app.core.security import is_loopback_host
 from app.services.worker_runtime import WorkerRuntime
 from app.ws.managers import agent_manager
@@ -77,7 +81,7 @@ app = FastAPI(
 )
 
 class RequestLoggingMiddleware:
-    """记录 HTTP 请求参数，并回放已读取的 body 给下游应用。"""
+    """记录 HTTP 请求参数，同时限制日志预读请求体的大小。"""
 
     def __init__(self, app: Callable) -> None:
         self.app = app
@@ -92,35 +96,80 @@ class RequestLoggingMiddleware:
             await self.app(scope, receive, send)
             return
 
-        raw_body = bytearray()
-        while True:
-            message = await receive()
-            if message.get("type") == "http.disconnect":
-                return
-            raw_body.extend(message.get("body", b""))
-            if not message.get("more_body", False):
-                break
+        headers = Headers(scope=scope)
+        content_type = headers.get("content-type", "")
+        content_length = _parse_content_length(headers.get("content-length"))
+        request_logger = logging.getLogger("app.request")
 
-        body_sent = False
+        # 文件上传和超过日志上限的请求不能为了记录日志而预读正文。
+        skip_reason: str | None = None
+        replay_receive: Callable[[], Awaitable[dict[str, Any]]]
+        if "multipart/form-data" in content_type.lower():
+            skip_reason = "multipart"
+        elif content_length is not None and content_length > MAX_BODY_LOG_BYTES:
+            skip_reason = "too_large"
 
-        async def replay_receive() -> dict[str, Any]:
-            nonlocal body_sent
-            if not body_sent:
-                body_sent = True
-                return {"type": "http.request", "body": bytes(raw_body), "more_body": False}
-            # StreamingResponse/FileResponse 会并行监听客户端断开。这里若立即伪造
-            # disconnect，会在响应体发送前取消流任务；回放完成后应继续等待原始连接。
-            return await receive()
+        if skip_reason is not None:
+            body_log: Any = {"skipped": skip_reason}
+            if content_type:
+                body_log["content_type"] = content_type
+            if content_length is not None:
+                body_log["size"] = content_length
+            replay_receive = receive
+        else:
+            # 只预读日志上限 + 1 字节，用于判断是否截断；原始 ASGI 消息保留并
+            # 按原顺序回放，避免复制或消费完整请求体。
+            buffered_messages: list[dict[str, Any]] = []
+            preview = bytearray()
+            body_complete = False
+            while not body_complete and len(preview) <= MAX_BODY_LOG_BYTES:
+                message = await receive()
+                if message.get("type") == "http.disconnect":
+                    return
+                buffered_messages.append(message)
+                body = message.get("body", b"")
+                if body and len(preview) <= MAX_BODY_LOG_BYTES:
+                    remaining = MAX_BODY_LOG_BYTES + 1 - len(preview)
+                    preview.extend(body[:remaining])
+                body_complete = not message.get("more_body", False)
+                if len(preview) > MAX_BODY_LOG_BYTES:
+                    break
+
+            body_truncated = len(preview) > MAX_BODY_LOG_BYTES or not body_complete
+            parsed_preview = parse_body_for_log(
+                bytes(preview[:MAX_BODY_LOG_BYTES]), content_type
+            )
+            if body_truncated:
+                body_log = {
+                    "preview": parsed_preview,
+                    "truncated": True,
+                    "size": content_length,
+                }
+            else:
+                body_log = parsed_preview
+
+            buffered_index = 0
+
+            async def _replay_receive() -> dict[str, Any]:
+                nonlocal buffered_index
+                if buffered_index < len(buffered_messages):
+                    message = buffered_messages[buffered_index]
+                    buffered_index += 1
+                    return message
+                # StreamingResponse/FileResponse 会并行监听客户端断开。这里回放完
+                # 已读取消息后继续等待原始连接，不能立即伪造 disconnect。
+                return await receive()
+
+            replay_receive = _replay_receive
 
         request = Request(scope, receive=replay_receive)
-        request_logger = logging.getLogger("app.request")
         started = time.perf_counter()
         request_logger.info(
             "HTTP 请求 %s %s query=%s body=%s",
             request.method,
             request.url.path,
             format_for_log(dict(request.query_params)),
-            format_for_log(parse_body_for_log(bytes(raw_body), Headers(scope=scope).get("content-type", ""))),
+            format_for_log(body_log),
         )
 
         response_status = 500
@@ -148,6 +197,16 @@ class RequestLoggingMiddleware:
             response_status,
             (time.perf_counter() - started) * 1000,
         )
+
+
+def _parse_content_length(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        length = int(value)
+    except (TypeError, ValueError):
+        return None
+    return length if length >= 0 else None
 
 
 app.add_middleware(

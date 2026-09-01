@@ -9,6 +9,16 @@ LOCATOR_TYPES = (
     "id|resource_id|xpath|accessibility_id|class_name|uiautomator|predicate|coordinate|custom|smart"
 )
 LOCATOR_TYPE_RE = f"^({LOCATOR_TYPES})$"
+RESERVED_ELEMENT_PAGE_GROUP_NAMES = frozenset({"all", "全部", "未分组"})
+
+
+def _normalize_element_page_group_name(value: str, *, field: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field}不能为空")
+    if normalized.casefold() == "all" or normalized in RESERVED_ELEMENT_PAGE_GROUP_NAMES:
+        raise ValueError("页面分组名称不能使用“all”“全部”或“未分组”")
+    return normalized
 
 
 def _validate_locator(locator_type: str | None, locator_value, locator_config) -> None:
@@ -80,6 +90,13 @@ class ElementCreate(BaseModel):
         normalized = value.strip()
         return normalized or None
 
+    @field_validator("page_name")
+    @classmethod
+    def reject_reserved_page_name(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        return _normalize_element_page_group_name(value, field="页面名称")
+
 
 class ElementUpdate(BaseModel):
     project_id: int | None = None
@@ -123,6 +140,13 @@ class ElementUpdate(BaseModel):
         normalized = value.strip()
         return normalized or None
 
+    @field_validator("page_name")
+    @classmethod
+    def reject_reserved_page_name(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        return _normalize_element_page_group_name(value, field="页面名称")
+
 
 class ElementOut(BaseModel):
     id: int
@@ -154,15 +178,34 @@ class ElementPageCount(BaseModel):
     page_name: str
     count: int
     group_id: int | None = None  # 自定义分组 id；元素聚合页为 None
+    created_by: int | None = None  # 自定义分组创建者；聚合分组为 None
+    parent_id: int | None = None  # 自定义分组父级；聚合分组为 None
 
 
 class ElementGroupCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
+    parent_id: int | None = None
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        return _normalize_element_page_group_name(value, field="分组名称")
+
+
+class ElementGroupUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    parent_id: int | None = None
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        return _normalize_element_page_group_name(value, field="分组名称")
 
 
 class ElementGroupOut(BaseModel):
     id: int
     name: str
+    parent_id: int | None = None
     created_by: int | None = None
     created_at: datetime
 

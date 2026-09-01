@@ -12,6 +12,7 @@ from uuid import UUID
 
 from app.models import AppProfileSkipRule
 from app.schemas.generated_case_params import (
+    ASSERTION_NEEDS_ELEMENT,
     ASSERTION_PARAM_MODELS,
     ELEMENT_LABELS,
     KNOWN_ACTIONS,
@@ -33,6 +34,7 @@ NODE_PATCH_ALLOWED = {
     "wait_timeout",
     "max_swipes",
     "duration",
+    "max_wait_seconds",
 }
 NODE_IDENTITY_FIELDS = {"key", "order", "phase", "action", "type", "assertion_type"}
 
@@ -112,6 +114,13 @@ def _registry_validate_assertion(assertion: dict) -> dict:
     model = ASSERTION_PARAM_MODELS[assertion_type]
     params = deepcopy(assertion.get("params") or {})
     assertion["params"] = model(**params).model_dump(exclude_none=False)
+    if assertion_type in ASSERTION_NEEDS_ELEMENT and assertion.get("element_id") is None:
+        raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", "该断言需要元素")
+    wait = float(assertion.get("max_wait_seconds", 10))
+    if not 0 <= wait <= 300:
+        raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", "断言最大等待时间必须在 0 到 300 秒之间")
+    assertion["max_wait_seconds"] = wait
+    assertion["continue_on_failure"] = bool(assertion.get("continue_on_failure", False))
     return assertion
 
 
@@ -148,7 +157,7 @@ def _finalize_case_step(node: dict) -> dict:
     out["phase"] = _CASE_PHASE_MAP.get(raw_phase, "case_main")
     out["source_order"] = node.get("_source_order")
     out["source_key"] = node.get("_source_key")
-    out["assertions"] = [finalize_snapshot_node(a) for a in node.get("assertions") or []]
+    out["kind"] = out.get("kind") or ("assertion" if "type" in out else "action")
     return out
 
 
@@ -210,8 +219,11 @@ def filter_and_patch(
 
 
 def assign_order(nodes: list[dict], order_offset: int) -> list[dict]:
-    for i, node in enumerate(nodes):
-        node["order"] = i + 1 + order_offset
+    counters: dict[str, int] = {}
+    for node in nodes:
+        phase = str(node.get("phase") or "main")
+        counters[phase] = counters.get(phase, 0) + 1
+        node["order"] = counters[phase] + order_offset
     return nodes
 
 

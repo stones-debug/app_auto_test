@@ -37,14 +37,11 @@ async def backfill_profiles(db, *, dry_run: bool) -> tuple[dict[str, int], list[
     stats = {"cases_changed": 0, "profiles_created": 0, "releases_created": 0}
     backup_rows: list[dict] = []
     for case in await cases_repo.list_all(db):
-        steps, steps_changed = normalize_nodes(case.id, "step", case.steps or [])
-        old_assertions = getattr(case, "assertions", []) or []
-        assertions, assertions_changed = normalize_nodes(case.id, "assertion", old_assertions)
-        if steps_changed or assertions_changed:
+        nodes, nodes_changed = normalize_nodes(case.id, "node", case.flow_nodes or case.steps or [])
+        if nodes_changed:
             stats["cases_changed"] += 1
-            backup_rows.append({"case_id": case.id, "steps": case.steps or [], "assertions": old_assertions})
-            case.steps = steps
-            vars(case)["assertions"] = assertions
+            backup_rows.append({"case_id": case.id, "flow_nodes": case.flow_nodes or case.steps or []})
+            case.flow_nodes = nodes
     for project in await projects_repo.list_active(db):
         profile = await profiles_repo.find_named(db, project.id, DEFAULT_PROFILE_NAME)
         if profile is None:

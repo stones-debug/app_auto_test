@@ -176,6 +176,12 @@ def _render_py(manifest: dict) -> str:
             lines.append(f"    {item['name']!r},")
     lines.append("})")
     lines.append("")
+    lines.append("ASSERTION_NEEDS_ELEMENT = frozenset({")
+    for item in manifest["assertions"]:
+        if item["needs_element"]:
+            lines.append(f"    {item['name']!r},")
+    lines.append("})")
+    lines.append("")
     lines.append("ELEMENT_LABELS: dict[str, str] = {")
     for item in manifest["actions"]:
         if item.get("element_label"):

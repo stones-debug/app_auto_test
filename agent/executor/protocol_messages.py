@@ -20,6 +20,32 @@ class StepResultMessage(TypedDict):
     screenshot_path: str | None
 
 
+class NodeStartedMessage(TypedDict):
+    type: str
+    execution_id: int
+    session_token: str | None
+    execution_node_id: int
+    execution_case_id: NotRequired[int]
+    kind: NotRequired[str]
+    attempt: NotRequired[int]
+
+
+class NodeResultMessage(TypedDict):
+    type: str
+    execution_id: int
+    session_token: str | None
+    execution_node_id: int
+    execution_case_id: NotRequired[int]
+    kind: NotRequired[str]
+    status: str
+    duration: int
+    actual_value: str | None
+    expected_value: str | None
+    error_message: str | None
+    screenshot_path: str | None
+    attempt_count: NotRequired[int]
+
+
 class AssertionItem(TypedDict):
     execution_assertion_id: int
     assertion_order: NotRequired[int]

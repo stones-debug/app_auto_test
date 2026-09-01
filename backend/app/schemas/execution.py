@@ -117,6 +117,7 @@ class ExecutionCaseOut(BaseModel):
     duration: int | None
     error_message: str | None
     steps: list["ExecutionStepOut"] = Field(default_factory=list)
+    nodes: list["ExecutionNodeOut"] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
@@ -133,6 +134,30 @@ class ExecutionStepOut(BaseModel):
     error_message: str | None
     artifact_id: int | None = None
     assertions: list["ExecutionAssertionOut"] = Field(default_factory=list)
+
+    model_config = {"from_attributes": True}
+
+
+class ExecutionNodeOut(BaseModel):
+    id: int
+    kind: str
+    node_order: int
+    phase: str
+    node_key: str | None = None
+    action: str | None = None
+    assertion_type: str | None = None
+    description: str | None = None
+    element_id: int | None = None
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    max_wait_seconds: float | None = None
+    continue_on_failure: bool = False
+    status: str
+    duration: int | None = None
+    attempt_count: int = 0
+    actual_value: str | None = None
+    expected_value: str | None = None
+    error_message: str | None = None
+    artifact_id: int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -195,6 +220,7 @@ class ExecutionSuiteOut(BaseModel):
     setup_steps: list["ExecutionStepOut"] = Field(default_factory=list)
     teardown_steps: list["ExecutionStepOut"] = Field(default_factory=list)
     cases: list[ExecutionCaseOut] = Field(default_factory=list)
+    nodes: list[ExecutionNodeOut] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
@@ -256,3 +282,7 @@ class ExecutionLogPage(BaseModel):
     page: int
     page_size: int
     items: list[ExecutionLogOut]
+
+
+ExecutionCaseOut.model_rebuild()
+ExecutionSuiteOut.model_rebuild()

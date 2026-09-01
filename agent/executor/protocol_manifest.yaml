@@ -5,8 +5,8 @@
 #   - frontend/src/api/generated/registry.ts
 # 控制字段（controls.step）属于 Step 顶层，绝不进入 action params。
 
-protocol_version: "2.2.0"
-min_agent_version: "2.2.0"
+protocol_version: "3.0.0"
+min_agent_version: "3.0.0"
 
 controls:
   step:

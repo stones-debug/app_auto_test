@@ -74,6 +74,30 @@ def _report_step(execution_id: int, step: dict) -> dict:
     }
 
 
+def _report_node(execution_id: int, node: dict) -> dict:
+    return {
+        "id": node["id"],
+        "kind": node["kind"],
+        "node_order": node["node_order"],
+        "phase": node.get("phase"),
+        "node_key": node.get("node_key"),
+        "action": node.get("action"),
+        "assertion_type": node.get("assertion_type"),
+        "description": node.get("description"),
+        "element_id": node.get("element_id"),
+        "parameters": node.get("parameters") or {},
+        "max_wait_seconds": node.get("max_wait_seconds"),
+        "status": node.get("status", "pending"),
+        "duration": node.get("duration"),
+        "attempt_count": node.get("attempt_count", 0),
+        "actual_value": node.get("actual_value"),
+        "expected_value": node.get("expected_value"),
+        "error_message": node.get("error_message"),
+        "screenshot": _rel_screenshot(execution_id, node.get("screenshot_path")),
+        "artifact_id": node.get("artifact_id"),
+    }
+
+
 def _report_case(execution_id: int, case: dict) -> dict:
     return {
         "id": case["id"],
@@ -85,6 +109,7 @@ def _report_case(execution_id: int, case: dict) -> dict:
         "error_message": case["error_message"],
         "elements": case["elements"],
         "steps": [_report_step(execution_id, step) for step in case["steps"]],
+        "nodes": [_report_node(execution_id, node) for node in case.get("nodes") or []],
     }
 
 
@@ -116,6 +141,7 @@ async def get_report_detail(db: AsyncSession, execution_id: int) -> dict:
                 "teardown_steps": [
                     _report_step(execution_id, step) for step in s["teardown_steps"]
                 ],
+                "nodes": [_report_node(execution_id, node) for node in s.get("nodes") or []],
             }
         )
 
@@ -159,6 +185,12 @@ async def get_report_detail(db: AsyncSession, execution_id: int) -> dict:
             "step_skipped": report.step_skipped if report else 0,
             "step_success_rate": report.step_success_rate if report else 0,
             "not_applicable_suites": report.not_applicable_suites if report else 0,
+            "assertion_total": report.assertion_total if report else 0,
+            "assertion_passed": report.assertion_passed if report else 0,
+            "assertion_failed": report.assertion_failed if report else 0,
+            "assertion_error_count": report.assertion_error_count if report else 0,
+            "assertion_skipped": report.assertion_skipped if report else 0,
+            "assertion_success_rate": report.assertion_success_rate if report else 0,
         },
         "suites": suites,
         "cases": cases,
@@ -209,21 +241,21 @@ def _rel_screenshot(execution_id: int, path: str | None) -> str | None:
 def _embed_screenshots(detail: dict) -> None:
     execution_id = detail["execution"]["id"]
 
-    def _embed(steps: list[dict]) -> None:
-        for step in steps:
-            if not step["screenshot"]:
+    def _embed(items: list[dict]) -> None:
+        for item in items:
+            if not item.get("screenshot"):
                 continue
             # screenshot 字段为 screenshots/xxx.png（已剥掉 execution_{id}/ 前缀）
-            object_key = f"execution_{execution_id}/{step['screenshot']}"
+            object_key = f"execution_{execution_id}/{item['screenshot']}"
             file_path = resolve_screenshot_path(execution_id, object_key)
             if file_path is None or not file_path.is_file():
-                step["screenshot_base64"] = None
+                item["screenshot_base64"] = None
                 continue
             try:
                 data = file_path.read_bytes()
-                step["screenshot_base64"] = base64.b64encode(data).decode()
+                item["screenshot_base64"] = base64.b64encode(data).decode()
             except OSError:
-                step["screenshot_base64"] = None
+                item["screenshot_base64"] = None
 
     suites = detail.get("suites", [])
     for suite in suites:
@@ -231,9 +263,11 @@ def _embed_screenshots(detail: dict) -> None:
         _embed(suite["teardown_steps"])
         for case in suite["cases"]:
             _embed(case["steps"])
+            _embed(case.get("nodes") or [])
     if not suites:
         for case in detail["cases"]:
             _embed(case["steps"])
+            _embed(case.get("nodes") or [])
 
 
 async def render_report_html(db: AsyncSession, execution_id: int) -> Path:

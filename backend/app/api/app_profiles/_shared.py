@@ -22,7 +22,11 @@ def _find_case_node(case: TestCase, node_type: str, node_key: str):
         normalized_key = str(UUID(str(node_key)))
     except ValueError:
         return None
-    collection = case.steps if node_type == "step" else [assertion for step in (case.steps or []) for assertion in (step.get("assertions") or [])]
+    collection = [
+        node for node in (case.flow_nodes or case.steps or [])
+        if node_type == "step" and node.get("kind", "action") == "action"
+        or node_type == "assertion" and node.get("kind") == "assertion"
+    ]
     for node in collection or []:
         if isinstance(node, dict) and str(node.get("key") or "") == normalized_key:
             return normalized_key, node
