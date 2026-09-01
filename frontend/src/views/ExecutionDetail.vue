@@ -30,6 +30,7 @@ import {
 import {
   applyAssertionResult,
   applyCaseStatus,
+  applyNodeStarted,
   applyNodeResult,
   applyStepResult,
   applySuiteStatus,
@@ -258,6 +259,10 @@ function subscribe(id: number) {
     } else if (type === 'assertion_result') {
       realtimeVersion += 1
       applyAssertionResult(timelineSuites.value, msg)
+      notifyTimelineChanged()
+    } else if (type === 'node_started') {
+      realtimeVersion += 1
+      applyNodeStarted(timelineSuites.value, msg)
       notifyTimelineChanged()
     } else if (type === 'node_result') {
       realtimeVersion += 1

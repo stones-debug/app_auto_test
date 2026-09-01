@@ -379,22 +379,17 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
         )
         db.add(exec_suite)
         await db.flush()
-        for node_order, step in enumerate([*setup_snapshot, *teardown_snapshot], start=1):
-            db.add(ExecutionNode(
-                execution_suite_id=exec_suite.id, kind="action", node_order=node_order,
-                phase=step["phase"], node_key=step.get("source_key") or step.get("key"),
-                action=step.get("action") or "", description=step.get("description"),
-                element_id=step.get("element_id"),
-                parameters=step.get("params") or {},
-                continue_on_failure=bool(step.get("continue_on_failure", False)), status="pending",
-            ))
-            db.add(ExecutionStep(
-                execution_suite_id=exec_suite.id, phase=step["phase"],
-                step_order=int(step.get("order") or 0), action=step.get("action") or "",
-                source_key=step.get("source_key") or step.get("key"), source_order=step.get("source_order"),
-                parameters=step.get("params") or {}, continue_on_failure=bool(step.get("continue_on_failure", False)),
-                status="pending",
-            ))
+        for phase_steps in (setup_snapshot, teardown_snapshot):
+            for node_order, step in enumerate(phase_steps, start=1):
+                db.add(ExecutionNode(
+                    execution_suite_id=exec_suite.id, kind="action", node_order=node_order,
+                    phase=step["phase"], node_key=step.get("source_key") or step.get("key"),
+                    action=step.get("action") or "", description=step.get("description"),
+                    element_id=step.get("element_id"),
+                    parameters=step.get("params") or {},
+                    max_wait_seconds=step.get("max_wait_seconds"),
+                    continue_on_failure=bool(step.get("continue_on_failure", False)), status="pending",
+                ))
 
         if selected_case_ids is None:
             selected_case_ids = list((await db.execute(
@@ -630,6 +625,7 @@ async def _load_terminal_children(
 async def _merge_cases_and_skip_pending(
     db: AsyncSession,
     cases: Sequence[ExecutionCase],
+    case_nodes_by_case: dict[int, list[ExecutionNode]],
     case_steps_by_case: dict[int, list[ExecutionStep]],
     assertions_by_case: dict[int, list[ExecutionAssertion]],
     all_steps: list[ExecutionStep],
@@ -641,16 +637,23 @@ async def _merge_cases_and_skip_pending(
     pending_assertion_ids: set[int] = set()
     for case in cases:
         should_merge = case.status in ("pending", "running")
+        nodes = case_nodes_by_case.get(case.id, [])
         steps = case_steps_by_case.get(case.id, [])
         assertions = assertions_by_case.get(case.id, [])
         merged_case = merge_case_status(
             CaseStatusInput(
                 status=case.status,
                 started=case.started_at is not None if should_merge else False,
-                step_statuses=tuple(step.status for step in steps) if should_merge else (),
-                assertion_statuses=tuple(assertion.status for assertion in assertions)
-                if should_merge
-                else (),
+                step_statuses=(
+                    tuple(node.status for node in nodes if node.kind == "action")
+                    if nodes and (not steps or any(node.status != "pending" for node in nodes))
+                    else tuple(step.status for step in steps)
+                ) if should_merge else (),
+                assertion_statuses=(
+                    tuple(node.status for node in nodes if node.kind == "assertion")
+                    if nodes and (not assertions or any(node.status != "pending" for node in nodes))
+                    else tuple(assertion.status for assertion in assertions)
+                ) if should_merge else (),
                 error_message=case.error_message,
             ),
             terminal_status,
@@ -686,19 +689,30 @@ async def _merge_suites_and_skip_pending(
     db: AsyncSession,
     suites: Sequence[ExecutionSuite],
     cases_by_suite: dict[int, list[ExecutionCase]],
+    suite_nodes_by_suite: dict[int, list[ExecutionNode]],
     suite_steps_by_suite: dict[int, list[ExecutionStep]],
     all_steps: list[ExecutionStep],
     terminal_status: str,
 ) -> None:
-    """按套件子节点优先级归并套件，并批量收敛套件下的 pending 步骤。"""
+    """按统一执行节点归并套件，并收敛未执行的套件节点。
+
+    套件前后置步骤的执行结果只来自 ExecutionNode。ExecutionStep 是旧的
+    步骤模型，不能再参与套件状态归并，否则节点已 passed 而旧行仍 pending
+    时会把套件错误汇总成 skipped。
+    """
     pending_suite_step_ids: set[int] = set()
+    pending_suite_node_ids: set[int] = set()
     for suite in suites:
         if suite.status not in ("pending", "running"):
             continue
         suite_was_running = suite.status == "running"
+        suite_nodes = suite_nodes_by_suite.get(suite.id, [])
         suite_steps = suite_steps_by_suite.get(suite.id, [])
+        # 仅兼容没有统一节点的历史/手工数据；正常新执行一定有 suite_nodes，
+        # 不会再让旧 ExecutionStep 参与套件状态判断。
+        child_items = suite_nodes or suite_steps
         child_statuses = [
-            _normalize_stuck_status(step.status, terminal_status) for step in suite_steps
+            _normalize_stuck_status(item.status, terminal_status) for item in child_items
         ] + [case.status for case in cases_by_suite.get(suite.id, [])]
         merged = _aggregate_status(child_statuses)
         if (
@@ -714,10 +728,24 @@ async def _merge_suites_and_skip_pending(
                 if terminal_status in ("stopped", "cancelled")
                 else None
             )
+        pending_suite_node_ids.update(
+            node.id for node in suite_nodes if node.status == "pending"
+        )
+        # 保持旧详情行的终态可读，但它不再参与套件状态或报告统计。
         pending_suite_step_ids.update(
             step.id for step in suite_steps if step.status == "pending"
         )
 
+    if pending_suite_node_ids:
+        for node in suite_nodes_by_suite.values():
+            for item in node:
+                if item.id in pending_suite_node_ids:
+                    item.status = "skipped"
+        await db.execute(
+            update(ExecutionNode)
+            .where(ExecutionNode.id.in_(pending_suite_node_ids))
+            .values(status="skipped")
+        )
     if pending_suite_step_ids:
         for step in all_steps:
             if step.id in pending_suite_step_ids:
@@ -796,21 +824,30 @@ async def _mark_terminal(db: AsyncSession, execution: Execution, status_: str, m
     if case_ids:
         node_filters.append(ExecutionNode.execution_case_id.in_(case_ids))
     all_nodes = list((await db.execute(select(ExecutionNode).where(or_(*node_filters)))).scalars().all()) if node_filters else []
+    suite_nodes_by_suite: dict[int, list[ExecutionNode]] = {}
+    case_nodes_by_case: dict[int, list[ExecutionNode]] = {}
     for node in all_nodes:
-        node.status = _normalize_stuck_status(node.status, status_)
+        if node.execution_suite_id is not None:
+            suite_nodes_by_suite.setdefault(node.execution_suite_id, []).append(node)
+        elif node.execution_case_id is not None:
+            case_nodes_by_case.setdefault(node.execution_case_id, []).append(node)
     await _merge_cases_and_skip_pending(
         db,
         cases,
+        case_nodes_by_case,
         case_steps_by_case,
         assertions_by_case,
         all_steps,
         all_assertions,
         status_,
     )
+    for node in all_nodes:
+        node.status = _normalize_stuck_status(node.status, status_)
     await _merge_suites_and_skip_pending(
         db,
         suites,
         cases_by_suite,
+        suite_nodes_by_suite,
         suite_steps_by_suite,
         all_steps,
         status_,
@@ -912,8 +949,8 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
     """协议 V2：start_test 下发套件级结构（suites[] + execution_*_id）。
 
     - 以固化的 ExecutionSuite / ExecutionCase 为单元下发（含 execution_suite_id/execution_case_id）；
-    - 套件前后置步骤读取已固化的 ExecutionStep（execution_suite_id 非空、phase 为
-      suite_setup/suite_teardown），携带 execution_step_id 供 Agent 精确回传；
+    - 套件前后置步骤读取已固化的 ExecutionNode，携带 execution_node_id 供 Agent
+      精确回传；旧 setup_steps/teardown_steps 仅作为详情兼容投影保留；
     - 用例步骤和断言均从预建行注入 execution_step_id/execution_assertion_id；缺行视为
       服务端快照不完整并立即失败，不再回退按顺序猜测或动态创建。
     """
@@ -952,6 +989,20 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
         (node.execution_case_id, node.phase, node.node_order): node.id
         for node in _node_rows if node.execution_case_id is not None
     }
+
+    suite_node_rows = list(
+        (
+            await db.execute(
+                select(ExecutionNode)
+                .where(ExecutionNode.execution_suite_id.in_(suite_ids))
+                .order_by(ExecutionNode.execution_suite_id, ExecutionNode.phase, ExecutionNode.node_order)
+            )
+        ).scalars().all()
+    )
+    nodes_by_suite: dict[int, list[ExecutionNode]] = {}
+    for node in suite_node_rows:
+        if node.execution_suite_id is not None:
+            nodes_by_suite.setdefault(node.execution_suite_id, []).append(node)
 
     # 旧步骤/断言映射保留给旧快照；新的 flow_snapshot 不依赖它。
     _case_step_rows = (
@@ -1082,6 +1133,33 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
             for st in steps_by_suite.get(s.id, [])
             if st.phase == "suite_teardown"
         ]
+
+        def _suite_node_payload(node: ExecutionNode) -> dict:
+            payload = {
+                "execution_node_id": node.id,
+                "kind": node.kind,
+                "phase": node.phase,
+                "order": node.node_order,
+                "action": node.action,
+                "params": node.parameters or {},
+                "source_key": node.node_key,
+                "element_id": node.element_id,
+                "continue_on_failure": node.continue_on_failure,
+            }
+            if node.max_wait_seconds is not None:
+                payload["max_wait_seconds"] = float(node.max_wait_seconds)
+            return payload
+
+        setup_nodes = [
+            _suite_node_payload(node)
+            for node in nodes_by_suite.get(s.id, [])
+            if node.phase == "suite_setup"
+        ]
+        teardown_nodes = [
+            _suite_node_payload(node)
+            for node in nodes_by_suite.get(s.id, [])
+            if node.phase == "suite_teardown"
+        ]
         suite_cases = [
             {
                 "execution_case_id": c.id,
@@ -1103,8 +1181,10 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
                 "suite_order": s.suite_order,
                 "is_virtual": s.is_virtual,
                 "elements_snapshot": s.elements_snapshot or {},
+                "setup_nodes": setup_nodes,
                 "setup_steps": setup_steps,
                 "cases": suite_cases,
+                "teardown_nodes": teardown_nodes,
                 "teardown_steps": teardown_steps,
             }
         )

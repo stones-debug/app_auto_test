@@ -18,6 +18,7 @@ import { getElement, listElements, listModules } from '@/api/elements'
 import CaseFlowEditor from '@/components/CaseFlowEditor.vue'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 import { buildCaseEditorSummary, caseEditorSummaryText } from '@/utils/caseEditorSummary'
+import { mergeFlowNodes, normalizeFlowNodeOrders } from '@/utils/flowNodeOrder'
 
 const route = useRoute()
 const router = useRouter()
@@ -60,8 +61,7 @@ function phaseNodes(phase: StepPhase) {
   return computed<FlowNode[]>({
     get: () => (form.flow_nodes as FlowNode[]).filter((node) => (node.phase ?? 'main') === phase),
     set: (nodes) => {
-      const others = (form.flow_nodes as FlowNode[]).filter((node) => (node.phase ?? 'main') !== phase)
-      form.flow_nodes = [...others, ...nodes].map((node, index) => ({ ...node, order: index + 1 }))
+      form.flow_nodes = mergeFlowNodes((form.flow_nodes as FlowNode[]) ?? [], phase, nodes)
     },
   })
 }
@@ -131,12 +131,15 @@ async function save() {
   }
   loading.value = true
   try {
+    const flowNodes = normalizeFlowNodeOrders(
+      ((form.flow_nodes as FlowNode[]) ?? []).map(normalizeFlowNode),
+    )
     const payload: Partial<TestCase> = {
       name: form.name,
       module_id: form.module_id,
       description: form.description,
       status: form.status,
-      flow_nodes: (form.flow_nodes as FlowNode[]).map(normalizeFlowNode),
+      flow_nodes: flowNodes,
       variables: collectVariables(),
     }
     if (isEdit.value) {

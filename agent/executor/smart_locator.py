@@ -432,7 +432,15 @@ class SmartElementResolver:
     def __init__(self, total_timeout: float = DEFAULT_TOTAL_TIMEOUT) -> None:
         self.total_timeout = total_timeout
 
-    def resolve(self, driver, context, locator_snapshot: dict, disable_scroll: bool = False):
+    def resolve(
+        self,
+        driver,
+        context,
+        locator_snapshot: dict,
+        disable_scroll: bool = False,
+        deadline: float | None = None,
+        allow_immediate: bool = False,
+    ):
         """从 smart 快照定位元素；找不到/不唯一/滚动耗尽/配置非法均抛对应异常。"""
         # 平台守卫：本阶段智能定位仅支持 Android（平台字段缺省/None 视为不限定）。
         platform = locator_snapshot.get("platform")
@@ -453,7 +461,7 @@ class SmartElementResolver:
             search["scroll"] = False
         selection = config["selection"]
         alternatives = config["alternatives"]
-        deadline = time.monotonic() + self.total_timeout
+        deadline = deadline if deadline is not None else time.monotonic() + self.total_timeout
         scroll_enabled = search["scroll"] and search["max_swipes"] > 0
         swipes_done = 0
         scrolled = False
@@ -467,7 +475,8 @@ class SmartElementResolver:
         while True:
             for alt_index, alt in enumerate(alternatives, start=1):
                 self._check_stop(context)
-                self._check_deadline(deadline)
+                if not allow_immediate:
+                    self._check_deadline(deadline)
                 locator_type, locator_value = build_selector(alt)
                 logger.info(
                     "智能定位候选 %s/%s: %s=%s", alt_index, len(alternatives), locator_type, locator_value
@@ -477,6 +486,9 @@ class SmartElementResolver:
                 logger.info("候选 %s 匹配 %s 个元素", alt_index, count)
                 if count >= 1:
                     return self._select(matches, selection, locator_value)
+
+            if allow_immediate:
+                break
 
             # 当前页面全部候选未命中 → 滚动一页后重查（页面指纹连续两次不变提前停止）
             if not scroll_enabled or page_stable:
@@ -493,7 +505,7 @@ class SmartElementResolver:
             scrolled = True
             settle = search["settle_ms"] / 1000.0
             if settle > 0:
-                time.sleep(settle)
+                self._sleep_with_budget(context, settle, deadline)
             self._check_stop(context)
             self._check_deadline(deadline)
             cur_sig = self._page_signature(driver)
@@ -545,9 +557,22 @@ class SmartElementResolver:
         if stop is not None and stop():
             raise StopRequested("执行被用户停止")
 
-    def _check_deadline(self, deadline: float) -> None:
-        if time.monotonic() > deadline:
-            raise ElementNotFound(f"智能定位超过 {self.total_timeout:.0f}s 总超时仍未找到元素")
+    @staticmethod
+    def _check_deadline(deadline: float) -> None:
+        if time.monotonic() >= deadline:
+            raise ElementNotFound("智能定位超过截止时间仍未找到元素")
+
+    @classmethod
+    def _sleep_with_budget(cls, context, seconds: float, deadline: float) -> None:
+        """以小片段休眠，确保停止信号和绝对截止时间能及时生效。"""
+        sleep_deadline = min(deadline, time.monotonic() + max(0.0, seconds))
+        while True:
+            cls._check_stop(context)
+            remaining = sleep_deadline - time.monotonic()
+            if remaining <= 0:
+                cls._check_deadline(deadline)
+                return
+            time.sleep(min(0.1, remaining))
 
     @staticmethod
     def _find_all(driver, locator_type: str, locator_value: str):

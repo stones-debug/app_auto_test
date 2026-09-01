@@ -496,9 +496,11 @@ async def handle_node_result(db: AsyncSession, agent_id: int, payload: dict) -> 
     if case is not None:
         if case.started_at is None:
             case.started_at = node.started_at or now
-        if node.kind == "assertion" and node.status == "failed":
-            case.status = "failed"
-            case.error_message = case.error_message or "断言失败"
+        if node.kind == "assertion" and node.status in {"failed", "error"}:
+            case.status = node.status
+            case.error_message = case.error_message or (
+                "断言执行错误" if node.status == "error" else "断言失败"
+            )
         elif node.kind == "action" and node.status in {"failed", "error"} and not node.continue_on_failure:
             case.status = node.status
             case.error_message = node.error_message
@@ -691,6 +693,22 @@ async def _stored_execution_terminal(
             )
         ).scalars()
     )
+    suite_node_statuses = set(
+        (
+            await db.execute(
+                select(ExecutionNode.status)
+                .join(
+                    ExecutionSuite,
+                    ExecutionSuite.id == ExecutionNode.execution_suite_id,
+                )
+                .where(
+                    ExecutionSuite.execution_id == execution_id,
+                    ExecutionNode.execution_case_id.is_(None),
+                    ExecutionNode.status.in_(("error", "failed", "stopped")),
+                )
+            )
+        ).scalars()
+    )
     suite_step_statuses = set(
         (
             await db.execute(
@@ -712,6 +730,8 @@ async def _stored_execution_terminal(
             return candidate, f"{candidate} 套件"
         if candidate in case_statuses:
             return candidate, f"{candidate} 用例"
+        if candidate in suite_node_statuses:
+            return candidate, f"{candidate} 套件节点"
         if candidate in suite_step_statuses:
             return candidate, f"{candidate} 套件步骤"
     return None, None

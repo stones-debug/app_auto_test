@@ -25,6 +25,7 @@ class NodeStartedMessage(TypedDict):
     execution_id: int
     session_token: str | None
     execution_node_id: int
+    execution_suite_id: NotRequired[int]
     execution_case_id: NotRequired[int]
     kind: NotRequired[str]
     attempt: NotRequired[int]
@@ -35,6 +36,7 @@ class NodeResultMessage(TypedDict):
     execution_id: int
     session_token: str | None
     execution_node_id: int
+    execution_suite_id: NotRequired[int]
     execution_case_id: NotRequired[int]
     kind: NotRequired[str]
     status: str

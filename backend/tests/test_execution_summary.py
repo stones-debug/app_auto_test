@@ -80,6 +80,18 @@ def test_merge_execution_status(agent_status: str, stored_statuses: tuple[str, .
             "error",
             "已有错误",
         ),
+        (
+            CaseStatusInput(status="running", step_statuses=("error",)),
+            "passed",
+            "error",
+            None,
+        ),
+        (
+            CaseStatusInput(status="running", assertion_statuses=("error",)),
+            "passed",
+            "error",
+            None,
+        ),
         (CaseStatusInput(status="failed"), "passed", "failed", None),
     ],
 )

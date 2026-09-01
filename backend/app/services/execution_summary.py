@@ -98,6 +98,8 @@ def merge_case_status(case: CaseStatusInput, terminal_status: str) -> CaseMergeR
         "fail" if status in ("fail", "failed") else status
         for status in case.assertion_statuses
     }
+    if "error" in case.step_statuses or "error" in assertion_statuses:
+        return CaseMergeResult("error", case.error_message)
     failed = "failed" in case.step_statuses or "fail" in assertion_statuses
     if failed:
         return CaseMergeResult("failed", case.error_message)

@@ -58,8 +58,16 @@ def _run_action_in_thread(action_cls, driver, context, params: dict) -> dict:
     return asyncio.run(action_cls().execute(driver, context, params))
 
 
-def _run_assertion_in_thread(assertion_cls, driver, context, params: dict) -> dict:
-    return asyncio.run(assertion_cls().verify(driver, context, params))
+def _run_assertion_in_thread(
+    assertion_cls,
+    driver,
+    context,
+    params: dict,
+    deadline: float | None = None,
+) -> dict:
+    if deadline is None:
+        return asyncio.run(assertion_cls().verify(driver, context, params))
+    return asyncio.run(assertion_cls().verify(driver, context, params, deadline=deadline))
 
 
 class RunnerReporter:
@@ -145,6 +153,7 @@ class RunnerReporter:
         execution_node_id: int,
         attempt: int | None = None,
         *,
+        execution_suite_id: int | None = None,
         execution_case_id: int | None = None,
         kind: str | None = None,
     ) -> None:
@@ -154,6 +163,8 @@ class RunnerReporter:
         }
         if attempt is not None:
             msg["attempt"] = attempt
+        if execution_suite_id is not None:
+            msg["execution_suite_id"] = execution_suite_id
         if execution_case_id is not None:
             msg["execution_case_id"] = execution_case_id
         if kind is not None:
@@ -165,7 +176,7 @@ class RunnerReporter:
         actual_value: str | None = None, expected_value: str | None = None,
         error_message: str | None = None, screenshot_path: str | None = None,
         attempt_count: int | None = None, execution_case_id: int | None = None,
-        kind: str | None = None,
+        kind: str | None = None, execution_suite_id: int | None = None,
     ) -> None:
         msg: NodeResultMessage = {
             "type": "node_result", "execution_id": self.execution_id,
@@ -176,6 +187,8 @@ class RunnerReporter:
         }
         if attempt_count is not None:
             msg["attempt_count"] = attempt_count
+        if execution_suite_id is not None:
+            msg["execution_suite_id"] = execution_suite_id
         if execution_case_id is not None:
             msg["execution_case_id"] = execution_case_id
         if kind is not None:
@@ -307,13 +320,38 @@ class TestRunner:
                         effective = dict(assertion.get("params") or {})
                         if assertion.get("element_id") is not None and "element_id" not in effective:
                             effective["element_id"] = assertion["element_id"]
-                        assertion_result = await asyncio.to_thread(
-                            _run_assertion_in_thread,
-                            assertion_cls,
-                            self.driver,
-                            context,
-                            effective,
-                        )
+
+                        async def verify_once(
+                            deadline: float,
+                            assertion_type=assertion_cls,
+                            params=effective,
+                        ) -> dict:
+                            return await asyncio.to_thread(
+                                _run_assertion_in_thread,
+                                assertion_type,
+                                self.driver,
+                                context,
+                                params,
+                                deadline,
+                            )
+
+                        # V2 步骤后断言没有统一节点的等待字段，保持历史单次验证行为；
+                        # 只有明确带等待字段时才启用硬超时轮询。
+                        if "max_wait_seconds" not in assertion:
+                            assertion_result = await asyncio.to_thread(
+                                _run_assertion_in_thread,
+                                assertion_cls,
+                                self.driver,
+                                context,
+                                effective,
+                            )
+                        else:
+                            assertion_result = await verify_with_wait(
+                                verify_once,
+                                max_wait_seconds=float(assertion["max_wait_seconds"]),
+                                should_stop=self.should_stop,
+                                on_interrupt=lambda: asyncio.to_thread(self.driver.interrupt),
+                            )
                     except StopRequested:
                         raise
                     except Exception as exc:
@@ -390,10 +428,15 @@ class TestRunner:
         context: ExecutionContext,
         reporter: RunnerReporter,
         phase: str,
-        execution_case_id: int,
-    ) -> tuple[bool, bool]:
-        """V3：动作/断言共用一个有序节点流。"""
-        failed = False
+        execution_case_id: int | None = None,
+        execution_suite_id: int | None = None,
+    ) -> tuple[str | None, bool]:
+        """V3：动作/断言共用一个有序节点流。
+
+        返回阶段的真实聚合状态，而不是仅返回是否失败；这样未知动作、
+        驱动异常和断言内部异常会以 ``error`` 继续向上汇总。
+        """
+        statuses: list[str] = []
         for node in nodes:
             if self.should_stop():
                 raise StopRequested("执行被用户停止")
@@ -403,6 +446,7 @@ class TestRunner:
             kind = node.get("kind") or ("assertion" if node.get("type") else "action")
             await reporter.node_started(
                 node_id,
+                execution_suite_id=execution_suite_id,
                 execution_case_id=execution_case_id,
                 kind=str(kind),
             )
@@ -417,15 +461,28 @@ class TestRunner:
                     if node.get("element_id") is not None:
                         effective.setdefault("element_id", node["element_id"])
 
-                    async def verify_once(assertion_type=assertion_cls, params=effective) -> dict:
+                    async def verify_once(
+                        deadline: float,
+                        assertion_type=assertion_cls,
+                        params=effective,
+                    ) -> dict:
                         return await asyncio.to_thread(
-                            _run_assertion_in_thread, assertion_type, self.driver, context, params
+                            _run_assertion_in_thread,
+                            assertion_type,
+                            self.driver,
+                            context,
+                            params,
+                            deadline,
                         )
+
+                    def interrupt_driver():
+                        return asyncio.to_thread(self.driver.interrupt)
 
                     result = await verify_with_wait(
                         verify_once,
                         max_wait_seconds=float(node.get("max_wait_seconds", 10)),
                         should_stop=self.should_stop,
+                        on_interrupt=interrupt_driver,
                     )
                 else:
                     action_name = str(node.get("action") or "unknown")
@@ -449,6 +506,7 @@ class TestRunner:
             await self._resolve_screenshot(result)
             expected = result.get("expected") or (node.get("params") or {}).get("expected")
             status = str(result.get("status") or "error")
+            statuses.append(status)
             await reporter.node_result(
                 node_id, status=status, duration=duration,
                 actual_value=str(result.get("actual")) if result.get("actual") is not None else result.get("actual_value"),
@@ -456,6 +514,7 @@ class TestRunner:
                 error_message=str(result.get("error_message")) if result.get("error_message") else None,
                 screenshot_path=result.get("screenshot_path"),
                 attempt_count=result.get("attempt_count"),
+                execution_suite_id=execution_suite_id,
                 execution_case_id=execution_case_id,
                 kind=str(kind),
             )
@@ -465,10 +524,9 @@ class TestRunner:
                 int(node.get("order") or 0),
             )
             if status != "passed":
-                failed = True
                 if not node.get("continue_on_failure", False):
-                    return failed, True
-        return failed, False
+                    return aggregate_statuses(statuses), True
+        return (aggregate_statuses(statuses) if statuses else None), False
 
     async def run_case(self, case: dict, reporter: RunnerReporter | None = None) -> str:
         execution_case_id = int(case.get("execution_case_id") or 0)
@@ -489,21 +547,24 @@ class TestRunner:
             setup_nodes = [node for node in all_steps if _case_phase_bucket(node.get("phase")) == "setup"]
             main_nodes = [node for node in all_steps if _case_phase_bucket(node.get("phase")) == "main"]
             teardown_nodes = [node for node in all_steps if _case_phase_bucket(node.get("phase")) == "teardown"]
-            case_failed = False
-            setup_failed, setup_halted = await self._run_flow_nodes(
-                setup_nodes, context, reporter, "setup", execution_case_id
+            phase_statuses: list[str] = []
+            setup_status, setup_halted = await self._run_flow_nodes(
+                setup_nodes, context, reporter, "setup", execution_case_id=execution_case_id
             )
-            case_failed = case_failed or setup_failed
+            if setup_status is not None:
+                phase_statuses.append(setup_status)
             if not setup_halted:
-                main_failed, _main_halted = await self._run_flow_nodes(
-                    main_nodes, context, reporter, "main", execution_case_id
+                main_status, _main_halted = await self._run_flow_nodes(
+                    main_nodes, context, reporter, "main", execution_case_id=execution_case_id
                 )
-                case_failed = case_failed or main_failed
-            teardown_failed, _teardown_halted = await self._run_flow_nodes(
-                teardown_nodes, context, reporter, "teardown", execution_case_id
+                if main_status is not None:
+                    phase_statuses.append(main_status)
+            teardown_status, _teardown_halted = await self._run_flow_nodes(
+                teardown_nodes, context, reporter, "teardown", execution_case_id=execution_case_id
             )
-            case_failed = case_failed or teardown_failed
-            return "failed" if case_failed else "passed"
+            if teardown_status is not None:
+                phase_statuses.append(teardown_status)
+            return aggregate_statuses(phase_statuses)
         setup_steps = [s for s in all_steps if _case_phase_bucket(s.get("phase")) == "setup"]
         main_steps = [s for s in all_steps if _case_phase_bucket(s.get("phase")) == "main"]
         teardown_steps = [s for s in all_steps if _case_phase_bucket(s.get("phase")) == "teardown"]
@@ -548,13 +609,23 @@ class TestRunner:
         cases = suite.get("cases") or []
         case_statuses: list[str] = []
 
-        setup_failed, _setup_halted = await self._run_steps(
-            suite.get("setup_steps") or [],
-            context,
-            reporter,
-            "suite_setup",
-            execution_suite_id=suite_id,
-        )
+        setup_nodes = suite.get("setup_nodes")
+        teardown_nodes = suite.get("teardown_nodes")
+        phase_statuses: list[str] = []
+        if setup_nodes is not None:
+            setup_status, setup_halted = await self._run_flow_nodes(
+                setup_nodes, context, reporter, "suite_setup", execution_suite_id=suite_id
+            )
+            if setup_status is not None:
+                phase_statuses.append(setup_status)
+        else:
+            setup_failed, setup_halted = await self._run_steps(
+                suite.get("setup_steps") or [], context, reporter, "suite_setup",
+                execution_suite_id=suite_id,
+            )
+            if setup_failed:
+                phase_statuses.append("failed")
+        setup_failed = setup_status in {"failed", "error"} if setup_nodes is not None else setup_failed
         if setup_failed:
             for case in cases:
                 case_id = int(case.get("execution_case_id") or 0)
@@ -568,20 +639,21 @@ class TestRunner:
                 await reporter.case_status(case_id, cstatus)
                 case_statuses.append(cstatus)
 
-        teardown_failed, _teardown_halted = await self._run_steps(
-            suite.get("teardown_steps") or [],
-            context,
-            reporter,
-            "suite_teardown",
-            execution_suite_id=suite_id,
-        )
+        if teardown_nodes is not None:
+            teardown_status, _teardown_halted = await self._run_flow_nodes(
+                teardown_nodes, context, reporter, "suite_teardown", execution_suite_id=suite_id
+            )
+            if teardown_status is not None:
+                phase_statuses.append(teardown_status)
+        else:
+            teardown_failed, _teardown_halted = await self._run_steps(
+                suite.get("teardown_steps") or [], context, reporter, "suite_teardown",
+                execution_suite_id=suite_id,
+            )
+            if teardown_failed:
+                phase_statuses.append("failed")
 
-        statuses = list(case_statuses)
-        if setup_failed:
-            statuses.append("failed")
-        if teardown_failed:
-            statuses.append("failed")
-        terminal = aggregate_statuses(statuses)
+        terminal = aggregate_statuses([*phase_statuses, *case_statuses])
         await reporter.suite_status(suite_id, terminal)
         return terminal
 

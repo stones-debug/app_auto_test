@@ -53,6 +53,47 @@ interface RealtimeCase {
   assertions?: RealtimeAssertion[]
 }
 
+const TERMINAL_STATUS_PRIORITY: Record<string, number> = {
+  passed: 1,
+  skipped: 2,
+  stopped: 3,
+  failed: 4,
+  error: 5,
+}
+
+function isTerminalStatus(status: string): boolean {
+  return Object.prototype.hasOwnProperty.call(TERMINAL_STATUS_PRIORITY, status)
+}
+
+/** 按 error > failed > stopped > skipped > passed 聚合节点状态。 */
+export function aggregateRealtimeStatuses(statuses: Iterable<string>): string {
+  const values = [...statuses].map((status) => String(status).toLowerCase())
+  if (!values.length) return 'skipped'
+  for (const status of ['error', 'failed', 'stopped']) {
+    if (values.includes(status)) return status
+  }
+  if (values.includes('running')) return 'running'
+  if (values.includes('pending')) return 'pending'
+  if (values.includes('skipped')) return 'skipped'
+  if (values.length && values.every((status) => status === 'passed')) return 'passed'
+  return 'error'
+}
+
+/** 合并单条状态消息，禁止低优先级状态覆盖已经存在的终态。 */
+export function mergeRealtimeStatus(current: string, incoming: string): string {
+  const previous = String(current || 'pending').toLowerCase()
+  const next = String(incoming || previous).toLowerCase()
+  if (!isTerminalStatus(previous)) {
+    if (isTerminalStatus(next)) return next
+    if (next === 'running') return 'running'
+    return previous === 'running' ? previous : next
+  }
+  if (!isTerminalStatus(next)) return previous
+  return (TERMINAL_STATUS_PRIORITY[next] ?? 0) >= (TERMINAL_STATUS_PRIORITY[previous] ?? 0)
+    ? next
+    : previous
+}
+
 function findSuite(suites: RealtimeSuite[], message: RealtimeMessage): RealtimeSuite | null {
   const executionSuiteId = message.execution_suite_id
   if (executionSuiteId != null) {
@@ -156,47 +197,107 @@ function findStep(
   return null
 }
 
+function findSuiteStepByNodeId(
+  suites: RealtimeSuite[],
+  message: RealtimeMessage,
+): { suite: RealtimeSuite; step: RealtimeStep } | null {
+  const suite = findSuite(suites, message)
+  if (!suite) return null
+  const nodeId = message.execution_node_id == null ? null : Number(message.execution_node_id)
+  if (nodeId == null) return null
+  const step = [...(suite.setup_steps ?? []), ...(suite.teardown_steps ?? [])]
+    .find((item) => item.id != null && item.id === nodeId)
+  return step ? { suite, step } : null
+}
+
+function updateStepFromNodeMessage(step: RealtimeStep, message: RealtimeMessage): void {
+  step.status = String(message.status ?? step.status)
+  if (message.duration != null) step.duration = Number(message.duration)
+  if (message.actual_value != null) step.actual_value = String(message.actual_value)
+  if (message.error_message != null) step.error_message = String(message.error_message)
+  if (message.artifact_id != null) step.artifact_id = Number(message.artifact_id)
+}
+
+function aggregateCaseNodeStatus(executionCase: RealtimeCase, fallback: string): string {
+  if (!executionCase.nodes?.length) return fallback
+  const nodeStatus = aggregateRealtimeStatuses(executionCase.nodes.map((node) => node.status))
+  // case_status 可能先于节点结果到达；已有 error/failed/stopped 不能被后续
+  // node_started 或通过消息降级。
+  return ['error', 'failed', 'stopped'].includes(fallback)
+    ? aggregateRealtimeStatuses([fallback, nodeStatus])
+    : nodeStatus
+}
+
+function aggregateSuiteStatus(suite: RealtimeSuite): string {
+  return aggregateRealtimeStatuses([
+    ...(suite.setup_steps ?? []).map((step) => step.status),
+    ...suite.cases.map((executionCase) => executionCase.status),
+    ...(suite.teardown_steps ?? []).map((step) => step.status),
+  ])
+}
+
 export function applyStepResult(suites: RealtimeSuite[], message: RealtimeMessage): void {
   if (!Array.isArray(suites)) return
   const caseRow = findCase(suites, message)
 
   const step = findStep(suites, caseRow, message)
   if (step) {
-    step.status = String(message.status ?? step.status)
-    step.duration = message.duration == null ? step.duration : Number(message.duration)
-    step.actual_value = message.actual_value == null
-      ? step.actual_value
-      : String(message.actual_value)
-    step.error_message = message.error_message == null
-      ? step.error_message
-      : String(message.error_message)
-    step.artifact_id = message.artifact_id == null ? step.artifact_id : Number(message.artifact_id)
+    updateStepFromNodeMessage(step, message)
   }
 
   if (!caseRow) {
     const suiteRow = findSuite(suites, message)
     if (suiteRow) {
       const suiteStatus = message.case_status
-      if (typeof suiteStatus === 'string' && suiteStatus) suiteRow.status = suiteStatus
-      else if (message.status === 'failed') suiteRow.status = 'failed'
-      else suiteRow.status = 'running'
+      if (typeof suiteStatus === 'string' && suiteStatus) {
+        suiteRow.status = mergeRealtimeStatus(suiteRow.status, suiteStatus)
+      } else {
+        suiteRow.status = mergeRealtimeStatus(
+          suiteRow.status,
+          message.status === 'failed' ? 'failed' : 'running',
+        )
+      }
     }
     return
   }
   const caseStatus = message.case_status
   if (typeof caseStatus === 'string' && caseStatus) {
-    caseRow.status = caseStatus
+    caseRow.status = mergeRealtimeStatus(caseRow.status, caseStatus)
   } else if (message.status === 'failed') {
-    caseRow.status = 'failed'
+    caseRow.status = mergeRealtimeStatus(caseRow.status, 'failed')
   } else {
-    caseRow.status = 'running'
+    caseRow.status = mergeRealtimeStatus(caseRow.status, 'running')
   }
+}
+
+/** V3：节点开始执行时立即显示 running，并按全部节点重新计算用例状态。 */
+export function applyNodeStarted(suites: RealtimeSuite[], message: RealtimeMessage): void {
+  if (!Array.isArray(suites)) return
+  const executionCase = findCase(suites, message)
+  if (executionCase?.nodes) {
+    const nodeId = message.execution_node_id == null ? null : Number(message.execution_node_id)
+    const node = executionCase.nodes.find((item) => nodeId != null && item.id === nodeId)
+    if (!node) return
+    node.status = 'running'
+    executionCase.status = aggregateCaseNodeStatus(executionCase, 'running')
+    return
+  }
+  const suiteNode = findSuiteStepByNodeId(suites, message)
+  if (!suiteNode) return
+  suiteNode.step.status = 'running'
+  suiteNode.suite.status = aggregateSuiteStatus(suiteNode.suite)
 }
 
 /** V3：按 execution_node_id 合并统一节点结果，不依赖节点数组位置。 */
 export function applyNodeResult(suites: RealtimeSuite[], message: RealtimeMessage): void {
   const executionCase = findCase(suites, message)
-  if (!executionCase?.nodes) return
+  if (!executionCase?.nodes) {
+    const suiteNode = findSuiteStepByNodeId(suites, message)
+    if (!suiteNode) return
+    updateStepFromNodeMessage(suiteNode.step, message)
+    suiteNode.suite.status = aggregateSuiteStatus(suiteNode.suite)
+    return
+  }
   const nodeId = message.execution_node_id == null ? null : Number(message.execution_node_id)
   const node = executionCase.nodes.find((item) => nodeId != null && item.id === nodeId)
   if (!node) return
@@ -207,16 +308,16 @@ export function applyNodeResult(suites: RealtimeSuite[], message: RealtimeMessag
   if (message.error_message != null) node.error_message = String(message.error_message)
   if (message.attempt_count != null) node.attempt_count = Number(message.attempt_count)
   if (message.artifact_id != null) node.artifact_id = Number(message.artifact_id)
-  const caseStatus = message.case_status
-  if (typeof caseStatus === 'string' && caseStatus) executionCase.status = caseStatus
-  else if (node.status !== 'passed') executionCase.status = node.status
-  else executionCase.status = 'running'
+  executionCase.status = aggregateCaseNodeStatus(executionCase, executionCase.status)
 }
 
 export function applyCaseStatus(suites: RealtimeSuite[], message: RealtimeMessage): void {
   const executionCase = findCase(suites, message)
   if (!executionCase) return
-  executionCase.status = String(message.status ?? executionCase.status)
+  executionCase.status = mergeRealtimeStatus(
+    executionCase.status,
+    String(message.status ?? executionCase.status),
+  )
   executionCase.duration = message.duration == null
     ? executionCase.duration
     : Number(message.duration)
@@ -228,7 +329,10 @@ export function applyCaseStatus(suites: RealtimeSuite[], message: RealtimeMessag
 export function applySuiteStatus(suites: RealtimeSuite[], message: RealtimeMessage): void {
   const executionSuite = findSuite(suites, message)
   if (!executionSuite) return
-  executionSuite.status = String(message.status ?? executionSuite.status)
+  executionSuite.status = mergeRealtimeStatus(
+    executionSuite.status,
+    String(message.status ?? executionSuite.status),
+  )
   executionSuite.duration = message.duration == null
     ? executionSuite.duration
     : Number(message.duration)
@@ -309,9 +413,9 @@ export function applyAssertionResult(suites: RealtimeSuite[], message: RealtimeM
   })
 
   if (typeof message.case_status === 'string' && message.case_status) {
-    executionCase.status = message.case_status
+    executionCase.status = mergeRealtimeStatus(executionCase.status, message.case_status)
   } else if (incoming.some((item) => ['fail', 'failed'].includes(String(item.status)))) {
-    executionCase.status = 'failed'
+    executionCase.status = mergeRealtimeStatus(executionCase.status, 'failed')
   }
 }
 

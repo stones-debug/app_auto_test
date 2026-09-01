@@ -379,6 +379,13 @@ class AgentApp:
         await self.client.send(msg)
         logger.info("已上报 %s 台设备", len(devices))
 
+    async def _interrupt_driver(self, driver) -> None:
+        """后台中断驱动，避免 stop_test 等待阻塞中的 Appium 命令返回。"""
+        try:
+            await asyncio.to_thread(driver.interrupt)
+        except Exception as exc:
+            logger.warning("interrupt 失败: %s", exc)
+
     async def on_message(self, message: dict) -> None:
         """CR-06：接收循环只做分发；start_test 独立 task，stop_test 立即生效。"""
         msg_type = message.get("type")
@@ -432,18 +439,15 @@ class AgentApp:
             if runtime is None:
                 logger.warning("stop_test 但 execution=%s 不在运行", execution_id)
                 return
-            # 顺序固定：set cancel event → 线程中 interrupt driver → cancel task
+            # 顺序固定：set cancel event → cancel task → 后台 interrupt driver。
+            # interrupt 本身可能也是阻塞的，不能让 stop_test 的接收协程等待它。
             runtime.cancel_event.set()
             driver = runtime.driver
-            if driver is not None and hasattr(driver, "interrupt"):
-                try:
-                    # Windows 方案 §2：终止 Appium 会话可能阻塞，进入工作线程
-                    await asyncio.to_thread(driver.interrupt)
-                except Exception as exc:
-                    logger.warning("interrupt 失败: %s", exc)
             task = runtime.task
             if task is not None and not task.done():
                 task.cancel()
+            if driver is not None and hasattr(driver, "interrupt"):
+                asyncio.create_task(self._interrupt_driver(driver))
         else:
             logger.debug("忽略消息: %s", msg_type)
 

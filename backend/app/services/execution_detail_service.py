@@ -29,9 +29,11 @@ async def load_case_tree(db: AsyncSession, execution_id: int) -> list[dict]:
             "description": node.description,
             "element_id": node.element_id, "parameters": node.parameters or {},
             "max_wait_seconds": node.max_wait_seconds, "continue_on_failure": node.continue_on_failure,
-            "status": node.status, "duration": node.duration, "attempt_count": node.attempt_count,
+            "status": node.status, "started_at": node.started_at, "finished_at": node.finished_at,
+            "duration": node.duration, "attempt_count": node.attempt_count,
             "actual_value": node.actual_value, "expected_value": node.expected_value,
-            "error_message": node.error_message, "artifact_id": node.id if node.screenshot_path else None,
+            "error_message": node.error_message, "screenshot_path": node.screenshot_path,
+            "artifact_id": node.id if node.screenshot_path else None,
         })
 
     # 键中的 case_id 来自 ExecutionStep.execution_case_id（可空列：套件阶段步骤不挂用例）。
@@ -142,8 +144,8 @@ async def load_case_tree(db: AsyncSession, execution_id: int) -> list[dict]:
 async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
     """返回 execution 的套件树（S1-7 §2：执行详情嵌套 suites 聚合）。
 
-    每个 suite 含 setup_steps / teardown_steps（快照 JSON + ExecutionStep(套件阶段) 行合并状态）
-    与 cases（steps/assertions）。常数级查询：套件、用例、用例步骤、套件步骤、断言各一次。
+    每个 suite 含 setup_steps / teardown_steps（统一 ExecutionNode 投影）
+    与 cases（steps/assertions）。旧 ExecutionStep 行仅用于读取旧数据。
     """
     suite_rows, cases, suite_step_rows, case_step_rows, assertion_rows = await execution_tree.load_suite_tree_rows(db, execution_id)
     if not suite_rows:
@@ -162,9 +164,11 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
             "description": node.description,
             "element_id": node.element_id, "parameters": node.parameters or {},
             "max_wait_seconds": node.max_wait_seconds, "continue_on_failure": node.continue_on_failure,
-            "status": node.status, "duration": node.duration, "attempt_count": node.attempt_count,
+            "status": node.status, "started_at": node.started_at, "finished_at": node.finished_at,
+            "duration": node.duration, "attempt_count": node.attempt_count,
             "actual_value": node.actual_value, "expected_value": node.expected_value,
-            "error_message": node.error_message, "artifact_id": node.id if node.screenshot_path else None,
+            "error_message": node.error_message, "screenshot_path": node.screenshot_path,
+            "artifact_id": node.id if node.screenshot_path else None,
         }
         if node.execution_case_id is not None:
             nodes_by_case.setdefault(node.execution_case_id, []).append(item)
@@ -291,9 +295,44 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
             "screenshot_path": s.screenshot_path,
         }
 
+    def _mk_suite_node_step(node: dict) -> dict:
+        """将套件动作节点投影为旧详情字段，供报告/详情统一展示。"""
+        return {
+            "id": node["id"],
+            "step_order": node["node_order"],
+            "action": node.get("action") or "unknown",
+            "phase": node.get("phase"),
+            "parameters": node.get("parameters") or {},
+            "status": node.get("status", "pending"),
+            "started_at": node.get("started_at"),
+            "finished_at": node.get("finished_at"),
+            "duration": node.get("duration"),
+            "actual_value": node.get("actual_value"),
+            "error_message": node.get("error_message"),
+            "screenshot_path": node.get("screenshot_path"),
+        }
+
     result: list[dict] = []
     for suite in suite_rows:
         suite_steps = suite_steps_by_suite.get(suite.id, [])
+        suite_nodes = nodes_by_suite.get(suite.id, [])
+        setup_steps = [
+            _mk_suite_step(s) for s in suite_steps if s.phase == "suite_setup"
+        ]
+        teardown_steps = [
+            _mk_suite_step(s) for s in suite_steps if s.phase == "suite_teardown"
+        ]
+        if not suite_steps:
+            setup_steps = [
+                _mk_suite_node_step(node)
+                for node in suite_nodes
+                if node.get("phase") == "suite_setup"
+            ]
+            teardown_steps = [
+                _mk_suite_node_step(node)
+                for node in suite_nodes
+                if node.get("phase") == "suite_teardown"
+            ]
         result.append(
             {
                 "id": suite.id,
@@ -306,8 +345,8 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
                 "started_at": suite.started_at,
                 "finished_at": suite.finished_at,
                 "duration": suite.duration,
-                "setup_steps": [_mk_suite_step(s) for s in suite_steps if s.phase == "suite_setup"],
-                "teardown_steps": [_mk_suite_step(s) for s in suite_steps if s.phase == "suite_teardown"],
+                "setup_steps": setup_steps,
+                "teardown_steps": teardown_steps,
                 "cases": [_mk_case(c) for c in cases_by_suite.get(suite.id, [])],
                 "nodes": nodes_by_suite.get(suite.id, []),
             }

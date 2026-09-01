@@ -15,6 +15,7 @@ from app.models import (
     ExecutionAssertion,
     ExecutionCase,
     ExecutionLog,
+    ExecutionNode,
     ExecutionQueue,
     ExecutionStep,
     ExecutionSuite,
@@ -421,6 +422,22 @@ async def test_unprofiled_suite_snapshot_contains_suite_elements_and_variables(c
             await db.execute(select(ExecutionCase).where(ExecutionCase.execution_suite_id == execution_suite.id))
         ).scalar_one()
         assert execution_case.elements_snapshot[str(element_id)]["locator_value"] == "suite-button"
+        suite_nodes = (
+            await db.execute(
+                select(ExecutionNode)
+                .where(ExecutionNode.execution_suite_id == execution_suite.id)
+                .order_by(ExecutionNode.phase, ExecutionNode.node_order)
+            )
+        ).scalars().all()
+        assert [(node.phase, node.node_order) for node in suite_nodes] == [
+            ("suite_setup", 1),
+            ("suite_teardown", 1),
+        ]
+        assert not (
+            await db.execute(
+                select(ExecutionStep).where(ExecutionStep.execution_suite_id == execution_suite.id)
+            )
+        ).scalars().first()
 
 
 async def _seed_five_layer_variables(client: AsyncClient) -> tuple[int, int, int, int]:

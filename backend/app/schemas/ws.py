@@ -71,6 +71,7 @@ class NodeStartedIn(BaseModel):
     execution_id: int
     session_token: str | None = None
     execution_node_id: int
+    execution_suite_id: int | None = None
     execution_case_id: int | None = None
     kind: Literal["action", "assertion"] | None = None
     attempt: int | None = Field(default=None, ge=1)
@@ -81,6 +82,7 @@ class NodeResultIn(BaseModel):
     execution_id: int
     session_token: str | None = None
     execution_node_id: int
+    execution_suite_id: int | None = None
     execution_case_id: int | None = None
     kind: Literal["action", "assertion"] | None = None
     status: Literal["passed", "failed", "error", "stopped", "skipped"] = "passed"

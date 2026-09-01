@@ -4,6 +4,8 @@ import { appendLogs, liveLogKey, mergeExecutionLogs, nextLogCursor } from '@/uti
 import {
   applyAssertionResult,
   applyCaseStatus,
+  applyNodeStarted,
+  applyNodeResult,
   applyStepResult,
   applySuiteStatus,
   executionConnectionState,
@@ -19,6 +21,73 @@ import { REPORT_LOG_PAGE_SIZE, visibleReportLogs } from '@/utils/reportLogs'
 ;(globalThis as Record<string, unknown>).location = { protocol: 'http:', host: 'test.local' }
 
 describe('Step 7 执行详情：日志去重与 WS 状态', () => {
+  it('node_started 立即把对应节点标记为 running', () => {
+    const suites = [{
+      id: 5,
+      suite_id: null,
+      suite_name: '虚拟套件',
+      status: 'running',
+      setup_steps: [],
+      cases: [{
+        id: 1,
+        case_id: 10,
+        case_name: '登录',
+        status: 'pending',
+        steps: [],
+        nodes: [
+          { id: 11, kind: 'action' as const, node_order: 1, phase: 'case_setup', status: 'pending', parameters: {} },
+          { id: 12, kind: 'action' as const, node_order: 1, phase: 'case_main', status: 'pending', parameters: {} },
+        ],
+      }],
+      teardown_steps: [],
+    }]
+
+    applyNodeStarted(suites, { execution_case_id: 1, execution_node_id: 11 })
+
+    expect(suites[0].cases[0].nodes?.[0].status).toBe('running')
+    expect(suites[0].cases[0].status).toBe('running')
+    expect(suites[0].cases[0].nodes?.[1].status).toBe('pending')
+  })
+
+  it('后续节点通过时不会覆盖已有 failed/error 用例状态', () => {
+    const suites = [{
+      id: 5,
+      suite_id: null,
+      suite_name: '虚拟套件',
+      status: 'running',
+      setup_steps: [],
+      cases: [{
+        id: 1,
+        case_id: 10,
+        case_name: '登录',
+        status: 'failed',
+        steps: [],
+        nodes: [
+          { id: 11, kind: 'assertion' as const, node_order: 1, phase: 'case_main', status: 'failed', parameters: {} },
+          { id: 12, kind: 'action' as const, node_order: 2, phase: 'case_teardown', status: 'pending', parameters: {} },
+        ],
+      }],
+      teardown_steps: [],
+    }]
+
+    applyNodeStarted(suites, { execution_case_id: 1, execution_node_id: 12 })
+    expect(suites[0].cases[0].status).toBe('failed')
+    applyNodeResult(suites, {
+      execution_case_id: 1,
+      execution_node_id: 12,
+      status: 'passed',
+    })
+    expect(suites[0].cases[0].status).toBe('failed')
+
+    suites[0].cases[0].nodes![0].status = 'error'
+    applyNodeResult(suites, {
+      execution_case_id: 1,
+      execution_node_id: 12,
+      status: 'passed',
+    })
+    expect(suites[0].cases[0].status).toBe('error')
+  })
+
   it('步骤结果分别更新步骤状态与服务端 case_status（嵌套 suites 定位）', () => {
     const suites = [{
       id: 5,

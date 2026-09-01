@@ -11,6 +11,7 @@ from app.models import (
     ExecutionAssertion,
     ExecutionCase,
     ExecutionLog,
+    ExecutionNode,
     ExecutionStep,
     ExecutionSuite,
     Project,
@@ -124,6 +125,62 @@ async def test_case_tree_query_count_is_constant():
         s for s in calls if any(t in s for t in ("execution_cases", "execution_steps", "execution_assertions"))
     ]
     assert len(tree_statements) == 3, f"case tree 查询数应为 3，实际 {len(tree_statements)}"
+
+
+async def test_case_nodes_are_ordered_by_phase_priority():
+    """统一节点展示顺序必须是前置、主流程、后置，而不是字符串序。"""
+    from app.models import ExecutionSuite
+    from app.repositories.execution_tree import load_case_nodes
+
+    execution_id = await _project_and_execution()
+    async with SessionLocal() as db:
+        suite = ExecutionSuite(
+            execution_id=execution_id,
+            suite_id=None,
+            suite_name="排序套件",
+            suite_order=1,
+            is_virtual=True,
+            status="passed",
+            setup_steps_snapshot=[],
+            teardown_steps_snapshot=[],
+            elements_snapshot={},
+        )
+        db.add(suite)
+        await db.flush()
+        execution_case = ExecutionCase(
+            execution_id=execution_id,
+            execution_suite_id=suite.id,
+            case_id=1,
+            case_name="排序用例",
+            case_order=1,
+            status="passed",
+            steps_snapshot=[],
+            flow_snapshot=[],
+        )
+        db.add(execution_case)
+        await db.flush()
+        db.add_all(
+            [
+                ExecutionNode(
+                    execution_case_id=execution_case.id,
+                    kind="action",
+                    node_order=1,
+                    phase=phase,
+                    action="sleep",
+                    status="passed",
+                )
+                for phase in ("case_main", "case_teardown", "case_setup")
+            ]
+        )
+        await db.commit()
+
+        nodes = await load_case_nodes(db, [execution_case.id])
+
+    assert [node.phase for node in nodes] == [
+        "case_setup",
+        "case_main",
+        "case_teardown",
+    ]
 
 
 async def test_get_execution_logs_total_uses_db_count():

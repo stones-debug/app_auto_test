@@ -1,4 +1,5 @@
 import re
+import time
 from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
@@ -43,6 +44,8 @@ class ExecutionContext:
         element_id,
         wait_timeout: float | None = None,
         *,
+        deadline: float | None = None,
+        allow_immediate: bool = False,
         editable: bool = False,
         disable_smart_scroll: bool = False,
     ):
@@ -51,11 +54,24 @@ class ExecutionContext:
         if data is None:
             raise ElementNotFound(f"元素快照缺失: element_id={element_id}")
         locator_type = data.get("locator_type") or "id"
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 and not allow_immediate:
+                raise ElementNotFound(f"元素定位达到最大等待时间: element_id={element_id}")
+            if remaining <= 0:
+                wait_timeout = 0.0
+            else:
+                wait_timeout = remaining if wait_timeout is None else min(float(wait_timeout), remaining)
         if locator_type == "smart":
             # smart 快照不支持 editable 概念（resource_id 追加 EditText 后缀仅适用普通定位）；
             # 若 step 参数携带 editable 一并忽略。
             return SmartElementResolver().resolve(
-                self.driver, self, data, disable_scroll=disable_smart_scroll
+                self.driver,
+                self,
+                data,
+                disable_scroll=disable_smart_scroll,
+                deadline=deadline,
+                allow_immediate=allow_immediate,
             )
         locator_value = self.render(data.get("locator_value") or "")
         if editable and locator_type == "resource_id":

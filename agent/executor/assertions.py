@@ -5,7 +5,7 @@ from .stale_guard import with_stale_retry
 
 
 class BaseAssertion:
-    async def verify(self, driver, context, params: dict) -> dict:
+    async def verify(self, driver, context, params: dict, *, deadline: float | None = None) -> dict:
         raise NotImplementedError
 
 
@@ -22,7 +22,7 @@ def register_assertion(name: str):
 
 @register_assertion("element_exists")
 class ElementExistsAssertion(BaseAssertion):
-    async def verify(self, driver, context, params: dict) -> dict:
+    async def verify(self, driver, context, params: dict, *, deadline: float | None = None) -> dict:
         expected = params.get("expected", "exists")
         try:
             await with_stale_retry(
@@ -30,6 +30,7 @@ class ElementExistsAssertion(BaseAssertion):
                 context,
                 params.get("element_id"),
                 lambda element: None,
+                deadline=deadline,
                 label="存在性检查",
             )
             found = True
@@ -52,12 +53,13 @@ class ElementExistsAssertion(BaseAssertion):
 
 @register_assertion("text_equals")
 class TextEqualsAssertion(BaseAssertion):
-    async def verify(self, driver, context, params: dict) -> dict:
+    async def verify(self, driver, context, params: dict, *, deadline: float | None = None) -> dict:
         actual = await with_stale_retry(
             driver,
             context,
             params.get("element_id"),
             lambda element: driver.get_text(element),
+            deadline=deadline,
             label="断言-读取文本",
         )
         if params.get("trim"):
@@ -69,12 +71,13 @@ class TextEqualsAssertion(BaseAssertion):
 
 @register_assertion("text_contains")
 class TextContainsAssertion(BaseAssertion):
-    async def verify(self, driver, context, params: dict) -> dict:
+    async def verify(self, driver, context, params: dict, *, deadline: float | None = None) -> dict:
         actual = await with_stale_retry(
             driver,
             context,
             params.get("element_id"),
             lambda element: driver.get_text(element),
+            deadline=deadline,
             label="断言-读取文本",
         )
         expected = str(params.get("expected", ""))
@@ -84,12 +87,13 @@ class TextContainsAssertion(BaseAssertion):
 
 @register_assertion("text_not_contains")
 class TextNotContainsAssertion(BaseAssertion):
-    async def verify(self, driver, context, params: dict) -> dict:
+    async def verify(self, driver, context, params: dict, *, deadline: float | None = None) -> dict:
         actual = await with_stale_retry(
             driver,
             context,
             params.get("element_id"),
             lambda element: driver.get_text(element),
+            deadline=deadline,
             label="断言-读取文本",
         )
         expected = str(params.get("expected", ""))
@@ -99,13 +103,14 @@ class TextNotContainsAssertion(BaseAssertion):
 
 @register_assertion("attribute_equals")
 class AttributeEqualsAssertion(BaseAssertion):
-    async def verify(self, driver, context, params: dict) -> dict:
+    async def verify(self, driver, context, params: dict, *, deadline: float | None = None) -> dict:
         attribute = params.get("attribute", "")
         actual = await with_stale_retry(
             driver,
             context,
             params.get("element_id"),
             lambda element: driver.get_attribute(element, attribute),
+            deadline=deadline,
             label="断言-读取属性",
         )
         expected = str(params.get("expected", ""))
@@ -115,13 +120,14 @@ class AttributeEqualsAssertion(BaseAssertion):
 
 @register_assertion("attribute_contains")
 class AttributeContainsAssertion(BaseAssertion):
-    async def verify(self, driver, context, params: dict) -> dict:
+    async def verify(self, driver, context, params: dict, *, deadline: float | None = None) -> dict:
         attribute = params.get("attribute", "")
         actual = await with_stale_retry(
             driver,
             context,
             params.get("element_id"),
             lambda element: driver.get_attribute(element, attribute),
+            deadline=deadline,
             label="断言-读取属性",
         )
         expected = str(params.get("expected", ""))
@@ -131,12 +137,13 @@ class AttributeContainsAssertion(BaseAssertion):
 
 @register_assertion("value_equals")
 class ValueEqualsAssertion(BaseAssertion):
-    async def verify(self, driver, context, params: dict) -> dict:
+    async def verify(self, driver, context, params: dict, *, deadline: float | None = None) -> dict:
         actual = await with_stale_retry(
             driver,
             context,
             params.get("element_id"),
             lambda element: driver.get_text(element),
+            deadline=deadline,
             label="断言-读取文本",
         )
         expected = str(params.get("expected", ""))
@@ -146,12 +153,13 @@ class ValueEqualsAssertion(BaseAssertion):
 
 @register_assertion("regex_match")
 class RegexMatchAssertion(BaseAssertion):
-    async def verify(self, driver, context, params: dict) -> dict:
+    async def verify(self, driver, context, params: dict, *, deadline: float | None = None) -> dict:
         actual = await with_stale_retry(
             driver,
             context,
             params.get("element_id"),
             lambda element: driver.get_text(element),
+            deadline=deadline,
             label="断言-读取文本",
         )
         pattern = str(params.get("pattern", ""))

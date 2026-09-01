@@ -1,5 +1,6 @@
 """执行快照、执行详情树及状态归并的数据访问。"""
 
+from sqlalchemy import case as sql_case
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +11,18 @@ from app.models import (
     ExecutionStep,
     ExecutionSuite,
 )
+
+
+def _node_phase_rank():
+    """统一节点阶段顺序，避免按 phase 字符串字典序排序。"""
+    return sql_case(
+        (ExecutionNode.phase == "suite_setup", 0),
+        (ExecutionNode.phase == "case_setup", 1),
+        (ExecutionNode.phase == "case_main", 2),
+        (ExecutionNode.phase == "case_teardown", 3),
+        (ExecutionNode.phase == "suite_teardown", 4),
+        else_=99,
+    )
 
 
 async def materialize_snapshot(db: AsyncSession, execution, result) -> None:
@@ -24,25 +37,17 @@ async def materialize_snapshot(db: AsyncSession, execution, result) -> None:
         )
         db.add(exec_suite)
         await db.flush()
-        suite_node_order = 0
         for phase_steps in (suite.setup_steps_snapshot, suite.teardown_steps_snapshot):
-            for step in phase_steps:
-                suite_node_order += 1
+            for node_order, step in enumerate(phase_steps, start=1):
                 db.add(ExecutionNode(
                     execution_suite_id=exec_suite.id,
-                    kind="action", node_order=suite_node_order,
+                    kind="action", node_order=node_order,
                     phase=step.get("phase") or "suite_setup",
                     node_key=step.get("source_key") or step.get("key"),
                     action=step.get("action") or "",
                     description=step.get("description"),
                     element_id=step.get("element_id"), parameters=step.get("params") or {},
                     continue_on_failure=bool(step.get("continue_on_failure", False)), status="pending",
-                ))
-                db.add(ExecutionStep(
-                    execution_suite_id=exec_suite.id, phase=step.get("phase") or "suite_setup",
-                    step_order=int(step.get("order") or 0), action=step.get("action") or "",
-                    source_key=step.get("source_key"), source_order=step.get("source_order"),
-                    parameters=step.get("params") or {}, continue_on_failure=bool(step.get("continue_on_failure", False)), status="pending",
                 ))
         for case in suite.cases:
             exec_case = ExecutionCase(
@@ -113,7 +118,7 @@ async def load_case_nodes(db: AsyncSession, case_ids: list[int]) -> list[Executi
             await db.execute(
                 select(ExecutionNode)
                 .where(ExecutionNode.execution_case_id.in_(case_ids))
-                .order_by(ExecutionNode.execution_case_id, ExecutionNode.phase, ExecutionNode.node_order)
+                .order_by(ExecutionNode.execution_case_id, _node_phase_rank(), ExecutionNode.node_order)
             )
         ).scalars().all()
     )
@@ -152,7 +157,7 @@ async def load_suite_nodes(
                 .order_by(
                     ExecutionNode.execution_suite_id,
                     ExecutionNode.execution_case_id,
-                    ExecutionNode.phase,
+                    _node_phase_rank(),
                     ExecutionNode.node_order,
                 )
             )

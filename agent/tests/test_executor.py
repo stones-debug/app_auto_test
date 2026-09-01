@@ -1320,6 +1320,62 @@ async def test_run_suite_passing_reports_nested_structure():
     assert "execution_suite_id" not in step_msg
 
 
+async def test_run_suite_uses_execution_nodes_for_suite_setup_and_teardown():
+    """套件前后置必须通过统一节点上报，不能再发送旧 step_result。"""
+    suite = _make_suite([_suite_case()], setup_steps=[], teardown_steps=[])
+    suite["setup_nodes"] = [
+        {"execution_node_id": 5101, "kind": "action", "phase": "suite_setup",
+         "order": 1, "action": "sleep", "params": {"duration": 0}}
+    ]
+    suite["teardown_nodes"] = [
+        {"execution_node_id": 6101, "kind": "action", "phase": "suite_teardown",
+         "order": 1, "action": "sleep", "params": {"duration": 0}}
+    ]
+
+    status, sent = await _run_suite_and_capture(suite)
+
+    assert status == "passed"
+    suite_nodes = [
+        message for message in sent
+        if message.get("execution_node_id") in {5101, 6101}
+    ]
+    assert [message["type"] for message in suite_nodes] == [
+        "node_started", "node_result", "node_started", "node_result"
+    ]
+    assert [message["execution_suite_id"] for message in suite_nodes] == [1001] * 4
+    assert [message["status"] for message in suite_nodes if message["type"] == "node_result"] == [
+        "passed", "passed"
+    ]
+    assert not [
+        message for message in sent
+        if message.get("type") == "step_result"
+        and message.get("phase") in {"suite_setup", "suite_teardown"}
+    ]
+
+
+async def test_run_suite_preserves_node_error_status():
+    """套件节点 error 必须聚合为套件 error，而不是普通 failed。"""
+    suite = _make_suite([_suite_case()], setup_steps=[], teardown_steps=[])
+    suite["setup_nodes"] = [
+        {"execution_node_id": 5101, "kind": "action", "phase": "suite_setup",
+         "order": 1, "action": "unknown_action", "params": {}}
+    ]
+    suite["teardown_nodes"] = []
+
+    status, sent = await _run_suite_and_capture(suite)
+
+    assert status == "error"
+    assert [message["status"] for message in sent if message["type"] == "suite_status"] == [
+        "running", "error"
+    ]
+    assert [message["status"] for message in sent if message["type"] == "node_result"] == [
+        "error"
+    ]
+    assert [message["status"] for message in sent if message["type"] == "case_status"] == [
+        "skipped"
+    ]
+
+
 async def test_run_suite_setup_failure_skips_cases_runs_teardown():
     """V2：suite_setup 失败 → 用例 skipped，仍执行 suite_teardown，套件终态 failed。"""
     driver = MockDriver()

@@ -3,7 +3,7 @@
 import asyncio
 import logging
 
-from .driver import ElementStaleRetryExhausted, StopRequested
+from .driver import ElementNotFound, ElementStaleRetryExhausted, StopRequested
 
 logger = logging.getLogger("agent.executor.stale_guard")
 
@@ -42,6 +42,7 @@ async def with_stale_retry(
     operation,
     *,
     wait_timeout=None,
+    deadline: float | None = None,
     editable: bool = False,
     disable_smart_scroll: bool = False,
     retries: int = 2,
@@ -59,11 +60,27 @@ async def with_stale_retry(
     for attempt in range(retries + 1):
         if stop is not None and stop():
             raise StopRequested("执行被用户停止")
-        try:
-            element = context.find_element(
-                element_id, wait_timeout=wait_timeout, editable=editable,
-                disable_smart_scroll=disable_smart_scroll,
+        remaining = None if deadline is None else deadline - asyncio.get_running_loop().time()
+        allow_immediate = remaining is not None and remaining <= 0 and attempt == 0
+        if remaining is not None and remaining <= 0 and not allow_immediate:
+            raise ElementNotFound(f"{label}达到最大等待时间")
+        bounded_wait_timeout = wait_timeout
+        if remaining is not None:
+            bounded_wait_timeout = (
+                0.0
+                if allow_immediate
+                else remaining if wait_timeout is None else min(float(wait_timeout), remaining)
             )
+        find_kwargs = {
+            "wait_timeout": bounded_wait_timeout,
+            "editable": editable,
+            "disable_smart_scroll": disable_smart_scroll,
+        }
+        if deadline is not None:
+            find_kwargs["deadline"] = deadline
+            find_kwargs["allow_immediate"] = allow_immediate
+        try:
+            element = context.find_element(element_id, **find_kwargs)
             return operation(element)
         except Exception as exc:
             if not is_stale_element_error(exc):
@@ -88,5 +105,8 @@ async def with_stale_retry(
                 element_id,
             )
             context.invalidate_element(element_id)
-            await asyncio.sleep(delay)
+            remaining = None if deadline is None else deadline - asyncio.get_running_loop().time()
+            if remaining is not None and remaining <= 0:
+                raise ElementNotFound(f"{label}达到最大等待时间") from exc
+            await asyncio.sleep(delay if remaining is None else min(delay, remaining))
     raise AssertionError("stale 重试状态异常")
