@@ -191,7 +191,9 @@ onMounted(loadSuites)
         </div>
         <div class="sidebar-filter">
           <el-input v-model="keyword" placeholder="按名称或描述搜索" clearable class="sidebar-search">
-            <template #prefix><el-icon><Search /></el-icon></template>
+            <template #prefix><el-icon>
+                <Search />
+              </el-icon></template>
           </el-input>
           <el-select v-model="sortBy" class="sidebar-sort">
             <el-option label="最近更新" value="updated" />
@@ -200,13 +202,8 @@ onMounted(loadSuites)
           </el-select>
         </div>
         <div v-loading="loadingSuites" class="suite-list">
-          <div
-            v-for="suite in filteredSuites"
-            :key="suite.id"
-            class="suite-item"
-            :class="{ active: suite.id === activeSuite }"
-            @click="onSelectSuite(suite)"
-          >
+          <div v-for="suite in filteredSuites" :key="suite.id" class="suite-item"
+            :class="{ active: suite.id === activeSuite }" @click="onSelectSuite(suite)">
             <div class="suite-item-top">
               <span class="suite-name" :title="suite.name">{{ suite.name }}</span>
               <el-tag :type="suiteStatusMeta(suite.status).type" size="small" effect="plain">
@@ -234,13 +231,8 @@ onMounted(loadSuites)
             </div>
           </div>
           <template v-if="filteredSuites.length === 0">
-            <EmptyState
-              v-if="suites.length === 0"
-              title="还没创建套件"
-              description="套件用于批量编排用例，并可配置前后置步骤与变量。"
-              action-label="新建套件"
-              @action="openCreate"
-            />
+            <EmptyState v-if="suites.length === 0" title="还没创建套件" description="套件用于批量编排用例，并可配置前后置步骤与变量。"
+              action-label="新建套件" @action="openCreate" />
             <div v-else class="no-match v2-aux">没有找到与「{{ keyword }}」匹配的套件</div>
           </template>
         </div>
@@ -264,42 +256,63 @@ onMounted(loadSuites)
           </PageHeader>
 
           <div class="stat-pills">
-            <div class="stat-pill"><span class="stat-value">{{ suiteCases.length }}</span><span class="stat-label">用例</span></div>
-            <div class="stat-pill"><span class="stat-value">{{ setupSteps.length }}</span><span class="stat-label">前置步骤</span></div>
-            <div class="stat-pill"><span class="stat-value">{{ teardownSteps.length }}</span><span class="stat-label">后置步骤</span></div>
-            <div class="stat-pill"><span class="stat-value">{{ suiteVars.length }}</span><span class="stat-label">变量</span></div>
+            <div class="stat-pill"><span class="stat-value">{{ suiteCases.length }}</span><span
+                class="stat-label">用例</span>
+            </div>
+            <div class="stat-pill"><span class="stat-value">{{ setupSteps.length }}</span><span
+                class="stat-label">前置步骤</span>
+            </div>
+            <div class="stat-pill"><span class="stat-value">{{ teardownSteps.length }}</span><span
+                class="stat-label">后置步骤</span></div>
+            <div class="stat-pill"><span class="stat-value">{{ suiteVars.length }}</span><span
+                class="stat-label">变量</span>
+            </div>
           </div>
 
           <section class="detail-section">
             <header class="section-head">
-              <div class="section-title-wrap"><span class="section-accent accent-indigo"></span><div><div class="v2-card-title">用例编排</div><div class="v2-aux">拖拽调整执行顺序；添加与移除即时保存</div></div></div>
-              <div class="section-head-right"><el-tag size="small" effect="plain" type="success">自动保存</el-tag><el-button type="primary" :icon="Plus" @click="openAddCase">添加用例</el-button></div>
+              <div class="section-title-wrap"><span class="section-accent accent-indigo"></span>
+                <div>
+                  <div class="v2-card-title">用例编排</div>
+                  <div class="v2-aux">拖拽调整执行顺序；添加与移除即时保存</div>
+                </div>
+              </div>
+              <div class="section-head-right"><el-tag size="small" effect="plain" type="success">自动保存</el-tag><el-button
+                  type="primary" :icon="Plus" @click="openAddCase">添加用例</el-button></div>
             </header>
             <div class="section-body">
-              <Draggable v-model="suiteCases" item-key="id" handle=".drag-handle" ghost-class="case-ghost" class="case-list" @end="onReorder">
+              <Draggable v-model="suiteCases" item-key="id" handle=".drag-handle" ghost-class="case-ghost"
+                class="case-list" @end="onReorder">
                 <template #item="{ element, index }">
-                  <div class="case-card"><div class="case-row"><span class="drag-handle" title="拖拽排序">⠿</span><span class="case-order">{{ index + 1 }}</span><span class="case-name" :title="element.case_name">{{ element.case_name }}</span><el-tag v-if="element.module_name" size="small" type="info" effect="plain" class="case-module">{{ element.module_name }}</el-tag><el-button class="case-remove" size="small" text type="danger" @click="removeCase(element)">移除</el-button></div></div>
+                  <div class="case-card">
+                    <div class="case-row"><span class="drag-handle" title="拖拽排序">⠿</span><span class="case-order">{{
+                        index + 1 }}</span><span class="case-name" :title="element.case_name">{{ element.case_name
+                        }}</span><el-tag v-if="element.module_name" size="small" type="info" effect="plain"
+                        class="case-module">{{ element.module_name }}</el-tag><el-button class="case-remove"
+                        size="small" text type="danger" @click="removeCase(element)">移除</el-button></div>
+                  </div>
                 </template>
               </Draggable>
-              <div v-if="suiteCases.length === 0" class="case-empty"><EmptyState title="套件还没有用例" description="从用例库中添加用例，拖拽即可调整执行顺序。" action-label="添加用例" @action="openAddCase" /></div>
+              <div v-if="suiteCases.length === 0" class="case-empty">
+                <EmptyState title="套件还没有用例" description="从用例库中添加用例，拖拽即可调整执行顺序。" action-label="添加用例"
+                  @action="openAddCase" />
+              </div>
             </div>
           </section>
 
-          <SuiteStepSection
-            :project-id="projectId"
-            :setup-steps="setupSteps"
-            :teardown-steps="teardownSteps"
-            :dirty="dirty"
-            :saving="savingSteps"
-            @update:setup-steps="onSetupStepsChange"
-            @update:teardown-steps="onTeardownStepsChange"
-            @save="saveSuiteSteps(activeSuite)"
-            @discard="discardSteps"
-          />
+          <SuiteStepSection :project-id="projectId" :setup-steps="setupSteps" :teardown-steps="teardownSteps"
+            :dirty="dirty" :saving="savingSteps" @update:setup-steps="onSetupStepsChange"
+            @update:teardown-steps="onTeardownStepsChange" @save="saveSuiteSteps(activeSuite)"
+            @discard="discardSteps" />
 
           <section class="detail-section">
             <header class="section-head">
-              <div class="section-title-wrap"><span class="section-accent accent-violet"></span><div><div class="v2-card-title">套件变量</div><div class="v2-aux">执行时注入的键值对，可随时编辑、删除</div></div></div>
+              <div class="section-title-wrap"><span class="section-accent accent-violet"></span>
+                <div>
+                  <div class="v2-card-title">套件变量</div>
+                  <div class="v2-aux">执行时注入的键值对，可随时编辑、删除</div>
+                </div>
+              </div>
               <div class="section-head-right"><el-tag size="small" effect="plain" type="success">即时保存</el-tag></div>
             </header>
             <div class="section-body">
@@ -307,10 +320,13 @@ onMounted(loadSuites)
               <div v-else class="var-list">
                 <div v-for="variable in suiteVars" :key="variable.id" class="var-row">
                   <span class="var-name">{{ variable.name }}</span>
-                  <el-input v-if="varEditing?.id === variable.id" v-model="varEditing.value" size="small" class="var-input" @keyup.enter="saveVarValue(variable, activeSuite)" @blur="saveVarValue(variable, activeSuite)" />
+                  <el-input v-if="varEditing?.id === variable.id" v-model="varEditing.value" size="small"
+                    class="var-input" @keyup.enter="saveVarValue(variable, activeSuite)"
+                    @blur="saveVarValue(variable, activeSuite)" />
                   <span v-else class="var-value" :title="variable.value">{{ variable.value || '—' }}</span>
                   <span class="var-actions">
-                    <el-button v-if="varEditing?.id === variable.id" size="small" type="primary" text :loading="savingVar" @click="saveVarValue(variable, activeSuite)">保存</el-button>
+                    <el-button v-if="varEditing?.id === variable.id" size="small" type="primary" text
+                      :loading="savingVar" @click="saveVarValue(variable, activeSuite)">保存</el-button>
                     <el-button v-else size="small" text @click="startEditVar(variable)">编辑</el-button>
                     <el-button size="small" type="danger" text @click="removeVar(variable, activeSuite)">删除</el-button>
                   </span>
@@ -321,89 +337,374 @@ onMounted(loadSuites)
         </div>
       </template>
       <div v-else-if="loadingSuites || loadingDetail" v-loading="true" class="detail-loading" />
-      <el-empty v-else class="detail-empty" description="请选择或新建一个套件"><el-button type="primary" @click="openCreate">新建套件</el-button></el-empty>
+      <el-empty v-else class="detail-empty" description="请选择或新建一个套件"><el-button type="primary"
+          @click="openCreate">新建套件</el-button></el-empty>
     </el-col>
   </el-row>
 
   <el-dialog v-model="dialogVisible" :title="editingId ? '编辑套件' : '新建套件'" width="480px" append-to-body>
     <el-form label-width="80px" @submit.prevent="save">
-      <el-form-item label="名称" required><el-input v-model="form.name" placeholder="请输入套件名称" maxlength="255" @keyup.enter="save" /></el-form-item>
-      <el-form-item label="描述"><el-input v-model="form.description" type="textarea" :rows="3" placeholder="可选" /></el-form-item>
+      <el-form-item label="名称" required><el-input v-model="form.name" placeholder="请输入套件名称" maxlength="255"
+          @keyup.enter="save" /></el-form-item>
+      <el-form-item label="描述"><el-input v-model="form.description" type="textarea" :rows="3"
+          placeholder="可选" /></el-form-item>
     </el-form>
-    <template #footer><el-button @click="dialogVisible = false">取消</el-button><el-button type="primary" :loading="savingSuite" @click="save">保存</el-button></template>
+    <template #footer><el-button @click="dialogVisible = false">取消</el-button><el-button type="primary"
+        :loading="savingSuite" @click="save">保存</el-button></template>
   </el-dialog>
 
-  <SuiteCasePicker
-    v-model="addDialogVisible"
-    :groups="groupedCases"
-    :all-cases-count="allCases.length"
-    :keyword="addKeyword"
-    :selected-ids="selectedIds"
-    :loading="loadingAddCases"
-    :adding="addingCases"
-    :case-status-meta="caseStatusMeta"
-    :group-selection-state="groupSelectionState"
-    :is-group-collapsed="isCaseGroupCollapsed"
-    @update:keyword="addKeyword = $event"
-    @toggle="toggleSelect"
-    @toggle-group="toggleGroupSelection"
-    @collapse="toggleCaseGroup"
-    @add="addSelectedCases"
-  />
+  <SuiteCasePicker v-model="addDialogVisible" :groups="groupedCases" :all-cases-count="allCases.length"
+    :keyword="addKeyword" :selected-ids="selectedIds" :loading="loadingAddCases" :adding="addingCases"
+    :case-status-meta="caseStatusMeta" :group-selection-state="groupSelectionState"
+    :is-group-collapsed="isCaseGroupCollapsed" @update:keyword="addKeyword = $event" @toggle="toggleSelect"
+    @toggle-group="toggleGroupSelection" @collapse="toggleCaseGroup" @add="addSelectedCases" />
 </template>
 
 <style scoped>
-.suite-sidebar { position: sticky; top: 16px; display: flex; flex-direction: column; max-height: calc(100vh - 120px); background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius-card); overflow: hidden; }
-.sidebar-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px; border-bottom: 1px solid var(--border); }
-.sidebar-title-wrap { display: flex; flex-direction: column; gap: 2px; }
-.sidebar-count { font-size: 12px; }
-.sidebar-filter { display: flex; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
-.sidebar-search { flex: 1; }
-.sidebar-sort { width: 124px; flex-shrink: 0; }
-.suite-list { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px; }
-.suite-item { padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; cursor: pointer; background: #fff; transition: border-color .15s, background .15s, box-shadow .15s; }
-.suite-item:hover { border-color: var(--primary); box-shadow: 0 2px 8px rgba(79, 70, 229, .08); }
-.suite-item.active { border-color: var(--primary); background: var(--primary-light); }
-.suite-item-top, .suite-item-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.suite-name { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.suite-desc { margin: 6px 0 10px; color: var(--text-2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.suite-foot-meta { display: flex; align-items: center; gap: 10px; color: var(--text-2); font-size: 12px; min-width: 0; }
-.meta-time { white-space: nowrap; }
-.suite-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
-.item-more { padding: 2px; }
-.no-match { text-align: center; padding: 24px 12px; }
-.detail-stack { width: 100%; }
-.detail-section { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius-card); margin-bottom: 16px; overflow: visible; }
-.section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
-.section-title-wrap { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
-.section-accent { width: 4px; height: 18px; border-radius: 2px; flex-shrink: 0; margin-top: 2px; }
-.accent-indigo { background: var(--primary); }
-.accent-violet { background: #8b5cf6; }
-.section-head-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
-.section-body { padding: 16px 20px; }
-.stat-pills { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
-.stat-pill { flex: 1; min-width: 96px; background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius-card); padding: 14px 16px; display: flex; flex-direction: column; gap: 2px; }
-.stat-value { font-size: var(--font-kpi); line-height: 1; font-weight: 700; color: var(--text); }
-.stat-label { color: var(--text-2); font-size: 12px; }
-.case-list { display: flex; flex-direction: column; gap: 8px; }
-.case-card { border: 1px solid var(--border); border-radius: 8px; background: #fff; transition: border-color .15s, box-shadow .15s, background .15s; }
-.case-card:hover { border-color: var(--primary); background: var(--primary-light); box-shadow: 0 2px 8px rgba(79, 70, 229, .08); }
-.case-ghost { opacity: .4; background: var(--primary-light); border: 1px dashed var(--primary); }
-.case-row { display: flex; align-items: center; gap: 10px; padding: 10px 14px; }
-.drag-handle { cursor: move; color: #999; flex-shrink: 0; }
-.drag-handle:hover { color: var(--primary); }
-.case-order { width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex-shrink: 0; background: var(--primary-light); color: var(--primary); }
-.case-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-.case-module, .case-remove { flex-shrink: 0; }
-.case-empty { padding: 4px 0; }
-.var-list { display: flex; flex-direction: column; }
-.var-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
-.var-row:last-child { border-bottom: none; }
-.var-name { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; min-width: 120px; color: var(--text); }
-.var-value { color: var(--text-2); min-width: 160px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.var-input { width: 240px; max-width: 100%; }
-.var-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; margin-left: auto; }
-.var-empty { text-align: center; padding: 24px 0; }
-.detail-loading { min-height: 220px; }
-.detail-empty { padding-top: 80px; }
+.suite-sidebar {
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 120px);
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-count {
+  font-size: 12px;
+}
+
+.sidebar-filter {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-search {
+  flex: 1;
+}
+
+.sidebar-sort {
+  width: 124px;
+  flex-shrink: 0;
+}
+
+.suite-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px;
+}
+
+.suite-item {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  background: #fff;
+  transition: border-color .15s, background .15s, box-shadow .15s;
+}
+
+.suite-item:hover {
+  border-color: var(--primary);
+  box-shadow: 0 2px 8px rgba(79, 70, 229, .08);
+}
+
+.suite-item.active {
+  border-color: var(--primary);
+  background: var(--primary-light);
+}
+
+.suite-item-top,
+.suite-item-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.suite-name {
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.suite-desc {
+  margin: 6px 0 10px;
+  color: var(--text-2);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.suite-foot-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-2);
+  font-size: 12px;
+  min-width: 0;
+}
+
+.meta-time {
+  white-space: nowrap;
+}
+
+.suite-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.item-more {
+  padding: 2px;
+}
+
+.no-match {
+  text-align: center;
+  padding: 24px 12px;
+}
+
+.detail-stack {
+  width: 100%;
+}
+
+.detail-section {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  margin-bottom: 16px;
+  overflow: visible;
+}
+
+.section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.section-title-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.section-accent {
+  width: 4px;
+  height: 18px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.accent-indigo {
+  background: var(--primary);
+}
+
+.accent-violet {
+  background: #8b5cf6;
+}
+
+.section-head-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.section-body {
+  padding: 16px 20px;
+}
+
+.stat-pills {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.stat-pill {
+  flex: 1;
+  min-width: 96px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stat-value {
+  font-size: var(--font-kpi);
+  line-height: 1;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.stat-label {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.case-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.case-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  transition: border-color .15s, box-shadow .15s, background .15s;
+}
+
+.case-card:hover {
+  border-color: var(--primary);
+  background: var(--primary-light);
+  box-shadow: 0 2px 8px rgba(79, 70, 229, .08);
+}
+
+.case-ghost {
+  opacity: .4;
+  background: var(--primary-light);
+  border: 1px dashed var(--primary);
+}
+
+.case-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+}
+
+.drag-handle {
+  cursor: move;
+  color: #999;
+  flex-shrink: 0;
+}
+
+.drag-handle:hover {
+  color: var(--primary);
+}
+
+.case-order {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+  background: var(--primary-light);
+  color: var(--primary);
+}
+
+.case-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.case-module,
+.case-remove {
+  flex-shrink: 0;
+}
+
+.case-empty {
+  padding: 4px 0;
+}
+
+.var-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.var-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.var-row:last-child {
+  border-bottom: none;
+}
+
+.var-name {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  min-width: 120px;
+  color: var(--text);
+}
+
+.var-value {
+  color: var(--text-2);
+  min-width: 160px;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.var-input {
+  width: 240px;
+  max-width: 100%;
+}
+
+.var-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.var-empty {
+  text-align: center;
+  padding: 24px 0;
+}
+
+.detail-loading {
+  min-height: 220px;
+}
+
+.detail-empty {
+  padding-top: 80px;
+}
 </style>
