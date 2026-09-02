@@ -263,10 +263,11 @@ async def create_element(
 
 @router.get("/elements/pages", response_model=list[ElementPageCount])
 async def element_pages(
+    project_id: int | None = None,
     _user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    counts, groups = await element_service.pages(db)
+    counts, groups = await element_service.pages(db, project_id=project_id)
     items = [
         ElementPageCount(
             page_name=group.name,

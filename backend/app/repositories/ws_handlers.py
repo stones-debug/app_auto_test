@@ -19,7 +19,7 @@ from app.models import (
 )
 from app.services.execution_summary import merge_runtime_status
 from app.services.screenshot_store import validate_object_key
-from app.services.worker_service import min_agent_version
+from app.services.worker_service import min_agent_version, protocol_version
 
 TERMINAL_STATES = {"passed", "failed", "error", "stopped", "skipped", "cancelled"}
 WRITE_STATES = {"running", "stopping"}
@@ -226,6 +226,9 @@ async def handle_register(db: AsyncSession, payload: dict) -> dict | None:
     # CR-21：注册时语义化版本比较（min_agent_version，来自 Registry 生成产物）
     _min_agent = min_agent_version()
     if not version_supported(payload.get("version"), _min_agent):
+        return None
+    reported_protocol = payload.get("protocol_version")
+    if reported_protocol is not None and reported_protocol != protocol_version():
         return None
 
     agent.status = "online"

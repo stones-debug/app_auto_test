@@ -1,6 +1,6 @@
 import re
 
-from .driver import ElementNotFound, StopRequested
+from .driver import ElementNotFound, StopRequested, _coerce_bool
 from .stale_guard import with_stale_retry
 
 
@@ -48,6 +48,25 @@ class ElementExistsAssertion(BaseAssertion):
             "status": "passed" if passed else "failed",
             "expected": expected,
             "actual": "found" if found else "not_found",
+        }
+
+
+@register_assertion("checked")
+class CheckedAssertion(BaseAssertion):
+    async def verify(self, driver, context, params: dict, *, deadline: float | None = None) -> dict:
+        expected = _coerce_bool(params.get("checked", True))
+        actual = await with_stale_retry(
+            driver,
+            context,
+            params.get("element_id"),
+            lambda element: driver.is_checked(element),
+            deadline=deadline,
+            label="断言-读取勾选状态",
+        )
+        return {
+            "status": "passed" if actual == expected else "failed",
+            "expected": "checked" if expected else "unchecked",
+            "actual": "checked" if actual else "unchecked",
         }
 
 

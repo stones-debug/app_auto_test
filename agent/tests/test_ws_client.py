@@ -18,6 +18,7 @@ async def test_ws_client_register_handshake():
         assert msg["type"] == "register"
         assert msg["agent_key"] == "sk-test"
         assert msg["agent_id"] == "agent-1"
+        assert msg["protocol_version"] == "3.2.0"
         await ws.send(json.dumps({"type": "registered", "agent_id": 42, "status": "ok"}))
         await asyncio.sleep(0.2)
         await ws.close()
@@ -29,6 +30,7 @@ async def test_ws_client_register_handshake():
             url=f"ws://127.0.0.1:{port}/ws/agent",
             agent_key="sk-test",
             agent_id="agent-1",
+            protocol_version="3.2.0",
         )
 
         async def on_registered(reply):

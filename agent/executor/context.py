@@ -8,8 +8,25 @@ from .driver import ElementNotFound
 from .smart_locator import SmartElementResolver
 
 _VAR_RE = re.compile(r"\$\{(\w+)\}")
+_EDITABLE_SUFFIX = "//android.widget.EditText"
+_MISSING_ELEMENT_NAMES = frozenset({"NoSuchElementException", "TimeoutException"})
 
 StopPredicate = Callable[[], bool]
+
+
+def _is_missing_element_error(error: BaseException) -> bool:
+    current: BaseException | None = error
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        if isinstance(current, ElementNotFound):
+            return True
+        if current.__class__.__name__ in _MISSING_ELEMENT_NAMES:
+            return True
+        if "no such element" in str(current).lower():
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 class ExecutionContext:
@@ -47,6 +64,7 @@ class ExecutionContext:
         deadline: float | None = None,
         allow_immediate: bool = False,
         editable: bool = False,
+        editable_suffix_only: bool = False,
         disable_smart_scroll: bool = False,
     ):
         key = str(element_id)
@@ -75,9 +93,23 @@ class ExecutionContext:
             )
         locator_value = self.render(data.get("locator_value") or "")
         if editable and locator_type == "resource_id":
-            editable_suffix = "//android.widget.EditText"
-            if not locator_value.endswith(editable_suffix):
-                locator_value = f"{locator_value}{editable_suffix}"
+            suffix_locator = (
+                locator_value
+                if locator_value.endswith(_EDITABLE_SUFFIX)
+                else f"{locator_value}{_EDITABLE_SUFFIX}"
+            )
+            if editable_suffix_only:
+                locator_value = suffix_locator
+            else:
+                try:
+                    # resource_id 可能直接指向 EditText，优先使用原始定位值。
+                    return self.driver.find_element(
+                        locator_type, locator_value, wait_timeout=wait_timeout
+                    )
+                except Exception as exc:
+                    if not _is_missing_element_error(exc):
+                        raise
+                    locator_value = suffix_locator
         return self.driver.find_element(locator_type, locator_value, wait_timeout=wait_timeout)
 
     def invalidate_element(self, element_id) -> None:

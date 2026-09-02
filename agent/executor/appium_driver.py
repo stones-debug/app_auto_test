@@ -5,7 +5,7 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
-from .driver import BaseDriver, DriverError
+from .driver import BaseDriver, DriverError, _coerce_bool
 
 if TYPE_CHECKING:
     from appium.webdriver.webdriver import WebDriver
@@ -42,6 +42,9 @@ class AppiumDriver(BaseDriver):
     # Appium 查询、UiAutomator2 通信和设备端页面刷新都可能超过几十毫秒。
     # 逻辑等待时间由 WebDriverWait/deadline 控制，不能直接作为 HTTP 传输超时。
     HTTP_MIN_TIMEOUT = 5.0
+    # 接近逻辑 deadline 时，不能把一次请求强行放大到 5 秒；保留一个
+    # 足以完成本机回环 Appium 请求的短窗口，避免取消线程长期占用请求锁。
+    HTTP_SHORT_TIMEOUT_MIN = 0.5
     HTTP_MAX_TIMEOUT = 30.0
     HTTP_IMMEDIATE_TIMEOUT = 2.0
     DEFAULT_HTTP_REQUEST_TIMEOUT = HTTP_MAX_TIMEOUT
@@ -92,7 +95,7 @@ class AppiumDriver(BaseDriver):
             return self.http_request_timeout
         return min(
             self.http_request_timeout,
-            max(self.HTTP_MIN_TIMEOUT, float(remaining)),
+            max(self.HTTP_SHORT_TIMEOUT_MIN, float(remaining)),
         )
 
     def set_command_timeout(self, timeout: float | None) -> None:
@@ -368,6 +371,28 @@ class AppiumDriver(BaseDriver):
             by = getattr(AppiumBy, normalized_type.upper(), None) or By.XPATH
         return driver.find_elements(by, normalized_value)
 
+    def find_elements_in_element(
+        self, element, locator_type: str, locator_value: str, wait_timeout: int = 0
+    ):
+        from appium.webdriver.common.appiumby import AppiumBy
+        from selenium.webdriver.common.by import By
+
+        normalized_type = str(locator_type or "").strip().lower()
+        normalized_value = str(locator_value or "").strip()
+        if normalized_type == "uiautomator":
+            by = AppiumBy.ANDROID_UIAUTOMATOR
+        elif normalized_type == "resource_id":
+            by = AppiumBy.XPATH
+            normalized_value = _resource_id_xpath(normalized_value)
+        else:
+            by = getattr(AppiumBy, normalized_type.upper(), None) or By.XPATH
+        timeout = float(wait_timeout) if wait_timeout is not None else 0.0
+        return self.run_with_http_timeout(
+            None if timeout <= 0 else timeout,
+            lambda: element.find_elements(by, normalized_value),
+            immediate=timeout <= 0,
+        )
+
     def page_signature(self) -> str:
         """当前页面指纹：page_source 的 sha256 前 16 位 + 长度（绝不回传完整源码）。"""
         driver = self._ensure()
@@ -403,6 +428,17 @@ class AppiumDriver(BaseDriver):
     def get_attribute(self, element, attribute: str) -> str:
         self._ensure()
         return element.get_attribute(attribute) or ""
+
+    def is_checked(self, element) -> bool:
+        """读取 Android checkbox 的 checked 状态，selected 作为兼容回退。"""
+        self._ensure()
+        checked = element.get_attribute("checked")
+        if checked not in (None, ""):
+            return _coerce_bool(checked)
+        is_selected = getattr(element, "is_selected", None)
+        if callable(is_selected):
+            return bool(is_selected())
+        return False
 
     def swipe(self, direction: str, duration: int = 500) -> None:
         driver = self._ensure()

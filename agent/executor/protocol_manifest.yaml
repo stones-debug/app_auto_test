@@ -5,8 +5,8 @@
 #   - frontend/src/api/generated/registry.ts
 # 控制字段（controls.step）属于 Step 顶层，绝不进入 action params。
 
-protocol_version: "3.0.0"
-min_agent_version: "3.0.0"
+protocol_version: "3.2.0"
+min_agent_version: "3.2.0"
 
 controls:
   step:
@@ -45,6 +45,13 @@ actions:
     version: 1
     needs_element: true
     params: []
+  - name: set_checked
+    label: 勾选/取消勾选
+    version: 1
+    needs_element: true
+    element_label: 复选框
+    params:
+      - { name: checked, type: boolean, default: true, label: 勾选状态 }
   - name: swipe
     label: 滑动
     version: 1
@@ -118,7 +125,7 @@ actions:
       - { name: percent, type: number, default: 0.3, min: 0.05, max: 0.95, label: 滑动比例（0.05～0.95） }
   - name: swipe_in_element_find_text_click
     label: 列表内滑动查找文字并点击
-    version: 1
+    version: 2
     needs_element: true
     element_label: 列表控件
     params:
@@ -141,6 +148,7 @@ actions:
       - { name: percent, type: number, default: 0.3, min: 0.05, max: 0.95, label: 滑动比例（0.05～0.95） }
       - { name: container_wait_timeout, type: integer, default: 10, min: 0, max: 60, label: 列表等待秒数 }
       - { name: settle_ms, type: integer, default: 300, min: 0, max: 2000, label: 稳定等待(ms) }
+      - { name: viewport_element_id, type: element, label: 可见视口元素（可选） }
   - name: scroll
     label: 滚动到元素
     version: 1
@@ -197,6 +205,13 @@ assertions:
         options:
           - { value: exists, label: 存在 }
           - { value: not_exists, label: 不存在 }
+  - name: checked
+    label: 复选框已勾选
+    version: 1
+    needs_element: true
+    element_label: 复选框
+    params:
+      - { name: checked, type: boolean, default: true, label: 期望勾选状态 }
   - name: text_equals
     label: 文本等于
     version: 1

@@ -61,6 +61,24 @@ async def test_zero_wait_assertion_performs_one_immediate_lookup():
     assert driver.wait_timeouts == [0.0]
 
 
+async def test_zero_wait_assertion_waits_for_immediate_attempt_to_finish():
+    started = threading.Event()
+
+    def blocking_verify(_deadline: float):
+        started.set()
+        time.sleep(0.1)
+        return {"status": "passed", "actual": "ready"}
+
+    result = await verify_with_wait(
+        lambda deadline: asyncio.to_thread(blocking_verify, deadline),
+        max_wait_seconds=0,
+    )
+
+    assert started.is_set()
+    assert result["status"] == "passed"
+    assert result["attempt_count"] == 1
+
+
 async def test_verify_with_wait_does_not_interrupt_driver_at_deadline():
     release = threading.Event()
 

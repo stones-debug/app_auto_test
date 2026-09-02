@@ -56,6 +56,51 @@ def dev_bundled_appium() -> tuple[Path, Path, Path | None] | None:
     return _scan_appium_dir(repo)
 
 
+def resolve_android_sdk_root(explicit: str | Path | None = None) -> Path | None:
+    """查找 Appium/ADB 使用的 Android SDK 根目录。
+
+    Windows 下 Agent 经常由 PowerShell、桌面快捷方式或服务启动，父进程未必
+    设置 Android SDK 环境变量。按显式配置、环境变量、PATH 中的 adb、Android
+    Studio 默认目录依次查找，并且只接受包含 ``platform-tools`` 的 SDK 目录。
+    """
+    candidates: list[str | Path] = []
+    if explicit is not None and str(explicit).strip():
+        candidates.append(explicit)
+    for name in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        value = os.environ.get(name)
+        if value:
+            candidates.append(value)
+
+    adb = shutil.which("adb")
+    if adb:
+        adb_path = Path(adb).resolve()
+        if adb_path.parent.name.lower() == "platform-tools":
+            candidates.append(adb_path.parent.parent)
+
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    user_profile = os.environ.get("USERPROFILE")
+    if local_app_data:
+        candidates.append(Path(local_app_data) / "Android" / "Sdk")
+    if user_profile:
+        candidates.append(Path(user_profile) / "AppData" / "Local" / "Android" / "Sdk")
+
+    seen: set[str] = set()
+    for raw in candidates:
+        expanded = os.path.expandvars(str(raw).strip().strip('"'))
+        path = Path(expanded).expanduser()
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        key = str(resolved).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        if resolved.is_dir() and (resolved / "platform-tools").is_dir():
+            return resolved
+    return None
+
+
 class AppiumError(Exception):
     pass
 
@@ -72,6 +117,7 @@ class AppiumServer:
         ready_timeout: float = 60.0,
         command: list[str] | None = None,
         probe: Callable[[str], bool] | None = None,
+        android_sdk_root: str | Path | None = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -81,6 +127,7 @@ class AppiumServer:
         self.log_dir = log_dir
         self.ready_timeout = ready_timeout
         self.command = command
+        self.android_sdk_root = android_sdk_root
         self._probe_fn = probe or self._probe
         self.process: subprocess.Popen | None = None
         self._log_handle = None
@@ -122,17 +169,38 @@ class AppiumServer:
             kwargs["creationflags"] = CREATE_NO_WINDOW
         packed = bundled_appium()
         dev = packed or dev_bundled_appium()
+        env = os.environ.copy()
+        env_changed = False
         if dev:
             _, _, home = dev
-            env = os.environ.copy()
             if home is not None:
                 env["APPIUM_HOME"] = str(home)
-            # 打包安装：uiautomator2 驱动需要 ANDROID_HOME 定位 platform-tools/adb（随包在 exe 同级）；
-            # dev vendor 模式不覆盖，继承调用方环境（与 devices/adb.py 的 adb 定位一致）。
-            if packed:
-                root = Path(sys.executable).resolve().parent
-                env["ANDROID_HOME"] = str(root)
-                env["ANDROID_SDK_ROOT"] = str(root)
+                env_changed = True
+
+        # Appium 的 uiautomator2 驱动必须通过环境变量找到 Android SDK。
+        # 打包版 SDK 与 exe 同级；源码运行则自动发现本机 SDK，也支持配置显式指定。
+        sdk_root = self.android_sdk_root
+        if packed and sdk_root is None:
+            sdk_root = Path(sys.executable).resolve().parent
+        if self.android_sdk_root is not None:
+            resolved_sdk = resolve_android_sdk_root(self.android_sdk_root)
+        else:
+            resolved_sdk = resolve_android_sdk_root(sdk_root)
+        if self.android_sdk_root is not None and resolved_sdk is None:
+            raise AppiumError(
+                f"Android SDK 路径无效或缺少 platform-tools: {self.android_sdk_root}"
+            )
+        if resolved_sdk is not None:
+            env["ANDROID_HOME"] = str(resolved_sdk)
+            env["ANDROID_SDK_ROOT"] = str(resolved_sdk)
+            path_parts = [
+                str(resolved_sdk / "platform-tools"),
+                str(resolved_sdk / "emulator"),
+            ]
+            existing_path = env.get("PATH", "")
+            env["PATH"] = ";".join(path_parts + ([existing_path] if existing_path else []))
+            env_changed = True
+        if env_changed:
             kwargs["env"] = env
         self.process = subprocess.Popen(
             command,

@@ -118,8 +118,10 @@ export function listElements(
   return request.get<PageData<TestElement>>('/elements', { params })
 }
 
-export function elementPages() {
-  return request.get<ElementPageCount[]>('/elements/pages')
+export function elementPages(projectId?: number) {
+  return request.get<ElementPageCount[]>('/elements/pages', {
+    params: projectId == null ? {} : { project_id: projectId },
+  })
 }
 
 export function createElement(data: Partial<TestElement>) {

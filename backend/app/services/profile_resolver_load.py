@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AppProfileElementOverride, TestCase, TestElement
 from app.repositories.app_profiles import resolution as resolution_repo
+from app.schemas.generated_case_params import ELEMENT_PARAM_FIELDS
 from app.services.profile_resolver_nodes import ProfileRuleError, render_value
 
 
@@ -47,12 +48,21 @@ async def merge_suite_variables(db: AsyncSession, project_id: int, suite_id: int
 async def resolve_element_snapshots(db: AsyncSession, project_id: int, steps: list[dict], element_overrides: dict[int, AppProfileElementOverride], variables: dict) -> dict[str, dict[str, Any]]:
     ids: set[int] = set()
     for item in steps:
-        element_id = item.get("element_id") if isinstance(item, dict) else None
-        if element_id is not None:
-            try:
-                ids.add(int(element_id))
-            except (TypeError, ValueError):
-                continue
+        if not isinstance(item, dict):
+            continue
+        values = [item.get("element_id")]
+        node_name = str(item.get("action") or item.get("type") or "")
+        values.extend(
+            item.get("params", {}).get(field)
+            for field in ELEMENT_PARAM_FIELDS.get(node_name, ())
+            if isinstance(item.get("params"), dict)
+        )
+        for element_id in values:
+            if element_id is not None:
+                try:
+                    ids.add(int(element_id))
+                except (TypeError, ValueError):
+                    continue
     if not ids:
         return {}
     rows = await resolution_repo.load_by_ids(db, project_id=project_id, ids=ids)

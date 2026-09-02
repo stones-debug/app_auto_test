@@ -339,6 +339,67 @@ async def test_element_global_list_and_project_filter(client: AsyncClient):
     assert filtered["items"][0]["name"] == "全库元素B"
 
 
+async def test_element_pages_filter_groups_by_project(client: AsyncClient):
+    """项目元素库只返回项目实际使用的分组，并保留其层级父节点。"""
+    headers, project_id = await _setup(client)
+    other_project_id = (await client.post(
+        "/api/projects", json={"name": "元素分组过滤项目2"}, headers=headers
+    )).json()["id"]
+
+    root = (await client.post(
+        "/api/elements/groups", headers=headers, json={"name": "过滤项目一父页面"}
+    )).json()
+    child = (await client.post(
+        "/api/elements/groups",
+        headers=headers,
+        json={"name": "过滤项目一子页面", "parent_id": root["id"]},
+    )).json()
+    other_group = (await client.post(
+        "/api/elements/groups", headers=headers, json={"name": "过滤项目二页面"}
+    )).json()
+    empty_group = (await client.post(
+        "/api/elements/groups", headers=headers, json={"name": "过滤项目空页面"}
+    )).json()
+
+    for project, page_name, element_name in (
+        (project_id, child["name"], "过滤项目一元素"),
+        (other_project_id, other_group["name"], "过滤项目二元素"),
+    ):
+        response = await client.post(
+            "/api/elements",
+            headers=headers,
+            json={
+                "project_id": project,
+                "name": element_name,
+                "page_name": page_name,
+                "locator_type": "id",
+                "locator_value": element_name,
+            },
+        )
+        assert response.status_code == 201
+
+    project_pages = (await client.get(
+        f"/api/elements/pages?project_id={project_id}", headers=headers
+    )).json()
+    project_names = {item["page_name"] for item in project_pages}
+    assert {root["name"], child["name"]} <= project_names
+    assert "过滤项目二页面" not in project_names
+    assert "过滤项目空页面" not in project_names
+
+    other_pages = (await client.get(
+        f"/api/elements/pages?project_id={other_project_id}", headers=headers
+    )).json()
+    other_names = {item["page_name"] for item in other_pages}
+    assert other_group["name"] in other_names
+    assert child["name"] not in other_names
+
+    # 分组是全局资源且 created_by 关联用户，测试结束前显式清理，避免影响后续用户清理夹具。
+    for group_id in (child["id"], root["id"], other_group["id"], empty_group["id"]):
+        assert (
+            await client.delete(f"/api/elements/groups/{group_id}", headers=headers)
+        ).status_code == 204
+
+
 async def test_element_creator_only_edit_delete(client: AsyncClient):
     """V3：非创建者（管理员也不行）不能编辑/删除元素；创建者可以。"""
     h_owner, p1 = await _setup(client)

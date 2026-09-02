@@ -214,8 +214,9 @@ function onAssertionTypeChange(assertion: Assertion) {
             </div>
             <div v-for="field in actionMeta(element.action).fields" :key="field.key" class="step-row">
               <span class="field-label">{{ field.label }}</span>
-              <el-select
-                v-if="field.type === 'select'"
+                <ElementSelector v-if="field.type === 'element'" v-model="element.params![field.key]" :project-id="projectId" />
+                <el-select
+                  v-else-if="field.type === 'select'"
                 v-model="element.params![field.key]"
                 class="w-200"
               >

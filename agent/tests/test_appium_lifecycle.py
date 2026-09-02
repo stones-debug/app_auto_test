@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from appium_lifecycle import AppiumError, AppiumServer
+from appium_lifecycle import AppiumError, AppiumServer, resolve_android_sdk_root
 
 
 @pytest.fixture
@@ -54,6 +54,47 @@ def test_command_resolution_dev_vendor(monkeypatch):
     cmd = server._command()
     assert cmd[:2] == [str(node), str(main_js)]
     assert "--port" in cmd and cmd[cmd.index("--port") + 1] == "4730"
+
+
+def test_resolve_android_sdk_root_from_environment(tmp_path, monkeypatch):
+    sdk = tmp_path / "Android" / "Sdk"
+    (sdk / "platform-tools").mkdir(parents=True)
+    monkeypatch.setenv("ANDROID_HOME", str(sdk))
+    monkeypatch.delenv("ANDROID_SDK_ROOT", raising=False)
+    monkeypatch.setattr("appium_lifecycle.shutil.which", lambda _name: None)
+    assert resolve_android_sdk_root() == sdk.resolve()
+
+
+def test_start_sets_android_sdk_environment(tmp_path, monkeypatch):
+    sdk = tmp_path / "Android" / "Sdk"
+    (sdk / "platform-tools").mkdir(parents=True)
+    captured: dict = {}
+
+    class FakeProcess:
+        pid = 123
+
+        @staticmethod
+        def poll():
+            return None
+
+    def fake_popen(*_args, **kwargs):
+        captured.update(kwargs)
+        return FakeProcess()
+
+    monkeypatch.setattr("appium_lifecycle.subprocess.Popen", fake_popen)
+    monkeypatch.delenv("ANDROID_HOME", raising=False)
+    monkeypatch.delenv("ANDROID_SDK_ROOT", raising=False)
+    monkeypatch.setattr("appium_lifecycle.shutil.which", lambda _name: None)
+    server = AppiumServer(command=["node", "appium.js"], android_sdk_root=sdk)
+    server.start()
+
+    child_env = captured["env"]
+    assert child_env["ANDROID_HOME"] == str(sdk.resolve())
+    assert child_env["ANDROID_SDK_ROOT"] == str(sdk.resolve())
+    assert child_env["PATH"].split(";")[:2] == [
+        str((sdk / "platform-tools").resolve()),
+        str((sdk / "emulator").resolve()),
+    ]
 
 
 async def test_start_stop_lifecycle(sleepy_script):

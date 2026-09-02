@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 import {
   CASE_STATUS,
+  actionMeta,
   createCase,
   getCase,
   normalizeFlowNode,
@@ -165,6 +166,13 @@ function elementIds(nodes: FlowNode[]): number[] {
   const ids = new Set<number>()
   for (const node of nodes) {
     if (node.element_id != null) ids.add(node.element_id)
+    if (node.kind === 'action') {
+      for (const field of actionMeta(node.action).fields) {
+        if (field.type !== 'element') continue
+        const value = node.params?.[field.key]
+        if (value != null && value !== '') ids.add(Number(value))
+      }
+    }
   }
   return [...ids]
 }

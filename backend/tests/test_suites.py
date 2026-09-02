@@ -90,6 +90,31 @@ async def test_suite_crud(client: AsyncClient):
     assert deleted.status_code == 204
 
 
+async def test_suite_reorder_ignores_soft_deleted_case(client: AsyncClient):
+    """排序校验应与套件列表一致，不要求前端提交已软删除用例。"""
+    headers, project_id, case_ids = await _setup(client)
+    suite_id = (await client.post(
+        f"/api/projects/{project_id}/suites", json={"name": "软删除排序套件"}, headers=headers
+    )).json()["id"]
+    for case_id in case_ids:
+        response = await client.post(
+            f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=headers
+        )
+        assert response.status_code == 201
+
+    deleted = await client.delete(f"/api/cases/{case_ids[0]}", headers=headers)
+    assert deleted.status_code == 204
+
+    visible_cases = await client.get(f"/api/suites/{suite_id}/cases", headers=headers)
+    assert [item["case_id"] for item in visible_cases.json()] == [case_ids[1]]
+    reorder = await client.put(
+        f"/api/suites/{suite_id}/cases/order",
+        json={"order": [case_ids[1]]},
+        headers=headers,
+    )
+    assert reorder.status_code == 204
+
+
 async def test_variable_crud(client: AsyncClient):
     headers, project_id, _ = await _setup(client)
 

@@ -954,8 +954,8 @@ async def test_runner_e2e_smart_snapshot_full_chain():
     # get_text(smart) 命中渲染后的节点文本
     get_text_msg = next(m for m in sent if m["type"] == "step_result" and m["action"] == "get_text")
     assert get_text_msg["actual_value"] == "测试设备B"
-    # 普通 input（resource_id → EditText 后缀）写入 state
-    assert driver.state["com.demo:id/name_field//android.widget.EditText"] == "admin"
+    # 普通 input 优先使用原始 resource_id；目标不可编辑时才回退到 EditText 后缀
+    assert driver.state["com.demo:id/name_field"] == "admin"
     # 断言走统一 resolver 链
     assertion_msg = next(m for m in sent if m["type"] == "assertion_result")
     assert assertion_msg["assertions"][0]["status"] == "passed"

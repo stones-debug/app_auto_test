@@ -159,7 +159,10 @@ async def refresh_cases(db: AsyncSession, relations: list[TestSuiteCase]) -> Non
 
 async def list_relations(db: AsyncSession, suite_id: int) -> list[TestSuiteCase]:
     rows = await db.execute(
-        select(TestSuiteCase).where(TestSuiteCase.suite_id == suite_id).with_for_update()
+        select(TestSuiteCase)
+        .join(TestCase, TestCase.id == TestSuiteCase.case_id)
+        .where(TestSuiteCase.suite_id == suite_id, TestCase.deleted_at.is_(None))
+        .with_for_update()
     )
     return list(rows.scalars().all())
 

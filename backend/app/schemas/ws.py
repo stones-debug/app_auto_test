@@ -10,6 +10,7 @@ class AgentRegisterIn(BaseModel):
     agent_id: str
     agent_key: str
     version: str | None = None
+    protocol_version: str | None = None
     hostname: str | None = None
     platform: str | None = None
 

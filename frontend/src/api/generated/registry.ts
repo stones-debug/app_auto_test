@@ -3,7 +3,7 @@
 export interface ParamField {
   key: string
   label: string
-  type: 'text' | 'number' | 'select' | 'switch'
+  type: 'text' | 'number' | 'select' | 'switch' | 'element'
   options?: { value: string; label: string }[]
   default?: string | number | boolean
   placeholder?: string
@@ -37,7 +37,7 @@ export interface AssertionMeta {
   fields: ParamField[]
 }
 
-export const PROTOCOL_VERSION = "3.0.0"
+export const PROTOCOL_VERSION = "3.2.0"
 
 export const ACTIONS: ActionMeta[] = [
   { value: 'launch_app', label: '启动 APP', needsElement: false, fields: [
@@ -56,6 +56,9 @@ export const ACTIONS: ActionMeta[] = [
     { key: 'clear_first', label: '先清空', type: 'switch', default: true },
   ] },
   { value: 'clear', label: '清空输入框', needsElement: true, fields: [
+  ] },
+  { value: 'set_checked', label: '勾选/取消勾选', needsElement: true, elementLabel: '复选框', fields: [
+    { key: 'checked', label: '勾选状态', type: 'switch', default: true },
   ] },
   { value: 'swipe', label: '滑动', needsElement: false, fields: [
     { key: 'direction', label: '方向', type: 'select', options: [{ value: 'up', label: '上滑' }, { value: 'down', label: '下滑' }, { value: 'left', label: '左滑' }, { value: 'right', label: '右滑' }], default: 'up' },
@@ -88,6 +91,7 @@ export const ACTIONS: ActionMeta[] = [
     { key: 'percent', label: '滑动比例（0.05～0.95）', type: 'number', default: 0.3, min: 0.05, max: 0.95 },
     { key: 'container_wait_timeout', label: '列表等待秒数', type: 'number', default: 10, min: 0, max: 60 },
     { key: 'settle_ms', label: '稳定等待(ms)', type: 'number', default: 300, min: 0, max: 2000 },
+    { key: 'viewport_element_id', label: '可见视口元素（可选）', type: 'element' },
   ] },
   { value: 'scroll', label: '滚动到元素', needsElement: true, fields: [
   ] },
@@ -115,6 +119,9 @@ export const ACTIONS: ActionMeta[] = [
 export const ASSERTION_TYPES: AssertionMeta[] = [
   { value: 'element_exists', label: '元素存在/不存在', needsElement: true, fields: [
     { key: 'expected', label: '期望', type: 'select', options: [{ value: 'exists', label: '存在' }, { value: 'not_exists', label: '不存在' }], default: 'exists' },
+  ] },
+  { value: 'checked', label: '复选框已勾选', needsElement: true, fields: [
+    { key: 'checked', label: '期望勾选状态', type: 'switch', default: true },
   ] },
   { value: 'text_equals', label: '文本等于', needsElement: true, fields: [
     { key: 'expected', label: '期望值', type: 'text', required: true },

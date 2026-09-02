@@ -130,6 +130,41 @@ async def test_case_jsonb_validation(client: AsyncClient):
     assert created.json()["steps"][0]["assertions"][0]["type"] == "text_equals"
 
 
+async def test_checkbox_action_and_assertion_are_accepted(client: AsyncClient):
+    """checkbox 动作/断言使用协议生成的 checked 参数并可保存。"""
+    headers, project_id = await _setup(client)
+    element_id = await _create_element(client, headers, project_id)
+    created = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "复选框用例",
+            "steps": [
+                {
+                    "order": 1,
+                    "action": "set_checked",
+                    "element_id": element_id,
+                    "params": {"checked": True},
+                    "assertions": [
+                        {
+                            "order": 1,
+                            "type": "checked",
+                            "element_id": element_id,
+                            "params": {"checked": True},
+                        }
+                    ],
+                }
+            ],
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201, created.text
+    step = created.json()["steps"][0]
+    assert step["action"] == "set_checked"
+    assert step["params"]["checked"] is True
+    assert step["assertions"][0]["type"] == "checked"
+    assert step["assertions"][0]["params"]["checked"] is True
+
+
 async def test_case_steps_support_setup_main_teardown_phases(client: AsyncClient):
     headers, project_id = await _setup(client)
     steps = [
@@ -592,6 +627,7 @@ async def test_find_text_click_step_crud(client: AsyncClient):
                         "percent": 0.4,
                         "container_wait_timeout": 5,
                         "settle_ms": 200,
+                        "viewport_element_id": element_id,
                     },
                 },
             ],
@@ -604,6 +640,7 @@ async def test_find_text_click_step_crud(client: AsyncClient):
     assert step["action"] == "swipe_in_element_find_text_click"
     assert step["params"]["target_text"] == "系统时间"
     assert step["params"]["preferred_direction"] == "down"
+    assert step["params"]["viewport_element_id"] == element_id
 
     got = await client.get(f"/api/cases/{case_id}", headers=headers)
     assert got.status_code == 200

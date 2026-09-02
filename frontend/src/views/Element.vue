@@ -186,7 +186,7 @@ async function load() {
 }
 
 async function loadPages() {
-  pageGroups.value = await elementPages()
+  pageGroups.value = await elementPages(projectFilter.value)
 }
 
 async function loadProjects() {
@@ -204,7 +204,7 @@ async function loadProjects() {
   if (q) {
     projectFilter.value = q
     page.value = 1
-    await load()
+    await Promise.all([loadPages(), load()])
   }
 }
 

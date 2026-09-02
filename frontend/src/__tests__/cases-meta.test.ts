@@ -13,7 +13,7 @@ import {
 } from '@/api/cases'
 
 describe('CR-09 动作/断言元数据契约', () => {
-  it('覆盖 Agent Registry 全部 17 个动作', () => {
+  it('覆盖 Agent Registry 全部 18 个动作', () => {
     const values = ACTIONS.map((a) => a.value).sort()
     expect(values).toEqual(
       [
@@ -22,6 +22,7 @@ describe('CR-09 动作/断言元数据契约', () => {
         'click',
         'input',
         'clear',
+        'set_checked',
         'swipe',
         'swipe_to_find',
         'swipe_in_element',
@@ -38,10 +39,11 @@ describe('CR-09 动作/断言元数据契约', () => {
     )
   })
 
-  it('覆盖全部 8 个断言类型', () => {
+  it('覆盖全部 9 个断言类型', () => {
     expect(ASSERTION_TYPES.map((a) => a.value).sort()).toEqual(
       [
         'element_exists',
+        'checked',
         'text_equals',
         'text_contains',
         'text_not_contains',
@@ -55,6 +57,16 @@ describe('CR-09 动作/断言元数据契约', () => {
 
   it('element_exists 需要元素选择器（修复原隐藏 bug）', () => {
     expect(assertionMeta('element_exists').needsElement).toBe(true)
+  })
+
+  it('set_checked 与 checked 使用复选框状态字段', () => {
+    const action = actionMeta('set_checked')
+    const assertion = assertionMeta('checked')
+    expect(action.needsElement).toBe(true)
+    expect(action.elementLabel).toBe('复选框')
+    expect(defaultParams(action.fields)).toEqual({ checked: true })
+    expect(assertion.needsElement).toBe(true)
+    expect(defaultParams(assertion.fields)).toEqual({ checked: true })
   })
 
   it('regex_match 使用 pattern 字段（修复 expected 误用）', () => {
@@ -120,6 +132,7 @@ describe('CR-09 动作/断言元数据契约', () => {
     const textField = meta.fields.find((f) => f.key === 'target_text')!
     expect(textField.required).toBe(true)
     expect(textField.minLength).toBe(1)
+    expect(meta.fields.find((f) => f.key === 'viewport_element_id')?.type).toBe('element')
   })
 
   it('列表内滑动查找文字并点击 保存前校验参数范围', () => {

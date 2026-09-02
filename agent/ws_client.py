@@ -28,13 +28,15 @@ class AgentWSClient:
         url: str,
         agent_key: KeyProvider,
         agent_id: str,
-        version: str = "1.0.0",
+        version: str = "3.2.0",
+        protocol_version: str | None = None,
         heartbeat_interval: int = 30,
     ) -> None:
         self.url = url
         self.agent_key = agent_key
         self.agent_id = agent_id
         self.version = version
+        self.protocol_version = protocol_version
         self.heartbeat_interval = heartbeat_interval
         self.ws = None
         self.on_message: MessageHandler | None = None
@@ -60,6 +62,8 @@ class AgentWSClient:
             "platform": platform.system().lower(),
             "version": self.version,
         }
+        if self.protocol_version is not None:
+            register_payload["protocol_version"] = self.protocol_version
         logger.info("WS 请求连接 %s params=%s", self.url, format_for_log(register_payload))
         ws = await websockets.connect(
             self.url,

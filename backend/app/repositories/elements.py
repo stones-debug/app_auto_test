@@ -259,7 +259,22 @@ async def list_pages(db: AsyncSession, project_id: int | None = None):
     )
     counts = dict(rows.tuples().all())
     groups = await db.execute(select(ElementGroup).order_by(ElementGroup.id))
-    return counts, list(groups.scalars().all())
+    group_items = list(groups.scalars().all())
+    if project_id is not None:
+        # 页面分组表是全局的，项目归属由当前项目实际使用的 page_name 确定。
+        # 同时保留必要的父级节点，避免子页面因父级被过滤而无法正确显示层级。
+        groups_by_id = {group.id: group for group in group_items}
+        visible_ids = {
+            group.id for group in group_items if group.name in counts
+        }
+        pending = list(visible_ids)
+        while pending:
+            parent_id = groups_by_id[pending.pop()].parent_id
+            if parent_id is not None and parent_id in groups_by_id and parent_id not in visible_ids:
+                visible_ids.add(parent_id)
+                pending.append(parent_id)
+        group_items = [group for group in group_items if group.id in visible_ids]
+    return counts, group_items
 
 
 async def create_group(

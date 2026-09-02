@@ -2,6 +2,13 @@ import hashlib
 import re
 
 
+def _coerce_bool(value) -> bool:
+    """将 Appium/Mock 返回的 checked/selected 值统一转换为布尔值。"""
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "checked", "selected"}
+
+
 class DriverError(Exception):
     pass
 
@@ -71,6 +78,12 @@ class BaseDriver:
         """
         raise NotImplementedError
 
+    def find_elements_in_element(
+        self, element, locator_type: str, locator_value: str, wait_timeout: int = 0
+    ):
+        """在指定元素后代中查找匹配节点，不扩大到整个页面。"""
+        raise NotImplementedError
+
     def click(self, element) -> None:
         raise NotImplementedError
 
@@ -84,6 +97,10 @@ class BaseDriver:
         raise NotImplementedError
 
     def get_attribute(self, element, attribute: str) -> str:
+        raise NotImplementedError
+
+    def is_checked(self, element) -> bool:
+        """返回复选框当前是否处于勾选状态。"""
         raise NotImplementedError
 
     def swipe(self, direction: str, duration: int = 500) -> None:
@@ -194,6 +211,10 @@ class MockDriver(BaseDriver):
     def find_element(self, locator_type: str, locator_value: str, wait_timeout: int = 10):
         # 携带当前屏幕 generation：set_screen 之后普通定位的元素与智能定位一致受 stale 校验，
         # 避免「set_screen 后普通定位元素恒 stale」的潜伏陷阱（未 set_screen 时 generation=0）。
+        if locator_type == "id":
+            for node in _flatten_mock_nodes(self):
+                if node.locator_value == locator_value:
+                    return node
         return MockElement(locator_value, generation=self._screen_generation)
 
     def find_elements(self, locator_type: str, locator_value: str, wait_timeout: int = 10):
@@ -201,6 +222,16 @@ class MockDriver(BaseDriver):
         if locator_type not in ("xpath", "uiautomator"):
             return []
         return _mock_find_elements(self, locator_type, locator_value)
+
+    def find_elements_in_element(
+        self, element, locator_type: str, locator_value: str, wait_timeout: int = 0
+    ):
+        self._assert_fresh(element)
+        descendants = _all_descendants(element)
+        if not descendants and element not in _flatten_mock_nodes(self):
+            # 兼容旧测试/旧 mock：未把容器放入屏幕树时无法建立父子关系。
+            return _mock_find_elements(self, locator_type, locator_value)
+        return _mock_find_elements(self, locator_type, locator_value, roots=descendants)
 
     def set_screen(self, elements: list[dict]) -> None:
         """放置当前屏幕节点；generation+1 使此前返回的元素全部失效。"""
@@ -253,6 +284,11 @@ class MockDriver(BaseDriver):
 
     def click(self, element) -> None:
         self._assert_fresh(element)
+        if "checked" in element._attributes:
+            element._attributes["checked"] = not _coerce_bool(element._attributes["checked"])
+        elif "selected" in element._attributes:
+            # Mock 中没有 Android 原生控件行为，selected 作为 checked 的兼容状态。
+            element._attributes["selected"] = not _coerce_bool(element._attributes["selected"])
 
     def input(self, element, value: str, clear_first: bool = True) -> None:
         self._assert_fresh(element)
@@ -269,6 +305,12 @@ class MockDriver(BaseDriver):
     def get_attribute(self, element, attribute: str) -> str:
         self._assert_fresh(element)
         return element.get_attribute(attribute)
+
+    def is_checked(self, element) -> bool:
+        self._assert_fresh(element)
+        if "checked" in element._attributes:
+            return _coerce_bool(element._attributes["checked"])
+        return _coerce_bool(element._attributes.get("selected", False))
 
     def swipe(self, direction: str, duration: int = 500) -> None:
         self.swipes.append((direction, duration))
@@ -371,7 +413,7 @@ _UIS_METHOD_MAP = {
     "selected": ("selected", "equals"),
 }
 
-_MOCK_BOOL_ATTRIBUTES = frozenset({"clickable", "enabled", "selected", "displayed"})
+_MOCK_BOOL_ATTRIBUTES = frozenset({"clickable", "enabled", "selected", "checked", "displayed"})
 
 # XPath 属性名 → Mock 节点属性键（content-desc/resource-id/class 与快照字段名的映射）
 _XPATH_ATTR_TO_NODE = {
@@ -383,6 +425,7 @@ _XPATH_ATTR_TO_NODE = {
     "clickable": "clickable",
     "enabled": "enabled",
     "selected": "selected",
+    "checked": "checked",
     "displayed": "displayed",
 }
 
@@ -678,8 +721,10 @@ def _mock_condition_matches(node: MockElement, cond: dict) -> bool:
     return False
 
 
-def _mock_find_elements(driver, locator_type: str, locator_value: str) -> list[MockElement]:
-    nodes = _flatten_mock_nodes(driver)
+def _mock_find_elements(
+    driver, locator_type: str, locator_value: str, roots: list[MockElement] | None = None
+) -> list[MockElement]:
+    nodes = _flatten_mock_nodes(driver) if roots is None else roots
     if not nodes:
         return []
     if locator_type == "xpath":

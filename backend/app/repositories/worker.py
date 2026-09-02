@@ -33,6 +33,7 @@ from app.models import (
     TestSuiteCase,
     Variable,
 )
+from app.schemas.generated_case_params import ELEMENT_PARAM_FIELDS
 from app.services.execution_summary import (
     CaseStatusInput,
     aggregate_statuses,
@@ -207,12 +208,19 @@ async def build_variable_map(
 async def _collect_element_ids(steps: list) -> set[int]:
     ids: set[int] = set()
     for item in steps:
-        element_id = item.get("element_id") if isinstance(item, dict) else None
-        if element_id is not None:
-            try:
-                ids.add(int(element_id))
-            except (TypeError, ValueError):
-                continue
+        if not isinstance(item, dict):
+            continue
+        values = [item.get("element_id")]
+        node_name = str(item.get("action") or item.get("type") or "")
+        params = item.get("params")
+        if isinstance(params, dict):
+            values.extend(params.get(field) for field in ELEMENT_PARAM_FIELDS.get(node_name, ()))
+        for element_id in values:
+            if element_id is not None:
+                try:
+                    ids.add(int(element_id))
+                except (TypeError, ValueError):
+                    continue
     return ids
 
 

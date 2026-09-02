@@ -18,6 +18,19 @@ _STALE_MESSAGE_MARKERS = (
     "staleelementreferenceexception",
     "staleobjectexception",
 )
+_NOT_EDITABLE_EXCEPTION_NAMES = frozenset(
+    {
+        "ElementNotInteractableException",
+        "InvalidElementStateException",
+    }
+)
+_NOT_EDITABLE_MESSAGE_MARKERS = (
+    "不可编辑",
+    "not editable",
+    "not interactable",
+    "invalid element state",
+    "cannot be cleared",
+)
 
 
 def is_stale_element_error(error: BaseException) -> bool:
@@ -30,6 +43,21 @@ def is_stale_element_error(error: BaseException) -> bool:
             return True
         message = str(current).lower()
         if any(marker in message for marker in _STALE_MESSAGE_MARKERS):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def is_not_editable_error(error: BaseException) -> bool:
+    """识别 resource_id 指向容器而非实际可编辑控件的操作失败。"""
+    current: BaseException | None = error
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        if current.__class__.__name__ in _NOT_EDITABLE_EXCEPTION_NAMES:
+            return True
+        message = str(current).lower()
+        if any(marker in message for marker in _NOT_EDITABLE_MESSAGE_MARKERS):
             return True
         current = current.__cause__ or current.__context__
     return False

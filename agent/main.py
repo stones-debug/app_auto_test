@@ -113,6 +113,7 @@ class AgentApp:
             command=config.get("appium_command"),
             log_dir=Path(config.get("log_dir", tempfile.gettempdir())) / "appium",
             ready_timeout=float(config.get("appium_ready_timeout", 60)),
+            android_sdk_root=config.get("android_sdk_root"),
         )
         self._appium_lock = asyncio.Lock()
         self._appium_refs = 0
@@ -475,6 +476,7 @@ def build_agent_app(
         agent_key=key_provider,
         agent_id=install_id,
         version=__version__,
+        protocol_version=protocol_version(),
         heartbeat_interval=config.get("heartbeat_interval", 30),
     )
     app.client = client

@@ -64,6 +64,7 @@ _PY_SNIPPET_TYPES = {
     "integer": "int",
     "number": "float",
     "select": "str",
+    "element": "int",
 }
 
 _PY_LITERAL_SNIPPET = """{name}: Literal[{choices}] = {default}
@@ -86,6 +87,8 @@ def _py_field_snippet(param: dict) -> str:
         if kwargs:
             return f"    {name}: {type_} = Field(..., {', '.join(kwargs)})\n"
         return f"    {name}: {type_}\n"
+    if param["type"] == "element":
+        return f"    {name}: int | None = None\n"
     default = param.get("default")
     if type_ == "str":
         return f"    {name}: {type_} | None = None\n"
@@ -188,6 +191,13 @@ def _render_py(manifest: dict) -> str:
             lines.append(f"    {item['name']!r}: {item['element_label']!r},")
     lines.append("}")
     lines.append("")
+    lines.append("ELEMENT_PARAM_FIELDS: dict[str, tuple[str, ...]] = {")
+    for item in [*manifest["actions"], *manifest["assertions"]]:
+        fields = tuple(param["name"] for param in item["params"] if param["type"] == "element")
+        if fields:
+            lines.append(f"    {item['name']!r}: {fields!r},")
+    lines.append("}")
+    lines.append("")
     if kind == "?":  # never used
         return "\n".join(lines)  # pragma: no cover
     return "\n".join(lines)
@@ -207,6 +217,7 @@ def _ts_field_type(param: dict) -> str:
         "integer": "'number'",
         "number": "'number'",
         "select": "'select'",
+        "element": "'element'",
     }[param["type"]]
 
 
@@ -248,7 +259,7 @@ def _render_ts(manifest: dict) -> str:
         "export interface ParamField {",
         "  key: string",
         "  label: string",
-        "  type: 'text' | 'number' | 'select' | 'switch'",
+        "  type: 'text' | 'number' | 'select' | 'switch' | 'element'",
         "  options?: { value: string; label: string }[]",
         "  default?: string | number | boolean",
         "  placeholder?: string",

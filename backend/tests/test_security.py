@@ -84,7 +84,7 @@ async def test_register_rejects_old_agent_version():
         agent_id_db = agent.id
 
     try:
-        # 旧版本 → 拒绝（min_agent_version 随 Registry 升到 3.0.0）
+        # 旧版本 → 拒绝（min_agent_version 与当前 Agent 安装包版本统一为 3.2.0）
         async with SessionLocal() as db:
             ws_old = FakeWS()
             reply = await handle_register(
@@ -99,10 +99,26 @@ async def test_register_rejects_old_agent_version():
             ws_new = FakeWS()
             reply = await handle_register(
                 db, ws_new,
-                {"type": "register", "agent_id": "pytest_sec_agent", "agent_key": "sk-sec", "version": "3.0.0"},
+                {"type": "register", "agent_id": "pytest_sec_agent", "agent_key": "sk-sec", "version": "3.2.0"},
             )
         assert reply is not None and reply["status"] == "ok"
         assert ws_new.closed is None
+
+        # 版本足够但协议不匹配时也应在注册阶段拒绝，避免上线后才在执行阶段失败。
+        async with SessionLocal() as db:
+            ws_protocol = FakeWS()
+            reply = await handle_register(
+                db, ws_protocol,
+                {
+                    "type": "register",
+                    "agent_id": "pytest_sec_agent",
+                    "agent_key": "sk-sec",
+                    "version": "3.2.0",
+                    "protocol_version": "3.1.0",
+                },
+            )
+        assert reply is None
+        assert ws_protocol.closed is not None and ws_protocol.closed[0] == 1008
     finally:
         async with SessionLocal() as cleanup:
             await cleanup.execute(delete(Agent).where(Agent.id == agent_id_db))

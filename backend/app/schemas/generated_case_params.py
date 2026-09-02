@@ -32,6 +32,10 @@ class ClearParams(ParamsBase):
     pass
 
 
+class SetCheckedParams(ParamsBase):
+    checked: bool = True
+
+
 class SwipeParams(ParamsBase):
     direction: Literal['up', 'down', 'left', 'right'] = 'up'
     duration: int = Field(default=500, ge=0)
@@ -75,6 +79,7 @@ class SwipeInElementFindTextClickParams(ParamsBase):
     percent: float = Field(default=0.3, ge=0.05, le=0.95)
     container_wait_timeout: int = Field(default=10, ge=0, le=60)
     settle_ms: int = Field(default=300, ge=0, le=2000)
+    viewport_element_id: int | None = None
 
 
 class ScrollParams(ParamsBase):
@@ -109,6 +114,10 @@ class TapCoordinateParams(ParamsBase):
 
 class ElementExistsParams(ParamsBase):
     expected: Literal['exists', 'not_exists'] = 'exists'
+
+
+class CheckedParams(ParamsBase):
+    checked: bool = True
 
 
 class TextEqualsParams(ParamsBase):
@@ -148,6 +157,7 @@ STEP_PARAM_MODELS: dict[str, type[ParamsBase]] = {
     'click': ClickParams,  # noqa: F821
     'input': InputParams,  # noqa: F821
     'clear': ClearParams,  # noqa: F821
+    'set_checked': SetCheckedParams,  # noqa: F821
     'swipe': SwipeParams,  # noqa: F821
     'swipe_to_find': SwipeToFindParams,  # noqa: F821
     'swipe_in_element': SwipeInElementParams,  # noqa: F821
@@ -164,6 +174,7 @@ STEP_PARAM_MODELS: dict[str, type[ParamsBase]] = {
 
 ASSERTION_PARAM_MODELS: dict[str, type[ParamsBase]] = {
     'element_exists': ElementExistsParams,  # noqa: F821
+    'checked': CheckedParams,  # noqa: F821
     'text_equals': TextEqualsParams,  # noqa: F821
     'text_contains': TextContainsParams,  # noqa: F821
     'text_not_contains': TextNotContainsParams,  # noqa: F821
@@ -176,12 +187,13 @@ ASSERTION_PARAM_MODELS: dict[str, type[ParamsBase]] = {
 KNOWN_ACTIONS = frozenset(STEP_PARAM_MODELS)
 KNOWN_ASSERTIONS = frozenset(ASSERTION_PARAM_MODELS)
 
-PROTOCOL_VERSION = '3.0.0'
+PROTOCOL_VERSION = '3.2.0'
 
 STEP_NEEDS_ELEMENT = frozenset({
     'click',
     'input',
     'clear',
+    'set_checked',
     'swipe_to_find',
     'swipe_in_element',
     'swipe_in_element_find_text_click',
@@ -192,6 +204,7 @@ STEP_NEEDS_ELEMENT = frozenset({
 
 ASSERTION_NEEDS_ELEMENT = frozenset({
     'element_exists',
+    'checked',
     'text_equals',
     'text_contains',
     'text_not_contains',
@@ -202,5 +215,10 @@ ASSERTION_NEEDS_ELEMENT = frozenset({
 })
 
 ELEMENT_LABELS: dict[str, str] = {
+    'set_checked': '复选框',
     'swipe_in_element_find_text_click': '列表控件',
+}
+
+ELEMENT_PARAM_FIELDS: dict[str, tuple[str, ...]] = {
+    'swipe_in_element_find_text_click': ('viewport_element_id',),
 }

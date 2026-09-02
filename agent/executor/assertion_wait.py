@@ -93,12 +93,12 @@ async def verify_with_wait(
                     raise StopRequested("执行被用户停止")
                 if remaining <= 0:
                     if immediate_attempt_pending:
-                        # max_wait=0 仍执行一次立即尝试，但只给线程一个很短的
-                        # 调度窗口；底层定位收到的也是 wait_timeout=0。
+                        # max_wait=0 仍执行一次立即尝试。必须等待这一次驱动请求
+                        # 完成，不能在 50ms 后取消 asyncio.to_thread，避免底层线程
+                        # 继续持有 Appium 请求锁并阻塞下一条命令。
                         immediate_attempt_pending = False
-                        await asyncio.wait({attempt_task}, timeout=0.05)
-                        if attempt_task.done():
-                            continue
+                        await attempt_task
+                        continue
                     await cancel_attempt(attempt_task)
                     normalized = {
                         "status": "failed",

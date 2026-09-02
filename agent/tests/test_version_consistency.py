@@ -52,6 +52,14 @@ def test_version_sources_consistent():
     assert len(set(sources.values())) == 1, f"版本不一致: {sources}"
 
 
+def test_min_agent_version_matches_runtime_version():
+    """协议最低 Agent 版本必须与当前发布包版本一致，避免旧包注册后才失败。"""
+    manifest = (ROOT / "executor" / "protocol_manifest.yaml").read_text(encoding="utf-8")
+    m = re.search(r'^min_agent_version:\s*"([^"]+)"', manifest, re.MULTILINE)
+    assert m, "protocol_manifest.yaml 缺少 min_agent_version"
+    assert m.group(1) == _version_from_py()
+
+
 def test_version_is_semver():
     v = _version_from_py()
     assert re.fullmatch(r"\d+\.\d+\.\d+", v), f"非语义化版本: {v!r}"
