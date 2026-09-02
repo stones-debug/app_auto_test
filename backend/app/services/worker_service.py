@@ -6,10 +6,8 @@ Repository 负责队列、锁、执行树和终态写入；本模块只负责阶
 
 import asyncio
 import logging
-import secrets
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
 
 import httpx
 
@@ -127,7 +125,26 @@ async def _finalize_error(factory, execution_id: int, message: str) -> None:
             await commit(db)
 
 
-async def run_execution(
+async def _restore_unsubmitted_execution(
+    factory,
+    execution_id: int,
+    worker_id: str,
+    session_token: str,
+) -> None:
+    """恢复已认领但尚未成功下发给 Agent 的执行。"""
+    async with _session_scope(factory) as db:
+        restored = await executions_repo.restore_reserved_execution(
+            db,
+            execution_id,
+            worker_id=worker_id,
+            session_token=session_token,
+        )
+        if not restored:
+            return
+        await db.commit()
+
+
+async def run_reserved_execution(
     db,
     execution_id: int,
     worker_id: str,
@@ -136,37 +153,38 @@ async def run_execution(
     poll_interval: float = 5.0,
     session_factory=None,
 ) -> None:
-    """按认领、启动、载荷、发送、补偿和轮询阶段使用短 Session。"""
+    """执行一个已由 ``claim_next_queue`` 原子认领的任务。
+
+    这里不再改变 queued/running 状态，也不再选择或占用设备；所有外部网络
+    等待都发生在短事务之外。
+    """
     # db 仅保留为旧调用方的兼容参数；执行生命周期必须始终通过工厂切分短 Session。
     factory = session_factory or SessionLocal
     sender = agent_sender or _default_agent_sender
-
-    async with _session_scope(factory) as claim_db:
-        execution = await executions_repo.get_by_id(claim_db, execution_id)
-        if execution is None:
-            return
-        claimed = await executions_repo.claim_running(
-            claim_db, execution_id, secrets.token_urlsafe(32), datetime.now(UTC)
-        )
-        if not claimed:
-            await executions_repo.mark_queue_done(claim_db, execution_id)
-            await claim_db.commit()
-            logger.info("[%s] execution=%s 已非 queued，跳过", worker_id, execution_id)
-            return
-        await claim_db.commit()
+    dispatched = False
+    session_token: str | None = None
 
     try:
         async with _session_scope(factory) as start_db:
             execution = await executions_repo.get_by_id(start_db, execution_id)
             if execution is None:
                 return
-            await _create_execution_cases(start_db, execution)
-            device = await _select_and_lock_device(start_db, execution)
-            if device is None:
-                await _mark_terminal_repo(start_db, execution, "error", "无可用的在线 Agent/设备")
-                await start_db.commit()
+            if execution.status in TERMINAL_STATES:
+                if execution.finalized_at is None:
+                    await _create_execution_cases(start_db, execution)
+                    await _mark_terminal_repo(start_db, execution, execution.status)
+                    await start_db.commit()
                 return
-            execution.device_id = device.id
+            if execution.status not in {"running", "stopping"}:
+                logger.info("[%s] execution=%s 非活动状态，跳过", worker_id, execution_id)
+                return
+            session_token = execution.session_token
+            if not session_token:
+                raise RuntimeError("执行缺少 session_token")
+            await _create_execution_cases(start_db, execution)
+            device = await executions_repo.get_device_for_execution(start_db, execution)
+            if device is None:
+                raise RuntimeError("执行设备不存在")
             agent_id = device.agent_id
             await start_db.commit()
     except Exception as exc:
@@ -201,27 +219,58 @@ async def run_execution(
     if not ok:
         await _finalize_error(factory, execution_id, "Agent 不在线或未连接 WS，无法开始执行")
         return
+    dispatched = True
 
-    while True:
-        async with _session_scope(factory) as poll_db:
-            current = await executions_repo.get_by_id(poll_db, execution_id, populate_existing=True)
-            if current is None:
-                return
-            if current.status in TERMINAL_STATES:
-                await _mark_terminal_repo(poll_db, current, current.status)
-                await poll_db.commit()
-                return
-            stopping = current.status == "stopping"
-            should_stop = stopping and _stop_grace_exceeded(current)
-            if should_stop:
-                await _mark_terminal_repo(poll_db, current, "stopped", f"停止宽限期超时（>{settings.execution_stop_grace_seconds}s），强制结束")
-                await poll_db.commit()
-                return
-            device = await executions_repo.get_device_for_execution(poll_db, current)
-            device_agent_id = device.agent_id if device is not None else None
-        if stopping and device_agent_id is not None:
+    try:
+        while True:
+            async with _session_scope(factory) as poll_db:
+                current = await executions_repo.get_by_id(poll_db, execution_id, populate_existing=True)
+                if current is None:
+                    return
+                if current.status in TERMINAL_STATES:
+                    await _mark_terminal_repo(poll_db, current, current.status)
+                    await poll_db.commit()
+                    return
+                stopping = current.status == "stopping"
+                should_stop = stopping and _stop_grace_exceeded(current)
+                if should_stop:
+                    await _mark_terminal_repo(poll_db, current, "stopped", f"停止宽限期超时（>{settings.execution_stop_grace_seconds}s），强制结束")
+                    await poll_db.commit()
+                    return
+                device = await executions_repo.get_device_for_execution(poll_db, current)
+                device_agent_id = device.agent_id if device is not None else None
+            if stopping and device_agent_id is not None:
+                try:
+                    await sender(device_agent_id, {"type": "stop_test", "execution_id": execution_id})
+                except Exception:
+                    logger.exception("[%s] stop_test 发送失败 execution=%s", worker_id, execution_id)
+            await asyncio.sleep(poll_interval)
+    except asyncio.CancelledError:
+        if not dispatched and session_token is not None:
             try:
-                await sender(device_agent_id, {"type": "stop_test", "execution_id": execution_id})
+                await _restore_unsubmitted_execution(
+                    factory, execution_id, worker_id, session_token
+                )
             except Exception:
-                logger.exception("[%s] stop_test 发送失败 execution=%s", worker_id, execution_id)
-        await asyncio.sleep(poll_interval)
+                logger.exception("[%s] 恢复未下发执行失败 execution=%s", worker_id, execution_id)
+        raise
+
+
+async def run_execution(
+    db,
+    execution_id: int,
+    worker_id: str,
+    *,
+    agent_sender: Callable[[int, dict], Awaitable[bool]] | None = None,
+    poll_interval: float = 5.0,
+    session_factory=None,
+) -> None:
+    """兼容旧调用名；任务必须先由 ``claim_next_queue`` 完成原子认领。"""
+    await run_reserved_execution(
+        db,
+        execution_id,
+        worker_id,
+        agent_sender=agent_sender,
+        poll_interval=poll_interval,
+        session_factory=session_factory,
+    )

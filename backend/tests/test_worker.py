@@ -272,6 +272,55 @@ async def test_claim_and_run_agent_offline(client: AsyncClient):
         assert "不在线" in log.message
 
 
+async def test_claim_skips_busy_device_without_blocking_other_agent(client: AsyncClient):
+    """指定设备忙时保持排队，但不能阻塞其他 Agent 的空闲设备。"""
+    token, case_id = await _setup_case(client)
+    _agent_a, device_a = await _create_agent_device()
+    _agent_b, device_b = await _create_agent_device()
+    execution_a = await _create_execution(client, token, case_id, {}, device_a)
+    execution_b = await _create_execution(client, token, case_id, {}, device_b)
+
+    async with SessionLocal() as db:
+        busy_device = await db.get(Device, device_a)
+        busy_device.status = "busy"
+        await db.commit()
+
+        claimed = await worker_service.claim_next_queue(db, "worker-test")
+        assert claimed is not None
+        assert claimed.execution_id == execution_b
+
+        first = await db.get(Execution, execution_a)
+        second = await db.get(Execution, execution_b)
+        locked_device = await db.get(Device, device_b)
+        assert first.status == "queued"
+        assert second.status == "running"
+        assert second.session_token
+        assert second.started_at is not None
+        assert locked_device.status == "busy"
+        assert locked_device.locked_by_execution == execution_b
+
+
+async def test_claim_same_device_preserves_queue_fifo(client: AsyncClient):
+    """同一设备的多个任务按队列创建顺序认领。"""
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    first_id = await _create_execution(client, token, case_id, {}, device_id)
+    second_id = await _create_execution(client, token, case_id, {}, device_id)
+
+    async with SessionLocal() as db:
+        first = await worker_service.claim_next_queue(db, "worker-test")
+        assert first is not None and first.execution_id == first_id
+        assert await worker_service.claim_next_queue(db, "worker-test") is None
+
+        device = await db.get(Device, device_id)
+        device.status = "idle"
+        device.locked_by_execution = None
+        await db.commit()
+
+        second = await worker_service.claim_next_queue(db, "worker-test")
+        assert second is not None and second.execution_id == second_id
+
+
 async def test_run_undefined_variable_errors(client: AsyncClient):
     token, case_id = await _setup_case(client)
     _agent_id, device_id = await _create_agent_device()

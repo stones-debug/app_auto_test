@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import secrets
 from collections.abc import Sequence
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
@@ -466,19 +467,54 @@ async def create_execution_cases_from_execution(db: AsyncSession, execution: Exe
 
 
 async def claim_next_queue(db: AsyncSession, worker_id: str) -> ExecutionQueue | None:
+    """原子认领一个当前可运行的执行，并同时占用其指定设备。
+
+    查询按队列顺序筛选在线 Agent 的空闲设备，因此忙设备不会阻塞其他设备的
+    任务；同一设备的任务仍由 ``created_at/id`` 保持 FIFO。队列、执行和设备
+    通过同一个行锁事务完成状态转换，避免先写 running 后锁设备的中间态。
+    """
     stmt = (
-        select(ExecutionQueue)
-        .where(ExecutionQueue.status == "pending")
-        .order_by(ExecutionQueue.created_at)
+        select(ExecutionQueue, Execution, Device)
+        .join(Execution, Execution.id == ExecutionQueue.execution_id)
+        .join(Device, Device.id == Execution.device_id)
+        .join(Agent, Agent.id == Device.agent_id)
+        .where(
+            ExecutionQueue.status == "pending",
+            Execution.status == "queued",
+            Execution.device_id.is_not(None),
+            Device.status == "idle",
+            Device.locked_by_execution.is_(None),
+            Agent.status == "online",
+            Agent.deleted_at.is_(None),
+        )
+        .order_by(ExecutionQueue.created_at, ExecutionQueue.id)
         .with_for_update(skip_locked=True)
         .limit(1)
     )
-    row = (await db.execute(stmt)).scalar_one_or_none()
-    if row is None:
+    selected = (await db.execute(stmt)).first()
+    if selected is None:
+        return None
+    row, execution, device = selected
+    now = datetime.now(UTC)
+    session_token = secrets.token_urlsafe(32)
+    locked = await db.execute(
+        update(Device)
+        .where(
+            Device.id == device.id,
+            Device.status == "idle",
+            Device.locked_by_execution.is_(None),
+        )
+        .values(status="busy", locked_by_execution=execution.id, updated_at=now)
+        .returning(Device.id)
+    )
+    if locked.scalar_one_or_none() is None:
         return None
     row.status = "claimed"
     row.claimed_by = worker_id
-    row.claimed_at = datetime.now(UTC)
+    row.claimed_at = now
+    execution.status = "running"
+    execution.session_token = session_token
+    execution.started_at = now
     await db.flush()
     return row
 

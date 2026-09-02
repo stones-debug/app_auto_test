@@ -175,6 +175,44 @@ async def claim_running(db: AsyncSession, execution_id: int, session_token: str,
     return result.scalar_one_or_none() is not None
 
 
+async def restore_reserved_execution(
+    db: AsyncSession,
+    execution_id: int,
+    *,
+    worker_id: str,
+    session_token: str,
+) -> bool:
+    """恢复已认领但尚未下发的执行，并释放其设备与队列认领。"""
+    restored = await db.execute(
+        update(Execution)
+        .where(
+            Execution.id == execution_id,
+            Execution.status == "running",
+            Execution.finalized_at.is_(None),
+            Execution.session_token == session_token,
+        )
+        .values(status="queued", session_token=None, started_at=None)
+        .returning(Execution.id)
+    )
+    if restored.scalar_one_or_none() is None:
+        return False
+    await db.execute(
+        update(Device)
+        .where(Device.locked_by_execution == execution_id)
+        .values(status="idle", locked_by_execution=None)
+    )
+    await db.execute(
+        update(ExecutionQueue)
+        .where(
+            ExecutionQueue.execution_id == execution_id,
+            ExecutionQueue.status == "claimed",
+            ExecutionQueue.claimed_by == worker_id,
+        )
+        .values(status="pending", claimed_by=None, claimed_at=None)
+    )
+    return True
+
+
 async def mark_queue_done(db: AsyncSession, execution_id: int) -> None:
     await db.execute(update(ExecutionQueue).where(ExecutionQueue.execution_id == execution_id).values(status="done"))
 

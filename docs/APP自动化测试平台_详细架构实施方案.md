@@ -1896,6 +1896,26 @@ UPDATE devices SET status='idle', locked_by_execution=NULL, updated_at=NOW()
 WHERE id=:did AND locked_by_execution=:eid;
 ```
 
+### 10.5.1 单 Worker 跨多个单设备 Agent 并行（最终口径）
+
+V1 部署采用一个 Worker 进程维护多个独立 Agent：每个 Agent 只维护一台设备，
+Worker 通过异步任务池并行执行多个不同设备上的任务；同一 Agent/设备始终只能
+运行一个任务。并发上限由 `WORKER_CONCURRENCY` 控制，默认值为 `1`，实际并发数
+不超过在线空闲设备数量。
+
+队列认领必须在同一数据库事务内完成：以 `execution_queue.status='pending'`、
+`executions.status='queued'`、指定设备空闲未锁、所属 Agent 在线为条件，按队列
+创建时间和 ID 排序并使用 `FOR UPDATE SKIP LOCKED`；事务同时锁定队列、执行和设备，
+执行条件更新后才写入 `claimed`、`running`、`session_token`、`started_at`，最后
+提交事务再创建异步执行任务。指定设备忙碌时任务继续排队，不得阻塞其他空闲设备；
+同一设备的任务按队列创建顺序 FIFO。
+
+Worker 停止时先停止认领并等待活动任务自然结束，超过 `WORKER_SHUTDOWN_GRACE_SECONDS`
+后只取消本地观察任务，不主动终止已经下发到 Agent 的测试。尚未成功下发的认领任务
+按 `execution_id + session_token + status='running' + finalized_at IS NULL` 条件恢复
+为 `queued`，同时释放设备锁并将队列恢复为 `pending`；已下发任务保留运行状态，等待
+Agent 终态上报或超时扫描兜底。
+
 ### 10.6 变量系统落地（补表与 API）
 
 ```sql
