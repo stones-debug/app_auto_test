@@ -25,6 +25,9 @@ export function mergeFlowNodes(
   const targetKeys = new Set(targetNodes.map((node) => node.key).filter((key): key is string => Boolean(key)))
   const targetRefs = new Set(targetNodes)
   const others = allNodes.filter((node) => {
+    // 父组件回写时 targetNodes 通常是复制后的对象，不能仅依赖引用判断。
+    // 目标阶段的旧节点必须整体移除；跨阶段拖入的节点则按 key 移除旧副本。
+    if (phaseOf(node) === phase) return false
     if (targetRefs.has(node)) return false
     return !node.key || !targetKeys.has(node.key)
   })

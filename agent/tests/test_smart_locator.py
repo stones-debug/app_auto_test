@@ -1,5 +1,7 @@
 """智能元素定位（Step 2）测试：Mock 世界覆盖解析/滚动/stale/选择策略/校验。"""
 
+import time
+
 import pytest
 
 from executor import ElementNotFound, ExecutionContext, MockDriver, StopRequested, TestRunner
@@ -8,6 +10,7 @@ from executor.smart_locator import (
     ElementNotUnique,
     InvalidSmartLocator,
     ScrollLimitReached,
+    SmartElementResolver,
     build_selector,
 )
 
@@ -395,6 +398,35 @@ async def test_smart_scroll_respects_stop():
     with pytest.raises(StopRequested):
         context.find_element("1")
     assert driver.swipe_count == 1  # 第二次滚动前即停止
+
+
+async def test_smart_expired_deadline_does_not_call_appium():
+    calls = {"find_elements": 0}
+
+    class CountingDriver(MockDriver):
+        def find_elements(self, locator_type: str, locator_value: str, wait_timeout: int = 10):
+            calls["find_elements"] += 1
+            return super().find_elements(locator_type, locator_value, wait_timeout)
+
+    driver = CountingDriver()
+    with pytest.raises(ElementNotFound, match="超过截止时间"):
+        SmartElementResolver._run_with_deadline(
+            driver,
+            time.monotonic() - 1,
+            lambda: driver.find_elements("id", "never", wait_timeout=0),
+        )
+    assert calls["find_elements"] == 0
+
+
+async def test_smart_expired_deadline_allows_one_immediate_query():
+    driver = MockDriver()
+    driver.set_screen([_node(text="立即查询")])
+    config = _config([{"attribute": "text", "operator": "equals", "value": "立即查询"}])
+    context = _context(driver, config)
+
+    element = context.find_element("1", deadline=time.monotonic() - 1, allow_immediate=True)
+
+    assert element.text == "立即查询"
 
 
 # ---------- 场景 12：普通定位回归（sanitiy） ----------

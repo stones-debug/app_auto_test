@@ -27,10 +27,13 @@ const props = defineProps<{
   projectId?: number
   /** 元素 id → 名称映射（收起摘要显示元素名而非编号；未提供时回退编号） */
   elementNames?: ElementNameMap
+  /** 套件前后置步骤仅支持动作，不显示断言编辑区域。 */
+  allowAssertions?: boolean
 }>()
 const emit = defineEmits<{ 'update:modelValue': [steps: Step[]] }>()
 
 // 步骤没有数据库行 ID；使用 WeakMap 保存纯 UI 标识，避免折叠状态进入接口 payload。
+const stepUiKeyIds = new Map<string, number>()
 const stepUiIds = new WeakMap<object, number>()
 const collapsedStepIds = ref(new Set<number>())
 let nextStepUiId = 0
@@ -48,6 +51,13 @@ watch(
 )
 
 function stepUiId(step: Step): number {
+  if (step.key) {
+    const existingByKey = stepUiKeyIds.get(step.key)
+    if (existingByKey != null) return existingByKey
+    const createdByKey = ++nextStepUiId
+    stepUiKeyIds.set(step.key, createdByKey)
+    return createdByKey
+  }
   const rawStep = toRaw(step)
   const existing = stepUiIds.get(rawStep)
   if (existing != null) return existing
@@ -101,14 +111,17 @@ function addStep() {
       element_id: null,
       description: '',
       continue_on_failure: false,
-      assertions: [],
+      ...(props.allowAssertions === false ? {} : { assertions: [] }),
     },
   ])
 }
 
-function removeStep(index: number) {
-  collapsedStepIds.value.delete(stepUiId(props.modelValue[index]))
-  update(props.modelValue.filter((_, current) => current !== index))
+function removeStep(step: Step) {
+  collapsedStepIds.value.delete(stepUiId(step))
+  update(props.modelValue.filter((candidate) => {
+    if (candidate === step) return false
+    return !step.key || candidate.key !== step.key
+  }))
 }
 
 function onActionChange(step: Step) {
@@ -192,7 +205,7 @@ function onAssertionTypeChange(assertion: Assertion) {
             <el-button text size="small" @click.stop="toggleStep(element)">
               {{ isStepCollapsed(element) ? '展开' : '收起' }}
             </el-button>
-            <el-button type="danger" text size="small" @click.stop="removeStep(index)">删除</el-button>
+            <el-button type="danger" text size="small" @click.stop="removeStep(element)">删除</el-button>
           </div>
           <div v-show="!isStepCollapsed(element)" class="step-body">
             <div v-if="actionMeta(element.action).needsElement" class="step-row">
@@ -223,7 +236,7 @@ function onAssertionTypeChange(assertion: Assertion) {
               <span class="field-label">描述</span>
               <el-input v-model="element.description" placeholder="操作说明（可选）" />
             </div>
-            <div class="assertion-section">
+            <div v-if="props.allowAssertions !== false" class="assertion-section">
               <div class="assertion-title-row">
                 <div>
                   <strong>步骤后断言</strong>

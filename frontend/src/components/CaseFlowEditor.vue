@@ -27,6 +27,7 @@ const props = defineProps<{
   elementNames?: ElementNameMap
 }>()
 const emit = defineEmits<{ 'update:modelValue': [nodes: FlowNode[]] }>()
+const nodeUiKeyIds = new Map<string, number>()
 const nodeUiIds = new WeakMap<object, number>()
 const collapsedIds = ref(new Set<number>())
 let nextUiId = 0
@@ -40,6 +41,13 @@ watch(() => props.modelValue, (nodes) => {
 })
 
 function nodeUiId(node: FlowNode): number {
+  if (node.key) {
+    const existingByKey = nodeUiKeyIds.get(node.key)
+    if (existingByKey != null) return existingByKey
+    const createdByKey = ++nextUiId
+    nodeUiKeyIds.set(node.key, createdByKey)
+    return createdByKey
+  }
   const raw = toRaw(node)
   const existing = nodeUiIds.get(raw)
   if (existing != null) return existing
@@ -74,9 +82,12 @@ function addAssertion() {
   }
   update([...props.modelValue, node])
 }
-function remove(index: number) {
-  collapsedIds.value.delete(nodeUiId(props.modelValue[index]))
-  update(props.modelValue.filter((_, current) => current !== index))
+function remove(node: FlowNode) {
+  collapsedIds.value.delete(nodeUiId(node))
+  update(props.modelValue.filter((candidate) => {
+    if (candidate === node) return false
+    return !node.key || candidate.key !== node.key
+  }))
 }
 function onActionChange(node: ActionNode) { node.params = defaultParams(actionMeta(node.action).fields); update([...props.modelValue]) }
 function onAssertionTypeChange(node: AssertionNode) { node.params = defaultParams(assertionMeta(node.type).fields); update([...props.modelValue]) }
@@ -101,7 +112,7 @@ function nodeSummary(node: FlowNode) { return node.kind === 'action' ? stepSumma
               <el-select v-else v-model="element.type" class="action-select" @change="onAssertionTypeChange(element)"><el-option v-for="item in ASSERTION_TYPES" :key="item.value" :label="item.label" :value="item.value" /></el-select>
             </template>
             <template v-if="!isCollapsed(element)"><span class="continue-label">失败后继续</span><el-switch v-model="element.continue_on_failure" size="small" @change="update([...modelValue])" /></template>
-            <el-button text size="small" @click.stop="toggle(element)">{{ isCollapsed(element) ? '展开' : '收起' }}</el-button><el-button type="danger" text size="small" @click.stop="remove(index)">删除</el-button>
+            <el-button text size="small" @click.stop="toggle(element)">{{ isCollapsed(element) ? '展开' : '收起' }}</el-button><el-button type="danger" text size="small" @click.stop="remove(element)">删除</el-button>
           </div>
           <div v-show="!isCollapsed(element)" class="step-body">
             <template v-if="element.kind === 'action'">

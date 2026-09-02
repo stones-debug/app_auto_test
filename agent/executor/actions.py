@@ -182,6 +182,8 @@ class SwipeInElementFindTextClickAction(BaseAction):
 
     目标文字直接写在动作参数（支持 ${变量}），不进入元素库。
     匹配方式 equals/contains；先按首选方向查找，未找到再反向跨过起点继续。
+    每次滚动调用成功即计入次数，以 max_swipes_per_direction 作为每个方向的
+    可靠上限，不依赖不同 Appium 版本对 scrollGesture 返回值的差异。
     只接受中心点落在列表控件可见矩形内的匹配，点击距离列表中心最近的匹配项。
     找到后立即点击；如遇 stale，重新定位列表和目标重试，不能复用旧句柄。
     """
@@ -213,10 +215,9 @@ class SwipeInElementFindTextClickAction(BaseAction):
         reverse_swipes = 0
         last_click_error: BaseException | None = None
 
-        # 阶段 1：首选方向，最多 max_swipes 次。
-        # 滚动后必须先查询新页面，再依据 scrollGesture 的 canContinue 决定是否结束：
-        # 返回 False 仅表示“本次滚动后不能再继续”，不代表本次滚动没有发生，
-        # 因此最后一次滚动产生的新页面必须在结束前排查，否则会漏查最后一屏。
+        # 阶段 1：首选方向，严格按配置最多执行 max_swipes 次。
+        # scrollGesture 的返回值在不同 Appium/UiAutomator2 版本中可能为 False/None，
+        # 但手势本身已经执行；不能用该返回值提前截断用户配置的查找预算。
         while True:
             found, error = await self._try_find_and_click(
                 driver, context, element_id, selector, container_wait_timeout,
@@ -227,7 +228,7 @@ class SwipeInElementFindTextClickAction(BaseAction):
                 last_click_error = error
             if preferred_swipes >= max_swipes:
                 break
-            can_continue = await self._scroll_dir(
+            await self._scroll_dir(
                 driver, context, element_id, preferred, percent,
                 container_wait_timeout, settle_ms,
             )
@@ -240,8 +241,6 @@ class SwipeInElementFindTextClickAction(BaseAction):
                 return self._make_result(done_swipes, target_text)
             if error is not None:
                 last_click_error = error
-            if not can_continue:
-                break
 
         # 阶段 2：反向，预算 = 首选实际滑动次数 + max_swipes（前半返回起点，后半探索另一侧）
         reverse_budget = preferred_swipes + max_swipes
@@ -255,7 +254,7 @@ class SwipeInElementFindTextClickAction(BaseAction):
                 last_click_error = error
             if reverse_swipes >= reverse_budget:
                 break
-            can_continue = await self._scroll_dir(
+            await self._scroll_dir(
                 driver, context, element_id, opposite, percent,
                 container_wait_timeout, settle_ms,
             )
@@ -268,8 +267,6 @@ class SwipeInElementFindTextClickAction(BaseAction):
                 return self._make_result(done_swipes, target_text)
             if error is not None:
                 last_click_error = error
-            if not can_continue:
-                break
 
         raise ElementNotFound(self._failure_reason(
             element_id, target_text, match_mode, preferred, opposite,

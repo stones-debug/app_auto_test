@@ -43,6 +43,7 @@ const emit = defineEmits<{
         title="前置操作"
         description="运行时在套件内每个用例主体之前执行"
         tone="warning"
+        :allow-assertions="false"
       />
       <CaseStepEditor
         :model-value="teardownSteps"
@@ -52,6 +53,7 @@ const emit = defineEmits<{
         title="后置操作"
         description="运行时在套件内每个用例完成后执行；失败时仍会尝试清理"
         tone="success"
+        :allow-assertions="false"
       />
     </div>
 
@@ -104,13 +106,10 @@ const emit = defineEmits<{
   flex-shrink: 0;
 }
 .steps-grid {
-  display: grid;
-  grid-template-columns: 1fr;
+  display: flex;
+  flex-direction: column;
   gap: 16px;
   padding: 16px 20px 0;
-}
-@media (min-width: 1600px) {
-  .steps-grid { grid-template-columns: 1fr 1fr; }
 }
 .steps-save-bar {
   position: sticky;

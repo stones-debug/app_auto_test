@@ -1,5 +1,7 @@
 import hashlib
 import logging
+import math
+import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -37,6 +39,12 @@ class AppiumDriver(BaseDriver):
     来自 Worker 下发的 start_test.device，据此构造 UiAutomator2/XCUITest options。
     """
 
+    # Appium 查询、UiAutomator2 通信和设备端页面刷新都可能超过几十毫秒。
+    # 逻辑等待时间由 WebDriverWait/deadline 控制，不能直接作为 HTTP 传输超时。
+    HTTP_MIN_TIMEOUT = 5.0
+    HTTP_MAX_TIMEOUT = 30.0
+    DEFAULT_HTTP_REQUEST_TIMEOUT = HTTP_MAX_TIMEOUT
+
     def __init__(
         self,
         host: str = "127.0.0.1",
@@ -44,32 +52,75 @@ class AppiumDriver(BaseDriver):
         capabilities: dict | None = None,
         device: dict | None = None,
         command_timeout: int | None = None,
+        http_request_timeout: float | None = None,
     ) -> None:
         self.command_executor = f"http://{host}:{port}"
         self.capabilities = capabilities or {}
         self.device = device or {}
         self.command_timeout = command_timeout
+        self.http_request_timeout = self._normalize_http_request_timeout(http_request_timeout)
         self.driver: WebDriver | None = None
         self._http_timeout_default: float | None = None
+        self._http_command_lock = threading.RLock()
+
+    @classmethod
+    def _normalize_http_request_timeout(cls, timeout: float | None) -> float:
+        if timeout is None:
+            return cls.DEFAULT_HTTP_REQUEST_TIMEOUT
+        try:
+            value = float(timeout)
+        except (TypeError, ValueError):
+            return cls.DEFAULT_HTTP_REQUEST_TIMEOUT
+        if not math.isfinite(value):
+            return cls.DEFAULT_HTTP_REQUEST_TIMEOUT
+        return min(cls.HTTP_MAX_TIMEOUT, max(cls.HTTP_MIN_TIMEOUT, value))
+
+    def _client_config(self):
+        driver = self.driver
+        executor = getattr(driver, "command_executor", None)
+        return getattr(executor, "_client_config", None)
 
     def _remember_http_timeout_default(self) -> None:
-        driver = self.driver
-        executor = getattr(driver, "command_executor", None)
-        client_config = getattr(executor, "_client_config", None)
+        client_config = self._client_config()
         self._http_timeout_default = getattr(client_config, "timeout", None)
 
+    def _effective_http_timeout(self, remaining: float | None) -> float:
+        if remaining is None:
+            return self.http_request_timeout
+        return min(
+            self.http_request_timeout,
+            max(self.HTTP_MIN_TIMEOUT, float(remaining)),
+        )
+
     def set_command_timeout(self, timeout: float | None) -> None:
-        """设置当前 Appium HTTP 请求超时，避免请求越过断言共享 deadline。"""
-        driver = self.driver
-        executor = getattr(driver, "command_executor", None)
-        client_config = getattr(executor, "_client_config", None)
+        """兼容旧调用方设置 HTTP 超时；新代码应使用 run_with_http_timeout。"""
+        client_config = self._client_config()
         if client_config is None:
             return
-        client_config.timeout = (
-            self._http_timeout_default
-            if timeout is None
-            else max(0.05, float(timeout))
-        )
+        with self._http_command_lock:
+            client_config.timeout = (
+                self._http_timeout_default
+                if timeout is None
+                else self._effective_http_timeout(timeout)
+            )
+
+    def run_with_http_timeout(self, remaining: float | None, operation):
+        """使用独立的 HTTP 超时执行单次请求，并原子恢复原有配置。
+
+        Appium 的 WebDriver client config 在同一驱动上是共享对象。必须把锁覆盖
+        整个请求，而不是只锁住设置/恢复动作，否则被取消的工作线程可能在新请求
+        执行期间恢复旧超时。
+        """
+        client_config = self._client_config()
+        if client_config is None:
+            return operation()
+        with self._http_command_lock:
+            old_timeout = client_config.timeout
+            client_config.timeout = self._effective_http_timeout(remaining)
+            try:
+                return operation()
+            finally:
+                client_config.timeout = old_timeout
 
     def _device_caps(self) -> dict:
         """由 Worker 下发的设备信息构造平台能力（CR-08）。"""
@@ -271,8 +322,15 @@ class AppiumDriver(BaseDriver):
         operation_deadline = time.monotonic() + max(0.0, timeout)
 
         def locate(_driver):
-            self.set_command_timeout(max(0.05, operation_deadline - time.monotonic()))
-            return driver.find_element(by, normalized_value)
+            remaining = operation_deadline - time.monotonic()
+            if timeout > 0 and remaining <= 0:
+                # WebDriverWait 的逻辑窗口已结束，不再发起一个必然越过 deadline
+                # 的请求；wait_timeout=0 走一次立即查询例外。
+                raise TimeoutException()
+            return self.run_with_http_timeout(
+                None if timeout <= 0 else remaining,
+                lambda: driver.find_element(by, normalized_value),
+            )
 
         try:
             if timeout <= 0:
@@ -282,8 +340,6 @@ class AppiumDriver(BaseDriver):
             raise ElementNotFound(
                 f"元素等待超时: {normalized_type}={normalized_value} ({timeout_label}s)"
             ) from None
-        finally:
-            self.set_command_timeout(None)
 
     def find_elements(self, locator_type: str, locator_value: str, wait_timeout: int = 10):
         """多匹配查询（智能定位用）：返回当前页面全部匹配元素。

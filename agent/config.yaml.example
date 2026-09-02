@@ -13,7 +13,10 @@ registry_full_interval: 30
 # Appium 生命周期（按需隐藏启动，127.0.0.1）
 appium_host: "127.0.0.1"
 appium_port: 4723
+# Appium 会话空闲多久后失效（不是单次 HTTP 请求超时）
 appium_command_timeout: 300
+# 单次 Appium HTTP 请求最多等待多久，Agent 会限制在 5～30 秒
+appium_http_request_timeout: 30
 appium_ready_timeout: 60
 # appium_bin: "appium"            # Appium server 可执行文件（PATH 中）
 # node_bin: "C:\\node\\node.exe"  # 或指定便携 Node + appium JS

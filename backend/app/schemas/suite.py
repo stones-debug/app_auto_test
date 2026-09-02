@@ -5,12 +5,37 @@ from pydantic import BaseModel, Field, model_validator
 from app.schemas.case import StepCreate
 
 
+def _normalize_suite_steps(value):
+    """兼容通用步骤编辑器提交的空 assertions 元数据。"""
+    if value is None:
+        return value
+    normalized = []
+    for step in value:
+        if isinstance(step, dict) and "assertions" in step:
+            if step["assertions"]:
+                raise ValueError("套件前后置步骤不支持断言")
+            step = {key: item for key, item in step.items() if key != "assertions"}
+        normalized.append(step)
+    return normalized
+
+
 class SuiteCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: str | None = None
     # 方案 §2：套件前后置步骤（仅 Action，无断言）；复用 StepCreate 校验与 UUID 兜底
     setup_steps: list[StepCreate] = Field(default_factory=list)
     teardown_steps: list[StepCreate] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_step_payload(cls, values):
+        if not isinstance(values, dict):
+            return values
+        values = dict(values)
+        for field in ("setup_steps", "teardown_steps"):
+            if field in values:
+                values[field] = _normalize_suite_steps(values[field])
+        return values
 
 
 class SuiteUpdate(BaseModel):
@@ -19,6 +44,17 @@ class SuiteUpdate(BaseModel):
     status: str | None = Field(default=None, pattern="^(active|disabled)$")
     setup_steps: list[StepCreate] | None = None
     teardown_steps: list[StepCreate] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_step_payload(cls, values):
+        if not isinstance(values, dict):
+            return values
+        values = dict(values)
+        for field in ("setup_steps", "teardown_steps"):
+            if field in values:
+                values[field] = _normalize_suite_steps(values[field])
+        return values
 
 
 class SuiteOut(BaseModel):

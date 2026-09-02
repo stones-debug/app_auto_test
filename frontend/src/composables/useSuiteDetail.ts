@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { getSuite, listVariables, updateSuite, updateVariable, deleteVariable, type Suite, type Variable } from '@/api/suites'
 import { normalizeStep, validateStep, type Step } from '@/api/cases'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
+import { toSuiteStepPayload } from '@/utils/suiteSteps'
 
 export function useSuiteDetail(onSaved?: () => Promise<void>) {
   const loadingDetail = ref(false)
@@ -74,8 +75,8 @@ export function useSuiteDetail(onSaved?: () => Promise<void>) {
       const updated = await updateSuite(activeSuite, {
         name: suiteDetail.value.name,
         description: suiteDetail.value.description ?? null,
-        setup_steps: setupSteps.value,
-        teardown_steps: teardownSteps.value,
+        setup_steps: toSuiteStepPayload(setupSteps.value),
+        teardown_steps: toSuiteStepPayload(teardownSteps.value),
       })
       suiteDetail.value = {
         ...suiteDetail.value,

@@ -81,6 +81,17 @@ async def with_stale_retry(
             find_kwargs["allow_immediate"] = allow_immediate
         try:
             element = context.find_element(element_id, **find_kwargs)
+            if deadline is None:
+                return operation(element)
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0 and not allow_immediate:
+                raise ElementNotFound(f"{label}达到最大等待时间")
+            run_with_timeout = getattr(driver, "run_with_http_timeout", None)
+            if callable(run_with_timeout):
+                return run_with_timeout(
+                    None if allow_immediate else remaining,
+                    lambda element=element: operation(element),
+                )
             return operation(element)
         except Exception as exc:
             if not is_stale_element_error(exc):

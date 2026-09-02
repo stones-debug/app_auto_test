@@ -481,7 +481,9 @@ class SmartElementResolver:
                 logger.info(
                     "智能定位候选 %s/%s: %s=%s", alt_index, len(alternatives), locator_type, locator_value
                 )
-                matches = self._find_all(driver, locator_type, locator_value, deadline)
+                matches = self._find_all(
+                    driver, locator_type, locator_value, deadline, allow_immediate=allow_immediate
+                )
                 count = len(matches)
                 logger.info("候选 %s 匹配 %s 个元素", alt_index, count)
                 if count >= 1:
@@ -579,11 +581,19 @@ class SmartElementResolver:
             time.sleep(min(0.1, remaining))
 
     @staticmethod
-    def _find_all(driver, locator_type: str, locator_value: str, deadline: float):
+    def _find_all(
+        driver,
+        locator_type: str,
+        locator_value: str,
+        deadline: float,
+        *,
+        allow_immediate: bool = False,
+    ):
         return SmartElementResolver._run_with_deadline(
             driver,
             deadline,
             lambda: driver.find_elements(locator_type, locator_value, wait_timeout=0),
+            allow_immediate=allow_immediate,
         )
 
     @staticmethod
@@ -591,11 +601,20 @@ class SmartElementResolver:
         return SmartElementResolver._run_with_deadline(driver, deadline, driver.page_signature)
 
     @staticmethod
-    def _run_with_deadline(driver, deadline: float, operation):
+    def _run_with_deadline(driver, deadline: float, operation, *, allow_immediate: bool = False):
         """让单次 Appium HTTP 调用也受共享 deadline 约束。"""
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 and not allow_immediate:
+            raise ElementNotFound("智能定位超过截止时间仍未找到元素")
+
+        run_with_timeout = getattr(driver, "run_with_http_timeout", None)
+        if callable(run_with_timeout):
+            return run_with_timeout(None if allow_immediate else remaining, operation)
+
+        # 兼容尚未实现 run_with_http_timeout 的第三方驱动替身。
         set_timeout = getattr(driver, "set_command_timeout", None)
         if callable(set_timeout):
-            set_timeout(max(0.05, deadline - time.monotonic()))
+            set_timeout(None if allow_immediate else remaining)
         try:
             return operation()
         finally:

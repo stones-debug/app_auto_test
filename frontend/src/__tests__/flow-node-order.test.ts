@@ -43,6 +43,21 @@ describe('flow node phase ordering', () => {
     expect(merged.map((item) => `${item.phase}:${item.order}`)).toEqual(['main:1', 'main:2'])
   })
 
+  it('removes a deleted node when the edited phase is copied by the parent', () => {
+    const setup = node('setup-1', 'setup', 1)
+    const main1 = node('main-1', 'main', 1)
+    const main2 = node('main-2', 'main', 2)
+    const teardown = node('teardown-1', 'teardown', 1)
+
+    const merged = mergeFlowNodes(
+      [setup, main1, main2, teardown],
+      'main',
+      [{ ...main1, order: 1 }],
+    )
+
+    expect(merged.map((item) => item.key)).toEqual(['setup-1', 'main-1', 'teardown-1'])
+  })
+
   it('normalizes every phase independently before saving', () => {
     const normalized = normalizeFlowNodeOrders([
       node('main-1', 'main', 4),

@@ -179,6 +179,7 @@ async def test_suite_steps_with_find_text_click(client: AsyncClient):
                     "action": "swipe_in_element_find_text_click",
                     "element_id": element_id,
                     "params": {"target_text": "确定", "match_mode": "contains"},
+                    "assertions": [],
                 },
             ],
         },
@@ -186,3 +187,25 @@ async def test_suite_steps_with_find_text_click(client: AsyncClient):
     )
     assert updated.status_code == 200
     assert updated.json()["teardown_steps"][0]["params"]["match_mode"] == "contains"
+    assert "assertions" not in updated.json()["teardown_steps"][0]
+
+
+async def test_suite_steps_reject_non_empty_assertions(client: AsyncClient):
+    """套件前后置仅支持动作，不能借兼容字段写入断言。"""
+    headers, project_id, _ = await _setup(client)
+    response = await client.post(
+        f"/api/projects/{project_id}/suites",
+        json={
+            "name": "禁止套件断言",
+            "setup_steps": [
+                {
+                    "order": 1,
+                    "action": "sleep",
+                    "params": {"duration": 1},
+                    "assertions": [{"type": "element_exists"}],
+                },
+            ],
+        },
+        headers=headers,
+    )
+    assert response.status_code == 422

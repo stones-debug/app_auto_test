@@ -602,6 +602,123 @@ async def test_appium_find_element_wait_success(monkeypatch):
     assert found == "element:soon"
 
 
+async def test_appium_http_timeout_has_safe_minimum_and_restores_default():
+    from types import SimpleNamespace
+
+    from executor.appium_driver import AppiumDriver
+
+    client_config = SimpleNamespace(timeout=30.0)
+    session = SimpleNamespace(
+        command_executor=SimpleNamespace(_client_config=client_config),
+    )
+    driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
+    driver.driver = session
+    driver._remember_http_timeout_default()
+
+    assert driver._effective_http_timeout(0.05) == 5.0
+    assert driver._effective_http_timeout(15) == 15.0
+    assert driver._effective_http_timeout(300) == 30.0
+
+    driver.set_command_timeout(0.05)
+    assert client_config.timeout == AppiumDriver.HTTP_MIN_TIMEOUT
+
+    driver.set_command_timeout(None)
+    assert client_config.timeout == 30.0
+
+
+async def test_appium_http_timeout_can_be_configured_but_is_clamped():
+    from executor.appium_driver import AppiumDriver
+
+    assert AppiumDriver(http_request_timeout=10).http_request_timeout == 10.0
+    assert AppiumDriver(http_request_timeout=1).http_request_timeout == 5.0
+    assert AppiumDriver(http_request_timeout=300).http_request_timeout == 30.0
+
+
+async def test_appium_immediate_find_uses_http_timeout_and_restores_default():
+    from types import SimpleNamespace
+
+    from executor.appium_driver import AppiumDriver
+
+    client_config = SimpleNamespace(timeout=12.0)
+
+    class ImmediateSession:
+        command_executor = SimpleNamespace(_client_config=client_config)
+
+        def find_element(self, by, value):
+            assert client_config.timeout == 30.0
+            return f"element:{value}"
+
+    driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
+    driver.driver = ImmediateSession()
+    driver._remember_http_timeout_default()
+
+    assert driver.find_element("id", "now", wait_timeout=0) == "element:now"
+    assert client_config.timeout == 12.0
+
+
+async def test_appium_http_timeout_restores_after_request_error():
+    from types import SimpleNamespace
+
+    from executor.appium_driver import AppiumDriver
+
+    client_config = SimpleNamespace(timeout=12.0)
+    session = SimpleNamespace(
+        command_executor=SimpleNamespace(_client_config=client_config),
+    )
+    driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
+    driver.driver = session
+
+    def fail_request():
+        raise RuntimeError("request failed")
+
+    with pytest.raises(RuntimeError, match="request failed"):
+        driver.run_with_http_timeout(15, fail_request)
+    assert client_config.timeout == 12.0
+
+
+async def test_appium_http_timeout_is_serialized_across_threads():
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from types import SimpleNamespace
+
+    from executor.appium_driver import AppiumDriver
+
+    client_config = SimpleNamespace(timeout=12.0)
+    session = SimpleNamespace(
+        command_executor=SimpleNamespace(_client_config=client_config),
+    )
+    driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
+    driver.driver = session
+    first_started = Event()
+    release_first = Event()
+    second_entered = Event()
+    observed: list[float] = []
+
+    def first_request():
+        first_started.set()
+        assert client_config.timeout == 15.0
+        assert not second_entered.wait(0.1)
+        assert release_first.wait(2)
+        return "first"
+
+    def second_request():
+        second_entered.set()
+        observed.append(client_config.timeout)
+        return "second"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_future = pool.submit(driver.run_with_http_timeout, 15, first_request)
+        assert first_started.wait(2)
+        second_future = pool.submit(driver.run_with_http_timeout, 20, second_request)
+        assert not second_entered.wait(0.1)
+        release_first.set()
+        assert first_future.result() == "first"
+        assert second_future.result() == "second"
+
+    assert observed == [20.0]
+    assert client_config.timeout == 12.0
+
+
 async def test_appium_standard_android_id_keeps_native_id_strategy():
     from appium.webdriver.common.appiumby import AppiumBy
 
@@ -896,12 +1013,14 @@ async def test_create_driver_appium_uses_config_and_device():
             "appium_port": 4730,
             "appium_capabilities": {"appium:options": {"noReset": False}},
             "appium_command_timeout": 300,
+            "appium_http_request_timeout": 15,
         },
         device={"udid": "emulator-5554", "platform": "android"},
     )
     assert isinstance(driver, AppiumDriver)
     assert driver.command_executor == "http://10.0.0.8:4730"
     assert driver.command_timeout == 300
+    assert driver.http_request_timeout == 15.0
 
     ios = AppiumDriver(device={"udid": "iphone-x", "platform": "ios"})
     assert ios._device_caps()["platformName"] == "iOS"
@@ -1626,8 +1745,9 @@ async def test_find_text_click_scroll_preferred_fails_reverse_crosses_start():
     # 下滑：2 次回到起点，再 1 次越过起点出现目标
     target_page = [{"id": "t1", "text": "系统时间", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}]
     driver.down_pages = lambda count: target_page if count >= 3 else None
-    action, context = _run_find_text(driver, _find_text_params())
-    result = await action.execute(driver, context, _find_text_params())
+    params = _find_text_params(max_swipes_per_direction=2)
+    action, context = _run_find_text(driver, params)
+    result = await action.execute(driver, context, params)
     assert result["status"] == "passed"
     assert result["found_after_swipes"] == 5  # 2 上滑（含边界）+ 3 下滑（2 返起点 + 1 越过）
     assert driver.up_count == 2
@@ -1648,8 +1768,9 @@ async def test_find_text_click_reverse_boundary_last_screen_still_queried():
     target_page = [{"id": "t1", "text": "系统时间", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}]
     driver.down_pages = lambda count: target_page if count >= 1 else None
     driver.down_boundary_at = 1
-    action, context = _run_find_text(driver, _find_text_params())
-    result = await action.execute(driver, context, _find_text_params())
+    params = _find_text_params(max_swipes_per_direction=1)
+    action, context = _run_find_text(driver, params)
+    result = await action.execute(driver, context, params)
     assert result["status"] == "passed"
     assert result["found_after_swipes"] == 2  # 1 上滑（边界）+ 1 下滑（边界）后命中最后一屏
     assert driver.up_count == 1
@@ -1663,8 +1784,9 @@ async def test_find_text_click_preferred_boundary_switches_to_reverse():
     driver.up_boundary_at = 1  # 上滑一次即到边界
     target_page = [{"id": "t1", "text": "系统时间", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}]
     driver.down_pages = lambda count: target_page if count >= 2 else None
-    action, context = _run_find_text(driver, _find_text_params())
-    result = await action.execute(driver, context, _find_text_params())
+    params = _find_text_params(max_swipes_per_direction=1)
+    action, context = _run_find_text(driver, params)
+    result = await action.execute(driver, context, params)
     assert result["status"] == "passed"
     assert driver.up_count == 1
     assert driver.down_count == 2
@@ -1682,6 +1804,48 @@ async def test_find_text_click_both_directions_exhaust_raises():
     action, context = _run_find_text(driver, _find_text_params(max_swipes_per_direction=2))
     with pytest.raises(ElementNotFound, match="系统时间"):
         await action.execute(driver, context, _find_text_params(max_swipes_per_direction=2))
+
+
+class _FalseScrollResultDriver(_ListScrollDriver):
+    """模拟部分 Appium 版本返回 False 但手势已实际执行。"""
+
+    def scroll_in_element(self, element, direction: str, percent: float) -> bool:
+        super().scroll_in_element(element, direction, percent)
+        return False
+
+
+async def test_find_text_click_uses_configured_budget_and_reverses_direction():
+    """滚动返回 False 不能截断配置次数，达到上限后仍需执行反向查找。"""
+    driver = _FalseScrollResultDriver(_FULL_SCREEN)
+    driver.set_screen([{"id": "i0", "text": "项目一", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
+    target_page = [{"id": "t1", "text": "系统时间", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}]
+    driver.up_pages = lambda count: target_page if count >= 3 else None
+    driver.down_pages = lambda count: target_page if count >= 1 else None
+    params = _find_text_params(max_swipes_per_direction=3)
+    action, context = _run_find_text(driver, params)
+
+    result = await action.execute(driver, context, params)
+
+    assert result["status"] == "passed"
+    assert result["found_after_swipes"] == 3
+    assert driver.up_count == 3
+    assert driver.down_count == 0
+
+
+async def test_find_text_click_honors_down_preferred_direction():
+    driver = _ListScrollDriver(_FULL_SCREEN)
+    driver.set_screen([{"id": "i0", "text": "项目一", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
+    target_page = [{"id": "t1", "text": "系统时间", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}]
+    driver.down_pages = lambda count: target_page if count >= 2 else None
+    params = _find_text_params(preferred_direction="down")
+    action, context = _run_find_text(driver, params)
+
+    result = await action.execute(driver, context, params)
+
+    assert result["status"] == "passed"
+    assert result["found_after_swipes"] == 2
+    assert driver.down_count == 2
+    assert driver.up_count == 0
 
 
 class _StaleOnceScrollDriver(_ListScrollDriver):

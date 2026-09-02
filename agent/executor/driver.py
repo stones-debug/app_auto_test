@@ -148,6 +148,11 @@ class BaseDriver:
         """临时设置驱动 HTTP 命令超时；不支持的驱动实现为空操作。"""
         _ = timeout
 
+    def run_with_http_timeout(self, remaining: float | None, operation):
+        """在指定的 HTTP 超时策略下执行一次驱动请求。"""
+        _ = remaining
+        return operation()
+
 
 class MockDriver(BaseDriver):
     """确定性模拟驱动：以 locator_value 为 key 维护应用状态，供本地联调/测试。
@@ -704,5 +709,6 @@ def create_driver(mode: str, config: dict | None = None, device: dict | None = N
             capabilities=config.get("appium_capabilities") or {},
             device=device,
             command_timeout=config.get("appium_command_timeout"),
+            http_request_timeout=config.get("appium_http_request_timeout"),
         )
     return MockDriver(initial_state)
