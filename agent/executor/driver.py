@@ -148,9 +148,10 @@ class BaseDriver:
         """临时设置驱动 HTTP 命令超时；不支持的驱动实现为空操作。"""
         _ = timeout
 
-    def run_with_http_timeout(self, remaining: float | None, operation):
+    def run_with_http_timeout(self, remaining: float | None, operation, *, immediate: bool = False):
         """在指定的 HTTP 超时策略下执行一次驱动请求。"""
         _ = remaining
+        _ = immediate
         return operation()
 
 

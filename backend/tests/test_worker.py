@@ -482,12 +482,18 @@ async def test_dispatch_timeout_preserves_running_and_device_lock(client: AsyncC
         client, token, case_id, {"variables": {"btn_id": "x"}}, device_id
     )
     sender_started = asyncio.Event()
+    observed = asyncio.Event()
     monkeypatch.setattr(settings, "worker_agent_send_timeout_seconds", 1)
+
+    async def observe(*_args, **_kwargs):
+        observed.set()
 
     async def sender(_agent_id, _payload):
         sender_started.set()
         await asyncio.Event().wait()
         return True
+
+    monkeypatch.setattr(worker_service, "_observe_execution", observe)
 
     async with SessionLocal() as db:
         await worker_service.claim_next_queue(db, "worker-test")
@@ -500,6 +506,113 @@ async def test_dispatch_timeout_preserves_running_and_device_lock(client: AsyncC
         session_factory=SessionLocal,
     )
     assert sender_started.is_set()
+    assert observed.is_set()
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        queue = (
+            await db.execute(
+                select(ExecutionQueue).where(ExecutionQueue.execution_id == execution_id)
+            )
+        ).scalar_one()
+        device = await db.get(Device, device_id)
+        assert execution.status == "running"
+        assert execution.dispatch_state == "dispatching"
+        assert queue.status == "claimed"
+        assert device.status == "busy"
+        assert device.locked_by_execution == execution_id
+
+
+async def test_dispatch_timeout_observes_stop_and_retries_stop_test(
+    client: AsyncClient, monkeypatch
+):
+    """下发超时后仍保留观察任务，并能向已可能收到任务的 Agent 发送停止。"""
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(
+        client, token, case_id, {"variables": {"btn_id": "button"}}, device_id
+    )
+    start_started = asyncio.Event()
+    stop_sent = asyncio.Event()
+    monkeypatch.setattr(settings, "worker_agent_send_timeout_seconds", 0.01)
+
+    async def sender(_agent_id, payload):
+        if payload["type"] == "start_test":
+            start_started.set()
+            await asyncio.Event().wait()
+        else:
+            stop_sent.set()
+        return True
+
+    async with SessionLocal() as db:
+        assert await worker_service.claim_next_queue(db, "worker-test") is not None
+
+    task = asyncio.create_task(
+        worker_service.run_reserved_execution(
+            None,
+            execution_id,
+            "worker-test",
+            agent_sender=sender,
+            poll_interval=0.01,
+            session_factory=SessionLocal,
+        )
+    )
+    await asyncio.wait_for(start_started.wait(), timeout=1)
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        execution.status = "stopping"
+        execution.stop_requested_at = datetime.now(UTC)
+        await db.commit()
+
+    await asyncio.wait_for(stop_sent.wait(), timeout=1)
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        execution.status = "stopped"
+        execution.finished_at = datetime.now(UTC)
+        await db.commit()
+    await asyncio.wait_for(task, timeout=1)
+
+
+async def test_cancel_during_dispatching_exception_keeps_observer_state(
+    client: AsyncClient, monkeypatch
+):
+    """停机取消时若发送异常结果不确定，不能恢复 queued。"""
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(
+        client, token, case_id, {"variables": {"btn_id": "button"}}, device_id
+    )
+    sender_started = asyncio.Event()
+    release_sender = asyncio.Event()
+    observed = asyncio.Event()
+
+    async def sender(_agent_id, _payload):
+        sender_started.set()
+        await release_sender.wait()
+        raise ConnectionError("connection reset")
+
+    async def observe(*_args, **_kwargs):
+        observed.set()
+
+    monkeypatch.setattr(worker_service, "_observe_execution", observe)
+    async with SessionLocal() as db:
+        assert await worker_service.claim_next_queue(db, "worker-test") is not None
+
+    task = asyncio.create_task(
+        worker_service.run_reserved_execution(
+            None,
+            execution_id,
+            "worker-test",
+            agent_sender=sender,
+            session_factory=SessionLocal,
+        )
+    )
+    await asyncio.wait_for(sender_started.wait(), timeout=1)
+    task.cancel()
+    release_sender.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert observed.is_set()
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
@@ -880,8 +993,8 @@ async def test_build_variable_map_layers(client: AsyncClient):
         await db.rollback()
 
 
-async def test_agent_sender_exception_finalizes_execution_and_releases_device(client: AsyncClient):
-    """载荷发送抛错时必须走统一补偿事务，不能遗留 running/busy。"""
+async def test_agent_sender_exception_keeps_execution_for_observation(client: AsyncClient):
+    """载荷发送结果不确定时不能重新排队，应等待 Agent/扫描任务收敛。"""
     token, case_id = await _setup_case(client)
     _agent_id, device_id = await _create_agent_device()
     execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "button"}}, device_id)
@@ -889,17 +1002,37 @@ async def test_agent_sender_exception_finalizes_execution_and_releases_device(cl
     async with SessionLocal() as db:
         assert await worker_service.claim_next_queue(db, "worker-test") is not None
 
+    sender_failed = asyncio.Event()
+
     async def broken_sender(_agent_id, _payload):
+        sender_failed.set()
         raise RuntimeError("agent unavailable")
 
-    await worker_service.run_execution(None, execution_id, "worker-test", agent_sender=broken_sender)
+    task = asyncio.create_task(
+        worker_service.run_execution(
+            None,
+            execution_id,
+            "worker-test",
+            agent_sender=broken_sender,
+            poll_interval=0.01,
+            session_factory=SessionLocal,
+        )
+    )
+    await asyncio.wait_for(sender_failed.wait(), timeout=1)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        execution.status = "passed"
+        execution.finished_at = datetime.now(UTC)
+        await db.commit()
+    await asyncio.wait_for(task, timeout=1)
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
         device = await db.get(Device, device_id)
         queue = (await db.execute(select(ExecutionQueue).where(ExecutionQueue.execution_id == execution_id))).scalar_one()
         report = (await db.execute(select(Report).where(Report.execution_id == execution_id))).scalar_one()
-        assert execution.status == "error"
+        assert execution.status == "passed"
         assert device.status == "idle"
         assert device.locked_by_execution is None
         assert queue.status == "done"

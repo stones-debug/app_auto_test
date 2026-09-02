@@ -645,7 +645,7 @@ async def test_appium_immediate_find_uses_http_timeout_and_restores_default():
         command_executor = SimpleNamespace(_client_config=client_config)
 
         def find_element(self, by, value):
-            assert client_config.timeout == 30.0
+            assert client_config.timeout == AppiumDriver.HTTP_IMMEDIATE_TIMEOUT
             return f"element:{value}"
 
     driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
@@ -1815,11 +1815,11 @@ class _FalseScrollResultDriver(_ListScrollDriver):
 
 
 async def test_find_text_click_uses_configured_budget_and_reverses_direction():
-    """滚动返回 False 不能截断配置次数，达到上限后仍需执行反向查找。"""
+    """滚动到边界后应先查询最后一屏，再立即执行反向查找。"""
     driver = _FalseScrollResultDriver(_FULL_SCREEN)
     driver.set_screen([{"id": "i0", "text": "项目一", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
     target_page = [{"id": "t1", "text": "系统时间", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}]
-    driver.up_pages = lambda count: target_page if count >= 3 else None
+    driver.up_pages = lambda count: None
     driver.down_pages = lambda count: target_page if count >= 1 else None
     params = _find_text_params(max_swipes_per_direction=3)
     action, context = _run_find_text(driver, params)
@@ -1827,9 +1827,9 @@ async def test_find_text_click_uses_configured_budget_and_reverses_direction():
     result = await action.execute(driver, context, params)
 
     assert result["status"] == "passed"
-    assert result["found_after_swipes"] == 3
-    assert driver.up_count == 3
-    assert driver.down_count == 0
+    assert result["found_after_swipes"] == 2
+    assert driver.up_count == 1
+    assert driver.down_count == 1
 
 
 async def test_find_text_click_honors_down_preferred_direction():
@@ -1846,6 +1846,23 @@ async def test_find_text_click_honors_down_preferred_direction():
     assert result["found_after_swipes"] == 2
     assert driver.down_count == 2
     assert driver.up_count == 0
+
+
+async def test_find_text_click_reverses_after_preferred_budget_exhausted():
+    """首选方向未到边界但次数耗尽时，也必须切换到反方向。"""
+    driver = _ListScrollDriver(_FULL_SCREEN)
+    driver.set_screen([{"id": "i0", "text": "项目一", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
+    driver.up_pages = lambda count: None
+    target_page = [{"id": "t1", "text": "系统时间", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}]
+    driver.down_pages = lambda count: target_page if count >= 1 else None
+    params = _find_text_params(max_swipes_per_direction=2)
+    action, context = _run_find_text(driver, params)
+
+    result = await action.execute(driver, context, params)
+
+    assert result["status"] == "passed"
+    assert driver.up_count == 2
+    assert driver.down_count == 1
 
 
 class _StaleOnceScrollDriver(_ListScrollDriver):

@@ -91,6 +91,7 @@ async def with_stale_retry(
                 return run_with_timeout(
                     None if allow_immediate else remaining,
                     lambda element=element: operation(element),
+                    immediate=allow_immediate,
                 )
             return operation(element)
         except Exception as exc:

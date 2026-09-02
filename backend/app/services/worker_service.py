@@ -271,6 +271,58 @@ async def _restore_dispatching_after_cancel(
             await db.commit()
 
 
+async def _observe_execution(
+    factory,
+    execution_id: int,
+    sender: Callable[[int, dict], Awaitable[bool]],
+    poll_interval: float,
+    *,
+    worker_id: str,
+) -> None:
+    """观察已下发或下发结果不确定的执行，并持续转发停止请求。
+
+    start_test 写入 Agent 后，HTTP/WS 响应可能在返回前丢失，因此 dispatching
+    不能直接恢复为 queued。观察任务保留设备锁和队列认领，直到 Agent 上报终态，
+    或 timeout_scan/停止宽限期将执行收敛为终态。
+    """
+    while True:
+        async with _session_scope(factory) as poll_db:
+            current = await executions_repo.get_by_id(
+                poll_db, execution_id, populate_existing=True
+            )
+            if current is None:
+                return
+            if current.status in TERMINAL_STATES:
+                await _mark_terminal_repo(poll_db, current, current.status)
+                await poll_db.commit()
+                return
+            stopping = current.status == "stopping"
+            if stopping and _stop_grace_exceeded(current):
+                await _mark_terminal_repo(
+                    poll_db,
+                    current,
+                    "stopped",
+                    f"停止宽限期超时（>{settings.execution_stop_grace_seconds}s），强制结束",
+                )
+                await poll_db.commit()
+                return
+            device = await executions_repo.get_device_for_execution(poll_db, current)
+            device_agent_id = device.agent_id if device is not None else None
+
+        if stopping and device_agent_id is not None:
+            try:
+                await sender(device_agent_id, {"type": "stop_test", "execution_id": execution_id})
+            except Exception:
+                # stop_test 同样可能在写入后丢失响应；观察任务继续重试，
+                # 直到 Agent 上报终态或停止宽限期收敛执行。
+                logger.exception(
+                    "[%s] stop_test 发送失败 execution=%s，观察任务将继续重试",
+                    worker_id,
+                    execution_id,
+                )
+        await asyncio.sleep(poll_interval)
+
+
 async def run_reserved_execution(
     db,
     execution_id: int,
@@ -388,31 +440,49 @@ async def run_reserved_execution(
                 worker_id,
                 execution_id,
             )
+            await _observe_execution(
+                factory,
+                execution_id,
+                sender,
+                poll_interval,
+                worker_id=worker_id,
+            )
             raise
         except asyncio.CancelledError:
             raise
         except Exception:
-            await _restore_dispatching_after_cancel(
-                factory, execution_id, worker_id, session_token
+            logger.exception(
+                "[%s] 停机期间 Agent 下发结果不确定 execution=%s，保留 dispatching/running",
+                worker_id,
+                execution_id,
             )
-            raise
+            await _observe_execution(
+                factory,
+                execution_id,
+                sender,
+                poll_interval,
+                worker_id=worker_id,
+            )
+            # 外层取消仍是当前任务的最终结果；不能把底层发送异常重新抛出，
+            # 否则停机回收会误判为普通失败。观察任务已接管后保留取消语义。
+            raise asyncio.CancelledError from None
         else:
             if not ok:
                 await _restore_dispatching_after_cancel(
                     factory, execution_id, worker_id, session_token
                 )
-                raise
-            try:
-                marked, stopping, device_agent_id, _dispatch_state = (
-                    await _record_dispatch_success(factory, execution_id, session_token)
-                )
-                if marked and stopping and device_agent_id is not None:
-                    await sender(
-                        device_agent_id,
-                        {"type": "stop_test", "execution_id": execution_id},
+            else:
+                try:
+                    marked, stopping, device_agent_id, _dispatch_state = (
+                        await _record_dispatch_success(factory, execution_id, session_token)
                     )
-            except Exception:
-                logger.exception("[%s] 停机期间记录下发结果失败 execution=%s", worker_id, execution_id)
+                    if marked and stopping and device_agent_id is not None:
+                        await sender(
+                            device_agent_id,
+                            {"type": "stop_test", "execution_id": execution_id},
+                        )
+                except Exception:
+                    logger.exception("[%s] 停机期间记录下发结果失败 execution=%s", worker_id, execution_id)
             raise
     except TimeoutError:
         logger.warning(
@@ -420,9 +490,27 @@ async def run_reserved_execution(
             worker_id,
             execution_id,
         )
+        await _observe_execution(
+            factory,
+            execution_id,
+            sender,
+            poll_interval,
+            worker_id=worker_id,
+        )
         return
-    except Exception as exc:
-        await _finalize_error(factory, execution_id, f"Agent 发送失败: {exc}")
+    except Exception:
+        logger.exception(
+            "[%s] execution=%s Agent 下发结果不确定，保留 dispatching/running并进入观察",
+            worker_id,
+            execution_id,
+        )
+        await _observe_execution(
+            factory,
+            execution_id,
+            sender,
+            poll_interval,
+            worker_id=worker_id,
+        )
         return
     if not ok:
         await _finalize_error(factory, execution_id, "Agent 不在线或未连接 WS，无法开始执行")
@@ -448,29 +536,13 @@ async def run_reserved_execution(
         except Exception:
             logger.exception("[%s] 首次下发后立即 stop_test 发送失败 execution=%s", worker_id, execution_id)
     try:
-        while True:
-            async with _session_scope(factory) as poll_db:
-                current = await executions_repo.get_by_id(poll_db, execution_id, populate_existing=True)
-                if current is None:
-                    return
-                if current.status in TERMINAL_STATES:
-                    await _mark_terminal_repo(poll_db, current, current.status)
-                    await poll_db.commit()
-                    return
-                stopping = current.status == "stopping"
-                should_stop = stopping and _stop_grace_exceeded(current)
-                if should_stop:
-                    await _mark_terminal_repo(poll_db, current, "stopped", f"停止宽限期超时（>{settings.execution_stop_grace_seconds}s），强制结束")
-                    await poll_db.commit()
-                    return
-                device = await executions_repo.get_device_for_execution(poll_db, current)
-                device_agent_id = device.agent_id if device is not None else None
-            if stopping and device_agent_id is not None:
-                try:
-                    await sender(device_agent_id, {"type": "stop_test", "execution_id": execution_id})
-                except Exception:
-                    logger.exception("[%s] stop_test 发送失败 execution=%s", worker_id, execution_id)
-            await asyncio.sleep(poll_interval)
+        await _observe_execution(
+            factory,
+            execution_id,
+            sender,
+            poll_interval,
+            worker_id=worker_id,
+        )
     except asyncio.CancelledError:
         await restore_before_dispatch()
         raise

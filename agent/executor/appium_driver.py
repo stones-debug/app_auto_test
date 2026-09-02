@@ -43,6 +43,7 @@ class AppiumDriver(BaseDriver):
     # 逻辑等待时间由 WebDriverWait/deadline 控制，不能直接作为 HTTP 传输超时。
     HTTP_MIN_TIMEOUT = 5.0
     HTTP_MAX_TIMEOUT = 30.0
+    HTTP_IMMEDIATE_TIMEOUT = 2.0
     DEFAULT_HTTP_REQUEST_TIMEOUT = HTTP_MAX_TIMEOUT
 
     def __init__(
@@ -84,7 +85,9 @@ class AppiumDriver(BaseDriver):
         client_config = self._client_config()
         self._http_timeout_default = getattr(client_config, "timeout", None)
 
-    def _effective_http_timeout(self, remaining: float | None) -> float:
+    def _effective_http_timeout(self, remaining: float | None, *, immediate: bool = False) -> float:
+        if immediate:
+            return self.HTTP_IMMEDIATE_TIMEOUT
         if remaining is None:
             return self.http_request_timeout
         return min(
@@ -104,7 +107,9 @@ class AppiumDriver(BaseDriver):
                 else self._effective_http_timeout(timeout)
             )
 
-    def run_with_http_timeout(self, remaining: float | None, operation):
+    def run_with_http_timeout(
+        self, remaining: float | None, operation, *, immediate: bool = False
+    ):
         """使用独立的 HTTP 超时执行单次请求，并原子恢复原有配置。
 
         Appium 的 WebDriver client config 在同一驱动上是共享对象。必须把锁覆盖
@@ -116,7 +121,7 @@ class AppiumDriver(BaseDriver):
             return operation()
         with self._http_command_lock:
             old_timeout = client_config.timeout
-            client_config.timeout = self._effective_http_timeout(remaining)
+            client_config.timeout = self._effective_http_timeout(remaining, immediate=immediate)
             try:
                 return operation()
             finally:
@@ -330,6 +335,7 @@ class AppiumDriver(BaseDriver):
             return self.run_with_http_timeout(
                 None if timeout <= 0 else remaining,
                 lambda: driver.find_element(by, normalized_value),
+                immediate=timeout <= 0,
             )
 
         try:

@@ -18,12 +18,12 @@ appium_command_timeout: 300
 # 单次 Appium HTTP 请求最多等待多久，Agent 会限制在 5～30 秒
 appium_http_request_timeout: 30
 appium_ready_timeout: 60
-# appium_bin: "appium"            # Appium server 可执行文件（PATH 中）
-# node_bin: "C:\\node\\node.exe"  # 或指定便携 Node + appium JS
-# appium_js: "C:\\appium\\main.js"
-# appium_capabilities:
-#   appium:options:
-#     noReset: true
+appium_bin: "appium"            # Appium server 可执行文件（PATH 中）
+node_bin: "C:\\node\\node.exe"  # 或指定便携 Node + appium JS
+appium_js: "C:\\appium\\main.js"
+appium_capabilities:
+  appium:options:
+    noReset: true
 # “启动 APP”步骤未填写 Activity 时，Agent 会通过目标设备的 ADB 自动解析 MAIN/LAUNCHER；
 # 如应用没有标准桌面入口，可在步骤中显式填写 Activity，或在这里配置 appActivity。
 

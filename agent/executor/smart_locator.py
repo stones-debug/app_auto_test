@@ -609,7 +609,11 @@ class SmartElementResolver:
 
         run_with_timeout = getattr(driver, "run_with_http_timeout", None)
         if callable(run_with_timeout):
-            return run_with_timeout(None if allow_immediate else remaining, operation)
+            return run_with_timeout(
+                None if allow_immediate else remaining,
+                operation,
+                immediate=allow_immediate,
+            )
 
         # 兼容尚未实现 run_with_http_timeout 的第三方驱动替身。
         set_timeout = getattr(driver, "set_command_timeout", None)
