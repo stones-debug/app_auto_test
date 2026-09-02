@@ -4,6 +4,7 @@ import re
 import secrets
 from collections.abc import Sequence
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -47,6 +48,15 @@ logger = logging.getLogger("worker")
 _VAR_RE = re.compile(r"\$\{(\w+)\}")
 TERMINAL_STATES = {"passed", "failed", "error", "stopped", "cancelled"}
 _PHASE_MAP = {"setup": "case_setup", "main": "case_main", "teardown": "case_teardown"}
+
+
+@dataclass(frozen=True)
+class UnavailableQueueItem:
+    queue: ExecutionQueue
+    execution: Execution
+    device: Device | None
+    agent: Agent | None
+    message: str
 
 
 def _numeric_order(value: object) -> int:
@@ -481,6 +491,7 @@ async def claim_next_queue(db: AsyncSession, worker_id: str) -> ExecutionQueue |
         .where(
             ExecutionQueue.status == "pending",
             Execution.status == "queued",
+            Execution.dispatch_state == "pending",
             Execution.device_id.is_not(None),
             Device.status == "idle",
             Device.locked_by_execution.is_(None),
@@ -513,10 +524,72 @@ async def claim_next_queue(db: AsyncSession, worker_id: str) -> ExecutionQueue |
     row.claimed_by = worker_id
     row.claimed_at = now
     execution.status = "running"
+    execution.dispatch_state = "reserved"
+    execution.dispatch_started_at = None
+    execution.dispatched_at = None
     execution.session_token = session_token
     execution.started_at = now
     await db.flush()
     return row
+
+
+def _unavailable_message(
+    execution: Execution, device: Device | None, agent: Agent | None
+) -> str | None:
+    if execution.device_id is None:
+        return "执行未指定设备"
+    if device is None:
+        return "指定设备不存在"
+    if agent is None or agent.deleted_at is not None or agent.status != "online":
+        return "指定 Agent 当前离线"
+    if device.status == "offline":
+        return "指定设备当前离线"
+    if device.status == "unauthorized":
+        return "指定设备未授权，请在设备上允许 USB 调试"
+    if device.status == "error":
+        return "指定设备当前不可用"
+    return None
+
+
+async def claim_unavailable_queue(db: AsyncSession) -> UnavailableQueueItem | None:
+    """锁定一个明确不可运行的队列项，但不占用 Worker 执行槽位。
+
+    在线 Agent 的 busy/已锁设备不在条件内，必须继续排队；仅资源明确失效
+    的任务才由调用方立即终结为 error。
+    """
+    unavailable = or_(
+        Execution.device_id.is_(None),
+        Device.id.is_(None),
+        Device.status.in_(("offline", "unauthorized", "error")),
+        Agent.id.is_(None),
+        Agent.deleted_at.is_not(None),
+        Agent.status != "online",
+    )
+    stmt = (
+        select(ExecutionQueue, Execution, Device, Agent)
+        .join(Execution, Execution.id == ExecutionQueue.execution_id)
+        .outerjoin(Device, Device.id == Execution.device_id)
+        .outerjoin(Agent, Device.agent_id == Agent.id)
+        .where(
+            ExecutionQueue.status == "pending",
+            Execution.status == "queued",
+            Execution.dispatch_state == "pending",
+            unavailable,
+        )
+        .order_by(ExecutionQueue.created_at, ExecutionQueue.id)
+        # 外连接的 Device/Agent 允许缺失，不能让 PostgreSQL 尝试锁定其 NULL
+        # 行；这里只锁定必然存在的队列与执行记录。
+        .with_for_update(of=(ExecutionQueue, Execution), skip_locked=True)
+        .limit(1)
+    )
+    selected = (await db.execute(stmt)).first()
+    if selected is None:
+        return None
+    queue, execution, device, agent = selected
+    message = _unavailable_message(execution, device, agent)
+    if message is None:
+        return None
+    return UnavailableQueueItem(queue, execution, device, agent, message)
 
 
 # ---------- 设备原子抢占（§10.5） ----------
@@ -1230,6 +1303,64 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
 # ---------- 扫描任务（仅 worker-001 启用） ----------
 
 
+async def _restore_stale_reserved(
+    db: AsyncSession, row: ExecutionQueue, execution: Execution
+) -> bool:
+    """恢复 Worker 异常退出时遗留的 reserved 认领。"""
+    if not row.claimed_by or not execution.session_token:
+        return False
+    restored = await db.execute(
+        update(Execution)
+        .where(
+            Execution.id == execution.id,
+            Execution.status == "running",
+            Execution.dispatch_state == "reserved",
+            Execution.finalized_at.is_(None),
+            Execution.session_token == execution.session_token,
+        )
+        .values(
+            status="queued",
+            dispatch_state="pending",
+            dispatch_started_at=None,
+            dispatched_at=None,
+            session_token=None,
+            started_at=None,
+        )
+        .returning(Execution.id)
+    )
+    if restored.scalar_one_or_none() is None:
+        return False
+
+    now = datetime.now(UTC)
+    locked_devices = (
+        await db.execute(
+            select(Device).where(Device.locked_by_execution == execution.id)
+        )
+    ).scalars().all()
+    for device in locked_devices:
+        agent = await db.get(Agent, device.agent_id)
+        device.status = (
+            "idle" if agent is not None and agent.status == "online" and agent.deleted_at is None
+            else "offline"
+        )
+        device.locked_by_execution = None
+        device.updated_at = now
+
+    queue_result = await db.execute(
+        update(ExecutionQueue)
+        .where(
+            ExecutionQueue.id == row.id,
+            ExecutionQueue.execution_id == execution.id,
+            ExecutionQueue.status == "claimed",
+            ExecutionQueue.claimed_by == row.claimed_by,
+        )
+        .values(status="pending", claimed_by=None, claimed_at=None)
+    )
+    if int(getattr(queue_result, "rowcount", 0)) != 1:
+        raise RuntimeError(f"恢复 stale reserved 执行 {execution.id} 时队列认领不匹配")
+    return True
+
+
 async def reclaim_stale_claimed(db: AsyncSession, stale_minutes: int = 10) -> None:
     threshold = datetime.now(UTC) - timedelta(minutes=stale_minutes)
     rows = (
@@ -1243,6 +1374,22 @@ async def reclaim_stale_claimed(db: AsyncSession, stale_minutes: int = 10) -> No
     for row in rows:
         execution = await db.get(Execution, row.execution_id)
         if execution is not None and execution.status == "running":
+            if execution.dispatch_state == "reserved":
+                if row.retry_count >= 2:
+                    row.status = "failed"
+                    await _mark_terminal(
+                        db, execution, "error", "队列认领超时，重试次数超限"
+                    )
+                elif await _restore_stale_reserved(db, row, execution):
+                    row.retry_count += 1
+                continue
+            if execution.dispatch_state in {"dispatching", "dispatched"}:
+                logger.warning(
+                    "执行下发状态不确定，保留认领 execution=%s dispatch_state=%s",
+                    execution.id,
+                    execution.dispatch_state,
+                )
+                continue
             continue
         if row.retry_count >= 2:
             row.status = "failed"

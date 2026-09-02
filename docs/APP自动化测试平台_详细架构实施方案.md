@@ -1916,6 +1916,15 @@ Worker 停止时先停止认领并等待活动任务自然结束，超过 `WORKE
 为 `queued`，同时释放设备锁并将队列恢复为 `pending`；已下发任务保留运行状态，等待
 Agent 终态上报或超时扫描兜底。
 
+每条执行另外维护 `dispatch_state`：`pending → reserved → dispatching → dispatched`。
+原子认领写入 `reserved`，载荷准备完成后必须通过 `status='running'`、
+`dispatch_state='reserved'`、`session_token` 和 `finalized_at IS NULL` 的条件更新取得
+唯一下发权，只有 sender 成功返回后才写入 `dispatched`。因此用户先停止时 CAS 失败，
+不会发送 `start_test`；进入 `dispatching` 后不允许恢复为 queued，避免 Agent 已收到
+任务而发生重复执行。Agent/设备明确离线、未授权、删除或不存在的 pending 任务由
+Worker 在带 `FOR UPDATE SKIP LOCKED` 的短事务内建树、记录原因、终结为 `error` 并生成
+报告；在线但 busy/已锁设备继续排队。
+
 ### 10.6 变量系统落地（补表与 API）
 
 ```sql

@@ -35,6 +35,7 @@ from app.models import (
 from app.models import (
     TestSuiteCase as SuiteCaseModel,
 )
+from app.repositories import executions as executions_repo
 from app.services import worker_service
 from app.services.worker_runtime import WorkerRuntime
 from tests.helpers import create_bound_agent_device
@@ -270,6 +271,68 @@ async def test_claim_and_run_agent_offline(client: AsyncClient):
 
         log = (await db.execute(select(ExecutionLog).where(ExecutionLog.execution_id == execution_id))).scalar_one()
         assert "不在线" in log.message
+
+
+@pytest.mark.parametrize(
+    ("agent_status", "device_status", "expected_message"),
+    [
+        ("offline", "idle", "指定 Agent 当前离线"),
+        ("online", "offline", "指定设备当前离线"),
+        ("online", "unauthorized", "指定设备未授权"),
+    ],
+)
+async def test_unavailable_queue_is_finalized_without_worker_slot(
+    client: AsyncClient, agent_status: str, device_status: str, expected_message: str
+):
+    token, case_id = await _setup_case(client)
+    agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(
+        client, token, case_id, {"variables": {"btn_id": "x"}}, device_id
+    )
+
+    async with SessionLocal() as db:
+        agent = await db.get(Agent, agent_id)
+        device = await db.get(Device, device_id)
+        agent.status = agent_status
+        device.status = device_status
+        await db.commit()
+        assert await worker_service.claim_next_queue(db, "worker-test") is None
+        assert await worker_service.settle_next_unavailable_queue(db)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        queue = (
+            await db.execute(
+                select(ExecutionQueue).where(ExecutionQueue.execution_id == execution_id)
+            )
+        ).scalar_one()
+        report = (
+            await db.execute(select(Report).where(Report.execution_id == execution_id))
+        ).scalar_one()
+        log = (
+            await db.execute(select(ExecutionLog).where(ExecutionLog.execution_id == execution_id))
+        ).scalar_one()
+        assert execution.status == "error"
+        assert queue.status == "done"
+        assert report.total == 1
+        assert expected_message in log.message
+
+
+async def test_dispatch_cas_rejects_stop_before_first_send(client: AsyncClient):
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {}, device_id)
+
+    async with SessionLocal() as db:
+        await worker_service.claim_next_queue(db, "worker-test")
+        execution = await db.get(Execution, execution_id)
+        execution.status = "stopping"
+        await db.commit()
+        execution = await db.get(Execution, execution_id, populate_existing=True)
+        assert execution.session_token is not None
+        assert not await executions_repo.begin_dispatch(
+            db, execution_id, execution.session_token, datetime.now(UTC)
+        )
 
 
 async def test_claim_skips_busy_device_without_blocking_other_agent(client: AsyncClient):
@@ -1055,6 +1118,63 @@ async def test_reclaim_stale_claimed(client: AsyncClient):
         assert queue.status == "pending"
         assert queue.retry_count == 1
         assert queue.claimed_by is None
+
+
+async def test_reclaim_stale_reserved_restores_execution_and_device(client: AsyncClient):
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {}, device_id)
+
+    async with SessionLocal() as db:
+        await worker_service.claim_next_queue(db, "dead-worker")
+        queue = (
+            await db.execute(
+                select(ExecutionQueue).where(ExecutionQueue.execution_id == execution_id)
+            )
+        ).scalar_one()
+        queue.claimed_at = datetime.now(UTC) - timedelta(minutes=20)
+        await db.commit()
+
+        await worker_service.reclaim_stale_claimed(db)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        queue = (
+            await db.execute(
+                select(ExecutionQueue).where(ExecutionQueue.execution_id == execution_id)
+            )
+        ).scalar_one()
+        device = await db.get(Device, device_id)
+        assert execution.status == "queued"
+        assert execution.dispatch_state == "pending"
+        assert execution.session_token is None
+        assert queue.status == "pending"
+        assert queue.retry_count == 1
+        assert device.status == "idle"
+        assert device.locked_by_execution is None
+
+
+async def test_reclaim_stale_dispatching_does_not_requeue(client: AsyncClient):
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {}, device_id)
+
+    async with SessionLocal() as db:
+        await worker_service.claim_next_queue(db, "dead-worker")
+        execution = await db.get(Execution, execution_id)
+        execution.dispatch_state = "dispatching"
+        queue = (
+            await db.execute(
+                select(ExecutionQueue).where(ExecutionQueue.execution_id == execution_id)
+            )
+        ).scalar_one()
+        queue.claimed_at = datetime.now(UTC) - timedelta(minutes=20)
+        await db.commit()
+
+        await worker_service.reclaim_stale_claimed(db)
+
+        assert queue.status == "claimed"
+        assert execution.status == "running"
 
 
 async def test_mark_terminal_derives_case_status(client: AsyncClient):

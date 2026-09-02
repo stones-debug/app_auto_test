@@ -40,7 +40,10 @@ class Device(Base, TimestampMixin):
         Index("idx_devices_agent", "agent_id"),
         # §5.2：同一 Agent 下设备 UDID 唯一（CR-17 建议的唯一键）
         UniqueConstraint("agent_id", "udid", name="uq_devices_agent_udid"),
-        CheckConstraint("status IN ('idle', 'busy', 'offline', 'error')", name="ck_devices_status"),
+        CheckConstraint(
+            "status IN ('idle', 'busy', 'offline', 'unauthorized', 'error')",
+            name="ck_devices_status",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -50,7 +53,9 @@ class Device(Base, TimestampMixin):
     platform_version: Mapped[str | None] = mapped_column(String(50))
     udid: Mapped[str] = mapped_column(String(255), nullable=False)
     device_type: Mapped[str] = mapped_column(String(20), default="emulator")  # real / emulator / simulator
-    status: Mapped[str] = mapped_column(String(20), default="idle")  # idle / busy / offline / error
+    status: Mapped[str] = mapped_column(
+        String(20), default="idle"
+    )  # idle / busy / offline / unauthorized / error
     # Windows 方案 §3：usb / wifi；无线连接地址（ip:port），USB 可为空
     connection_type: Mapped[str] = mapped_column(String(10), default="usb")
     address: Mapped[str | None] = mapped_column(String(255))

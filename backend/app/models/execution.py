@@ -25,6 +25,7 @@ from app.models.base import TimestampMixin
 
 # 执行步骤阶段（§1 分层结构）：套件前后置 + 用例三阶段
 STEP_PHASES = ("suite_setup", "case_setup", "case_main", "case_teardown", "suite_teardown")
+DISPATCH_STATES = ("pending", "reserved", "dispatching", "dispatched")
 
 
 class Execution(Base, TimestampMixin):
@@ -46,6 +47,10 @@ class Execution(Base, TimestampMixin):
             "jsonb_typeof(profile_resolution_summary) = 'object'",
             name="ck_executions_resolution_summary",
         ),
+        CheckConstraint(
+            "dispatch_state IN ('pending','reserved','dispatching','dispatched')",
+            name="ck_executions_dispatch_state",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -55,6 +60,11 @@ class Execution(Base, TimestampMixin):
     case_id: Mapped[int | None] = mapped_column(ForeignKey("test_cases.id"))
     device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id"))
     status: Mapped[str] = mapped_column(String(20), default="queued")
+    dispatch_state: Mapped[str] = mapped_column(
+        String(20), default="pending", server_default=text("'pending'")
+    )
+    dispatch_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     parameters: Mapped[dict] = mapped_column(JSON, default=dict)
     session_token: Mapped[str | None] = mapped_column(String(128))
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=1800)

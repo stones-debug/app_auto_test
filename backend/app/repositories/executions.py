@@ -1,12 +1,13 @@
 """内部执行状态和 Agent 执行绑定查询。"""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    Agent,
     Device,
     Execution,
     ExecutionExclusion,
@@ -175,14 +176,54 @@ async def claim_running(db: AsyncSession, execution_id: int, session_token: str,
     return result.scalar_one_or_none() is not None
 
 
+async def begin_dispatch(
+    db: AsyncSession, execution_id: int, session_token: str, now
+) -> bool:
+    """取得唯一的 start_test 下发权（reserved -> dispatching）。"""
+    result = await db.execute(
+        update(Execution)
+        .where(
+            Execution.id == execution_id,
+            Execution.status == "running",
+            Execution.dispatch_state == "reserved",
+            Execution.session_token == session_token,
+            Execution.finalized_at.is_(None),
+        )
+        .values(dispatch_state="dispatching", dispatch_started_at=now)
+        .returning(Execution.id)
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def mark_dispatched(
+    db: AsyncSession, execution_id: int, session_token: str, now
+) -> bool:
+    """记录 start_test 已成功写入 Agent WebSocket。"""
+    result = await db.execute(
+        update(Execution)
+        .where(
+            Execution.id == execution_id,
+            Execution.dispatch_state == "dispatching",
+            Execution.session_token == session_token,
+            Execution.status.in_(("running", "stopping")),
+            Execution.finalized_at.is_(None),
+        )
+        .values(dispatch_state="dispatched", dispatched_at=now)
+        .returning(Execution.id)
+    )
+    return result.scalar_one_or_none() is not None
+
+
 async def restore_reserved_execution(
     db: AsyncSession,
     execution_id: int,
     *,
     worker_id: str,
     session_token: str,
+    dispatch_state: str = "reserved",
 ) -> bool:
-    """恢复已认领但尚未下发的执行，并释放其设备与队列认领。"""
+    """恢复尚未确认下发的执行，并原子释放设备与队列认领。"""
+    now = datetime.now(UTC)
     restored = await db.execute(
         update(Execution)
         .where(
@@ -190,18 +231,35 @@ async def restore_reserved_execution(
             Execution.status == "running",
             Execution.finalized_at.is_(None),
             Execution.session_token == session_token,
+            Execution.dispatch_state == dispatch_state,
         )
-        .values(status="queued", session_token=None, started_at=None)
+        .values(
+            status="queued",
+            dispatch_state="pending",
+            dispatch_started_at=None,
+            dispatched_at=None,
+            session_token=None,
+            started_at=None,
+        )
         .returning(Execution.id)
     )
     if restored.scalar_one_or_none() is None:
         return False
-    await db.execute(
-        update(Device)
-        .where(Device.locked_by_execution == execution_id)
-        .values(status="idle", locked_by_execution=None)
-    )
-    await db.execute(
+    locked_devices = (
+        await db.execute(
+            select(Device).where(Device.locked_by_execution == execution_id)
+        )
+    ).scalars().all()
+    for device in locked_devices:
+        agent = await db.get(Agent, device.agent_id)
+        device.status = (
+            "idle" if agent is not None and agent.status == "online" and agent.deleted_at is None
+            else "offline"
+        )
+        device.locked_by_execution = None
+        device.updated_at = now
+
+    queue_result = await db.execute(
         update(ExecutionQueue)
         .where(
             ExecutionQueue.execution_id == execution_id,
@@ -210,6 +268,10 @@ async def restore_reserved_execution(
         )
         .values(status="pending", claimed_by=None, claimed_at=None)
     )
+    if int(getattr(queue_result, "rowcount", 0)) != 1:
+        raise RuntimeError(
+            f"恢复执行 {execution_id} 时队列认领不匹配，事务必须回滚"
+        )
     return True
 
 
