@@ -24,6 +24,10 @@ async def _no_queue(_db, _worker_id):
     return None
 
 
+async def _no_unavailable(_db):
+    return False
+
+
 async def _noop(_db):
     return None
 
@@ -133,6 +137,33 @@ async def test_runtime_runs_multiple_executions_in_parallel(monkeypatch):
         release[3].set()
         for execution_id in (1, 2, 3):
             await asyncio.wait_for(release[execution_id].wait(), timeout=1)
+    finally:
+        await runtime.stop()
+
+
+async def test_runtime_settles_unavailable_work_without_consuming_slot(monkeypatch):
+    settle_calls = 0
+    settled = asyncio.Event()
+
+    async def settle(_db):
+        nonlocal settle_calls
+        settle_calls += 1
+        if settle_calls == 1:
+            settled.set()
+            return True
+        return False
+
+    monkeypatch.setattr(worker_runtime, "SessionLocal", FakeSession)
+    monkeypatch.setattr(worker_runtime.worker_service, "claim_next_queue", _no_queue)
+    monkeypatch.setattr(worker_runtime.worker_service, "settle_next_unavailable_queue", settle)
+    runtime = WorkerRuntime("unavailable-test", enable_scans=False, poll_interval=60)
+
+    await runtime.start()
+    try:
+        await asyncio.wait_for(settled.wait(), timeout=1)
+        assert runtime.active_count == 0
+        # 第一次返回 rejected 后应立即继续处理；第二次返回空才进入等待。
+        assert settle_calls == 2
     finally:
         await runtime.stop()
 

@@ -166,6 +166,17 @@ async def _restore_reserved_if_safe(
 ) -> None:
     """仅在数据库仍为 reserved 时恢复，避免覆盖 dispatching/dispatched。"""
     async with _session_scope(factory) as db:
+        current = await executions_repo.get_by_id(db, execution_id, populate_existing=True)
+        if (
+            current is not None
+            and current.session_token == session_token
+            and current.status == "stopping"
+            and current.dispatch_state == "reserved"
+            and current.finalized_at is None
+        ):
+            await _mark_terminal_repo(db, current, "stopped", "首次下发前收到停止请求")
+            await db.commit()
+            return
         restored = await executions_repo.restore_reserved_execution(
             db,
             execution_id,
@@ -209,6 +220,55 @@ async def _handle_dispatch_cas_failure(
             return
         await _mark_terminal_repo(db, execution, "error", "执行下发状态机异常")
         await db.commit()
+
+
+async def _record_dispatch_success(
+    factory, execution_id: int, session_token: str
+) -> tuple[bool, bool, int | None, str | None]:
+    """记录下发成功并读取停止竞争结果。"""
+    async with _session_scope(factory) as db:
+        marked = await _mark_dispatched(
+            db, execution_id, session_token, datetime.now(UTC)
+        )
+        current = await executions_repo.get_by_id(
+            db, execution_id, populate_existing=True
+        )
+        if current is None or current.session_token != session_token:
+            await db.commit()
+            return False, False, None, None
+        if not marked and current.status in TERMINAL_STATES:
+            await _mark_terminal_repo(db, current, current.status)
+        device_agent_id = None
+        if marked and current.status == "stopping":
+            device = await executions_repo.get_device_for_execution(db, current)
+            device_agent_id = device.agent_id if device is not None else None
+        await db.commit()
+        return marked, current.status == "stopping", device_agent_id, current.dispatch_state
+
+
+async def _restore_dispatching_after_cancel(
+    factory, execution_id: int, worker_id: str, session_token: str
+) -> None:
+    """发送明确失败且外层正在停机时，安全恢复 dispatching 认领。"""
+    async with _session_scope(factory) as db:
+        current = await executions_repo.get_by_id(db, execution_id, populate_existing=True)
+        if current is None or current.session_token != session_token:
+            return
+        if current.status == "stopping":
+            await _mark_terminal_repo(db, current, "stopped", "Worker 停止期间 Agent 下发失败")
+            await db.commit()
+            return
+        if current.status != "running":
+            return
+        restored = await executions_repo.restore_reserved_execution(
+            db,
+            execution_id,
+            worker_id=worker_id,
+            session_token=session_token,
+            dispatch_state="dispatching",
+        )
+        if restored:
+            await db.commit()
 
 
 async def run_reserved_execution(
@@ -307,12 +367,60 @@ async def run_reserved_execution(
         await _handle_dispatch_cas_failure(factory, execution_id, worker_id, session_token)
         return
 
+    async def send_start_test() -> bool:
+        return await asyncio.wait_for(
+            sender(agent_id, payload),
+            timeout=float(settings.worker_agent_send_timeout_seconds),
+        )
+
+    send_task = asyncio.create_task(
+        send_start_test(), name=f"worker-send-start-{worker_id}-{execution_id}"
+    )
     try:
-        ok = await sender(agent_id, payload)
+        ok = await asyncio.shield(send_task)
     except asyncio.CancelledError:
-        # 已进入 dispatching，取消不再恢复排队；Step 2 会等待受保护发送任务
-        # 得到确定结果后再决定恢复或保留 running。
-        raise
+        # 外层停机取消不应取消底层发送；先取得明确结果再决定恢复或保留。
+        try:
+            ok = await asyncio.shield(send_task)
+        except TimeoutError:
+            logger.warning(
+                "[%s] execution=%s Agent 下发超时，保留 dispatching/running，不重新入队",
+                worker_id,
+                execution_id,
+            )
+            raise
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            await _restore_dispatching_after_cancel(
+                factory, execution_id, worker_id, session_token
+            )
+            raise
+        else:
+            if not ok:
+                await _restore_dispatching_after_cancel(
+                    factory, execution_id, worker_id, session_token
+                )
+                raise
+            try:
+                marked, stopping, device_agent_id, _dispatch_state = (
+                    await _record_dispatch_success(factory, execution_id, session_token)
+                )
+                if marked and stopping and device_agent_id is not None:
+                    await sender(
+                        device_agent_id,
+                        {"type": "stop_test", "execution_id": execution_id},
+                    )
+            except Exception:
+                logger.exception("[%s] 停机期间记录下发结果失败 execution=%s", worker_id, execution_id)
+            raise
+    except TimeoutError:
+        logger.warning(
+            "[%s] execution=%s Agent 下发超时，保留 dispatching/running，不重新入队",
+            worker_id,
+            execution_id,
+        )
+        return
     except Exception as exc:
         await _finalize_error(factory, execution_id, f"Agent 发送失败: {exc}")
         return
@@ -321,30 +429,13 @@ async def run_reserved_execution(
         return
 
     try:
-        async with _session_scope(factory) as dispatched_db:
-            marked = await _mark_dispatched(
-                dispatched_db, execution_id, session_token, datetime.now(UTC)
-            )
-            current = await executions_repo.get_by_id(
-                dispatched_db, execution_id, populate_existing=True
-            )
-            if current is None or current.session_token != session_token:
-                await dispatched_db.commit()
-                return
-            if not marked and current.status in TERMINAL_STATES:
-                await _mark_terminal_repo(dispatched_db, current, current.status)
-            await dispatched_db.commit()
-            stopping = current.status == "stopping"
-            device_agent_id = None
-            if stopping:
-                device = await executions_repo.get_device_for_execution(dispatched_db, current)
-                device_agent_id = device.agent_id if device is not None else None
+        marked, stopping, device_agent_id, _dispatch_state = await _record_dispatch_success(
+            factory, execution_id, session_token
+        )
     except Exception as exc:
         await _finalize_error(factory, execution_id, f"记录 Agent 下发状态失败: {exc}")
         return
     if not marked:
-        if current.status in TERMINAL_STATES:
-            return
         logger.warning(
             "[%s] execution=%s sender 已返回成功但 dispatch CAS 失败，保留当前状态",
             worker_id,

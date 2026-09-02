@@ -321,7 +321,9 @@ async def test_unavailable_queue_is_finalized_without_worker_slot(
 async def test_dispatch_cas_rejects_stop_before_first_send(client: AsyncClient):
     token, case_id = await _setup_case(client)
     _agent_id, device_id = await _create_agent_device()
-    execution_id = await _create_execution(client, token, case_id, {}, device_id)
+    execution_id = await _create_execution(
+        client, token, case_id, {"variables": {"btn_id": "x"}}, device_id
+    )
 
     async with SessionLocal() as db:
         await worker_service.claim_next_queue(db, "worker-test")
@@ -333,6 +335,185 @@ async def test_dispatch_cas_rejects_stop_before_first_send(client: AsyncClient):
         assert not await executions_repo.begin_dispatch(
             db, execution_id, execution.session_token, datetime.now(UTC)
         )
+
+
+async def test_stop_before_first_send_finalizes_without_sending(client: AsyncClient):
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(
+        client, token, case_id, {"variables": {"btn_id": "x"}}, device_id
+    )
+    sent_messages: list[dict] = []
+
+    async with SessionLocal() as db:
+        await worker_service.claim_next_queue(db, "worker-test")
+        execution = await db.get(Execution, execution_id)
+        execution.status = "stopping"
+        execution.stop_requested_at = datetime.now(UTC)
+        await db.commit()
+
+        async def sender(_agent_id, payload):
+            sent_messages.append(payload)
+            return True
+
+        await worker_service.run_reserved_execution(
+            db, execution_id, "worker-test", agent_sender=sender
+        )
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        queue = (
+            await db.execute(
+                select(ExecutionQueue).where(ExecutionQueue.execution_id == execution_id)
+            )
+        ).scalar_one()
+        device = await db.get(Device, device_id)
+        assert sent_messages == []
+        assert execution.status == "stopped"
+        assert queue.status == "done"
+        assert device.status == "idle"
+        assert device.locked_by_execution is None
+
+
+async def test_cancel_during_dispatching_false_restores_queue(client: AsyncClient):
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(
+        client, token, case_id, {"variables": {"btn_id": "x"}}, device_id
+    )
+    sender_started = asyncio.Event()
+    sender_release = asyncio.Event()
+
+    async def sender(_agent_id, _payload):
+        sender_started.set()
+        await sender_release.wait()
+        return False
+
+    async with SessionLocal() as db:
+        await worker_service.claim_next_queue(db, "worker-test")
+
+    task = asyncio.create_task(
+        worker_service.run_reserved_execution(
+            None,
+            execution_id,
+            "worker-test",
+            agent_sender=sender,
+            session_factory=SessionLocal,
+        )
+    )
+    await asyncio.wait_for(sender_started.wait(), timeout=1)
+    task.cancel()
+    sender_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        queue = (
+            await db.execute(
+                select(ExecutionQueue).where(ExecutionQueue.execution_id == execution_id)
+            )
+        ).scalar_one()
+        device = await db.get(Device, device_id)
+        assert execution.status == "queued"
+        assert execution.dispatch_state == "pending"
+        assert queue.status == "pending"
+        assert queue.claimed_by is None
+        assert device.status == "idle"
+        assert device.locked_by_execution is None
+
+
+async def test_stop_during_dispatch_sends_stop_immediately(client: AsyncClient):
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(
+        client, token, case_id, {"variables": {"btn_id": "x"}}, device_id
+    )
+    start_sent = asyncio.Event()
+    release_start = asyncio.Event()
+    stop_sent = asyncio.Event()
+    sent_types: list[str] = []
+
+    async def sender(_agent_id, payload):
+        sent_types.append(payload["type"])
+        if payload["type"] == "start_test":
+            start_sent.set()
+            await release_start.wait()
+        else:
+            stop_sent.set()
+        return True
+
+    async with SessionLocal() as db:
+        await worker_service.claim_next_queue(db, "worker-test")
+
+    task = asyncio.create_task(
+        worker_service.run_reserved_execution(
+            None,
+            execution_id,
+            "worker-test",
+            agent_sender=sender,
+            poll_interval=0.01,
+            session_factory=SessionLocal,
+        )
+    )
+    await asyncio.wait_for(start_sent.wait(), timeout=1)
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        execution.status = "stopping"
+        execution.stop_requested_at = datetime.now(UTC)
+        await db.commit()
+    release_start.set()
+
+    await asyncio.wait_for(stop_sent.wait(), timeout=1)
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        execution.status = "stopped"
+        execution.finished_at = datetime.now(UTC)
+        await db.commit()
+    await asyncio.wait_for(task, timeout=1)
+
+    assert sent_types[:2] == ["start_test", "stop_test"]
+
+
+async def test_dispatch_timeout_preserves_running_and_device_lock(client: AsyncClient, monkeypatch):
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(
+        client, token, case_id, {"variables": {"btn_id": "x"}}, device_id
+    )
+    sender_started = asyncio.Event()
+    monkeypatch.setattr(settings, "worker_agent_send_timeout_seconds", 1)
+
+    async def sender(_agent_id, _payload):
+        sender_started.set()
+        await asyncio.Event().wait()
+        return True
+
+    async with SessionLocal() as db:
+        await worker_service.claim_next_queue(db, "worker-test")
+
+    await worker_service.run_reserved_execution(
+        None,
+        execution_id,
+        "worker-test",
+        agent_sender=sender,
+        session_factory=SessionLocal,
+    )
+    assert sender_started.is_set()
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        queue = (
+            await db.execute(
+                select(ExecutionQueue).where(ExecutionQueue.execution_id == execution_id)
+            )
+        ).scalar_one()
+        device = await db.get(Device, device_id)
+        assert execution.status == "running"
+        assert execution.dispatch_state == "dispatching"
+        assert queue.status == "claimed"
+        assert device.status == "busy"
+        assert device.locked_by_execution == execution_id
 
 
 async def test_claim_skips_busy_device_without_blocking_other_agent(client: AsyncClient):

@@ -1912,9 +1912,12 @@ Worker 通过异步任务池并行执行多个不同设备上的任务；同一 
 
 Worker 停止时先停止认领并等待活动任务自然结束，超过 `WORKER_SHUTDOWN_GRACE_SECONDS`
 后只取消本地观察任务，不主动终止已经下发到 Agent 的测试。尚未成功下发的认领任务
-按 `execution_id + session_token + status='running' + finalized_at IS NULL` 条件恢复
-为 `queued`，同时释放设备锁并将队列恢复为 `pending`；已下发任务保留运行状态，等待
-Agent 终态上报或超时扫描兜底。
+按 `execution_id + session_token + status='running' + dispatch_state='reserved' +
+finalized_at IS NULL` 条件恢复为 `queued`，同时释放设备锁并将队列恢复为 `pending`；
+已进入 `dispatching` 或 `dispatched` 的任务不重新入队，等待 Agent 终态上报或超时扫描
+兜底。Agent 首次下发由独立 task 保护，最长等待 `WORKER_AGENT_SEND_TIMEOUT_SECONDS`
+秒（默认 10，范围 1～60）；停机取消时，明确失败可恢复排队，超时或结果不确定则保留
+执行和设备锁，避免重复执行。
 
 每条执行另外维护 `dispatch_state`：`pending → reserved → dispatching → dispatched`。
 原子认领写入 `reserved`，载荷准备完成后必须通过 `status='running'`、

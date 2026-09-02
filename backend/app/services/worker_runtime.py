@@ -47,8 +47,7 @@ class WorkerRuntime:
         self._consumer_task: asyncio.Task | None = None
         self._execution_tasks: dict[int, asyncio.Task] = {}
         self._execution_started: dict[int, bool] = {}
-        self._slot_available = asyncio.Event()
-        self._slot_available.set()
+        self._wake_event = asyncio.Event()
         self._scheduler: AsyncIOScheduler | None = None
         self._stopping = False
 
@@ -93,6 +92,7 @@ class WorkerRuntime:
             scheduler.shutdown(wait=False)
 
         self._stop_event.set()
+        self._wake_event.set()
         self._stopping = True
         task = self._consumer_task
         self._consumer_task = None
@@ -140,6 +140,9 @@ class WorkerRuntime:
 
     async def _claim_loop(self) -> None:
         while not self._stop_event.is_set():
+            # 清除必须发生在容量检查和认领之前；等待函数不能再次清除，
+            # 这样完成回调在检查与等待之间 set 事件时不会丢失唤醒。
+            self._wake_event.clear()
             while not self._stop_event.is_set() and self.active_count < self.concurrency:
                 try:
                     async with SessionLocal() as db:
@@ -151,6 +154,16 @@ class WorkerRuntime:
                     logger.exception("Worker %s 认领任务异常", self.worker_id)
                     break
                 if item is None:
+                    try:
+                        async with SessionLocal() as db:
+                            rejected = await worker_service.settle_next_unavailable_queue(db)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.exception("Worker %s 收敛不可用任务异常", self.worker_id)
+                        break
+                    if rejected:
+                        continue
                     break
                 execution_id = item.execution_id
                 execution_task = asyncio.create_task(
@@ -161,8 +174,6 @@ class WorkerRuntime:
                 execution_task.add_done_callback(
                     lambda completed, eid=execution_id: self._execution_done(eid, completed)
                 )
-                if self.active_count >= self.concurrency:
-                    self._slot_available.clear()
 
             if self._stop_event.is_set():
                 break
@@ -192,24 +203,22 @@ class WorkerRuntime:
             logger.exception(
                 "Worker %s 执行任务异常 execution=%s", self.worker_id, execution_id
             )
-        if self.active_count < self.concurrency:
-            self._slot_available.set()
+        self._wake_event.set()
 
     async def _wait_for_wakeup(self) -> None:
-        self._slot_available.clear()
         stop_waiter = asyncio.create_task(self._stop_event.wait())
-        slot_waiter = asyncio.create_task(self._slot_available.wait())
+        wake_waiter = asyncio.create_task(self._wake_event.wait())
         try:
             await asyncio.wait(
-                [stop_waiter, slot_waiter],
+                [stop_waiter, wake_waiter],
                 timeout=self.poll_interval,
                 return_when=asyncio.FIRST_COMPLETED,
             )
         finally:
-            for waiter in (stop_waiter, slot_waiter):
+            for waiter in (stop_waiter, wake_waiter):
                 if not waiter.done():
                     waiter.cancel()
-            await asyncio.gather(stop_waiter, slot_waiter, return_exceptions=True)
+            await asyncio.gather(stop_waiter, wake_waiter, return_exceptions=True)
 
     def _start_scans(self) -> None:
         if self._scheduler is not None and self._scheduler.running:

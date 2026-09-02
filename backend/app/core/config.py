@@ -80,6 +80,7 @@ class Settings(BaseSettings):
     worker_claim_stale_minutes: int = 10
     worker_concurrency: int = Field(default=1, ge=1, le=32)
     worker_shutdown_grace_seconds: int = Field(default=30, ge=0, le=600)
+    worker_agent_send_timeout_seconds: int = Field(default=10, ge=1, le=60)
 
     # 分页
     max_page_size: int = 200
