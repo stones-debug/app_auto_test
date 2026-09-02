@@ -144,6 +144,28 @@ async def _restore_unsubmitted_execution(
         await db.commit()
 
 
+async def restore_reserved_execution(execution_id: int, worker_id: str) -> bool:
+    """恢复已认领但尚未开始执行协程的任务。
+
+    Worker 停机时，刚从队列认领出来的任务可能还没来得及进入执行协程，
+    因而不能依赖执行协程自身的取消清理逻辑。这里重新读取 session token，
+    用同一条件更新执行、队列和设备，避免把已经下发或已完成的任务回滚。
+    """
+    async with _session_scope(SessionLocal) as db:
+        execution = await executions_repo.get_by_id(db, execution_id)
+        if execution is None or not execution.session_token:
+            return False
+        restored = await executions_repo.restore_reserved_execution(
+            db,
+            execution_id,
+            worker_id=worker_id,
+            session_token=execution.session_token,
+        )
+        if restored:
+            await db.commit()
+        return restored
+
+
 async def run_reserved_execution(
     db,
     execution_id: int,
@@ -161,8 +183,18 @@ async def run_reserved_execution(
     # db 仅保留为旧调用方的兼容参数；执行生命周期必须始终通过工厂切分短 Session。
     factory = session_factory or SessionLocal
     sender = agent_sender or _default_agent_sender
-    dispatched = False
+    dispatch_attempted = False
     session_token: str | None = None
+
+    async def restore_before_dispatch() -> None:
+        if dispatch_attempted or session_token is None:
+            return
+        try:
+            await _restore_unsubmitted_execution(
+                factory, execution_id, worker_id, session_token
+            )
+        except Exception:
+            logger.exception("[%s] 恢复未下发执行失败 execution=%s", worker_id, execution_id)
 
     try:
         async with _session_scope(factory) as start_db:
@@ -187,6 +219,9 @@ async def run_reserved_execution(
                 raise RuntimeError("执行设备不存在")
             agent_id = device.agent_id
             await start_db.commit()
+    except asyncio.CancelledError:
+        await restore_before_dispatch()
+        raise
     except Exception as exc:
         await _finalize_error(factory, execution_id, f"Worker 启动阶段失败: {exc}")
         return
@@ -207,20 +242,25 @@ async def run_reserved_execution(
                 "suites": await _build_suites_payload(payload_db, execution),
             }
             agent_id = device.agent_id
+    except asyncio.CancelledError:
+        await restore_before_dispatch()
+        raise
     except Exception as exc:
         await _finalize_error(factory, execution_id, f"Worker 载荷构建失败: {exc}")
         return
 
     try:
+        dispatch_attempted = True
         ok = await sender(agent_id, payload)
+    except asyncio.CancelledError:
+        await restore_before_dispatch()
+        raise
     except Exception as exc:
         await _finalize_error(factory, execution_id, f"Agent 发送失败: {exc}")
         return
     if not ok:
         await _finalize_error(factory, execution_id, "Agent 不在线或未连接 WS，无法开始执行")
         return
-    dispatched = True
-
     try:
         while True:
             async with _session_scope(factory) as poll_db:
@@ -246,13 +286,7 @@ async def run_reserved_execution(
                     logger.exception("[%s] stop_test 发送失败 execution=%s", worker_id, execution_id)
             await asyncio.sleep(poll_interval)
     except asyncio.CancelledError:
-        if not dispatched and session_token is not None:
-            try:
-                await _restore_unsubmitted_execution(
-                    factory, execution_id, worker_id, session_token
-                )
-            except Exception:
-                logger.exception("[%s] 恢复未下发执行失败 execution=%s", worker_id, execution_id)
+        await restore_before_dispatch()
         raise
 
 

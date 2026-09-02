@@ -31,6 +31,7 @@ class WorkerRuntime:
         agent_sender: AgentSender | None = None,
         poll_interval: float | None = None,
         execution_poll_interval: float = 5.0,
+        concurrency: int | None = None,
     ) -> None:
         self.worker_id = worker_id
         self.enable_scans = enable_scans
@@ -39,9 +40,17 @@ class WorkerRuntime:
             float(settings.worker_poll_interval) if poll_interval is None else poll_interval
         )
         self.execution_poll_interval = execution_poll_interval
+        self.concurrency = settings.worker_concurrency if concurrency is None else concurrency
+        if not 1 <= self.concurrency <= 32:
+            raise ValueError("Worker concurrency must be between 1 and 32")
         self._stop_event = asyncio.Event()
         self._consumer_task: asyncio.Task | None = None
+        self._execution_tasks: dict[int, asyncio.Task] = {}
+        self._execution_started: dict[int, bool] = {}
+        self._slot_available = asyncio.Event()
+        self._slot_available.set()
         self._scheduler: AsyncIOScheduler | None = None
+        self._stopping = False
 
     @property
     def running(self) -> bool:
@@ -51,11 +60,16 @@ class WorkerRuntime:
     def scans_running(self) -> bool:
         return self._scheduler is not None and self._scheduler.running
 
+    @property
+    def active_count(self) -> int:
+        return len(self._execution_tasks)
+
     async def start(self) -> None:
         """幂等启动；扫描任务先注册，消费者随后开始认领队列。"""
         if self.running:
             return
         self._stop_event = asyncio.Event()
+        self._stopping = False
         if self.enable_scans:
             self._start_scans()
             # 后端停机/重启期间 agent 无法心跳，DB 中残留 online 状态。
@@ -65,9 +79,10 @@ class WorkerRuntime:
             self._claim_loop(), name=f"worker-consumer-{self.worker_id}"
         )
         logger.info(
-            "Worker runtime %s 已启动（scans=%s）",
+            "Worker runtime %s 已启动（scans=%s, concurrency=%s）",
             self.worker_id,
             self.enable_scans,
+            self.concurrency,
         )
 
     async def stop(self) -> None:
@@ -78,37 +93,123 @@ class WorkerRuntime:
             scheduler.shutdown(wait=False)
 
         self._stop_event.set()
+        self._stopping = True
         task = self._consumer_task
         self._consumer_task = None
-        if task is not None and not task.done():
-            task.cancel()
         if task is not None:
+            if not task.done():
+                task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+        active_tasks = list(self._execution_tasks.items())
+        started_ids = {
+            execution_id
+            for execution_id, _task in active_tasks
+            if self._execution_started.get(execution_id, False)
+        }
+        if active_tasks:
+            done, pending = await asyncio.wait(
+                [execution_task for _execution_id, execution_task in active_tasks],
+                timeout=float(settings.worker_shutdown_grace_seconds),
+            )
+            if done:
+                await asyncio.gather(*done, return_exceptions=True)
+            if pending:
+                for execution_task in pending:
+                    execution_task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                # 任务可能尚未开始执行，因而没有机会运行 run_reserved_execution
+                # 的 CancelledError 清理分支；这类任务一定尚未下发给 Agent。
+                for execution_id, _execution_task in active_tasks:
+                    if (
+                        execution_id not in started_ids
+                        and not self._execution_started.get(execution_id, False)
+                    ):
+                        try:
+                            await worker_service.restore_reserved_execution(
+                                execution_id, self.worker_id
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Worker %s 恢复未启动执行失败 execution=%s",
+                                self.worker_id,
+                                execution_id,
+                            )
+        self._execution_started.clear()
         logger.info("Worker runtime %s 已停止", self.worker_id)
 
     async def _claim_loop(self) -> None:
         while not self._stop_event.is_set():
-            try:
-                async with SessionLocal() as db:
-                    item = await worker_service.claim_next_queue(db, self.worker_id)
-                if item is not None:
-                    await worker_service.run_execution(
-                        None,
-                        item.execution_id,
-                        self.worker_id,
-                        agent_sender=self.agent_sender,
-                        poll_interval=self.execution_poll_interval,
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                # 单次数据库/调度异常只影响本轮，后台消费必须继续存活。
-                logger.exception("Worker %s 处理任务异常", self.worker_id)
+            while not self._stop_event.is_set() and self.active_count < self.concurrency:
+                try:
+                    async with SessionLocal() as db:
+                        item = await worker_service.claim_next_queue(db, self.worker_id)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # 单次数据库/调度异常只影响本轮，后台消费必须继续存活。
+                    logger.exception("Worker %s 认领任务异常", self.worker_id)
+                    break
+                if item is None:
+                    break
+                execution_id = item.execution_id
+                execution_task = asyncio.create_task(
+                    self._run_reserved_execution(execution_id),
+                    name=f"worker-execution-{self.worker_id}-{execution_id}",
+                )
+                self._execution_tasks[execution_id] = execution_task
+                execution_task.add_done_callback(
+                    lambda completed, eid=execution_id: self._execution_done(eid, completed)
+                )
+                if self.active_count >= self.concurrency:
+                    self._slot_available.clear()
 
-            try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=self.poll_interval)
-            except TimeoutError:
-                pass
+            if self._stop_event.is_set():
+                break
+            await self._wait_for_wakeup()
+
+    async def _run_reserved_execution(self, execution_id: int) -> None:
+        self._execution_started[execution_id] = True
+        await worker_service.run_reserved_execution(
+            None,
+            execution_id,
+            self.worker_id,
+            agent_sender=self.agent_sender,
+            poll_interval=self.execution_poll_interval,
+        )
+
+    def _execution_done(self, execution_id: int, task: asyncio.Task) -> None:
+        self._execution_tasks.pop(execution_id, None)
+        if not self._stopping:
+            self._execution_started.pop(execution_id, None)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            # 读取任务异常，避免 asyncio 输出 "Task exception was never retrieved"，
+            # 同时保证单个执行不会退出消费者。
+            logger.exception(
+                "Worker %s 执行任务异常 execution=%s", self.worker_id, execution_id
+            )
+        if self.active_count < self.concurrency:
+            self._slot_available.set()
+
+    async def _wait_for_wakeup(self) -> None:
+        self._slot_available.clear()
+        stop_waiter = asyncio.create_task(self._stop_event.wait())
+        slot_waiter = asyncio.create_task(self._slot_available.wait())
+        try:
+            await asyncio.wait(
+                [stop_waiter, slot_waiter],
+                timeout=self.poll_interval,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for waiter in (stop_waiter, slot_waiter):
+                if not waiter.done():
+                    waiter.cancel()
+            await asyncio.gather(stop_waiter, slot_waiter, return_exceptions=True)
 
     def _start_scans(self) -> None:
         if self._scheduler is not None and self._scheduler.running:

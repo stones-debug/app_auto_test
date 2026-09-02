@@ -3,10 +3,11 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 import worker as worker_cli
 from app import main as app_main
-from app.core.config import settings
+from app.core.config import Settings, settings
 from app.services import worker_runtime
 from app.services.worker_runtime import WorkerRuntime
 
@@ -70,7 +71,7 @@ async def test_runtime_injects_agent_sender(monkeypatch):
 
     monkeypatch.setattr(worker_runtime, "SessionLocal", FakeSession)
     monkeypatch.setattr(worker_runtime.worker_service, "claim_next_queue", claim)
-    monkeypatch.setattr(worker_runtime.worker_service, "run_execution", run)
+    monkeypatch.setattr(worker_runtime.worker_service, "run_reserved_execution", run)
     runtime = WorkerRuntime(
         "embedded-test",
         enable_scans=False,
@@ -89,6 +90,96 @@ async def test_runtime_injects_agent_sender(monkeypatch):
         "agent_sender": sender,
         "poll_interval": 0.02,
     }
+
+
+async def test_runtime_runs_multiple_executions_in_parallel(monkeypatch):
+    claimed_ids = iter([1, 2, 3])
+    started = {execution_id: asyncio.Event() for execution_id in (1, 2, 3)}
+    release = {execution_id: asyncio.Event() for execution_id in (1, 2, 3)}
+
+    async def claim(_db, _worker_id):
+        try:
+            return SimpleNamespace(execution_id=next(claimed_ids))
+        except StopIteration:
+            return None
+
+    async def run(_db, execution_id, _worker_id, *, agent_sender, poll_interval):
+        assert agent_sender is None
+        assert poll_interval == 0.01
+        started[execution_id].set()
+        await release[execution_id].wait()
+
+    monkeypatch.setattr(worker_runtime, "SessionLocal", FakeSession)
+    monkeypatch.setattr(worker_runtime.worker_service, "claim_next_queue", claim)
+    monkeypatch.setattr(worker_runtime.worker_service, "run_reserved_execution", run)
+    runtime = WorkerRuntime(
+        "parallel-test", enable_scans=False, poll_interval=0.01,
+        execution_poll_interval=0.01, concurrency=2,
+    )
+
+    await runtime.start()
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(started[1].wait(), started[2].wait()), timeout=1
+        )
+        assert runtime.active_count == 2
+        assert not started[3].is_set()
+
+        release[1].set()
+        await asyncio.wait_for(started[3].wait(), timeout=1)
+        assert runtime.active_count == 2
+
+        release[2].set()
+        release[3].set()
+        for execution_id in (1, 2, 3):
+            await asyncio.wait_for(release[execution_id].wait(), timeout=1)
+    finally:
+        await runtime.stop()
+
+
+async def test_runtime_isolates_execution_failure_and_releases_slot(monkeypatch):
+    claimed_ids = iter([1, 2])
+    second_started = asyncio.Event()
+
+    async def claim(_db, _worker_id):
+        try:
+            return SimpleNamespace(execution_id=next(claimed_ids))
+        except StopIteration:
+            return None
+
+    async def run(_db, execution_id, _worker_id, *, agent_sender, poll_interval):
+        if execution_id == 1:
+            raise RuntimeError("execution failed")
+        second_started.set()
+
+    monkeypatch.setattr(worker_runtime, "SessionLocal", FakeSession)
+    monkeypatch.setattr(worker_runtime.worker_service, "claim_next_queue", claim)
+    monkeypatch.setattr(worker_runtime.worker_service, "run_reserved_execution", run)
+    runtime = WorkerRuntime(
+        "failure-isolation-test", enable_scans=False, poll_interval=0.01,
+        concurrency=1,
+    )
+
+    await runtime.start()
+    try:
+        await asyncio.wait_for(second_started.wait(), timeout=1)
+        await asyncio.sleep(0)
+        assert runtime.running
+        assert runtime.active_count == 0
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.parametrize("value", [0, 33])
+def test_worker_concurrency_is_bounded(value):
+    with pytest.raises(ValidationError):
+        Settings(worker_concurrency=value)
+
+
+@pytest.mark.parametrize("value", [-1, 601])
+def test_worker_shutdown_grace_is_bounded(value):
+    with pytest.raises(ValidationError):
+        Settings(worker_shutdown_grace_seconds=value)
 
 
 async def test_runtime_survives_claim_error(monkeypatch):

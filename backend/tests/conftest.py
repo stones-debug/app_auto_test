@@ -226,7 +226,12 @@ async def _cleanup_test_data():
                     AppProfile.project_id.in_(project_ids)
                 )
                 await session.execute(
-                    delete(AppProfileAuditLog).where(AppProfileAuditLog.project_id.in_(project_ids))
+                    delete(AppProfileAuditLog).where(
+                        or_(
+                            AppProfileAuditLog.project_id.in_(project_ids),
+                            AppProfileAuditLog.profile_id.in_(profile_id_subq),
+                        )
+                    )
                 )
                 await session.execute(
                     delete(AppProfileNodeOverride).where(

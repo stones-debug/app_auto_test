@@ -5,6 +5,7 @@ Start the Task Worker (queue consumer + scheduler scans).
 .DESCRIPTION
 - Optional external-mode compatibility entrypoint.
 - Requires WORKER_MODE=external in backend/.env.
+- Set WORKER_CONCURRENCY in backend/.env to control concurrent executions (default: 1).
 - Runs `uv run python worker.py --worker-id <id> --enable-scans`.
 
 .EXAMPLE
