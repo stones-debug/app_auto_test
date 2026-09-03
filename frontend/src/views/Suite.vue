@@ -4,7 +4,7 @@ import { useRoute } from 'vue-router'
 import { MoreFilled, Plus, Search } from '@element-plus/icons-vue'
 import Draggable from 'vuedraggable'
 
-import { createSuite, deleteSuite, updateSuite, type Suite } from '@/api/suites'
+import { createSuite, createVariable, deleteSuite, updateSuite, type Suite } from '@/api/suites'
 import EmptyState from '@/components/EmptyState.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import RunButton from '@/components/RunButton.vue'
@@ -14,10 +14,12 @@ import { useSuiteCases } from '@/composables/useSuiteCases'
 import { useSuiteDetail } from '@/composables/useSuiteDetail'
 import { useSuiteList } from '@/composables/useSuiteList'
 import { usePermission } from '@/composables/usePermission'
+import { useProjectContextStore } from '@/stores/projectContext'
 import { formatDateTime } from '@/utils/format'
 
 const route = useRoute()
 const projectId = Number(route.params.projectId)
+const projectContext = useProjectContextStore()
 const { canWriteAssets } = usePermission()
 
 // 三个 composable 通过这个编排回调串起“选中套件 → 加载详情和用例”的流程。
@@ -91,6 +93,9 @@ const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
 const form = ref({ name: '', description: '' })
 const savingSuite = ref(false)
+const variableDialogVisible = ref(false)
+const variableForm = ref({ name: '', value: '', description: '' })
+const savingNewVariable = ref(false)
 
 async function onSelectSuite(suite: Suite) {
   if (suite.id === activeSuite.value) return
@@ -108,6 +113,36 @@ function openEdit(suite: Suite) {
   editingId.value = suite.id
   form.value = { name: suite.name, description: suite.description ?? '' }
   dialogVisible.value = true
+}
+
+function openCreateVariable() {
+  variableForm.value = { name: '', value: '', description: '' }
+  variableDialogVisible.value = true
+}
+
+async function saveNewVariable() {
+  const suiteId = activeSuite.value
+  const name = variableForm.value.name.trim()
+  if (!suiteId) return
+  if (!name) {
+    ElMessage.warning('请输入变量名')
+    return
+  }
+  savingNewVariable.value = true
+  try {
+    await createVariable({
+      scope: 'suite',
+      suite_id: suiteId,
+      name,
+      value: variableForm.value.value,
+      description: variableForm.value.description.trim() || null,
+    })
+    variableDialogVisible.value = false
+    ElMessage.success('变量已创建')
+    await suiteDetailState.selectSuite(suiteId, { preserveSteps: true })
+  } finally {
+    savingNewVariable.value = false
+  }
 }
 
 async function save() {
@@ -177,7 +212,19 @@ function onItemMenu(cmd: string | number | object, suite: Suite) {
   else if (key === 'delete') void remove(suite)
 }
 
-onMounted(loadSuites)
+async function initialize() {
+  // 先加载项目角色，避免套件详情先返回后变量编辑入口因权限尚未解析而被隐藏。
+  try {
+    await projectContext.load(projectId)
+  } catch {
+    // 项目权限接口失败时仍让套件接口自行返回错误，避免产生未处理 Promise。
+  }
+  await loadSuites()
+}
+
+onMounted(() => {
+  void initialize()
+})
 </script>
 
 <template>
@@ -316,7 +363,12 @@ onMounted(loadSuites)
                   <div class="v2-aux">执行时注入的键值对，可随时编辑、删除</div>
                 </div>
               </div>
-              <div class="section-head-right"><el-tag size="small" effect="plain" type="success">即时保存</el-tag></div>
+              <div class="section-head-right">
+                <el-tag size="small" effect="plain" type="success">即时保存</el-tag>
+                <el-button v-if="canWriteAssets" type="primary" :icon="Plus" size="small" @click="openCreateVariable">
+                  新增变量
+                </el-button>
+              </div>
             </header>
             <div class="section-body">
               <div v-if="suiteVars.length === 0" class="var-empty v2-aux">暂无套件变量</div>
@@ -354,6 +406,24 @@ onMounted(loadSuites)
     </el-form>
     <template #footer><el-button @click="dialogVisible = false">取消</el-button><el-button type="primary"
         :loading="savingSuite" @click="save">保存</el-button></template>
+  </el-dialog>
+
+  <el-dialog v-model="variableDialogVisible" title="新增套件变量" width="480px" append-to-body>
+    <el-form label-width="80px" @submit.prevent="saveNewVariable">
+      <el-form-item label="变量名" required>
+        <el-input v-model="variableForm.name" placeholder="如 username" maxlength="100" @keyup.enter="saveNewVariable" />
+      </el-form-item>
+      <el-form-item label="值">
+        <el-input v-model="variableForm.value" placeholder="请输入变量值" />
+      </el-form-item>
+      <el-form-item label="说明">
+        <el-input v-model="variableForm.description" type="textarea" :rows="2" placeholder="可选" />
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="variableDialogVisible = false">取消</el-button>
+      <el-button type="primary" :loading="savingNewVariable" @click="saveNewVariable">创建</el-button>
+    </template>
   </el-dialog>
 
   <SuiteCasePicker v-model="addDialogVisible" :groups="groupedCases" :all-cases-count="allCases.length"
