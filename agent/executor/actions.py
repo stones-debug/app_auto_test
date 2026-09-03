@@ -256,8 +256,9 @@ class SwipeInElementFindTextClickAction(BaseAction):
 
     目标文字直接写在动作参数（支持 ${变量}），不进入元素库。
     匹配方式 equals/contains；先按首选方向查找，未找到再反向跨过起点继续。
-    每次手势调用即计入次数，以 max_swipes_per_direction 作为每个方向的
-    可靠上限；滚动后比较页面签名，确认到达边界时立即切换反向。
+    每次手势调用即计入次数，首方向固定执行 max_swipes_per_direction 次，
+    未找到目标后反方向固定执行两倍该次数；页面签名只用于日志，不作为提前
+    停止条件。
     只接受中心点落在列表控件可见矩形内的匹配，点击距离列表中心最近的匹配项。
     找到后立即点击；如遇 stale，重新定位列表和目标重试，不能复用旧句柄。
     """
@@ -290,21 +291,17 @@ class SwipeInElementFindTextClickAction(BaseAction):
         phase_swipes = 0
         reverse_swipes = 0
         swipe_counts = {preferred: 0, opposite: 0}
-        exhausted_directions: set[str] = set()
         last_click_error: BaseException | None = None
-        phase_direction: str | None = None
 
-        # 阶段 1：锁定一个实际方向，严格按配置最多执行 max_swipes 次。
-        # 只允许第一次观测的 hint 修正首选方向；一旦开始滑动，后续观测
-        # 不能改变本阶段方向，否则目标在屏外时反复返回同一 hint 会导致
-        # 两个方向在第一阶段交替消耗，根本没有稳定的反向阶段。
+        # 阶段 1：固定使用首选方向，必须执行满 max_swipes 次；
+        # changed/signature 和目标位置 hint 只用于诊断，不提前结束或改向。
         logger.info(
             "列表文字查找开始: element_id=%s target=%r preferred=%s max_per_direction=%s",
             element_id,
             target_text,
             preferred,
-            max_swipes,
-        )
+                max_swipes,
+            )
         while phase_swipes < max_swipes:
             found, error, hint = await self._try_find_and_click(
                 driver, context, element_id, viewport_element_id, selector, container_wait_timeout,
@@ -319,19 +316,12 @@ class SwipeInElementFindTextClickAction(BaseAction):
             if error is not None:
                 last_click_error = error
             logger.info(
-                "列表观测: phase=forward count=%s/%s hint=%s",
+                "列表观测: phase=forward count=%s/%s hint=%s ignored=true",
                 phase_swipes,
                 max_swipes,
                 hint or "none",
             )
-            if phase_direction is None:
-                phase_direction = hint if hint in (preferred, opposite) else preferred
-                logger.info(
-                    "正向阶段方向确定: direction=%s source=%s",
-                    phase_direction,
-                    "hint" if hint in (preferred, opposite) else "preferred",
-                )
-            direction = phase_direction
+            direction = preferred
             logger.info(
                 "执行列表滑动: phase=forward direction=%s count=%s/%s total=%s",
                 direction,
@@ -346,28 +336,19 @@ class SwipeInElementFindTextClickAction(BaseAction):
             done_swipes += 1
             phase_swipes += 1
             swipe_counts[direction] += 1
-            if changed is False:
-                exhausted_directions.add(direction)
-                # 仍需查询边界页，查询在下面统一执行。
-                phase_done = True
-                phase_reason = "页面签名未变化"
-            else:
-                phase_done = swipe_counts[direction] >= max_swipes
-                phase_reason = "达到方向次数上限" if phase_done else "继续当前方向"
             logger.info(
                 "列表滑动完成: phase=forward direction=%s count=%s changed=%s next=%s",
                 direction,
                 swipe_counts[direction],
                 changed,
-                "reverse" if phase_done else direction,
+                "forward" if phase_swipes < max_swipes else "reverse",
             )
-            if phase_done:
-                exhausted_directions.add(direction)
+            if phase_swipes >= max_swipes:
                 logger.info(
-                    "正向阶段结束: direction=%s reason=%s total=%s",
+                    "正向阶段完成固定次数: direction=%s total=%s signature_changed=%s",
                     direction,
-                    phase_reason,
                     done_swipes,
+                    changed,
                 )
             found, error, hint = await self._try_find_and_click(
                 driver, context, element_id, viewport_element_id, selector, container_wait_timeout,
@@ -381,24 +362,19 @@ class SwipeInElementFindTextClickAction(BaseAction):
                 return self._make_result(done_swipes, target_text)
             if error is not None:
                 last_click_error = error
-            if phase_done:
-                break
 
-        # 阶段 2：强制反向，预算 = 阶段 1 实际滑动次数 + max_swipes。
-        # 前半用于返回起点，后半探索另一侧；这里完全忽略 hint，确保真实
-        # 的 swipeGesture 一定使用与阶段 1 相反的 direction。
-        first_direction = phase_direction or preferred
-        reverse_direction = opposite if first_direction == preferred else preferred
-        reverse_budget = phase_swipes + max_swipes
+        # 阶段 2：固定使用反方向，执行正向预算 + max_swipes 次。
+        # 例如 max_swipes=8 时，正向 8 次、反向 16 次；仍只在找到目标后提前结束。
+        reverse_direction = opposite
+        reverse_budget = max_swipes * 2
         logger.info(
-            "切换反向阶段: from=%s to=%s forward_swipes=%s reverse_budget=%s exhausted=%s",
-            first_direction,
+            "切换反向阶段: from=%s to=%s forward_swipes=%s reverse_budget=%s",
+            preferred,
             reverse_direction,
             phase_swipes,
             reverse_budget,
-            sorted(exhausted_directions),
         )
-        while reverse_swipes < reverse_budget and reverse_direction not in exhausted_directions:
+        while reverse_swipes < reverse_budget:
             found, error, hint = await self._try_find_and_click(
                 driver, context, element_id, viewport_element_id, selector, container_wait_timeout,
             )
@@ -432,26 +408,18 @@ class SwipeInElementFindTextClickAction(BaseAction):
             done_swipes += 1
             reverse_swipes += 1
             swipe_counts[direction] += 1
-            if changed is False:
-                exhausted_directions.add(direction)
-                phase_done = True
-                phase_reason = "页面签名未变化"
-            else:
-                phase_done = swipe_counts[direction] >= reverse_budget
-                phase_reason = "达到反向次数上限" if phase_done else "继续反向"
             logger.info(
                 "列表滑动完成: phase=reverse direction=%s count=%s changed=%s",
                 direction,
                 swipe_counts[direction],
                 changed,
             )
-            if phase_done:
-                exhausted_directions.add(direction)
+            if reverse_swipes >= reverse_budget:
                 logger.info(
-                    "反向阶段结束: direction=%s reason=%s total=%s",
+                    "反向阶段完成固定次数: direction=%s total=%s signature_changed=%s",
                     direction,
-                    phase_reason,
                     done_swipes,
+                    changed,
                 )
             found, error, hint = await self._try_find_and_click(
                 driver, context, element_id, viewport_element_id, selector, container_wait_timeout,
@@ -465,15 +433,12 @@ class SwipeInElementFindTextClickAction(BaseAction):
                 return self._make_result(done_swipes, target_text)
             if error is not None:
                 last_click_error = error
-            if phase_done:
-                break
 
         logger.warning(
-            "列表文字查找失败: target=%r total_swipes=%s counts=%s exhausted=%s",
+            "列表文字查找失败: target=%r total_swipes=%s counts=%s",
             target_text,
             done_swipes,
             swipe_counts,
-            sorted(exhausted_directions),
         )
         raise ElementNotFound(self._failure_reason(
             element_id, target_text, match_mode, preferred, opposite,
@@ -664,11 +629,44 @@ class SwipeInElementFindTextClickAction(BaseAction):
             raise ElementNotFound(f"ListView 未找到: element_id={element_id}") from exc
 
         def _do_scroll(container):
-            # swipe_in_element 内部会断言元素句柄有效（Appium 端元素失效会抛
-            # StaleObjectException/StaleElementReferenceException）。列表重新定位后到
-            # 执行滚动之间仍可能发生页面重绘，必须把「重新定位 + 滚动」作为一个整体走
-            # 统一的 stale 重试：句柄失效时重新定位容器再滚动，而不是直接失败。
-            return driver.swipe_in_element(container, direction, percent)
+            # 未配置额外视口时保持原有元素手势；配置视口后则以
+            # ListView 与视口的交集作为手势区域。这样滚动仍发生在 ListView
+            # 的可见部分，但上下滑动的起点/终点不会落到弹窗遮罩或屏外。
+            if viewport_element_id is None:
+                return driver.swipe_in_element(container, direction, percent)
+            try:
+                viewport = context.find_element(
+                    viewport_element_id,
+                    wait_timeout=container_wait_timeout,
+                    disable_smart_scroll=True,
+                )
+                region = self._visible_region(driver, container, viewport)
+                if region["width"] <= 0 or region["height"] <= 0:
+                    raise ElementNotFound("ListView 与可见视口没有有效重叠区域")
+                logger.info(
+                    "使用列表可见区域滑动: element_id=%s viewport_element_id=%s "
+                    "region=(%s,%s,%s,%s) direction=%s percent=%s",
+                    element_id,
+                    viewport_element_id,
+                    region["x"],
+                    region["y"],
+                    region["width"],
+                    region["height"],
+                    direction,
+                    percent,
+                )
+                return driver.swipe_in_region(
+                    region["x"],
+                    region["y"],
+                    region["width"],
+                    region["height"],
+                    direction,
+                    percent,
+                )
+            except Exception as exc:
+                if is_stale_element_error(exc):
+                    context.invalidate_element(viewport_element_id)
+                raise
 
         await with_stale_retry(
             driver,

@@ -60,7 +60,28 @@ async def update_module(
     return module
 
 
+async def reparent_module_children(
+    db: AsyncSession, *, module_id: int, parent_id: int | None
+) -> None:
+    await db.execute(
+        update(TestModule)
+        .where(TestModule.parent_id == module_id, TestModule.deleted_at.is_(None))
+        .values(parent_id=parent_id)
+    )
+
+
+async def ungroup_module_cases(db: AsyncSession, *, module_id: int) -> None:
+    await db.execute(
+        update(TestCase)
+        .where(TestCase.module_id == module_id, TestCase.deleted_at.is_(None))
+        .values(module_id=None)
+    )
+
+
 async def soft_delete_module(module: TestModule, deleted_at: datetime) -> TestModule:
+    # 删除模块后保留子模块和用例的数据可见性：子模块提升到当前模块的父级，
+    # 归属于当前模块的用例转为未分组，避免留下指向已删除模块的悬挂引用。
+    # 具体更新由 service 在同一事务中调用，repository 只负责持久化变更。
     module.deleted_at = deleted_at
     return module
 
@@ -265,7 +286,9 @@ async def list_pages(db: AsyncSession, project_id: int | None = None):
         # 同时保留必要的父级节点，避免子页面因父级被过滤而无法正确显示层级。
         groups_by_id = {group.id: group for group in group_items}
         visible_ids = {
-            group.id for group in group_items if group.name in counts
+            group.id
+            for group in group_items
+            if group.project_id == project_id or (group.project_id is None and group.name in counts)
         }
         pending = list(visible_ids)
         while pending:
@@ -278,17 +301,25 @@ async def list_pages(db: AsyncSession, project_id: int | None = None):
 
 
 async def create_group(
-    db: AsyncSession, *, name: str, parent_id: int | None, user_id: int | None
+    db: AsyncSession, *, name: str, project_id: int | None, parent_id: int | None, user_id: int | None
 ) -> ElementGroup:
-    group = ElementGroup(name=name, parent_id=parent_id, created_by=user_id)
+    group = ElementGroup(
+        name=name, project_id=project_id, parent_id=parent_id, created_by=user_id
+    )
     db.add(group)
     return group
 
 
 async def rename_group(db: AsyncSession, *, group: ElementGroup, name: str) -> ElementGroup:
+    element_conditions = [
+        func.btrim(TestElement.page_name) == group.name,
+        TestElement.deleted_at.is_(None),
+    ]
+    if group.project_id is not None:
+        element_conditions.append(TestElement.project_id == group.project_id)
     await db.execute(
         update(TestElement)
-        .where(func.btrim(TestElement.page_name) == group.name, TestElement.deleted_at.is_(None))
+        .where(*element_conditions)
         .values(page_name=name)
     )
     group.name = name
@@ -305,9 +336,15 @@ async def get_group(db: AsyncSession, group_id: int) -> ElementGroup | None:
 
 
 async def delete_group(db: AsyncSession, group: ElementGroup) -> None:
+    element_conditions = [
+        func.btrim(TestElement.page_name) == group.name,
+        TestElement.deleted_at.is_(None),
+    ]
+    if group.project_id is not None:
+        element_conditions.append(TestElement.project_id == group.project_id)
     await db.execute(
         update(TestElement)
-        .where(func.btrim(TestElement.page_name) == group.name, TestElement.deleted_at.is_(None))
+        .where(*element_conditions)
         .values(page_name=None)
     )
     await db.execute(

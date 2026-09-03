@@ -83,6 +83,8 @@ def resolve_android_sdk_root(explicit: str | Path | None = None) -> Path | None:
         candidates.append(Path(local_app_data) / "Android" / "Sdk")
     if user_profile:
         candidates.append(Path(user_profile) / "AppData" / "Local" / "Android" / "Sdk")
+    # 源码/开发包随附的 platform-tools 位于 agent/vendor/platform-tools。
+    candidates.append(Path(__file__).resolve().parent / "vendor")
 
     seen: set[str] = set()
     for raw in candidates:

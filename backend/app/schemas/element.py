@@ -184,6 +184,7 @@ class ElementPageCount(BaseModel):
 
 class ElementGroupCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
+    project_id: int | None = None
     parent_id: int | None = None
 
     @field_validator("name")
@@ -205,6 +206,7 @@ class ElementGroupUpdate(BaseModel):
 class ElementGroupOut(BaseModel):
     id: int
     name: str
+    project_id: int | None = None
     parent_id: int | None = None
     created_by: int | None = None
     created_at: datetime

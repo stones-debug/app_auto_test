@@ -8,6 +8,7 @@ defineProps<{
   teardownSteps: Step[]
   dirty: boolean
   saving: boolean
+  readonly?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -44,6 +45,7 @@ const emit = defineEmits<{
         description="运行时在套件内每个用例主体之前执行"
         tone="warning"
         :allow-assertions="false"
+        :readonly="readonly"
       />
       <CaseStepEditor
         :model-value="teardownSteps"
@@ -54,6 +56,7 @@ const emit = defineEmits<{
         description="运行时在套件内每个用例完成后执行；失败时仍会尝试清理"
         tone="success"
         :allow-assertions="false"
+        :readonly="readonly"
       />
     </div>
 

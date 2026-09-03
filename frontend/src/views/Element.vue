@@ -4,7 +4,8 @@ import { useRoute } from 'vue-router'
 import { Delete, Edit, Folder, Plus } from '@element-plus/icons-vue'
 
 import { useAuthStore } from '@/stores/auth'
-import { listProjects } from '@/api/projects'
+import { listProjects, type Project } from '@/api/projects'
+import { usePermission } from '@/composables/usePermission'
 import SmartLocatorEditor from '@/components/SmartLocatorEditor.vue'
 import {
   LOCATOR_TYPES,
@@ -31,6 +32,7 @@ import {
 import { buildLocatorPayload, cloneSmartConfig, smartLocatorSummary, validateSmartConfig, type SmartLocatorConfig } from '@/utils/smartLocator'
 
 const auth = useAuthStore()
+const { role: projectRole } = usePermission()
 const route = useRoute()
 
 const isProjectMode = computed(() => route.params.projectId != null)
@@ -49,7 +51,7 @@ const projectFilter = ref<number | undefined>(
 const pageGroups = ref<ElementPageCount[]>([])
 const allTotal = computed(() => totalElementCount(pageGroups.value))
 const selectedPage = ref('all')
-const projects = ref<{ id: number; name: string }[]>([])
+const projects = ref<Project[]>([])
 const collapsedGroups = ref<Set<number>>(new Set())
 
 type PageTreeNode = ElementPageCount & { children: PageTreeNode[] }
@@ -132,11 +134,23 @@ const importErrors = ref<ElementImportError[]>([])
 const importInput = ref<HTMLInputElement>()
 
 function canEdit(row: TestElement) {
-  return !!auth.user && row.created_by === auth.user.id
+  if (!auth.user) return false
+  const role = isProjectMode.value && row.project_id === projectFilter.value
+    ? projectRole.value
+    : projects.value.find((project) => project.id === row.project_id)?.role
+  return role === 'owner' || role === 'admin' || (role === 'member' && row.created_by === auth.user.id)
 }
 
+const canWriteSelectedProject = computed(() => {
+  if (isProjectMode.value) return ['owner', 'admin', 'member'].includes(projectRole.value ?? '')
+  if (projectFilter.value == null) return projects.value.some((project) => ['owner', 'admin', 'member'].includes(project.role ?? ''))
+  return ['owner', 'admin', 'member'].includes(
+    projects.value.find((project) => project.id === projectFilter.value)?.role ?? '',
+  )
+})
+
 function canManageGroup(group: ElementPageCount) {
-  return !!auth.user && group.group_id != null && !isReservedElementPageGroupName(group.page_name)
+  return !!auth.user && group.group_id != null && !isReservedElementPageGroupName(group.page_name) && canWriteSelectedProject.value
 }
 
 function isCollapsed(group: ElementPageCount) {
@@ -196,7 +210,6 @@ async function loadProjects() {
     // 项目内元素库：固定当前项目上下文
     projectFilter.value = Number(route.params.projectId)
     page.value = 1
-    await load()
     return
   }
   // 从全局元素页跳入时可带 project 筛选（如项目概览跳转）
@@ -204,8 +217,13 @@ async function loadProjects() {
   if (q) {
     projectFilter.value = q
     page.value = 1
-    await Promise.all([loadPages(), load()])
   }
+}
+
+async function initialize() {
+  // 先确定项目上下文，再加载分组和元素，避免刷新时请求到全局分组后被竞态覆盖。
+  await loadProjects()
+  await Promise.all([loadPages(), load()])
 }
 
 function selectPage(name: string) {
@@ -463,7 +481,7 @@ async function saveGroup() {
     if (selectedPage.value === oldName) selectedPage.value = name
     ElMessage.success('分组已更新')
   } else {
-    await createElementGroup(name, creatingParentId.value)
+    await createElementGroup(name, creatingParentId.value, projectFilter.value)
     if (creatingParentId.value != null) {
       const next = new Set(collapsedGroups.value)
       next.delete(creatingParentId.value)
@@ -523,9 +541,7 @@ function platformLabel(p: string) {
 }
 
 onMounted(() => {
-  loadPages()
-  loadProjects()
-  load()
+  void initialize()
   window.addEventListener('click', closeGroupContextMenu)
 })
 
@@ -570,7 +586,7 @@ onUnmounted(() => {
           <span class="count">{{ row.node.count }}</span>
         </span>
       </div>
-      <el-button class="add-group-btn" text type="primary" @click="openCreateGroup">
+      <el-button v-if="canWriteSelectedProject" class="add-group-btn" text type="primary" @click="openCreateGroup">
         <el-icon><Plus /></el-icon>
         <span>新增分组</span>
       </el-button>
@@ -598,9 +614,9 @@ onUnmounted(() => {
         </el-select>
         <el-button type="primary" @click="page = 1; load()">搜索</el-button>
         <span class="spacer"></span>
-        <el-button v-if="isProjectMode" @click="openImport">导入 Excel</el-button>
+        <el-button v-if="isProjectMode && canWriteSelectedProject" @click="openImport">导入 Excel</el-button>
         <el-button :loading="exportLoading" @click="exportExcel">导出 Excel</el-button>
-        <el-button type="primary" @click="openCreate">新建元素</el-button>
+        <el-button v-if="canWriteSelectedProject" type="primary" @click="openCreate">新建元素</el-button>
       </div>
 
       <el-table v-loading="loading" :data="items" stripe>
@@ -762,6 +778,9 @@ onUnmounted(() => {
   border-radius: var(--radius-card);
   padding: 12px;
   align-self: flex-start;
+  max-height: calc(100vh - 150px);
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 .tree-head {
   padding: 8px 12px 12px;

@@ -65,6 +65,16 @@ def test_resolve_android_sdk_root_from_environment(tmp_path, monkeypatch):
     assert resolve_android_sdk_root() == sdk.resolve()
 
 
+def test_resolve_android_sdk_root_from_agent_vendor(monkeypatch):
+    vendor = Path(__file__).resolve().parents[1] / "vendor"
+    if not (vendor / "platform-tools").is_dir():
+        pytest.skip("agent vendor platform-tools 未提供")
+    monkeypatch.delenv("ANDROID_HOME", raising=False)
+    monkeypatch.delenv("ANDROID_SDK_ROOT", raising=False)
+    monkeypatch.setattr("appium_lifecycle.shutil.which", lambda _name: None)
+    assert resolve_android_sdk_root() == vendor.resolve()
+
+
 def test_start_sets_android_sdk_environment(tmp_path, monkeypatch):
     sdk = tmp_path / "Android" / "Sdk"
     (sdk / "platform-tools").mkdir(parents=True)

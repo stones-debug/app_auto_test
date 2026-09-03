@@ -18,11 +18,15 @@ import {
 import { getElement, listElements, listModules } from '@/api/elements'
 import CaseFlowEditor from '@/components/CaseFlowEditor.vue'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
+import { usePermission } from '@/composables/usePermission'
+import { useProjectContextStore } from '@/stores/projectContext'
 import { buildCaseEditorSummary, caseEditorSummaryText } from '@/utils/caseEditorSummary'
 import { mergeFlowNodes, normalizeFlowNodeOrders } from '@/utils/flowNodeOrder'
 
 const route = useRoute()
 const router = useRouter()
+const projectContext = useProjectContextStore()
+const { canWriteAssets } = usePermission()
 const projectId = Number(route.params.projectId)
 const caseId = computed<number | null>(() => {
   if (route.name === 'CaseNew') return null
@@ -198,6 +202,12 @@ async function loadElementNames(nodes: FlowNode[]) {
 }
 
 onMounted(async () => {
+  await projectContext.load(projectId)
+  if (!canWriteAssets.value) {
+    ElMessage.warning('当前项目角色无权编辑用例')
+    await router.replace(`/projects/${projectId}/cases`)
+    return
+  }
   modules.value = await listModules(projectId)
   if (isEdit.value) {
     const data = await getCase(caseId.value!)

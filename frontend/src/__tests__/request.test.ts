@@ -2,6 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import axios from 'axios'
 
+const errorMessage = vi.hoisted(() => vi.fn())
+
+vi.mock('element-plus', () => ({
+  ElMessage: { error: errorMessage },
+}))
+
 vi.mock('axios', async (importOriginal) => {
   const actual = await importOriginal<typeof import('axios')>()
   const instance = {
@@ -27,7 +33,7 @@ vi.mock('axios', async (importOriginal) => {
 })
 
 // request.ts 在模块加载时调用 axios.create —— 先导入被测模块
-import { clearTokens, getToken, refreshToken, setTokens } from '@/utils/request'
+import { apiErrorMessage, clearTokens, getToken, refreshToken, setTokens } from '@/utils/request'
 
 const mockedAxios = vi.mocked(axios, true)
 
@@ -129,5 +135,28 @@ describe('CR-14 会话刷新闭环', () => {
     await expect(handler(authError('/auth/login'))).rejects.toBeTruthy()
     expect(mockedAxios.post).not.toHaveBeenCalled()
     expect(axInstance.request).not.toHaveBeenCalled()
+  })
+
+  it('普通接口失败时显示后端返回的校验提示', async () => {
+    const handler = responseErrorHandler
+    const error = {
+      config: { url: '/projects', headers: {} },
+      response: { status: 422, data: { detail: [{ msg: '项目名称不能为空' }] } },
+    }
+
+    await expect(handler(error)).rejects.toBe(error)
+    expect(errorMessage).toHaveBeenCalledWith('项目名称不能为空')
+  })
+
+  it('无法连接服务时显示网络提示', async () => {
+    const handler = responseErrorHandler
+    const error = { config: { url: '/projects', headers: {} }, code: 'ERR_NETWORK' }
+
+    await expect(handler(error)).rejects.toBe(error)
+    expect(errorMessage).toHaveBeenCalledWith('无法连接后端服务，请检查网络连接或服务是否已启动')
+  })
+
+  it('apiErrorMessage 支持 FastAPI 字符串错误详情', () => {
+    expect(apiErrorMessage({ response: { data: { detail: '项目不存在' } } })).toBe('项目不存在')
   })
 })

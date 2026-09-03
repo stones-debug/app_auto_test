@@ -13,10 +13,12 @@ import SuiteStepSection from '@/components/SuiteStepSection.vue'
 import { useSuiteCases } from '@/composables/useSuiteCases'
 import { useSuiteDetail } from '@/composables/useSuiteDetail'
 import { useSuiteList } from '@/composables/useSuiteList'
+import { usePermission } from '@/composables/usePermission'
 import { formatDateTime } from '@/utils/format'
 
 const route = useRoute()
 const projectId = Number(route.params.projectId)
+const { canWriteAssets } = usePermission()
 
 // 三个 composable 通过这个编排回调串起“选中套件 → 加载详情和用例”的流程。
 let loadSuiteData: (id: number) => Promise<void> = async () => undefined
@@ -187,7 +189,7 @@ onMounted(loadSuites)
             <h2 class="v2-card-title">套件管理</h2>
             <span class="sidebar-count v2-aux">{{ suites.length }} 个</span>
           </div>
-          <el-button type="primary" :icon="Plus" @click="openCreate">新建套件</el-button>
+          <el-button v-if="canWriteAssets" type="primary" :icon="Plus" @click="openCreate">新建套件</el-button>
         </div>
         <div class="sidebar-filter">
           <el-input v-model="keyword" placeholder="按名称或描述搜索" clearable class="sidebar-search">
@@ -218,7 +220,7 @@ onMounted(loadSuites)
               </span>
               <span class="suite-actions" @click.stop>
                 <RunButton :type="'suite'" :id="suite.id" :name="suite.name" />
-                <el-dropdown trigger="click" @command="onItemMenu($event, suite)">
+                <el-dropdown v-if="canWriteAssets" trigger="click" @command="onItemMenu($event, suite)">
                   <el-button :icon="MoreFilled" text size="small" class="item-more" aria-label="更多操作" />
                   <template #dropdown>
                     <el-dropdown-menu>
@@ -232,7 +234,7 @@ onMounted(loadSuites)
           </div>
           <template v-if="filteredSuites.length === 0">
             <EmptyState v-if="suites.length === 0" title="还没创建套件" description="套件用于批量编排用例，并可配置前后置步骤与变量。"
-              action-label="新建套件" @action="openCreate" />
+              :action-label="canWriteAssets ? '新建套件' : undefined" @action="openCreate" />
             <div v-else class="no-match v2-aux">没有找到与「{{ keyword }}」匹配的套件</div>
           </template>
         </div>
@@ -244,7 +246,7 @@ onMounted(loadSuites)
         <div v-loading="loadingDetail" class="detail-stack">
           <PageHeader :title="suiteDetail.name" :description="suiteDetail.description ?? ''">
             <RunButton :type="'suite'" :id="suiteDetail.id" :name="suiteDetail.name" />
-            <el-dropdown trigger="click" @command="onSuiteMenu">
+            <el-dropdown v-if="canWriteAssets" trigger="click" @command="onSuiteMenu">
               <el-button :icon="MoreFilled">套件操作</el-button>
               <template #dropdown>
                 <el-dropdown-menu>
@@ -278,29 +280,30 @@ onMounted(loadSuites)
                 </div>
               </div>
               <div class="section-head-right"><el-tag size="small" effect="plain" type="success">自动保存</el-tag><el-button
-                  type="primary" :icon="Plus" @click="openAddCase">添加用例</el-button></div>
+                  v-if="canWriteAssets" type="primary" :icon="Plus" @click="openAddCase">添加用例</el-button></div>
             </header>
             <div class="section-body">
-              <Draggable v-model="suiteCases" item-key="id" handle=".drag-handle" ghost-class="case-ghost"
+              <Draggable v-model="suiteCases" :disabled="!canWriteAssets" item-key="id" handle=".drag-handle" ghost-class="case-ghost"
                 class="case-list" @end="onReorder">
                 <template #item="{ element, index }">
                   <div class="case-card">
                     <div class="case-row"><span class="drag-handle" title="拖拽排序">⠿</span><span class="case-order">{{
                         index + 1 }}</span><span class="case-name" :title="element.case_name">{{ element.case_name
                         }}</span><el-tag v-if="element.module_name" size="small" type="info" effect="plain"
-                        class="case-module">{{ element.module_name }}</el-tag><el-button class="case-remove"
+                        class="case-module">{{ element.module_name }}</el-tag><el-button v-if="canWriteAssets" class="case-remove"
                         size="small" text type="danger" @click="removeCase(element)">移除</el-button></div>
                   </div>
                 </template>
               </Draggable>
               <div v-if="suiteCases.length === 0" class="case-empty">
-                <EmptyState title="套件还没有用例" description="从用例库中添加用例，拖拽即可调整执行顺序。" action-label="添加用例"
-                  @action="openAddCase" />
+                <EmptyState title="套件还没有用例" description="从用例库中添加用例，拖拽即可调整执行顺序。"
+                  :action-label="canWriteAssets ? '添加用例' : undefined" @action="openAddCase" />
               </div>
             </div>
           </section>
 
           <SuiteStepSection :project-id="projectId" :setup-steps="setupSteps" :teardown-steps="teardownSteps"
+            :readonly="!canWriteAssets"
             :dirty="dirty" :saving="savingSteps" @update:setup-steps="onSetupStepsChange"
             @update:teardown-steps="onTeardownStepsChange" @save="saveSuiteSteps(activeSuite)"
             @discard="discardSteps" />
@@ -327,8 +330,8 @@ onMounted(loadSuites)
                   <span class="var-actions">
                     <el-button v-if="varEditing?.id === variable.id" size="small" type="primary" text
                       :loading="savingVar" @click="saveVarValue(variable, activeSuite)">保存</el-button>
-                    <el-button v-else size="small" text @click="startEditVar(variable)">编辑</el-button>
-                    <el-button size="small" type="danger" text @click="removeVar(variable, activeSuite)">删除</el-button>
+                    <el-button v-if="canWriteAssets && varEditing?.id !== variable.id" size="small" text @click="startEditVar(variable)">编辑</el-button>
+                    <el-button v-if="canWriteAssets" size="small" type="danger" text @click="removeVar(variable, activeSuite)">删除</el-button>
                   </span>
                 </div>
               </div>
@@ -337,7 +340,7 @@ onMounted(loadSuites)
         </div>
       </template>
       <div v-else-if="loadingSuites || loadingDetail" v-loading="true" class="detail-loading" />
-      <el-empty v-else class="detail-empty" description="请选择或新建一个套件"><el-button type="primary"
+      <el-empty v-else class="detail-empty" description="请选择或新建一个套件"><el-button v-if="canWriteAssets" type="primary"
           @click="openCreate">新建套件</el-button></el-empty>
     </el-col>
   </el-row>

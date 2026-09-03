@@ -29,6 +29,8 @@ const props = defineProps<{
   elementNames?: ElementNameMap
   /** 套件前后置步骤仅支持动作，不显示断言编辑区域。 */
   allowAssertions?: boolean
+  /** 只读展示，用于访客查看套件前后置步骤。 */
+  readonly?: boolean
 }>()
 const emit = defineEmits<{ 'update:modelValue': [steps: Step[]] }>()
 
@@ -167,11 +169,12 @@ function onAssertionTypeChange(assertion: Assertion) {
         <div class="section-title">{{ title }}</div>
         <div class="section-description">{{ description }}</div>
       </div>
-      <el-button type="primary" plain size="small" @click="addStep">添加操作</el-button>
+      <el-button v-if="!props.readonly" type="primary" plain size="small" @click="addStep">添加操作</el-button>
     </div>
     <Draggable
       :model-value="modelValue"
       :item-key="stepUiId"
+      :disabled="props.readonly"
       handle=".drag-handle"
       class="step-list"
       group="case-steps"
@@ -195,34 +198,35 @@ function onAssertionTypeChange(assertion: Assertion) {
               <span class="step-action-label">{{ stepActionLabel(element) }}</span>
               <span class="step-summary-text">{{ stepSummaryText(element, props.elementNames) }}</span>
             </div>
-            <el-select v-else v-model="element.action" class="action-select" @change="onActionChange(element)">
+            <el-select v-else v-model="element.action" class="action-select" :disabled="props.readonly" @change="onActionChange(element)">
               <el-option v-for="action in ACTIONS" :key="action.value" :label="action.label" :value="action.value" />
             </el-select>
             <template v-if="!isStepCollapsed(element)">
               <span class="continue-label">失败后继续</span>
-              <el-switch v-model="element.continue_on_failure" size="small" @change="update([...modelValue])" />
+              <el-switch v-model="element.continue_on_failure" size="small" :disabled="props.readonly" @change="update([...modelValue])" />
             </template>
             <el-button text size="small" @click.stop="toggleStep(element)">
               {{ isStepCollapsed(element) ? '展开' : '收起' }}
             </el-button>
-            <el-button type="danger" text size="small" @click.stop="removeStep(element)">删除</el-button>
+            <el-button v-if="!props.readonly" type="danger" text size="small" @click.stop="removeStep(element)">删除</el-button>
           </div>
           <div v-show="!isStepCollapsed(element)" class="step-body">
             <div v-if="actionMeta(element.action).needsElement" class="step-row">
               <span class="field-label">{{ actionMeta(element.action).elementLabel ?? '元素' }}</span>
-              <ElementSelector v-model="element.element_id" :project-id="projectId" />
+              <ElementSelector v-model="element.element_id" :project-id="projectId" :disabled="props.readonly" />
             </div>
             <div v-for="field in actionMeta(element.action).fields" :key="field.key" class="step-row">
               <span class="field-label">{{ field.label }}</span>
-                <ElementSelector v-if="field.type === 'element'" v-model="element.params![field.key]" :project-id="projectId" />
+                <ElementSelector v-if="field.type === 'element'" v-model="element.params![field.key]" :project-id="projectId" :disabled="props.readonly" />
                 <el-select
                   v-else-if="field.type === 'select'"
                 v-model="element.params![field.key]"
                 class="w-200"
+                :disabled="props.readonly"
               >
                 <el-option v-for="option in field.options" :key="option.value" :label="option.label" :value="option.value" />
               </el-select>
-              <el-switch v-else-if="field.type === 'switch'" v-model="element.params![field.key]" />
+              <el-switch v-else-if="field.type === 'switch'" v-model="element.params![field.key]" :disabled="props.readonly" />
               <el-input
                 v-else
                 v-model="element.params![field.key]"
@@ -231,11 +235,12 @@ function onAssertionTypeChange(assertion: Assertion) {
                 :max="field.max"
                 :placeholder="field.placeholder"
                 class="w-200"
+                :disabled="props.readonly"
               />
             </div>
             <div class="step-row">
               <span class="field-label">描述</span>
-              <el-input v-model="element.description" placeholder="操作说明（可选）" />
+              <el-input v-model="element.description" placeholder="操作说明（可选）" :disabled="props.readonly" />
             </div>
             <div v-if="props.allowAssertions !== false" class="assertion-section">
               <div class="assertion-title-row">
@@ -243,7 +248,7 @@ function onAssertionTypeChange(assertion: Assertion) {
                   <strong>步骤后断言</strong>
                   <span class="assertion-tip">动作成功后立即按顺序校验</span>
                 </div>
-                <el-button type="primary" plain size="small" @click="addAssertion(element)">添加断言</el-button>
+                <el-button v-if="!props.readonly" type="primary" plain size="small" @click="addAssertion(element)">添加断言</el-button>
               </div>
               <el-card
                 v-for="(assertion, assertionIndex) in element.assertions ?? []"
@@ -253,21 +258,21 @@ function onAssertionTypeChange(assertion: Assertion) {
               >
                 <div class="assertion-head">
                   <span class="assertion-badge">{{ assertionIndex + 1 }}</span>
-                  <el-select v-model="assertion.type" class="action-select" @change="onAssertionTypeChange(assertion)">
+                  <el-select v-model="assertion.type" class="action-select" :disabled="props.readonly" @change="onAssertionTypeChange(assertion)">
                     <el-option v-for="item in ASSERTION_TYPES" :key="item.value" :label="item.label" :value="item.value" />
                   </el-select>
-                  <el-button type="danger" text size="small" @click="removeAssertion(element, assertionIndex)">删除</el-button>
+                  <el-button v-if="!props.readonly" type="danger" text size="small" @click="removeAssertion(element, assertionIndex)">删除</el-button>
                 </div>
                 <div v-if="assertionMeta(assertion.type).needsElement" class="step-row">
                   <span class="field-label">元素</span>
-                  <ElementSelector v-model="assertion.element_id" :project-id="projectId" />
+                  <ElementSelector v-model="assertion.element_id" :project-id="projectId" :disabled="props.readonly" />
                 </div>
                 <div v-for="field in assertionMeta(assertion.type).fields" :key="field.key" class="step-row">
                   <span class="field-label">{{ field.label }}</span>
-                  <el-select v-if="field.type === 'select'" v-model="assertion.params![field.key]" class="w-200">
+                  <el-select v-if="field.type === 'select'" v-model="assertion.params![field.key]" class="w-200" :disabled="props.readonly">
                     <el-option v-for="option in field.options" :key="option.value" :label="option.label" :value="option.value" />
                   </el-select>
-                  <el-switch v-else-if="field.type === 'switch'" v-model="assertion.params![field.key]" />
+                  <el-switch v-else-if="field.type === 'switch'" v-model="assertion.params![field.key]" :disabled="props.readonly" />
                   <el-input
                     v-else
                     v-model="assertion.params![field.key]"
@@ -276,11 +281,12 @@ function onAssertionTypeChange(assertion: Assertion) {
                     :max="field.max"
                     :placeholder="field.placeholder"
                     class="w-200"
+                    :disabled="props.readonly"
                   />
                 </div>
                 <div class="step-row">
                   <span class="field-label">描述</span>
-                  <el-input v-model="assertion.description" placeholder="断言说明（可选）" />
+                  <el-input v-model="assertion.description" placeholder="断言说明（可选）" :disabled="props.readonly" />
                 </div>
               </el-card>
               <div v-if="!(element.assertions?.length)" class="assertion-empty">暂无断言</div>
@@ -290,7 +296,7 @@ function onAssertionTypeChange(assertion: Assertion) {
       </template>
     </Draggable>
     <div class="add-more">
-      <el-button type="primary" plain class="w-full" @click="addStep">+ 添加操作</el-button>
+      <el-button v-if="!props.readonly" type="primary" plain class="w-full" @click="addStep">+ 添加操作</el-button>
     </div>
   </div>
 </template>

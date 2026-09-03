@@ -70,6 +70,7 @@ async def test_module_crud(client: AsyncClient):
     assert listing.status_code == 200
     names = [m["name"] for m in listing.json()]
     assert "登录模块" in names
+    assert "子模块" in names
 
     # 子模块通过 parent_id 过滤
     child_list = await client.get(
@@ -77,6 +78,14 @@ async def test_module_crud(client: AsyncClient):
     )
     assert len(child_list.json()) == 1
     assert child_list.json()[0]["name"] == "子模块"
+
+    case = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={"name": "模块用例", "module_id": module_id},
+        headers=headers,
+    )
+    assert case.status_code == 201
+    case_id = case.json()["id"]
 
     updated = await client.put(
         f"/api/modules/{module_id}", json={"name": "改名模块"}, headers=headers
@@ -86,6 +95,11 @@ async def test_module_crud(client: AsyncClient):
 
     deleted = await client.delete(f"/api/modules/{module_id}", headers=headers)
     assert deleted.status_code == 204
+
+    remaining = await client.get(f"/api/projects/{project_id}/modules", headers=headers)
+    remaining_child = next(item for item in remaining.json() if item["id"] == child.json()["id"])
+    assert remaining_child["parent_id"] is None
+    assert (await client.get(f"/api/cases/{case_id}", headers=headers)).json()["module_id"] is None
 
 
 async def test_element_crud_and_usage(client: AsyncClient):
@@ -340,25 +354,28 @@ async def test_element_global_list_and_project_filter(client: AsyncClient):
 
 
 async def test_element_pages_filter_groups_by_project(client: AsyncClient):
-    """项目元素库只返回项目实际使用的分组，并保留其层级父节点。"""
+    """项目元素库返回当前项目的空分组，并保留其层级父节点。"""
     headers, project_id = await _setup(client)
     other_project_id = (await client.post(
         "/api/projects", json={"name": "元素分组过滤项目2"}, headers=headers
     )).json()["id"]
 
     root = (await client.post(
-        "/api/elements/groups", headers=headers, json={"name": "过滤项目一父页面"}
+        "/api/elements/groups", headers=headers,
+        json={"name": "过滤项目一父页面", "project_id": project_id},
     )).json()
     child = (await client.post(
         "/api/elements/groups",
         headers=headers,
-        json={"name": "过滤项目一子页面", "parent_id": root["id"]},
+        json={"name": "过滤项目一子页面", "project_id": project_id, "parent_id": root["id"]},
     )).json()
     other_group = (await client.post(
-        "/api/elements/groups", headers=headers, json={"name": "过滤项目二页面"}
+        "/api/elements/groups", headers=headers,
+        json={"name": "过滤项目二页面", "project_id": other_project_id},
     )).json()
     empty_group = (await client.post(
-        "/api/elements/groups", headers=headers, json={"name": "过滤项目空页面"}
+        "/api/elements/groups", headers=headers,
+        json={"name": "过滤项目空页面", "project_id": project_id},
     )).json()
 
     for project, page_name, element_name in (
@@ -382,32 +399,34 @@ async def test_element_pages_filter_groups_by_project(client: AsyncClient):
         f"/api/elements/pages?project_id={project_id}", headers=headers
     )).json()
     project_names = {item["page_name"] for item in project_pages}
-    assert {root["name"], child["name"]} <= project_names
+    assert {root["name"], child["name"], empty_group["name"]} <= project_names
     assert "过滤项目二页面" not in project_names
-    assert "过滤项目空页面" not in project_names
 
     other_pages = (await client.get(
         f"/api/elements/pages?project_id={other_project_id}", headers=headers
     )).json()
     other_names = {item["page_name"] for item in other_pages}
     assert other_group["name"] in other_names
-    assert child["name"] not in other_names
+    assert {root["name"], child["name"], empty_group["name"]}.isdisjoint(other_names)
 
-    # 分组是全局资源且 created_by 关联用户，测试结束前显式清理，避免影响后续用户清理夹具。
+    # 测试结束前显式清理，避免影响后续用户清理夹具。
     for group_id in (child["id"], root["id"], other_group["id"], empty_group["id"]):
         assert (
             await client.delete(f"/api/elements/groups/{group_id}", headers=headers)
         ).status_code == 204
 
 
-async def test_element_creator_only_edit_delete(client: AsyncClient):
-    """V3：非创建者（管理员也不行）不能编辑/删除元素；创建者可以。"""
+async def test_element_admin_can_edit_delete_any_element(client: AsyncClient):
+    """V3：项目管理员可维护任意元素，普通成员仍只能维护自己创建的元素。"""
     h_owner, p1 = await _setup(client)
     h_admin = await _register_user(client, "pytest_admin", "admin2@tl-tek.com")
+    h_member = await _register_user(client, "pytest_element_member", "element-member@tl-tek.com")
 
     # admin 加入项目（owner 邀请）
     me = (await client.get("/api/auth/me", headers=h_admin)).json()
     await client.post(f"/api/projects/{p1}/members", headers=h_owner, json={"user_id": me["id"], "role": "admin"})
+    member = (await client.get("/api/auth/me", headers=h_member)).json()
+    await client.post(f"/api/projects/{p1}/members", headers=h_owner, json={"user_id": member["id"], "role": "member"})
 
     el = (await client.post(
         "/api/elements",
@@ -416,22 +435,33 @@ async def test_element_creator_only_edit_delete(client: AsyncClient):
     )).json()
     el_id = el["id"]
 
-    # 非创建者 admin 更新 → 403
+    # 非创建者普通成员更新 → 403
     denied = await client.put(
-        f"/api/elements/{el_id}", json={"locator_value": "hack"}, headers=h_admin
+        f"/api/elements/{el_id}", json={"locator_value": "hack"}, headers=h_member
     )
     assert denied.status_code == 403
     assert "创建者" in denied.json()["detail"]
-    # 非创建者删除 → 403
-    assert (await client.delete(f"/api/elements/{el_id}", headers=h_admin)).status_code == 403
 
-    # 创建者更新 → 200
+    # 管理员可以继续修改并删除非本人创建的元素。
+    updated = await client.put(
+        f"/api/elements/{el_id}", json={"locator_value": "admin_update"}, headers=h_admin
+    )
+    assert updated.status_code == 200
+    assert updated.json()["locator_value"] == "admin_update"
+    assert (await client.delete(f"/api/elements/{el_id}", headers=h_admin)).status_code == 204
+
+    # 创建者更新 → 200；创建者删除 → 204
+    own_el = (await client.post(
+        "/api/elements",
+        headers=h_owner,
+        json={"project_id": p1, "name": "创建者元素2", "locator_type": "id", "locator_value": "c2"},
+    )).json()
     ok = (await client.put(
-        f"/api/elements/{el_id}", json={"locator_value": "creator_update"}, headers=h_owner
+        f"/api/elements/{own_el['id']}", json={"locator_value": "creator_update"}, headers=h_owner
     )).json()
     assert ok["locator_value"] == "creator_update"
-    # 创建者删除 → 204
-    assert (await client.delete(f"/api/elements/{el_id}", headers=h_owner)).status_code == 204
+    assert (await client.delete(f"/api/elements/{own_el['id']}", headers=h_owner)).status_code == 204
+
 
 
 async def test_element_copy_creates_for_current_user(client: AsyncClient):

@@ -6,6 +6,7 @@ import { getElement, listElements, type TestElement } from '@/api/elements'
 const props = defineProps<{
   modelValue?: number | null
   projectId?: number
+  disabled?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -72,6 +73,7 @@ watch(() => props.modelValue, () => {
     clearable
     placeholder="选择元素（可清空）"
     :loading="loading"
+    :disabled="props.disabled"
     class="element-select"
     @change="onChange"
   >

@@ -1,4 +1,5 @@
 import axios, { type AxiosError, type AxiosRequestConfig, type InternalAxiosRequestConfig } from 'axios'
+import { ElMessage } from 'element-plus'
 
 const TOKEN_KEY = 'access_token'
 const REFRESH_KEY = 'refresh_token'
@@ -24,7 +25,38 @@ export function apiErrorDetail(error: unknown): ApiErrorDetail | null {
 }
 
 export function apiErrorMessage(error: unknown, fallback = '请求失败'): string {
-  return apiErrorDetail(error)?.message || fallback
+  const detail = (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) => {
+        if (!item || typeof item !== 'object') return ''
+        const message = (item as { msg?: unknown }).msg
+        return typeof message === 'string' ? message : ''
+      })
+      .filter(Boolean)
+    if (messages.length) return messages.join('；')
+  }
+  const structured = apiErrorDetail(error)
+  if (structured?.message) return structured.message
+  const message = (error as { message?: unknown })?.message
+  return typeof message === 'string' && message.trim() ? message : fallback
+}
+
+function notifyRequestError(error: AxiosError): void {
+  const code = error.code
+  if (code === 'ERR_CANCELED') return
+  if (code === 'ECONNABORTED' || code === 'ETIMEDOUT') {
+    ElMessage.error('请求超时，请检查网络或后端服务是否正常')
+    return
+  }
+  if (!error.response) {
+    ElMessage.error('无法连接后端服务，请检查网络连接或服务是否已启动')
+    return
+  }
+  const status = error.response.status
+  const fallback = status >= 500 ? `服务异常（${status}），请稍后重试` : `请求失败（${status}）`
+  ElMessage.error(apiErrorMessage(error, fallback))
 }
 
 // V2 §5.1：记住我——勾选用 localStorage（持久），否则 refresh token 放 sessionStorage。
@@ -129,6 +161,9 @@ instance.interceptors.response.use(
           path && path !== '/' ? `/login?redirect=${encodeURIComponent(path)}` : '/login'
       }
     }
+    // 页面加载请求通常没有单独的 catch，统一在请求层给用户可见反馈。
+    // 登录、注册等认证入口由页面展示业务提示，避免出现重复消息。
+    if (!noSession && error.response?.status !== 401) notifyRequestError(error)
     return Promise.reject(error)
   },
 )

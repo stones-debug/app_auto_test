@@ -106,6 +106,10 @@ async def update_module(
 
 async def delete_module(db: AsyncSession, *, module: TestModule) -> None:
     try:
+        await elements_repo.reparent_module_children(
+            db, module_id=module.id, parent_id=module.parent_id
+        )
+        await elements_repo.ungroup_module_cases(db, module_id=module.id)
         await elements_repo.soft_delete_module(module, datetime.now(UTC))
         await asset_service.commit_asset_change(db, [module.project_id])
     except Exception:
@@ -141,13 +145,15 @@ async def get_enriched_or_404(
 
 
 async def _ensure_page_group(
-    db: AsyncSession, *, page_name: str | None
+    db: AsyncSession, *, page_name: str | None, project_id: int | None = None
 ) -> None:
     """Ensure every named page shown in the tree has a manageable group node."""
     if page_name is None:
         return
     if await elements_repo.get_group_by_name(db, page_name) is None:
-        await elements_repo.create_group(db, name=page_name, parent_id=None, user_id=None)
+        await elements_repo.create_group(
+            db, name=page_name, project_id=project_id, parent_id=None, user_id=None
+        )
 
 
 async def create(
@@ -156,7 +162,7 @@ async def create(
     target_project_id = project_id if project_id is not None else body.project_id
     if target_project_id is None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="project_id 必填")
-    await _ensure_page_group(db, page_name=body.page_name)
+    await _ensure_page_group(db, page_name=body.page_name, project_id=target_project_id)
     element = await elements_repo.create(
         db,
         project_id=target_project_id,
@@ -193,7 +199,8 @@ async def update(
         fields["project_id"] = body.project_id
     if "page_name" in body.model_fields_set:
         fields["page_name"] = body.page_name
-        await _ensure_page_group(db, page_name=body.page_name)
+        target_project_id = body.project_id if body.project_id is not None else element.project_id
+        await _ensure_page_group(db, page_name=body.page_name, project_id=target_project_id)
     for field in ("name", "platform", "scope", "locator_type", "locator_value", "locator_config", "description"):
         if field in body.model_fields_set and getattr(body, field) is not None:
             value = getattr(body, field)
@@ -229,7 +236,7 @@ async def copy(
     db: AsyncSession, *, source: TestElement, user_id: int
 ) -> tuple[TestElement, Project | None, User | None]:
     try:
-        await _ensure_page_group(db, page_name=source.page_name)
+        await _ensure_page_group(db, page_name=source.page_name, project_id=source.project_id)
         element = await elements_repo.copy(db, source, user_id=user_id)
         await asset_service.commit_asset_change(db, [source.project_id])
         await elements_repo.refresh_element(db, element)
@@ -254,7 +261,7 @@ async def import_elements(
         for row, model in rows:
             data = model.model_dump()
             data["locator_config"] = model.locator_config.model_dump() if model.locator_config else None
-            await _ensure_page_group(db, page_name=model.page_name)
+            await _ensure_page_group(db, page_name=model.page_name, project_id=project_id)
             if row.element_id is None:
                 await elements_repo.add_imported(db, data=data, user_id=user_id)
                 created_count += 1
@@ -316,14 +323,18 @@ async def pages(db: AsyncSession, *, project_id: int | None = None):
 
 
 async def create_group(
-    db: AsyncSession, *, name: str, parent_id: int | None, user_id: int
+    db: AsyncSession, *, name: str, project_id: int | None, parent_id: int | None, user_id: int
 ) -> ElementGroup:
     if await elements_repo.get_group_by_name(db, name) is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="分组已存在")
-    if parent_id is not None and await elements_repo.get_group(db, parent_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="父级页面不存在")
+    if parent_id is not None:
+        parent = await elements_repo.get_group(db, parent_id)
+        if parent is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="父级页面不存在")
+        if project_id is not None and parent.project_id not in (None, project_id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="父级页面不属于当前项目")
     group = await elements_repo.create_group(
-        db, name=name, parent_id=parent_id, user_id=user_id
+        db, name=name, project_id=project_id, parent_id=parent_id, user_id=user_id
     )
     try:
         await db.commit()

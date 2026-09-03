@@ -1781,8 +1781,7 @@ class _ListScrollDriver(MockDriver):
         self._assert_fresh(element)
         self.clicked.append(element.text or element.get_attribute("id"))
 
-    def swipe_in_element(self, element, direction: str, percent: float) -> None:
-        self._assert_fresh(element)
+    def _apply_direction_page(self, direction: str) -> None:
         if direction == "up":
             self.up_count += 1
             if self.up_pages is not None:
@@ -1795,7 +1794,19 @@ class _ListScrollDriver(MockDriver):
                 screen = self.down_pages(self.down_count)
                 if screen is not None:
                     self.set_screen(screen)
+
+    def swipe_in_element(self, element, direction: str, percent: float) -> None:
+        self._assert_fresh(element)
+        self._apply_direction_page(direction)
         self.element_swipes.append((element.locator_value, direction, percent))
+        self.swipe(direction)
+
+    def swipe_in_region(
+        self, left: int, top: int, width: int, height: int,
+        direction: str, percent: float,
+    ) -> None:
+        self._apply_direction_page(direction)
+        self.region_swipes.append((left, top, width, height, direction, percent))
         self.swipe(direction)
 
 
@@ -1923,7 +1934,7 @@ async def test_find_text_click_preferred_boundary_switches_to_reverse():
 
 
 async def test_find_text_click_ignores_exhausted_direction_hint():
-    """边界后的屏外目标仍提示原方向时，下一次滑动必须改走反方向。"""
+    """页面签名不变时仍执行完首方向预算，再按固定次数反向。"""
     driver = _ListScrollDriver(_FULL_SCREEN)
     offscreen = [{"id": "target", "text": "系统时间", "bounds": {"x": 100, "y": 2200, "width": 200, "height": 50}}]
     visible = [{"id": "target", "text": "系统时间", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}]
@@ -1935,9 +1946,14 @@ async def test_find_text_click_ignores_exhausted_direction_hint():
     result = await action.execute(driver, context, _find_text_params(max_swipes_per_direction=2))
 
     assert result["status"] == "passed"
-    assert driver.up_count == 1
+    assert result["found_after_swipes"] == 3
+    assert driver.up_count == 2
     assert driver.down_count == 1
-    assert driver.element_swipes == [("list", "up", 0.3), ("list", "down", 0.3)]
+    assert driver.element_swipes == [
+        ("list", "up", 0.3),
+        ("list", "up", 0.3),
+        ("list", "down", 0.3),
+    ]
 
 
 async def test_find_text_click_locks_first_direction_before_reversing(caplog):
@@ -2016,6 +2032,9 @@ async def test_find_text_click_both_directions_exhaust_raises():
     action, context = _run_find_text(driver, _find_text_params(max_swipes_per_direction=2))
     with pytest.raises(ElementNotFound, match="系统时间"):
         await action.execute(driver, context, _find_text_params(max_swipes_per_direction=2))
+    assert driver.up_count == 2
+    assert driver.down_count == 4
+    assert len(driver.element_swipes) == 6
 
 
 class _SwipeGestureNoResultDriver(_ListScrollDriver):
@@ -2026,7 +2045,7 @@ class _SwipeGestureNoResultDriver(_ListScrollDriver):
 
 
 async def test_find_text_click_uses_configured_budget_and_reverses_direction():
-    """滚动到边界后应先查询最后一屏，再立即执行反向查找。"""
+    """无论页面签名是否变化，首方向和反向都按固定预算执行。"""
     driver = _SwipeGestureNoResultDriver(_FULL_SCREEN)
     driver.set_screen([{"id": "i0", "text": "项目一", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
     target_page = [{"id": "t1", "text": "系统时间", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}]
@@ -2038,10 +2057,15 @@ async def test_find_text_click_uses_configured_budget_and_reverses_direction():
     result = await action.execute(driver, context, params)
 
     assert result["status"] == "passed"
-    assert result["found_after_swipes"] == 2
-    assert driver.up_count == 1
+    assert result["found_after_swipes"] == 4
+    assert driver.up_count == 3
     assert driver.down_count == 1
-    assert driver.element_swipes == [("list", "up", 0.3), ("list", "down", 0.3)]
+    assert driver.element_swipes == [
+        ("list", "up", 0.3),
+        ("list", "up", 0.3),
+        ("list", "up", 0.3),
+        ("list", "down", 0.3),
+    ]
 
 
 async def test_find_text_click_honors_down_preferred_direction():
@@ -2202,7 +2226,60 @@ async def test_find_text_click_uses_listview_for_search_and_viewport_for_clippin
 
     assert result["status"] == "passed"
     assert driver.clicked == ["后门"]
-    assert driver.element_swipes == [("list", "up", 0.3)]
+    assert driver.element_swipes == []
+    assert driver.region_swipes == [(0, 400, 1000, 1000, "up", 0.3)]
+
+
+async def test_find_text_click_uses_visible_region_for_down_swipe():
+    """向下滑时手势起点必须位于 ListView 与父视口的交集区域。"""
+    driver = _ListScrollDriver({"x": 0, "y": 0, "width": 1000, "height": 1800})
+    initial = [{
+        "id": "viewport",
+        "bounds": {"x": 0, "y": 400, "width": 1000, "height": 800},
+        "children": [{
+            "id": "list",
+            "class_name": "android.widget.ListView",
+            "bounds": {"x": 0, "y": 0, "width": 1000, "height": 1800},
+            "children": [{
+                "id": "target",
+                "text": "左转",
+                "bounds": {"x": 100, "y": 100, "width": 400, "height": 80},
+            }],
+        }],
+    }]
+    visible = [{
+        "id": "viewport",
+        "bounds": {"x": 0, "y": 400, "width": 1000, "height": 800},
+        "children": [{
+            "id": "list",
+            "class_name": "android.widget.ListView",
+            "bounds": {"x": 0, "y": 0, "width": 1000, "height": 1800},
+            "children": [{
+                "id": "target",
+                "text": "左转",
+                "bounds": {"x": 100, "y": 700, "width": 400, "height": 80},
+            }],
+        }],
+    }]
+    driver.set_screen(initial)
+    driver.down_pages = lambda _count: visible
+    params = _find_text_params(
+        target_text="左转",
+        preferred_direction="down",
+        max_swipes_per_direction=1,
+        viewport_element_id=2,
+    )
+    action, context = _run_find_text(driver, params)
+    context.elements_snapshot.update({
+        "2": {"locator_type": "id", "locator_value": "viewport"},
+    })
+
+    result = await action.execute(driver, context, params)
+
+    assert result["status"] == "passed"
+    assert driver.clicked == ["左转"]
+    assert driver.element_swipes == []
+    assert driver.region_swipes == [(0, 400, 1000, 800, "down", 0.3)]
 
 
 async def test_find_text_click_does_not_match_same_text_in_other_list():

@@ -50,11 +50,15 @@ class TestElement(Base, TimestampMixin, SoftDeleteMixin):
 
 
 class ElementGroup(Base, TimestampMixin):
-    """元素库页面分组（支持分层、空分组和先建页面后建元素）。"""
+    """元素库页面分组（支持项目归属、分层、空分组和先建页面后建元素）。"""
 
     __tablename__ = "element_page_groups"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # nullable 用于保留历史上未关联项目的全局分组；新建分组由项目上下文关联。
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL")
+    )
     name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("element_page_groups.id"))
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))

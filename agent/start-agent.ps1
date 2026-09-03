@@ -55,6 +55,9 @@ function Resolve-AndroidSdkRoot([string]$RequestedRoot) {
     if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
         [void]$candidates.Add((Join-Path $env:USERPROFILE "AppData\Local\Android\Sdk"))
     }
+    # 源码/开发包随附的 adb 位于 agent\vendor\platform-tools\adb.exe，
+    # 因此 Android SDK 根目录是 agent\vendor。
+    [void]$candidates.Add((Join-Path $AgentDir "vendor"))
 
     foreach ($candidate in $candidates) {
         $expanded = [Environment]::ExpandEnvironmentVariables($candidate.Trim().Trim('"'))

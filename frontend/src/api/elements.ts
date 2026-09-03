@@ -35,6 +35,7 @@ export interface TestElement {
 export interface ElementGroup {
   id: number
   name: string
+  project_id?: number | null
   parent_id?: number | null
   created_by?: number | null
   created_at: string
@@ -132,8 +133,16 @@ export function copyElement(id: number) {
   return request.post<TestElement>(`/elements/${id}/copy`)
 }
 
-export function createElementGroup(name: string, parentId?: number | null) {
-  return request.post<ElementGroup>('/elements/groups', { name, parent_id: parentId ?? null })
+export function createElementGroup(
+  name: string,
+  parentId?: number | null,
+  projectId?: number | null,
+) {
+  return request.post<ElementGroup>('/elements/groups', {
+    name,
+    project_id: projectId ?? null,
+    parent_id: parentId ?? null,
+  })
 }
 
 export function updateElementGroup(groupId: number, name: string, parentId?: number | null) {

@@ -49,18 +49,22 @@ async def _check_editable(project_id: int, user: User, db: AsyncSession) -> None
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
 
 
-async def _require_creator(element: TestElement, user: User) -> None:
-    if element.created_by != user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅元素创建者可修改")
+async def _require_creator(element: TestElement, user: User, db: AsyncSession) -> None:
+    _project, role = await get_project_permission(element.project_id, user, db)
+    # 项目 owner/admin 可以维护项目内全部元素；普通成员仍只能维护自己创建的元素。
+    if role in ("owner", "admin") or (role == "member" and element.created_by == user.id):
+        return
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅元素创建者或项目管理员可修改")
 
 
 @router.get("/projects/{project_id}/modules", response_model=list[ModuleOut])
 async def list_modules(
     project_id: int,
-    parent_id: int | None = 0,
+    parent_id: int | None = None,
     _perm: tuple[Project, str | None] = Depends(get_project_permission),
     db: AsyncSession = Depends(get_db),
 ):
+    # 不传 parent_id 时返回项目内完整模块树数据；保留 0 作为历史的“未指定父模块”哨兵。
     normalized_parent = None if parent_id == 0 else parent_id
     return await element_service.list_modules(
         db, project_id=project_id, parent_id=normalized_parent
@@ -288,8 +292,14 @@ async def create_element_group(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    if body.project_id is not None:
+        await _check_editable(body.project_id, user, db)
     return await element_service.create_group(
-        db, name=body.name, parent_id=body.parent_id, user_id=user.id
+        db,
+        name=body.name,
+        project_id=body.project_id,
+        parent_id=body.parent_id,
+        user_id=user.id,
     )
 
 
@@ -301,6 +311,8 @@ async def update_element_group(
     db: AsyncSession = Depends(get_db),
 ):
     group = await element_service.get_group_or_404(db, group_id)
+    if group.project_id is not None:
+        await _check_editable(group.project_id, user, db)
     return await element_service.update_group(db, group=group, body=body, user_id=user.id)
 
 
@@ -311,6 +323,8 @@ async def delete_element_group(
     db: AsyncSession = Depends(get_db),
 ):
     group = await element_service.get_group_or_404(db, group_id)
+    if group.project_id is not None:
+        await _check_editable(group.project_id, user, db)
     await element_service.delete_group(db, group=group, user_id=user.id)
 
 
@@ -332,7 +346,7 @@ async def update_element(
     db: AsyncSession = Depends(get_db),
 ):
     element = await element_service.get_or_404(db, element_id)
-    await _require_creator(element, user)
+    await _require_creator(element, user, db)
     if body.project_id is not None and body.project_id != element.project_id:
         await _check_editable(body.project_id, user, db)
     updated, project, creator = await element_service.update(
@@ -348,7 +362,7 @@ async def delete_element(
     db: AsyncSession = Depends(get_db),
 ):
     element = await element_service.get_or_404(db, element_id)
-    await _require_creator(element, user)
+    await _require_creator(element, user, db)
     await element_service.delete(db, element=element)
 
 
