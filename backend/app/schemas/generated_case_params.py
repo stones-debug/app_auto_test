@@ -125,6 +125,11 @@ class TextEqualsParams(ParamsBase):
     trim: bool = False
 
 
+class TextNotEqualsParams(ParamsBase):
+    expected: str
+    trim: bool = False
+
+
 class TextContainsParams(ParamsBase):
     expected: str
 
@@ -176,6 +181,7 @@ ASSERTION_PARAM_MODELS: dict[str, type[ParamsBase]] = {
     'element_exists': ElementExistsParams,  # noqa: F821
     'checked': CheckedParams,  # noqa: F821
     'text_equals': TextEqualsParams,  # noqa: F821
+    'text_not_equals': TextNotEqualsParams,  # noqa: F821
     'text_contains': TextContainsParams,  # noqa: F821
     'text_not_contains': TextNotContainsParams,  # noqa: F821
     'attribute_equals': AttributeEqualsParams,  # noqa: F821
@@ -206,6 +212,7 @@ ASSERTION_NEEDS_ELEMENT = frozenset({
     'element_exists',
     'checked',
     'text_equals',
+    'text_not_equals',
     'text_contains',
     'text_not_contains',
     'attribute_equals',

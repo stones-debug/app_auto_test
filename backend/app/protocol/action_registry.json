@@ -576,6 +576,26 @@
       ]
     },
     {
+      "name": "text_not_equals",
+      "label": "文本不等于",
+      "version": 1,
+      "needs_element": true,
+      "params": [
+        {
+          "name": "expected",
+          "type": "string",
+          "required": true,
+          "label": "期望值"
+        },
+        {
+          "name": "trim",
+          "type": "boolean",
+          "default": false,
+          "label": "去空格"
+        }
+      ]
+    },
+    {
       "name": "text_contains",
       "label": "文本包含",
       "version": 1,

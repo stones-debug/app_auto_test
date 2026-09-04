@@ -39,12 +39,13 @@ describe('CR-09 动作/断言元数据契约', () => {
     )
   })
 
-  it('覆盖全部 9 个断言类型', () => {
+  it('覆盖全部 10 个断言类型', () => {
     expect(ASSERTION_TYPES.map((a) => a.value).sort()).toEqual(
       [
         'element_exists',
         'checked',
         'text_equals',
+        'text_not_equals',
         'text_contains',
         'text_not_contains',
         'attribute_equals',
@@ -57,6 +58,16 @@ describe('CR-09 动作/断言元数据契约', () => {
 
   it('element_exists 需要元素选择器（修复原隐藏 bug）', () => {
     expect(assertionMeta('element_exists').needsElement).toBe(true)
+  })
+
+  it('文本不等于与文本等于使用对称参数', () => {
+    const assertion = assertionMeta('text_not_equals')
+    expect(assertion.label).toBe('文本不等于')
+    expect(assertion.needsElement).toBe(true)
+    expect(assertion.fields).toMatchObject([
+      { key: 'expected', required: true },
+      { key: 'trim', default: false },
+    ])
   })
 
   it('set_checked 与 checked 使用复选框状态字段', () => {

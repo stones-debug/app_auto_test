@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { nextTick, onMounted, ref, watch, type ComponentPublicInstance } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { MoreFilled, Plus, Search } from '@element-plus/icons-vue'
 import Draggable from 'vuedraggable'
@@ -17,6 +17,7 @@ import { usePermission } from '@/composables/usePermission'
 import { useProjectContextStore } from '@/stores/projectContext'
 import { formatDateTime } from '@/utils/format'
 import { parseSuiteId } from '@/utils/suiteNavigation'
+import { digitsOnly } from '@/utils/suiteCaseOrder'
 
 const route = useRoute()
 const router = useRouter()
@@ -89,7 +90,73 @@ const {
   addSelectedCases,
   removeCase,
   onReorder,
+  moveCaseToPosition,
+  ordering,
+  casesRefreshVersion,
 } = suiteCaseState
+
+const editingOrderCaseId = ref<number | null>(null)
+const editingOrderValue = ref('')
+const orderEditSignature = ref('')
+type OrderInputInstance = { focus: () => void; select: () => void }
+const orderInput = ref<OrderInputInstance | null>(null)
+function setOrderInputRef(instance: Element | ComponentPublicInstance | null) {
+  const candidate = instance as Partial<OrderInputInstance> | null
+  orderInput.value = candidate && typeof candidate.focus === 'function' && typeof candidate.select === 'function'
+    ? candidate as OrderInputInstance
+    : null
+}
+let orderEditSubmitting = false
+
+function beginOrderEdit(item: SuiteCase, event: Event) {
+  event.stopPropagation()
+  if (!canWriteAssets || ordering.value) return
+  editingOrderCaseId.value = item.case_id
+  editingOrderValue.value = String(suiteCases.value.findIndex((candidate) => candidate.case_id === item.case_id) + 1)
+  orderEditSignature.value = suiteCases.value.map((candidate) => candidate.case_id).join(',')
+  void nextTick(() => {
+    orderInput.value?.focus()
+    orderInput.value?.select()
+  })
+}
+
+function cleanOrderInput(value: string) {
+  editingOrderValue.value = digitsOnly(value)
+}
+
+function cancelOrderEdit() {
+  editingOrderCaseId.value = null
+  editingOrderValue.value = ''
+  orderEditSubmitting = false
+}
+
+async function submitOrderEdit() {
+  if (orderEditSubmitting || editingOrderCaseId.value === null) return
+  orderEditSubmitting = true
+  const raw = editingOrderValue.value
+  const position = Number(raw)
+  if (!raw || !Number.isInteger(position) || position < 1 || position > suiteCases.value.length) {
+    ElMessage.warning(`请输入 1-${suiteCases.value.length} 的数字`)
+    cancelOrderEdit()
+    return
+  }
+  await moveCaseToPosition(editingOrderCaseId.value, position)
+  // onReorder 负责成功提示；这里仅结束编辑，避免 Enter 后 blur 重复提示。
+  cancelOrderEdit()
+}
+
+function onOrderKeydown(event: Event | KeyboardEvent) {
+  event.stopPropagation()
+  if (!('key' in event)) return
+  if (event.key === 'Escape') cancelOrderEdit()
+  else if (event.key === 'Enter') void submitOrderEdit()
+}
+
+watch(activeSuite, cancelOrderEdit)
+watch(casesRefreshVersion, cancelOrderEdit)
+watch(() => suiteCases.value.map((item) => item.case_id).join(','), (signature) => {
+  if (editingOrderCaseId.value !== null && signature !== orderEditSignature.value) cancelOrderEdit()
+})
 
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
@@ -348,12 +415,16 @@ onMounted(() => {
                   v-if="canWriteAssets" type="primary" :icon="Plus" @click="openAddCase">添加用例</el-button></div>
             </header>
             <div class="section-body">
-              <Draggable v-model="suiteCases" :disabled="!canWriteAssets" item-key="id" handle=".drag-handle" ghost-class="case-ghost"
+              <Draggable v-model="suiteCases" :disabled="!canWriteAssets || ordering" item-key="id" handle=".drag-handle" ghost-class="case-ghost"
                 class="case-list" @end="onReorder">
                 <template #item="{ element, index }">
                   <div class="case-card" @dblclick="openCaseEditor(element)">
-                    <div class="case-row"><span class="drag-handle" title="拖拽排序">⠿</span><span class="case-order">{{
-                        index + 1 }}</span><span class="case-name" :title="element.case_name">{{ element.case_name
+                    <div class="case-row"><span class="drag-handle" title="拖拽排序">⠿</span>
+                      <span v-if="editingOrderCaseId !== element.case_id" class="case-order" :class="{ editable: canWriteAssets }"
+                        title="点击设置编号" @click.stop="beginOrderEdit(element, $event)" @dblclick.stop="beginOrderEdit(element, $event)">{{ index + 1 }}</span>
+                      <el-input v-else :ref="setOrderInputRef" v-model="editingOrderValue" class="case-order-input" size="small" @click.stop @dblclick.stop
+                        @input="cleanOrderInput" @keydown="onOrderKeydown" @blur="void submitOrderEdit()" />
+                      <span class="case-name" :title="element.case_name">{{ element.case_name
                         }}</span><el-tag v-if="element.module_name" size="small" type="info" effect="plain"
                         class="case-module">{{ element.module_name }}</el-tag><el-button v-if="canWriteAssets" class="case-remove"
                         size="small" text type="danger" @click="removeCase(element)" @dblclick.stop>移除</el-button></div>
@@ -710,8 +781,10 @@ onMounted(() => {
 }
 
 .case-order {
-  width: 22px;
+  min-width: 22px;
+  width: auto;
   height: 22px;
+  padding: 0 6px;
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
@@ -722,6 +795,10 @@ onMounted(() => {
   background: var(--primary-light);
   color: var(--primary);
 }
+
+.case-order.editable { cursor: pointer; }
+
+.case-order-input { width: 68px; flex-shrink: 0; }
 
 .case-name {
   flex: 1;

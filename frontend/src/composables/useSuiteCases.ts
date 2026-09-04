@@ -7,6 +7,7 @@ import {
   setGroupSelection,
   toggleCollapsedGroup,
 } from '@/utils/suiteCaseSelection'
+import { moveToPosition } from '@/utils/suiteCaseOrder'
 
 export interface AddCaseCandidate {
   id: number
@@ -35,6 +36,10 @@ export function useSuiteCases(
   const addingCases = ref(false)
   const loadingAddCases = ref(false)
   const collapsedCaseGroups = ref<Set<string>>(new Set())
+  const ordering = ref(false)
+  const persistedOrder = ref<number[]>([])
+  const casesRefreshVersion = ref(0)
+  let reorderRequestId = 0
 
   const filteredCases = computed(() => {
     const kw = addKeyword.value.trim().toLowerCase()
@@ -62,6 +67,8 @@ export function useSuiteCases(
 
   async function loadSuiteCases(id: number | null = activeSuite.value) {
     suiteCases.value = id ? await listSuiteCases(id) : []
+    persistedOrder.value = suiteCases.value.map((item) => item.case_id)
+    casesRefreshVersion.value += 1
   }
 
   function resetAddDialog() {
@@ -156,9 +163,43 @@ export function useSuiteCases(
   }
 
   async function onReorder() {
-    if (!activeSuite.value) return
-    await reorderSuiteCases(activeSuite.value, suiteCases.value.map((item) => item.case_id))
-    ElMessage.success('用例顺序已保存')
+    if (!activeSuite.value) return false
+    const suiteId = activeSuite.value
+    const refreshVersion = casesRefreshVersion.value
+    const previousOrder = [...persistedOrder.value]
+    const nextOrder = suiteCases.value.map((item) => item.case_id)
+    if (nextOrder.join(',') === persistedOrder.value.join(',')) return false
+    ordering.value = true
+    const requestId = ++reorderRequestId
+    try {
+      await reorderSuiteCases(suiteId, nextOrder)
+      if (activeSuite.value !== suiteId || casesRefreshVersion.value !== refreshVersion) return false
+      persistedOrder.value = nextOrder
+      ElMessage.success('用例顺序已保存')
+      return true
+    } catch {
+      if (activeSuite.value !== suiteId || casesRefreshVersion.value !== refreshVersion) return false
+      suiteCases.value = [...suiteCases.value].sort(
+        (a, b) => previousOrder.indexOf(a.case_id) - previousOrder.indexOf(b.case_id),
+      )
+      ElMessage.error('保存用例顺序失败，已恢复原顺序')
+      return false
+    } finally {
+      if (reorderRequestId === requestId) ordering.value = false
+    }
+  }
+
+  async function moveCaseToPosition(caseId: number, position: number) {
+    if (!activeSuite.value || ordering.value) return false
+    const fromIndex = suiteCases.value.findIndex((item) => item.case_id === caseId)
+    const next = moveToPosition(suiteCases.value, fromIndex, position)
+    if (!next || next.map((item) => item.case_id).join(',') === suiteCases.value.map((item) => item.case_id).join(',')) return false
+    suiteCases.value = next
+    try {
+      return await onReorder()
+    } catch {
+      return false
+    }
   }
 
   return {
@@ -180,6 +221,9 @@ export function useSuiteCases(
     addSelectedCases,
     removeCase,
     onReorder,
+    moveCaseToPosition,
+    ordering,
+    casesRefreshVersion,
     loadSuiteCases,
   }
 }

@@ -6,7 +6,7 @@ import time
 
 from executor import ExecutionContext, MockDriver, TestRunner
 from executor.assertion_wait import verify_with_wait
-from executor.assertions import TextEqualsAssertion
+from executor.assertions import TextEqualsAssertion, TextNotEqualsAssertion
 
 
 class RecordingDriver(MockDriver):
@@ -41,6 +41,54 @@ async def test_assertion_passes_remaining_budget_to_element_lookup():
     assert result["status"] == "passed"
     assert driver.wait_timeouts
     assert 0 < driver.wait_timeouts[0] <= 0.5
+
+
+async def test_text_not_equals_strict_comparison_and_trim_are_symmetric():
+    driver = MockDriver(initial_state={"username": " admin "})
+    context = _context(driver)
+
+    result = await TextNotEqualsAssertion().verify(
+        driver, context, {"element_id": 1, "expected": "admin", "trim": True}
+    )
+    assert result == {"status": "failed", "expected": "admin", "actual": "admin"}
+
+    result = await TextNotEqualsAssertion().verify(
+        driver, context, {"element_id": 1, "expected": "Admin", "trim": True}
+    )
+    assert result == {"status": "passed", "expected": "Admin", "actual": "admin"}
+
+
+async def test_text_not_equals_does_not_pass_when_element_lookup_fails():
+    from executor import ElementNotFound
+
+    class MissingDriver(MockDriver):
+        def find_element(self, locator_type, locator_value, wait_timeout=10):
+            raise ElementNotFound(f"元素不存在: {locator_value}")
+
+    driver = MissingDriver(initial_state={})
+    context = _context(driver)
+
+    try:
+        await TextNotEqualsAssertion().verify(
+            driver, context, {"element_id": 1, "expected": "anything"}
+        )
+    except ElementNotFound:
+        pass
+    else:
+        raise AssertionError("元素不存在时文本不等于不能错误通过")
+
+
+async def test_text_not_equals_equal_text_expires_as_failed():
+    driver = MockDriver(initial_state={"username": "same"})
+    context = _context(driver)
+    result = await verify_with_wait(
+        lambda deadline: TextNotEqualsAssertion().verify(
+            driver, context, {"element_id": 1, "expected": "same"}, deadline=deadline
+        ),
+        max_wait_seconds=0,
+    )
+    assert result["status"] == "failed"
+    assert result["actual"] == "same"
 
 
 async def test_zero_wait_assertion_performs_one_immediate_lookup():

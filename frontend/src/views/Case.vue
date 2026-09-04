@@ -9,7 +9,7 @@ import RunButton from '@/components/RunButton.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { usePermission } from '@/composables/usePermission'
 import { formatDateTime } from '@/utils/format'
-import { moduleKeyFromId, moduleQuery, parseModuleKey } from '@/utils/caseModuleNavigation'
+import { caseListQuery, parseCaseListPage, parseModuleKey } from '@/utils/caseModuleNavigation'
 
 const route = useRoute()
 const router = useRouter()
@@ -63,13 +63,13 @@ async function loadModules() {
 
 const filteredModuleId = ref<number | null>(null)
 
-function selectModule(key: string) {
+function selectModule(key: string, resetPage = true) {
   const normalizedKey = parseModuleKey(key)
   selectedModule.value = normalizedKey
   if (normalizedKey === 'all') filteredModuleId.value = null
   else if (normalizedKey === 'none') filteredModuleId.value = -1 // 未分组：后端按 module_id=null 过滤
   else filteredModuleId.value = Number(normalizedKey)
-  page.value = 1
+  if (resetPage) page.value = 1
   void load()
 }
 
@@ -77,15 +77,23 @@ async function load() {
   selectedRows.value = []
   loading.value = true
   try {
-    const data = await listCases(projectId, {
-      page: page.value,
-      page_size: pageSize.value,
-      keyword: keyword.value,
-      status: statusFilter.value,
-      module_id: filteredModuleId.value === -1 ? null : filteredModuleId.value,
-    })
-    items.value = data.items
-    total.value = data.total
+    while (true) {
+      const data = await listCases(projectId, {
+        page: page.value,
+        page_size: pageSize.value,
+        keyword: keyword.value,
+        status: statusFilter.value,
+        module_id: filteredModuleId.value === -1 ? null : filteredModuleId.value,
+      })
+      total.value = data.total
+      const lastPage = data.total > 0 ? Math.ceil(data.total / pageSize.value) : 1
+      if (page.value !== Math.min(page.value, lastPage)) {
+        page.value = Math.min(page.value, lastPage)
+        continue
+      }
+      items.value = data.items
+      break
+    }
   } finally {
     loading.value = false
   }
@@ -94,7 +102,7 @@ async function load() {
 function openCreate() {
   router.push({
     path: `/projects/${projectId}/cases/new`,
-    query: moduleQuery(parseModuleKey(selectedModule.value)),
+    query: caseListQuery(parseModuleKey(selectedModule.value), page.value),
   })
 }
 
@@ -213,10 +221,10 @@ async function removeModule(module: TestModule) {
 }
 
 function openEdit(row: TestCase) {
-  // 编辑页返回时优先使用用例自身模块；查询参数同时作为加载失败时的安全回退。
+  // 编辑页返回时保持当前列表筛选与页码，不切换到用例自身模块。
   router.push({
     path: `/projects/${projectId}/cases/${row.id}/edit`,
-    query: moduleQuery(moduleKeyFromId(row.module_id)),
+    query: caseListQuery(parseModuleKey(selectedModule.value), page.value),
   })
 }
 
@@ -263,7 +271,8 @@ function lastExecLabel(status: string | null) {
 
 onMounted(() => {
   // 编辑页返回会带回模块上下文；没有上下文时才使用“全部”。
-  selectModule(parseModuleKey(route.query.module))
+  page.value = parseCaseListPage(route.query.page)
+  selectModule(parseModuleKey(route.query.module), false)
   void loadModules()
   window.addEventListener('click', closeModuleContextMenu)
 })

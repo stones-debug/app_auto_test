@@ -17,3 +17,14 @@ export function parseModuleKey(raw: unknown): CaseModuleKey {
 export function moduleQuery(key: CaseModuleKey): Record<string, string> {
   return key === 'all' ? {} : { module: key }
 }
+
+export function parseCaseListPage(raw: unknown): number {
+  const value = Array.isArray(raw) ? raw[0] : raw
+  const page = typeof value === 'number' || typeof value === 'string' ? Number(value) : NaN
+  return Number.isInteger(page) && page > 0 ? page : 1
+}
+
+export function caseListQuery(moduleKey: CaseModuleKey, page: number): Record<string, string> {
+  const query = moduleQuery(moduleKey)
+  return page > 1 ? { ...query, page: String(page) } : query
+}

@@ -127,6 +127,10 @@ export const ASSERTION_TYPES: AssertionMeta[] = [
     { key: 'expected', label: '期望值', type: 'text', required: true },
     { key: 'trim', label: '去空格', type: 'switch', default: false },
   ] },
+  { value: 'text_not_equals', label: '文本不等于', needsElement: true, fields: [
+    { key: 'expected', label: '期望值', type: 'text', required: true },
+    { key: 'trim', label: '去空格', type: 'switch', default: false },
+  ] },
   { value: 'text_contains', label: '文本包含', needsElement: true, fields: [
     { key: 'expected', label: '期望值', type: 'text', required: true },
   ] },

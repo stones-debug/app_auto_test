@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { moduleKeyFromId, moduleQuery, parseModuleKey } from '@/utils/caseModuleNavigation'
+import {
+  caseListQuery,
+  moduleKeyFromId,
+  moduleQuery,
+  parseCaseListPage,
+  parseModuleKey,
+} from '@/utils/caseModuleNavigation'
 import { parseSuiteId, parseSuiteReturnId, suiteLocation } from '@/utils/suiteNavigation'
 
 describe('case module navigation', () => {
@@ -20,6 +26,18 @@ describe('case module navigation', () => {
     expect(parseModuleKey('invalid')).toBe('all')
     expect(parseModuleKey('0')).toBe('all')
     expect(parseModuleKey(['none', '7'])).toBe('none')
+  })
+
+  it('preserves and validates the case list page context', () => {
+    expect(parseCaseListPage('2')).toBe(2)
+    expect(parseCaseListPage(['2', '3'])).toBe(2)
+    expect(parseCaseListPage('0')).toBe(1)
+    expect(parseCaseListPage('2.5')).toBe(1)
+    expect(parseCaseListPage(undefined)).toBe(1)
+    expect(caseListQuery(parseModuleKey('7'), 2)).toEqual({ module: '7', page: '2' })
+    expect(caseListQuery(parseModuleKey('7'), 1)).toEqual({ module: '7' })
+    expect(caseListQuery(parseModuleKey('all'), 2)).toEqual({ page: '2' })
+    expect(caseListQuery(parseModuleKey(undefined), 2)).toEqual({ page: '2' })
   })
 
   it('preserves the suite context when returning from case editing', () => {

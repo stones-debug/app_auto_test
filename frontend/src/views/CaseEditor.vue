@@ -21,7 +21,7 @@ import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 import { usePermission } from '@/composables/usePermission'
 import { useProjectContextStore } from '@/stores/projectContext'
 import { buildCaseEditorSummary, caseEditorSummaryText } from '@/utils/caseEditorSummary'
-import { moduleKeyFromId, moduleQuery, parseModuleKey, type CaseModuleKey } from '@/utils/caseModuleNavigation'
+import { caseListQuery, moduleKeyFromId, parseCaseListPage, parseModuleKey, type CaseModuleKey } from '@/utils/caseModuleNavigation'
 import { mergeFlowNodes, normalizeFlowNodeOrders } from '@/utils/flowNodeOrder'
 import { parseSuiteReturnId, suiteLocation } from '@/utils/suiteNavigation'
 
@@ -52,13 +52,13 @@ const form = reactive<Partial<TestCase>>({
 
 const variableEntries = ref<{ key: string; value: string }[]>([])
 const isEdit = computed(() => caseId.value !== null)
-// 新建用例未保存返回时使用进入编辑页前的筛选；已有用例则使用其已保存模块。
+// 返回列表时保留进入编辑页前的筛选与页码；新建成功后模块筛选按已保存模块返回。
 const returnModuleKey = ref<CaseModuleKey>(parseModuleKey(route.query.module))
-const originalModuleId = ref<number | null | undefined>(undefined)
+const returnPage = parseCaseListPage(route.query.page)
 const returnSuiteId = parseSuiteReturnId(route.query)
 
 function casesLocation(moduleKey: CaseModuleKey) {
-  return { path: `/projects/${projectId}/cases`, query: moduleQuery(moduleKey) }
+  return { path: `/projects/${projectId}/cases`, query: caseListQuery(moduleKey, returnPage) }
 }
 
 function returnLocation(moduleKey: CaseModuleKey) {
@@ -66,10 +66,7 @@ function returnLocation(moduleKey: CaseModuleKey) {
 }
 
 function goBack() {
-  const moduleKey = isEdit.value && originalModuleId.value !== undefined
-    ? moduleKeyFromId(originalModuleId.value)
-    : returnModuleKey.value
-  void router.push(returnLocation(moduleKey))
+  void router.push(returnLocation(returnModuleKey.value))
 }
 
 // V2 §4.2：编辑页 dirty 离开确认
@@ -172,7 +169,7 @@ async function save() {
       await updateCase(caseId.value!, payload)
       ElMessage.success('已保存')
       markSaved()
-      void router.push(returnLocation(moduleKeyFromId(form.module_id)))
+      void router.push(returnLocation(returnModuleKey.value))
     } else {
       await createCase(projectId, payload)
       ElMessage.success('已创建')
@@ -234,7 +231,6 @@ onMounted(async () => {
     const data = await getCase(caseId.value!)
     form.name = data.name
     form.module_id = data.module_id
-    originalModuleId.value = data.module_id
     form.description = data.description ?? ''
     form.status = data.status
     // Step 4：加载旧数据时归一化 continue_on_failure，且清理历史留在 params 里的字段

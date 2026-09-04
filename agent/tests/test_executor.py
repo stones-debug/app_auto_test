@@ -74,6 +74,7 @@ async def test_registries_loaded():
     assert "sleep" in ACTION_REGISTRY
     assert "swipe_to_find" in ACTION_REGISTRY
     assert "text_equals" in ASSERTION_REGISTRY
+    assert "text_not_equals" in ASSERTION_REGISTRY
     assert "checked" in ASSERTION_REGISTRY
     assert "element_exists" in ASSERTION_REGISTRY
     assert "regex_match" in ASSERTION_REGISTRY

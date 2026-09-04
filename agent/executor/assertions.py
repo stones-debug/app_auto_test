@@ -88,6 +88,24 @@ class TextEqualsAssertion(BaseAssertion):
         return {"status": "passed" if passed else "failed", "expected": expected, "actual": actual}
 
 
+@register_assertion("text_not_equals")
+class TextNotEqualsAssertion(BaseAssertion):
+    async def verify(self, driver, context, params: dict, *, deadline: float | None = None) -> dict:
+        actual = await with_stale_retry(
+            driver,
+            context,
+            params.get("element_id"),
+            lambda element: driver.get_text(element),
+            deadline=deadline,
+            label="断言-读取文本",
+        )
+        if params.get("trim"):
+            actual = actual.strip()
+        expected = str(params.get("expected", ""))
+        passed = actual != expected
+        return {"status": "passed" if passed else "failed", "expected": expected, "actual": actual}
+
+
 @register_assertion("text_contains")
 class TextContainsAssertion(BaseAssertion):
     async def verify(self, driver, context, params: dict, *, deadline: float | None = None) -> dict:
