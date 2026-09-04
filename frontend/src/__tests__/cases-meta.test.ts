@@ -132,7 +132,8 @@ describe('CR-09 动作/断言元数据契约', () => {
     const textField = meta.fields.find((f) => f.key === 'target_text')!
     expect(textField.required).toBe(true)
     expect(textField.minLength).toBe(1)
-    expect(meta.fields.find((f) => f.key === 'viewport_element_id')?.type).toBe('element')
+    expect(meta.fields.some((f) => f.key === 'viewport_mode')).toBe(false)
+    expect(meta.fields.some((f) => f.key === 'viewport_element_id')).toBe(false)
   })
 
   it('列表内滑动查找文字并点击 保存前校验参数范围', () => {

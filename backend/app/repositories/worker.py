@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -43,6 +44,7 @@ from app.services.execution_summary import (
     merge_execution_status,
     rate_percent,
 )
+from app.services.profile_resolver_nodes import runtime_variable_names
 
 logger = logging.getLogger("worker")
 
@@ -131,23 +133,29 @@ def min_agent_version() -> str:
 # ---------- 变量渲染（§10.6：优先级 执行参数 > 套件 > 用例 > 项目 > 全局） ----------
 
 
-def render_text(text: str, variables: dict) -> str:
+def render_text(text: str, variables: dict, runtime_variables: set[str] | frozenset[str] = frozenset()) -> str:
     def repl(match: re.Match) -> str:
         name = match.group(1)
         if name not in variables:
+            if name in runtime_variables:
+                return match.group(0)
             raise ValueError(f"未定义变量: ${{{name}}}")
         return str(variables[name])
 
     return _VAR_RE.sub(repl, text)
 
 
-def render_value(value, variables: dict):
+def render_value(
+    value: Any,
+    variables: dict,
+    runtime_variables: set[str] | frozenset[str] = frozenset(),
+) -> Any:
     if isinstance(value, str):
-        return render_text(value, variables)
+        return render_text(value, variables, runtime_variables)
     if isinstance(value, dict):
-        return {k: render_value(v, variables) for k, v in value.items()}
+        return {k: render_value(v, variables, runtime_variables) for k, v in value.items()}
     if isinstance(value, list):
-        return [render_value(v, variables) for v in value]
+        return [render_value(v, variables, runtime_variables) for v in value]
     return value
 
 
@@ -242,8 +250,8 @@ async def build_case_snapshot(
     # 才将其一次性展开，避免历史管理脚本改过 steps 后整条执行链读到旧快照。
     if case.steps and (not stored_flow or _legacy_steps_from_flow(stored_flow) != case.steps):
         stored_flow = _flatten_legacy_steps(case.steps)
-    stored_steps = render_value(deepcopy(stored_flow), variable_map)
     selected_steps: list[dict] = []
+    runtime_variables: set[str] = set()
     for phase in ("setup", "main", "teardown"):
         if phase == "setup" and not use_pre_steps:
             continue
@@ -251,13 +259,14 @@ async def build_case_snapshot(
             continue
         phase_steps = [
             step
-            for step in stored_steps
+            for step in stored_flow
             if isinstance(step, dict) and str(step.get("phase") or "main") == phase
         ]
         phase_steps.sort(key=lambda step: _numeric_order(step.get("order")))
         phase_order = 0
-        for step in phase_steps:
+        for raw_step in phase_steps:
             phase_order += 1
+            step = render_value(deepcopy(raw_step), variable_map, runtime_variables)
             selected_steps.append(
                 {
                     **step,
@@ -266,6 +275,7 @@ async def build_case_snapshot(
                     "order": phase_order,
                 }
             )
+            runtime_variables.update(runtime_variable_names(step))
     steps = selected_steps
     element_ids = await _collect_element_ids(steps)
     elements: dict = {}
@@ -274,11 +284,15 @@ async def build_case_snapshot(
             await db.execute(select(TestElement).where(TestElement.id.in_(element_ids)))
         ).scalars().all()
         for el in rows:
-            elements[str(el.id)] = _element_snapshot(el, variable_map)
+            elements[str(el.id)] = _element_snapshot(el, variable_map, runtime_variables)
     return {"flow_nodes": steps, "steps": _legacy_steps_from_flow(steps), "elements": elements}
 
 
-def _element_snapshot(el: TestElement, variables: dict) -> dict:
+def _element_snapshot(
+    el: TestElement,
+    variables: dict,
+    runtime_variables: set[str] | frozenset[str] = frozenset(),
+) -> dict:
     """构造单元素执行快照：普通定位渲染变量；smart 定位 locator_config 原样透传。
 
     smart 定位的 locator_config 不能调用 render_value：其中可能包含 ${device_name}
@@ -297,7 +311,7 @@ def _element_snapshot(el: TestElement, variables: dict) -> dict:
         "platform": el.platform,
         "locator_type": el.locator_type,
         "locator_config": None,
-        "locator_value": render_value(el.locator_value, variables),
+        "locator_value": render_value(el.locator_value, variables, runtime_variables),
     }
 
 
@@ -318,19 +332,26 @@ async def _clear_execution_tree(db: AsyncSession, execution_id: int) -> None:
     await db.flush()
 
 
-def _suite_step_snapshots(nodes: list, variable_map: dict, phase: str) -> list[dict]:
-    rendered = render_value(deepcopy(nodes or []), variable_map)
+def _suite_step_snapshots(
+    nodes: list,
+    variable_map: dict,
+    phase: str,
+    runtime_variables: set[str] | None = None,
+) -> list[dict]:
+    available_runtime_variables = runtime_variables if runtime_variables is not None else set()
     snapshots: list[dict] = []
-    for node in sorted(
-        (item for item in rendered if isinstance(item, dict)),
+    for raw_node in sorted(
+        (item for item in (nodes or []) if isinstance(item, dict)),
         key=lambda item: _numeric_order(item.get("order")),
     ):
+        node = render_value(deepcopy(raw_node), variable_map, available_runtime_variables)
         snapshots.append({
             **node,
             "phase": phase,
             "source_order": node.get("order"),
             "order": len(snapshots) + 1,
         })
+        available_runtime_variables.update(runtime_variable_names(node))
     return snapshots
 
 
@@ -369,13 +390,14 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
                 ).scalars().all()
             }
         suite_variable_map = {**base_map, **suite_variables, **execution_variables}
+        suite_runtime_variables: set[str] = set()
         setup_snapshot = (
-            _suite_step_snapshots(suite.setup_steps, suite_variable_map, "suite_setup")
+            _suite_step_snapshots(suite.setup_steps, suite_variable_map, "suite_setup", suite_runtime_variables)
             if suite is not None
             else []
         )
         teardown_snapshot = (
-            _suite_step_snapshots(suite.teardown_steps, suite_variable_map, "suite_teardown")
+            _suite_step_snapshots(suite.teardown_steps, suite_variable_map, "suite_teardown", suite_runtime_variables)
             if suite is not None
             else []
         )
@@ -388,7 +410,9 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
                 await db.execute(select(TestElement).where(TestElement.id.in_(suite_element_ids)))
             ).scalars().all()
             for element in suite_element_rows:
-                suite_elements[str(element.id)] = _element_snapshot(element, suite_variable_map)
+                suite_elements[str(element.id)] = _element_snapshot(
+                    element, suite_variable_map, suite_runtime_variables
+                )
 
         exec_suite = ExecutionSuite(
             execution_id=execution.id, suite_id=suite_id, suite_name=suite_name,

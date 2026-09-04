@@ -45,7 +45,14 @@ async def merge_suite_variables(db: AsyncSession, project_id: int, suite_id: int
     return merged
 
 
-async def resolve_element_snapshots(db: AsyncSession, project_id: int, steps: list[dict], element_overrides: dict[int, AppProfileElementOverride], variables: dict) -> dict[str, dict[str, Any]]:
+async def resolve_element_snapshots(
+    db: AsyncSession,
+    project_id: int,
+    steps: list[dict],
+    element_overrides: dict[int, AppProfileElementOverride],
+    variables: dict,
+    runtime_variables: set[str] | frozenset[str] = frozenset(),
+) -> dict[str, dict[str, Any]]:
     ids: set[int] = set()
     for item in steps:
         if not isinstance(item, dict):
@@ -69,13 +76,27 @@ async def resolve_element_snapshots(db: AsyncSession, project_id: int, steps: li
     found = {row.id for row in rows}
     if found != ids:
         raise ProfileRuleError("PROFILE_ELEMENT_MISSING", f"步骤/断言引用的元素不存在、已删除或不属于该项目: {sorted(ids - found)}")
-    return {str(element.id): element_snapshot(element, element_overrides.get(element.id), variables) for element in rows}
+    return {
+        str(element.id): element_snapshot(element, element_overrides.get(element.id), variables, runtime_variables)
+        for element in rows
+    }
 
 
-def element_snapshot(element: TestElement, override: AppProfileElementOverride | None, variables: dict) -> dict[str, Any]:
+def element_snapshot(
+    element: TestElement,
+    override: AppProfileElementOverride | None,
+    variables: dict,
+    runtime_variables: set[str] | frozenset[str] = frozenset(),
+) -> dict[str, Any]:
     locator_type = override.locator_type if override else element.locator_type
     if locator_type == "smart":
         locator_config = override.locator_config if override else element.locator_config
         return {"name": element.name, "platform": element.platform, "locator_type": "smart", "locator_config": locator_config or None, "locator_value": None}
     locator_value = override.locator_value if override else element.locator_value
-    return {"name": element.name, "platform": element.platform, "locator_type": locator_type, "locator_config": None, "locator_value": render_value(locator_value, variables)}
+    return {
+        "name": element.name,
+        "platform": element.platform,
+        "locator_type": locator_type,
+        "locator_config": None,
+        "locator_value": render_value(locator_value, variables, runtime_variables),
+    }

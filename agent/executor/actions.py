@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 from .driver import (
+    DriverError,
     ElementNotFound,
     ElementStaleRetryExhausted,
     StopRequested,
@@ -259,7 +260,8 @@ class SwipeInElementFindTextClickAction(BaseAction):
     每次手势调用即计入次数，首方向固定执行 max_swipes_per_direction 次，
     未找到目标后反方向固定执行两倍该次数；页面签名只用于日志，不作为提前
     停止条件。
-    只接受中心点落在列表控件可见矩形内的匹配，点击距离列表中心最近的匹配项。
+    只接受中心点及安全边距落在 ListView 直接父元素视口内的匹配，
+    点击距离父元素中心最近的匹配项。
     找到后立即点击；如遇 stale，重新定位列表和目标重试，不能复用旧句柄。
     """
 
@@ -281,7 +283,9 @@ class SwipeInElementFindTextClickAction(BaseAction):
         percent = float(params.get("percent", 0.3))
         container_wait_timeout = params.get("container_wait_timeout", 10)
         settle_ms = int(params.get("settle_ms", 300))
-        viewport_element_id = params.get("viewport_element_id")
+        duration_ms = int(params.get("duration_ms", 300))
+        if duration_ms <= 0:
+            raise DriverError("滑动时长 duration_ms 必须为正数")
 
         # UiAutomator selector，转义防注入
         method = "text" if match_mode == "equals" else "textContains"
@@ -304,7 +308,8 @@ class SwipeInElementFindTextClickAction(BaseAction):
             )
         while phase_swipes < max_swipes:
             found, error, hint = await self._try_find_and_click(
-                driver, context, element_id, viewport_element_id, selector, container_wait_timeout,
+                driver, context, element_id,
+                selector, container_wait_timeout,
             )
             if found:
                 logger.info(
@@ -330,8 +335,8 @@ class SwipeInElementFindTextClickAction(BaseAction):
                 done_swipes + 1,
             )
             changed = await self._scroll_dir(
-                driver, context, element_id, viewport_element_id,
-                direction, percent, container_wait_timeout, settle_ms,
+                driver, context, element_id,
+                direction, percent, duration_ms, container_wait_timeout, settle_ms,
             )
             done_swipes += 1
             phase_swipes += 1
@@ -351,7 +356,8 @@ class SwipeInElementFindTextClickAction(BaseAction):
                     changed,
                 )
             found, error, hint = await self._try_find_and_click(
-                driver, context, element_id, viewport_element_id, selector, container_wait_timeout,
+                driver, context, element_id,
+                selector, container_wait_timeout,
             )
             if found:
                 logger.info(
@@ -376,7 +382,8 @@ class SwipeInElementFindTextClickAction(BaseAction):
         )
         while reverse_swipes < reverse_budget:
             found, error, hint = await self._try_find_and_click(
-                driver, context, element_id, viewport_element_id, selector, container_wait_timeout,
+                driver, context, element_id,
+                selector, container_wait_timeout,
             )
             if found:
                 logger.info(
@@ -402,8 +409,8 @@ class SwipeInElementFindTextClickAction(BaseAction):
                 done_swipes + 1,
             )
             changed = await self._scroll_dir(
-                driver, context, element_id, viewport_element_id,
-                direction, percent, container_wait_timeout, settle_ms,
+                driver, context, element_id,
+                direction, percent, duration_ms, container_wait_timeout, settle_ms,
             )
             done_swipes += 1
             reverse_swipes += 1
@@ -422,7 +429,8 @@ class SwipeInElementFindTextClickAction(BaseAction):
                     changed,
                 )
             found, error, hint = await self._try_find_and_click(
-                driver, context, element_id, viewport_element_id, selector, container_wait_timeout,
+                driver, context, element_id,
+                selector, container_wait_timeout,
             )
             if found:
                 logger.info(
@@ -446,26 +454,28 @@ class SwipeInElementFindTextClickAction(BaseAction):
         ))
 
     async def _try_find_and_click(
-        self, driver, context, element_id, viewport_element_id, selector, container_wait_timeout,
+        self, driver, context, element_id,
+        selector, container_wait_timeout,
     ) -> tuple[bool, BaseException | None, str | None]:
         """只在 ListView 后代查找目标，并按视口位置返回建议滑动方向。"""
         stop = getattr(context, "should_stop", None)
         if stop is not None and stop():
             raise StopRequested("执行被用户停止")
         observation = await self._observe_target(
-            driver, context, element_id, viewport_element_id, selector, container_wait_timeout,
+            driver, context, element_id,
+            selector, container_wait_timeout,
         )
         if observation is None:
             # 页面持续重绘时本轮观测未知，交给外层继续消耗滑动次数。
             return False, None, None
-        _container, _viewport, target, direction = observation
+        _container, _parent, _parent_region, target, direction = observation
         if target is None:
             return False, None, direction
         if direction is not None:
             return False, None, direction
         try:
             clicked, click_direction = await self._click_with_stale_retry(
-                driver, context, element_id, viewport_element_id, target,
+                driver, context, element_id, target,
                 container_wait_timeout, selector,
             )
             if not clicked:
@@ -481,32 +491,31 @@ class SwipeInElementFindTextClickAction(BaseAction):
         return True, None, None
 
     async def _observe_target(
-        self, driver, context, element_id, viewport_element_id, selector, wait_timeout,
+        self, driver, context, element_id,
+        selector, wait_timeout,
     ):
         """重新定位并观测列表目标，stale 时丢弃旧句柄后重试。"""
         delays = self._OBSERVE_STALE_RETRY_DELAYS
         for attempt in range(len(delays) + 1):
             try:
-                container, viewport = self._locate_container_and_viewport(
-                    driver, context, element_id, viewport_element_id, wait_timeout
+                container, parent, parent_region = self._locate_container_and_parent(
+                    driver, context, element_id, wait_timeout
                 )
                 target, direction = self._find_target_in_container(
-                    driver, container, viewport, selector
+                    driver, container, parent_region, selector
                 )
-                return container, viewport, target, direction
+                return container, parent, parent_region, target, direction
             except Exception as exc:
                 if not is_stale_element_error(exc):
                     raise
                 if attempt >= len(delays):
                     return None
                 context.invalidate_element(element_id)
-                if viewport_element_id is not None:
-                    context.invalidate_element(viewport_element_id)
                 await asyncio.sleep(delays[attempt])
         return None
 
-    def _locate_container_and_viewport(
-        self, driver, context, element_id, viewport_element_id, wait_timeout
+    def _locate_container_and_parent(
+        self, driver, context, element_id, wait_timeout
     ):
         try:
             container = context.find_element(
@@ -514,29 +523,23 @@ class SwipeInElementFindTextClickAction(BaseAction):
             )
         except ElementNotFound as exc:
             raise ElementNotFound(f"ListView 未找到: element_id={element_id}") from exc
-        viewport = container
-        if viewport_element_id is not None:
-            try:
-                viewport = context.find_element(
-                    viewport_element_id, wait_timeout=wait_timeout, disable_smart_scroll=True
-                )
-            except ElementNotFound as exc:
-                raise ElementNotFound(
-                    f"配置的可见视口元素未找到: element_id={viewport_element_id}"
-                ) from exc
-        visible = self._visible_region(driver, container, viewport)
+        try:
+            parent = driver.get_parent_element(container, wait_timeout=wait_timeout)
+        except ElementNotFound as exc:
+            raise ElementNotFound(
+                "ListView 没有直接父元素，无法确定父元素视口"
+            ) from exc
+        visible = self._parent_region(driver, parent)
         if visible["width"] <= 0 or visible["height"] <= 0:
-            raise ElementNotFound("ListView 与可见视口没有有效重叠区域")
-        return container, viewport
+            raise ElementNotFound("ListView 的直接父元素没有有效可见区域")
+        return container, parent, visible
 
     @staticmethod
-    def _visible_region(driver, container, viewport):
+    def _parent_region(driver, parent):
         size = driver.get_window_size()
-        visible = _clip_rect(driver.get_element_rect(container), size)
-        return _intersect_rect(visible, _clip_rect(driver.get_element_rect(viewport), size))
+        return _clip_rect(driver.get_element_rect(parent), size)
 
-    def _find_target_in_container(self, driver, container, viewport, selector):
-        visible = self._visible_region(driver, container, viewport)
+    def _find_target_in_container(self, driver, container, visible, selector):
         matches = driver.find_elements_in_element(container, "uiautomator", selector, wait_timeout=0)
         candidates = [m for m in matches if _is_displayed_and_enabled(driver, m)]
         safe = [m for m in candidates if _is_safely_clickable(driver, m, visible)]
@@ -554,7 +557,7 @@ class SwipeInElementFindTextClickAction(BaseAction):
         ), visible)
 
     async def _click_with_stale_retry(
-        self, driver, context, element_id, viewport_element_id, target,
+        self, driver, context, element_id, target,
         container_wait_timeout, selector,
     ):
         """每次点击前重新确认目标仍在安全视口内；stale 时等待后再重试。"""
@@ -564,17 +567,16 @@ class SwipeInElementFindTextClickAction(BaseAction):
                 raise StopRequested("执行被用户停止")
             try:
                 observation = await self._observe_target(
-                    driver, context, element_id, viewport_element_id, selector,
+                    driver, context, element_id, selector,
                     container_wait_timeout,
                 )
                 if observation is None:
                     return False, None
-                container, viewport, target, direction = observation
+                container, parent, visible, target, direction = observation
                 if target is None:
                     return False, direction
                 if direction is not None:
                     return False, direction
-                visible = self._visible_region(driver, container, viewport)
                 # 观测后再次校验，覆盖定位到点击之间的视口变化。
                 if not _is_safely_clickable(driver, target, visible):
                     return False, _direction_to_reveal(driver.get_element_rect(target), visible)
@@ -584,13 +586,12 @@ class SwipeInElementFindTextClickAction(BaseAction):
                 if not is_stale_element_error(exc):
                     if is_not_editable_error(exc):
                         observation = await self._observe_target(
-                            driver, context, element_id, viewport_element_id, selector,
+                            driver, context, element_id, selector,
                             container_wait_timeout,
                         )
                         if observation is None:
                             return False, None
-                        container, viewport, new_target, direction = observation
-                        visible = self._visible_region(driver, container, viewport)
+                        container, parent, visible, new_target, direction = observation
                         if (
                             new_target is not None
                             and direction is None
@@ -609,13 +610,11 @@ class SwipeInElementFindTextClickAction(BaseAction):
                 # 页面重绘后先让 UI 稳定，再重新定位；不能在等待前复用旧句柄。
                 await asyncio.sleep(self._CLICK_STALE_RETRY_DELAYS[attempt])
                 context.invalidate_element(element_id)
-                if viewport_element_id is not None:
-                    context.invalidate_element(viewport_element_id)
         raise AssertionError("点击 stale 重试状态异常")
 
     async def _scroll_dir(
-        self, driver, context, element_id, viewport_element_id, direction,
-        percent, container_wait_timeout, settle_ms,
+        self, driver, context, element_id, direction,
+        percent, duration_ms, container_wait_timeout, settle_ms,
     ):
         stop = getattr(context, "should_stop", None)
         if stop is not None and stop():
@@ -623,50 +622,77 @@ class SwipeInElementFindTextClickAction(BaseAction):
 
         try:
             before_signature = await self._observe_list_signature(
-                driver, context, element_id, viewport_element_id, container_wait_timeout
+                driver, context, element_id,
+                container_wait_timeout
             )
         except ElementNotFound as exc:
             raise ElementNotFound(f"ListView 未找到: element_id={element_id}") from exc
 
         def _do_scroll(container):
-            # 未配置额外视口时保持原有元素手势；配置视口后则以
-            # ListView 与视口的交集作为手势区域。这样滚动仍发生在 ListView
-            # 的可见部分，但上下滑动的起点/终点不会落到弹窗遮罩或屏外。
-            if viewport_element_id is None:
-                return driver.swipe_in_element(container, direction, percent)
-            try:
-                viewport = context.find_element(
-                    viewport_element_id,
-                    wait_timeout=container_wait_timeout,
-                    disable_smart_scroll=True,
-                )
-                region = self._visible_region(driver, container, viewport)
-                if region["width"] <= 0 or region["height"] <= 0:
-                    raise ElementNotFound("ListView 与可见视口没有有效重叠区域")
+            # 每次手势都从本轮新定位的 container 解析第一层父元素，
+            # 父元素句柄不能跨页面重绘复用；滑动距离统一按父视口高度计算。
+            parent = driver.get_parent_element(container, wait_timeout=container_wait_timeout)
+            region = self._parent_region(driver, parent)
+            if region["width"] <= 0 or region["height"] <= 0:
+                raise ElementNotFound("ListView 的直接父元素没有有效可见区域")
+            list_rect = driver.get_element_rect(container)
+            list_height = int(list_rect.get("height", 0))
+            parent_height = int(region["height"])
+            if list_height <= 0:
+                raise ElementNotFound("ListView 没有有效高度，无法计算滑动距离")
+            configured_percent = max(0.0, float(percent))
+            target_distance_px = min(
+                parent_height,
+                max(1, round(parent_height * configured_percent)),
+            )
+            speed = max(1, round(target_distance_px * 1000 / duration_ms))
+            effective_percent = target_distance_px / list_height
+            if direction == "up":
+                effective_percent = min(1.0, max(0.001, effective_percent))
                 logger.info(
-                    "使用列表可见区域滑动: element_id=%s viewport_element_id=%s "
-                    "region=(%s,%s,%s,%s) direction=%s percent=%s",
+                    "列表元素内向上滑动: element_id=%s direction=%s list_height=%s "
+                    "parent_height=%s configured_percent=%s effective_percent=%s "
+                    "target_distance_px=%s duration_ms=%s speed=%s",
                     element_id,
-                    viewport_element_id,
-                    region["x"],
-                    region["y"],
-                    region["width"],
-                    region["height"],
                     direction,
-                    percent,
+                    list_height,
+                    parent_height,
+                    configured_percent,
+                    effective_percent,
+                    target_distance_px,
+                    duration_ms,
+                    speed,
                 )
-                return driver.swipe_in_region(
-                    region["x"],
-                    region["y"],
-                    region["width"],
-                    region["height"],
-                    direction,
-                    percent,
+                return driver.swipe_in_element(
+                    container, direction, effective_percent, speed=speed
                 )
-            except Exception as exc:
-                if is_stale_element_error(exc):
-                    context.invalidate_element(viewport_element_id)
-                raise
+            logger.info(
+                "父元素区域内向下滑动: element_id=%s direction=%s configured_percent=%s "
+                "list_height=%s parent_height=%s effective_percent=%s "
+                "target_distance_px=%s duration_ms=%s speed=%s region=(%s,%s,%s,%s)",
+                element_id,
+                direction,
+                configured_percent,
+                list_height,
+                parent_height,
+                configured_percent,
+                target_distance_px,
+                duration_ms,
+                speed,
+                region["x"],
+                region["y"],
+                region["width"],
+                region["height"],
+            )
+            return driver.swipe_in_region(
+                region["x"],
+                region["y"],
+                region["width"],
+                region["height"],
+                direction,
+                configured_percent,
+                speed=speed,
+            )
 
         await with_stale_retry(
             driver,
@@ -681,7 +707,8 @@ class SwipeInElementFindTextClickAction(BaseAction):
             await asyncio.sleep(settle_ms / 1000.0)
         try:
             after_signature = await self._observe_list_signature(
-                driver, context, element_id, viewport_element_id, container_wait_timeout
+                driver, context, element_id,
+                container_wait_timeout
             )
         except ElementNotFound as exc:
             raise ElementNotFound(f"ListView 未找到: element_id={element_id}") from exc
@@ -690,40 +717,35 @@ class SwipeInElementFindTextClickAction(BaseAction):
         return before_signature != after_signature
 
     async def _observe_list_signature(
-        self, driver, context, element_id, viewport_element_id, wait_timeout
+        self, driver, context, element_id, wait_timeout
     ):
         """读取局部列表签名；stale 时重新定位，最终未知则交给次数预算处理。"""
         delays = self._OBSERVE_STALE_RETRY_DELAYS
         for attempt in range(len(delays) + 1):
             try:
-                container, viewport = self._locate_container_and_viewport(
-                    driver, context, element_id, viewport_element_id, wait_timeout
+                container, _parent, parent_region = self._locate_container_and_parent(
+                    driver, context, element_id, wait_timeout
                 )
-                return self._read_list_signature(driver, container, viewport)
+                return self._read_list_signature(driver, container, parent_region)
             except Exception as exc:
                 if not is_stale_element_error(exc):
                     raise
                 if attempt >= len(delays):
                     return None
                 context.invalidate_element(element_id)
-                if viewport_element_id is not None:
-                    context.invalidate_element(viewport_element_id)
                 await asyncio.sleep(delays[attempt])
         return None
 
-    @staticmethod
-    def _read_list_signature(driver, container, viewport):
+    @classmethod
+    def _read_list_signature(cls, driver, container, parent_region):
         try:
             nodes = driver.find_elements_in_element(
                 container, "uiautomator", "new UiSelector()", wait_timeout=0
             )
-            visible = SwipeInElementFindTextClickAction._visible_region(
-                driver, container, viewport
-            )
             snapshot = []
             for node in nodes:
                 rect = driver.get_element_rect(node)
-                if _intersection_area(rect, visible) <= 0:
+                if _intersection_area(rect, parent_region) <= 0:
                     continue
                 snapshot.append((
                     getattr(node, "text", "") or driver.get_attribute(node, "text"),

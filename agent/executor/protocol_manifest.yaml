@@ -146,9 +146,9 @@ actions:
           - { value: down, label: 下滑 }
       - { name: max_swipes_per_direction, type: integer, default: 8, min: 1, max: 50, label: 每方向最大滑动次数 }
       - { name: percent, type: number, default: 0.3, min: 0.05, max: 0.95, label: 滑动比例（0.05～0.95） }
+      - { name: duration_ms, type: integer, default: 300, min: 1, max: 10000, label: 滑动时长(ms) }
       - { name: container_wait_timeout, type: integer, default: 10, min: 0, max: 60, label: 列表等待秒数 }
       - { name: settle_ms, type: integer, default: 300, min: 0, max: 2000, label: 稳定等待(ms) }
-      - { name: viewport_element_id, type: element, label: 可见视口元素（可选） }
   - name: scroll
     label: 滚动到元素
     version: 1

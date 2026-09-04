@@ -40,11 +40,7 @@ export function stepSummaryText(step: Step, elementNames?: ElementNameMap): stri
     details.push(`自动${preferred}→${opposite}`)
     const maxSwipes = step.params?.['max_swipes_per_direction']
     if (maxSwipes != null) details.push(`每方向最多${maxSwipes}次`)
-    const viewportId = step.params?.['viewport_element_id']
-    if (viewportId != null && viewportId !== '') {
-      const viewportName = elementNames?.get(Number(viewportId))
-      details.push('视口：' + (viewportName ?? '#' + viewportId))
-    }
+    details.push('视口：列表直接父元素')
     return details.join(' · ')
   }
 

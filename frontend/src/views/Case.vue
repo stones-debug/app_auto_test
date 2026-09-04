@@ -9,6 +9,7 @@ import RunButton from '@/components/RunButton.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { usePermission } from '@/composables/usePermission'
 import { formatDateTime } from '@/utils/format'
+import { moduleKeyFromId, moduleQuery, parseModuleKey } from '@/utils/caseModuleNavigation'
 
 const route = useRoute()
 const router = useRouter()
@@ -63,12 +64,13 @@ async function loadModules() {
 const filteredModuleId = ref<number | null>(null)
 
 function selectModule(key: string) {
-  selectedModule.value = key
-  if (key === 'all') filteredModuleId.value = null
-  else if (key === 'none') filteredModuleId.value = -1 // 未分组：后端按 module_id=null 过滤
-  else filteredModuleId.value = Number(key)
+  const normalizedKey = parseModuleKey(key)
+  selectedModule.value = normalizedKey
+  if (normalizedKey === 'all') filteredModuleId.value = null
+  else if (normalizedKey === 'none') filteredModuleId.value = -1 // 未分组：后端按 module_id=null 过滤
+  else filteredModuleId.value = Number(normalizedKey)
   page.value = 1
-  load()
+  void load()
 }
 
 async function load() {
@@ -90,7 +92,10 @@ async function load() {
 }
 
 function openCreate() {
-  router.push(`/projects/${projectId}/cases/new`)
+  router.push({
+    path: `/projects/${projectId}/cases/new`,
+    query: moduleQuery(parseModuleKey(selectedModule.value)),
+  })
 }
 
 // 模块树操作
@@ -208,7 +213,11 @@ async function removeModule(module: TestModule) {
 }
 
 function openEdit(row: TestCase) {
-  router.push(`/projects/${projectId}/cases/${row.id}/edit`)
+  // 编辑页返回时优先使用用例自身模块；查询参数同时作为加载失败时的安全回退。
+  router.push({
+    path: `/projects/${projectId}/cases/${row.id}/edit`,
+    query: moduleQuery(moduleKeyFromId(row.module_id)),
+  })
 }
 
 async function remove(row: TestCase) {
@@ -253,8 +262,9 @@ function lastExecLabel(status: string | null) {
 }
 
 onMounted(() => {
+  // 编辑页返回会带回模块上下文；没有上下文时才使用“全部”。
+  selectModule(parseModuleKey(route.query.module))
   void loadModules()
-  void load()
   window.addEventListener('click', closeModuleContextMenu)
 })
 

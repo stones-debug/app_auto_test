@@ -89,9 +89,9 @@ export const ACTIONS: ActionMeta[] = [
     { key: 'preferred_direction', label: '首选方向', type: 'select', options: [{ value: 'up', label: '上滑' }, { value: 'down', label: '下滑' }], default: 'up' },
     { key: 'max_swipes_per_direction', label: '每方向最大滑动次数', type: 'number', default: 8, min: 1, max: 50 },
     { key: 'percent', label: '滑动比例（0.05～0.95）', type: 'number', default: 0.3, min: 0.05, max: 0.95 },
+    { key: 'duration_ms', label: '滑动时长(ms)', type: 'number', default: 300, min: 1, max: 10000 },
     { key: 'container_wait_timeout', label: '列表等待秒数', type: 'number', default: 10, min: 0, max: 60 },
     { key: 'settle_ms', label: '稳定等待(ms)', type: 'number', default: 300, min: 0, max: 2000 },
-    { key: 'viewport_element_id', label: '可见视口元素（可选）', type: 'element' },
   ] },
   { value: 'scroll', label: '滚动到元素', needsElement: true, fields: [
   ] },

@@ -77,7 +77,7 @@ describe('步骤编辑器折叠摘要', () => {
       continue_on_failure: false,
     }
     expect(stepSummaryText(step, new Map([[7, '日期列表']]))).toBe(
-      '列表：日期列表 · 文字等于“2026” · 自动上→下 · 每方向最多8次',
+      '列表：日期列表 · 文字等于“2026” · 自动上→下 · 每方向最多8次 · 视口：列表直接父元素',
     )
     expect(stepActionLabel(step)).toBe('列表内滑动查找文字并点击')
   })

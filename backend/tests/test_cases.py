@@ -627,7 +627,6 @@ async def test_find_text_click_step_crud(client: AsyncClient):
                         "percent": 0.4,
                         "container_wait_timeout": 5,
                         "settle_ms": 200,
-                        "viewport_element_id": element_id,
                     },
                 },
             ],
@@ -640,7 +639,6 @@ async def test_find_text_click_step_crud(client: AsyncClient):
     assert step["action"] == "swipe_in_element_find_text_click"
     assert step["params"]["target_text"] == "系统时间"
     assert step["params"]["preferred_direction"] == "down"
-    assert step["params"]["viewport_element_id"] == element_id
 
     got = await client.get(f"/api/cases/{case_id}", headers=headers)
     assert got.status_code == 200

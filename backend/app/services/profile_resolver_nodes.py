@@ -22,6 +22,7 @@ from app.schemas.generated_case_params import (
 )
 
 _VAR_RE = re.compile(r"\$\{(\w+)\}")
+_RUNTIME_VARIABLE_ACTIONS = frozenset({"get_text", "get_attribute"})
 
 # 节点覆盖白名单（方案 §2.4）：仅允许覆盖业务字段；禁止改 key/order/phase/action/type/assertion_type
 NODE_PATCH_ALLOWED = {
@@ -48,23 +49,25 @@ class ProfileRuleError(Exception):
         super().__init__(message or code)
 
 
-def render_text(text: str, variables: dict) -> str:
+def render_text(text: str, variables: dict, runtime_variables: set[str] | frozenset[str] = frozenset()) -> str:
     def repl(match: re.Match) -> str:
         name = match.group(1)
         if name not in variables:
+            if name in runtime_variables:
+                return match.group(0)
             raise ProfileRuleError("PROFILE_VARIABLE_UNRESOLVED", f"未定义变量: ${{{name}}}")
         return str(variables[name])
 
     return _VAR_RE.sub(repl, text)
 
 
-def render_value(value: Any, variables: dict) -> Any:
+def render_value(value: Any, variables: dict, runtime_variables: set[str] | frozenset[str] = frozenset()) -> Any:
     if isinstance(value, str):
-        return render_text(value, variables)
+        return render_text(value, variables, runtime_variables)
     if isinstance(value, dict):
-        return {k: render_value(v, variables) for k, v in value.items()}
+        return {k: render_value(v, variables, runtime_variables) for k, v in value.items()}
     if isinstance(value, list):
-        return [render_value(v, variables) for v in value]
+        return [render_value(v, variables, runtime_variables) for v in value]
     return value
 
 
@@ -78,14 +81,28 @@ def _apply_whitelist_patch(node: dict, patch: dict) -> dict:
     return node
 
 
-def _render_node_with_context(node: dict, variables: dict, case_name: str) -> dict:
+def _render_node_with_context(
+    node: dict,
+    variables: dict,
+    case_name: str,
+    runtime_variables: set[str] | frozenset[str] = frozenset(),
+) -> dict:
     try:
-        rendered = render_value(deepcopy(node), variables)
+        rendered = render_value(deepcopy(node), variables, runtime_variables)
     except ProfileRuleError as err:
         raise ProfileRuleError(
             err.code, f"用例[{case_name}] 节点[{node.get('key') or node.get('order')}]: {err.message}"
         ) from err
     return rendered
+
+
+def runtime_variable_names(node: dict) -> set[str]:
+    """返回节点成功执行后写入当前 Agent 执行上下文的变量名。"""
+    if str(node.get("action") or "") not in _RUNTIME_VARIABLE_ACTIONS:
+        return set()
+    params = node.get("params") or node.get("parameters") or {}
+    variable_name = params.get("variable_name") if isinstance(params, dict) else None
+    return {variable_name} if isinstance(variable_name, str) and variable_name else set()
 
 
 def _registry_validate_step(step: dict) -> dict:

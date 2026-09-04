@@ -343,6 +343,53 @@ async def test_undefined_variable_rejected(client):
     assert exc.value.code == "PROFILE_VARIABLE_UNRESOLVED"
 
 
+async def test_runtime_variable_from_get_text_is_deferred_until_agent(client):
+    """get_text 产生的变量在预检时保留占位符，交给 Agent 执行时解析。"""
+    base = await _base(client)
+    element = await client.post(
+        f"/api/projects/{base['project_id']}/elements",
+        headers=base["headers"],
+        json={"name": "动态文本元素", "locator_type": "id", "locator_value": "source"},
+    )
+    assert element.status_code == 201
+    element_id = element.json()["id"]
+    get_text_key = str(uuid.uuid4())
+    input_key = str(uuid.uuid4())
+    case = await client.post(
+        f"/api/projects/{base['project_id']}/cases",
+        headers=base["headers"],
+        json={
+            "name": "运行时变量用例",
+            "flow_nodes": [
+                {
+                    "kind": "action", "key": get_text_key, "order": 1, "action": "get_text",
+                    "element_id": element_id, "params": {"variable_name": "captured_text"},
+                },
+                {
+                    "kind": "action", "key": input_key, "order": 2, "action": "input",
+                    "element_id": element_id, "params": {"value": "${captured_text}"},
+                },
+            ],
+        },
+    )
+    assert case.status_code == 201
+    case_id = case.json()["id"]
+    async with SessionLocal() as db:
+        profile_id = await _make_profile(db, base)
+        result = await resolve_compat(
+            ResolutionRequest(
+                project_id=base["project_id"], profile_id=profile_id,
+                release_id=await _release_id(db, profile_id), target_type="case", target_ids=[case_id],
+                expected_profile_revision=1,
+                expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
+            ),
+            db,
+        )
+
+    nodes = result.cases[0].flow_snapshot
+    assert nodes[1]["params"]["value"] == "${captured_text}"
+
+
 async def test_revision_conflict(client):
     """expected revision 不匹配 → ProfileRevisionConflict。"""
     base = await _base(client)

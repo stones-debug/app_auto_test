@@ -77,9 +77,9 @@ class SwipeInElementFindTextClickParams(ParamsBase):
     preferred_direction: Literal['up', 'down'] = 'up'
     max_swipes_per_direction: int = Field(default=8, ge=1, le=50)
     percent: float = Field(default=0.3, ge=0.05, le=0.95)
+    duration_ms: int = Field(default=300, ge=1, le=10000)
     container_wait_timeout: int = Field(default=10, ge=0, le=60)
     settle_ms: int = Field(default=300, ge=0, le=2000)
-    viewport_element_id: int | None = None
 
 
 class ScrollParams(ParamsBase):
@@ -220,5 +220,4 @@ ELEMENT_LABELS: dict[str, str] = {
 }
 
 ELEMENT_PARAM_FIELDS: dict[str, tuple[str, ...]] = {
-    'swipe_in_element_find_text_click': ('viewport_element_id',),
 }

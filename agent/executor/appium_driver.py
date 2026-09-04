@@ -159,6 +159,8 @@ class AppiumDriver(BaseDriver):
         if self.command_timeout:
             caps["newCommandTimeout"] = self.command_timeout
         platform = (self.device.get("platform") or "").lower()
+        if platform == "android":
+            self._add_android_parent_xpath_setting(caps)
         if platform == "ios":
             options = XCUITestOptions()
             caps["bundleId"] = package
@@ -181,6 +183,8 @@ class AppiumDriver(BaseDriver):
         if self.command_timeout:
             caps["newCommandTimeout"] = self.command_timeout
         platform = (self.device.get("platform") or "").lower()
+        if platform == "android":
+            self._add_android_parent_xpath_setting(caps)
         options = XCUITestOptions() if platform == "ios" else UiAutomator2Options()
         caps.pop("appPackage", None)
         caps.pop("appActivity", None)
@@ -200,6 +204,48 @@ class AppiumDriver(BaseDriver):
         options.load_capabilities(caps)
         return options
 
+    @staticmethod
+    def _add_android_parent_xpath_setting(caps: dict) -> None:
+        """在 Android 会话创建能力中关闭受限的 XPath context scope。
+
+        UiAutomator2 默认只为元素上下文收集后代节点，导致 ``./parent::*``
+        无法工作。Appium 官方支持 ``appium:settings[<name>]`` 能力；同时
+        合并 ``appium:settings`` 对象，兼容较新的 Appium 版本和已有配置。
+        """
+        caps["appium:settings[limitXPathContextScope]"] = False
+        configured = caps.get("appium:settings")
+        settings = dict(configured) if isinstance(configured, dict) else {}
+        settings["limitXPathContextScope"] = False
+        caps["appium:settings"] = settings
+        configured_options = caps.get("appium:options")
+        if isinstance(configured_options, dict):
+            options = dict(configured_options)
+            nested = options.get("settings")
+            nested_settings = dict(nested) if isinstance(nested, dict) else {}
+            nested_settings["limitXPathContextScope"] = False
+            options["settings"] = nested_settings
+            caps["appium:options"] = options
+
+    def _apply_android_parent_xpath_setting(self) -> None:
+        """会话创建后再次应用 setting，确保真机使用完整 XPath context。"""
+        if (self.device.get("platform") or "").lower() != "android" or self.driver is None:
+            return
+        update_settings = getattr(self.driver, "update_settings", None)
+        if not callable(update_settings):
+            # 旧/极简客户端可能没有 Settings API；创建能力仍已携带官方 setting。
+            logger.warning(
+                "Appium 会话未提供 update_settings，父元素 XPath 将依赖会话创建时的 "
+                "appium:settings[limitXPathContextScope]=false"
+            )
+            return
+        try:
+            update_settings({"limitXPathContextScope": False})
+        except Exception as exc:
+            raise DriverError(
+                "Appium Android 会话无法设置 limitXPathContextScope=false，"
+                "父元素视口不可用"
+            ) from exc
+
     def attach_to_current_app(self) -> None:
         """创建 Appium 会话并保持设备当前前台界面，不启动指定 APP。"""
         try:
@@ -214,6 +260,7 @@ class AppiumDriver(BaseDriver):
             self._remember_http_timeout_default()
         except Exception as exc:
             raise DriverError(f"Appium 连接当前设备界面失败：{exc}") from exc
+        self._apply_android_parent_xpath_setting()
         logger.info("Appium 当前界面会话已创建: %s", self.driver.session_id)
 
     def _configured_android_capability(self, name: str) -> str | None:
@@ -293,6 +340,7 @@ class AppiumDriver(BaseDriver):
         except Exception as exc:
             target = package if platform == "ios" else f"{package}/{resolved_activity}"
             raise DriverError(f"Appium 启动应用失败（{target}）：{exc}") from exc
+        self._apply_android_parent_xpath_setting()
         logger.info("Appium 会话已创建: %s", self.driver.session_id)
 
     def close_app(self, package: str | None = None) -> None:
@@ -349,6 +397,55 @@ class AppiumDriver(BaseDriver):
             raise ElementNotFound(
                 f"元素等待超时: {normalized_type}={normalized_value} ({timeout_label}s)"
             ) from None
+
+    def get_parent_element(self, element, wait_timeout: float | None = 10):
+        """通过元素上下文的相对 XPath 获取直接父节点。
+
+        父视口没有独立的元素库定位值，所以必须在当前轮次、使用刚定位的
+        container 句柄查询。逻辑等待由 WebDriverWait 控制，单次 HTTP 请求
+        使用剩余时间，避免把 Appium 请求超时误当成元素等待时间。
+        """
+        from appium.webdriver.common.appiumby import AppiumBy
+        from selenium.common.exceptions import NoSuchElementException, TimeoutException
+        from selenium.webdriver.support.ui import WebDriverWait
+
+        from .driver import ElementNotFound
+        from .stale_guard import is_stale_element_error
+
+        driver = self._ensure()
+        timeout = float(wait_timeout if wait_timeout is not None else 10)
+        timeout = max(0.0, timeout)
+        operation_deadline = time.monotonic() + timeout
+
+        def locate(_driver):
+            remaining = operation_deadline - time.monotonic()
+            if timeout > 0 and remaining <= 0:
+                raise TimeoutException()
+            return self.run_with_http_timeout(
+                None if timeout <= 0 else remaining,
+                lambda: element.find_element(AppiumBy.XPATH, "./parent::*"),
+                immediate=timeout <= 0,
+            )
+
+        def translate_missing(exc):
+            if isinstance(exc, (NoSuchElementException, TimeoutException)):
+                raise ElementNotFound("元素没有直接父节点（无法作为父元素视口）") from None
+            # stale 必须原样上抛，交由动作层现有 stale 重试重新定位 container。
+            if is_stale_element_error(exc):
+                raise exc
+            if "no such element" in str(exc).lower():
+                raise ElementNotFound("元素没有直接父节点（无法作为父元素视口）") from exc
+            raise DriverError(f"获取元素直接父节点失败：{exc}") from exc
+
+        try:
+            if timeout <= 0:
+                return locate(driver)
+            return WebDriverWait(driver, timeout).until(locate)
+        except (NoSuchElementException, TimeoutException) as exc:
+            translate_missing(exc)
+        except Exception as exc:
+            translate_missing(exc)
+        raise AssertionError("父节点定位状态异常")
 
     def find_elements(self, locator_type: str, locator_value: str, wait_timeout: int = 10):
         """多匹配查询（智能定位用）：返回当前页面全部匹配元素。
@@ -458,14 +555,16 @@ class AppiumDriver(BaseDriver):
         if platform and platform != "android":
             raise DriverError("控件内滑动和区域内滑动当前仅支持 Android（UiAutomator2）")
 
-    def swipe_in_element(self, element, direction: str, percent: float) -> None:
+    def swipe_in_element(
+        self, element, direction: str, percent: float, speed: int | None = None
+    ) -> None:
         """UiAutomator2 mobile: swipeGesture，在元素自身边界内滑动。"""
         self._ensure_android_gesture()
         driver = self._ensure()
-        driver.execute_script(
-            "mobile: swipeGesture",
-            {"elementId": element.id, "direction": direction, "percent": percent},
-        )
+        payload = {"elementId": element.id, "direction": direction, "percent": percent}
+        if speed is not None:
+            payload["speed"] = speed
+        driver.execute_script("mobile: swipeGesture", payload)
 
     def scroll_in_element(self, element, direction: str, percent: float) -> bool:
         """UiAutomator2 mobile: scrollGesture，在元素边界内滚动并返回是否还能继续滚动。"""
@@ -496,21 +595,22 @@ class AppiumDriver(BaseDriver):
         height: int,
         direction: str,
         percent: float,
+        speed: int | None = None,
     ) -> None:
         """UiAutomator2 mobile: swipeGesture，在给定屏幕像素区域内滑动。"""
         self._ensure_android_gesture()
         driver = self._ensure()
-        driver.execute_script(
-            "mobile: swipeGesture",
-            {
-                "left": left,
-                "top": top,
-                "width": width,
-                "height": height,
-                "direction": direction,
-                "percent": percent,
-            },
-        )
+        payload = {
+            "left": left,
+            "top": top,
+            "width": width,
+            "height": height,
+            "direction": direction,
+            "percent": percent,
+        }
+        if speed is not None:
+            payload["speed"] = speed
+        driver.execute_script("mobile: swipeGesture", payload)
 
     def get_window_size(self) -> dict[str, int]:
         return self._ensure().get_window_size()

@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { MoreFilled, Plus, Search } from '@element-plus/icons-vue'
 import Draggable from 'vuedraggable'
 
-import { createSuite, createVariable, deleteSuite, updateSuite, type Suite } from '@/api/suites'
+import { createSuite, createVariable, deleteSuite, updateSuite, type Suite, type SuiteCase } from '@/api/suites'
 import EmptyState from '@/components/EmptyState.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import RunButton from '@/components/RunButton.vue'
@@ -16,8 +16,10 @@ import { useSuiteList } from '@/composables/useSuiteList'
 import { usePermission } from '@/composables/usePermission'
 import { useProjectContextStore } from '@/stores/projectContext'
 import { formatDateTime } from '@/utils/format'
+import { parseSuiteId } from '@/utils/suiteNavigation'
 
 const route = useRoute()
+const router = useRouter()
 const projectId = Number(route.params.projectId)
 const projectContext = useProjectContextStore()
 const { canWriteAssets } = usePermission()
@@ -101,6 +103,18 @@ async function onSelectSuite(suite: Suite) {
   if (suite.id === activeSuite.value) return
   if (!(await confirmDiscardSteps())) return
   await selectSuite(suite.id)
+}
+
+function openCaseEditor(suiteCase: SuiteCase) {
+  const suiteId = activeSuite.value
+  if (!suiteId) return
+  void router.push({
+    path: `/projects/${projectId}/cases/${suiteCase.case_id}/edit`,
+    query: {
+      return_to: 'suite',
+      suite_id: String(suiteId),
+    },
+  })
 }
 
 function openCreate() {
@@ -220,6 +234,10 @@ async function initialize() {
     // 项目权限接口失败时仍让套件接口自行返回错误，避免产生未处理 Promise。
   }
   await loadSuites()
+  const querySuiteId = parseSuiteId(route.query.suite_id)
+  if (querySuiteId !== null && suites.value.some((suite) => suite.id === querySuiteId)) {
+    await selectSuite(querySuiteId)
+  }
 }
 
 onMounted(() => {
@@ -333,12 +351,12 @@ onMounted(() => {
               <Draggable v-model="suiteCases" :disabled="!canWriteAssets" item-key="id" handle=".drag-handle" ghost-class="case-ghost"
                 class="case-list" @end="onReorder">
                 <template #item="{ element, index }">
-                  <div class="case-card">
+                  <div class="case-card" @dblclick="openCaseEditor(element)">
                     <div class="case-row"><span class="drag-handle" title="拖拽排序">⠿</span><span class="case-order">{{
                         index + 1 }}</span><span class="case-name" :title="element.case_name">{{ element.case_name
                         }}</span><el-tag v-if="element.module_name" size="small" type="info" effect="plain"
                         class="case-module">{{ element.module_name }}</el-tag><el-button v-if="canWriteAssets" class="case-remove"
-                        size="small" text type="danger" @click="removeCase(element)">移除</el-button></div>
+                        size="small" text type="danger" @click="removeCase(element)" @dblclick.stop>移除</el-button></div>
                   </div>
                 </template>
               </Draggable>

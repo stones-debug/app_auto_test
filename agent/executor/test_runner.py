@@ -300,7 +300,7 @@ class TestRunner:
                     action_cls = ACTION_REGISTRY.get(action_name)
                     if action_cls is None:
                         raise ValueError(f"未知动作: {action_name}")
-                    effective = dict(step.get("params") or {})
+                    effective = context.render_value(dict(step.get("params") or {}))
                     if step.get("element_id") is not None and "element_id" not in effective:
                         effective["element_id"] = step["element_id"]
                     result = await asyncio.to_thread(
@@ -317,7 +317,7 @@ class TestRunner:
                         assertion_cls = ASSERTION_REGISTRY.get(assertion.get("type"))
                         if assertion_cls is None:
                             raise ValueError(f"未知断言: {assertion.get('type')}")
-                        effective = dict(assertion.get("params") or {})
+                        effective = context.render_value(dict(assertion.get("params") or {}))
                         if assertion.get("element_id") is not None and "element_id" not in effective:
                             effective["element_id"] = assertion["element_id"]
 
@@ -457,7 +457,7 @@ class TestRunner:
                     assertion_cls = ASSERTION_REGISTRY.get(str(node.get("type") or node.get("assertion_type")))
                     if assertion_cls is None:
                         raise ValueError(f"未知断言: {node.get('type') or node.get('assertion_type')}")
-                    effective = dict(node.get("params") or node.get("parameters") or {})
+                    effective = context.render_value(dict(node.get("params") or node.get("parameters") or {}))
                     if node.get("element_id") is not None:
                         effective.setdefault("element_id", node["element_id"])
 
@@ -492,7 +492,7 @@ class TestRunner:
                         action_cls = ACTION_REGISTRY.get(action_name)
                         if action_cls is None:
                             raise ValueError(f"未知动作: {action_name}")
-                        effective = dict(node.get("params") or node.get("parameters") or {})
+                        effective = context.render_value(dict(node.get("params") or node.get("parameters") or {}))
                         if node.get("element_id") is not None:
                             effective.setdefault("element_id", node["element_id"])
                         result = await asyncio.to_thread(

@@ -2,6 +2,7 @@ import re
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from .driver import ElementNotFound
@@ -55,6 +56,16 @@ class ExecutionContext:
             return str(self.variables[name])
 
         return _VAR_RE.sub(repl, text)
+
+    def render_value(self, value: Any) -> Any:
+        """递归解析动作/断言参数中的运行时变量。"""
+        if isinstance(value, str):
+            return self.render(value)
+        if isinstance(value, dict):
+            return {key: self.render_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self.render_value(item) for item in value]
+        return value
 
     def find_element(
         self,

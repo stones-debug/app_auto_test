@@ -46,6 +46,7 @@ from app.services.profile_resolver_nodes import (
     _render_node_with_context,
     render_text,
     render_value,
+    runtime_variable_names,
     validate_node_patch,
 )
 from app.services.profile_resolver_nodes import (
@@ -510,6 +511,7 @@ async def _resolve_case(
     )
     kept_nodes: list[dict] = []
     exclusions: list[ExclusionItem] = []
+    runtime_variables: set[str] = set()
     for node in selected_steps:
         is_assertion = node.get("kind") == "assertion" or "type" in node
         node_type = "assertion" if is_assertion else "step"
@@ -522,8 +524,10 @@ async def _resolve_case(
         exclusions.extend(node_exclusions)
         if not kept:
             continue
-        rendered = _render_node_with_context(kept[0], variables, case.name)
-        kept_nodes.append(_registry_validate_assertion(rendered) if is_assertion else _registry_validate_step(rendered))
+        rendered = _render_node_with_context(kept[0], variables, case.name, runtime_variables)
+        validated = _registry_validate_assertion(rendered) if is_assertion else _registry_validate_step(rendered)
+        kept_nodes.append(validated)
+        runtime_variables.update(runtime_variable_names(validated))
     nodes = _assign_order(kept_nodes, order_offset=0)
     if not nodes:
         exclusions.append(
@@ -538,7 +542,7 @@ async def _resolve_case(
         )
         return None, exclusions, override_count
     elements = await _resolve_element_snapshots(
-        db, request.project_id, nodes, config["element_overrides"], variables
+        db, request.project_id, nodes, config["element_overrides"], variables, runtime_variables
     )
     override_count += sum(1 for element_id in elements if int(element_id) in config["element_overrides"])
     return (
@@ -578,6 +582,7 @@ async def _parse_suite_steps(
         if current_suite_id == suite_id
     }
     override_count = 0
+    runtime_variables: set[str] = set()
 
     def process(nodes: list, phase: str) -> tuple[list[dict], list[ExclusionItem]]:
         nonlocal override_count
@@ -589,7 +594,12 @@ async def _parse_suite_steps(
             {str(node.get("key") or "") for node in (nodes or []) if isinstance(node, dict)}
             & set(suite_overrides)
         )
-        steps = [_registry_validate_step(_render_node_with_context(node, variables, suite_name)) for node in kept]
+        steps: list[dict] = []
+        for node in kept:
+            rendered = _render_node_with_context(node, variables, suite_name, runtime_variables)
+            validated = _registry_validate_step(rendered)
+            steps.append(validated)
+            runtime_variables.update(runtime_variable_names(validated))
         steps = _assign_order(steps, order_offset=0)
         return [_finalize_suite_step(step, phase) for step in steps], exclusions
 
@@ -597,7 +607,12 @@ async def _parse_suite_steps(
     teardown_snapshot, teardown_exclusions = process(teardown_nodes, "suite_teardown")
     exclusions = [*setup_exclusions, *teardown_exclusions]
     elements = await _resolve_element_snapshots(
-        db, project_id, [*setup_snapshot, *teardown_snapshot], config["element_overrides"], variables
+        db,
+        project_id,
+        [*setup_snapshot, *teardown_snapshot],
+        config["element_overrides"],
+        variables,
+        runtime_variables,
     )
     override_count += sum(1 for element_id in elements if int(element_id) in config["element_overrides"])
     return setup_snapshot, teardown_snapshot, elements, exclusions, override_count

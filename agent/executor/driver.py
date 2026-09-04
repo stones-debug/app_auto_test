@@ -70,6 +70,14 @@ class BaseDriver:
     def find_element(self, locator_type: str, locator_value: str, wait_timeout: int = 10):
         raise NotImplementedError
 
+    def get_parent_element(self, element, wait_timeout: float | None = 10):
+        """返回元素的直接父节点。
+
+        父节点不是元素库中的定位对象，因此每次需要视口时都应通过此方法
+        从当前轮次重新定位的 container 获取，不能跨页面重绘缓存句柄。
+        """
+        raise NotImplementedError
+
     def find_elements(self, locator_type: str, locator_value: str, wait_timeout: int = 10):
         """多匹配查询（智能定位用）：返回当前页面全部匹配元素。
 
@@ -106,7 +114,9 @@ class BaseDriver:
     def swipe(self, direction: str, duration: int = 500) -> None:
         raise NotImplementedError
 
-    def swipe_in_element(self, element, direction: str, percent: float) -> None:
+    def swipe_in_element(
+        self, element, direction: str, percent: float, speed: int | None = None
+    ) -> None:
         """在指定原生控件可滚动范围内执行滑动。"""
         raise NotImplementedError
 
@@ -118,6 +128,7 @@ class BaseDriver:
         height: int,
         direction: str,
         percent: float,
+        speed: int | None = None,
     ) -> None:
         """在屏幕像素区域内执行滑动。"""
         raise NotImplementedError
@@ -193,8 +204,10 @@ class MockDriver(BaseDriver):
         self._next_node_id = 0
         self._scroll_callback = None
         self.swipes: list[tuple[str, int]] = []
-        self.element_swipes: list[tuple[str, str, float]] = []
-        self.region_swipes: list[tuple[int, int, int, int, str, float]] = []
+        self.element_swipes: list[tuple] = []
+        self.region_swipes: list[tuple] = []
+        self.element_swipe_speeds: list[int | None] = []
+        self.region_swipe_speeds: list[int | None] = []
         self.element_scrolls: list[tuple[str, str, float, bool]] = []
         self.scroll_can_continue = True
         self.swipe_count = 0
@@ -216,6 +229,17 @@ class MockDriver(BaseDriver):
                 if node.locator_value == locator_value:
                     return node
         return MockElement(locator_value, generation=self._screen_generation)
+
+    def get_parent_element(self, element, wait_timeout: float | None = 10):
+        """返回 MockElement 的直接父节点，模拟 Appium 相对 XPath 查询。"""
+        _ = wait_timeout
+        self._assert_fresh(element)
+        parent = getattr(element, "parent", None)
+        if parent is None:
+            raise ElementNotFound(
+                f"元素 {getattr(element, 'locator_value', '<unknown>')} 没有直接父节点"
+            )
+        return parent
 
     def find_elements(self, locator_type: str, locator_value: str, wait_timeout: int = 10):
         """多匹配查询：按 Strategy U/X 语义匹配当前屏幕节点树。"""
@@ -320,9 +344,13 @@ class MockDriver(BaseDriver):
             if new_screen is not None:
                 self.set_screen(new_screen)
 
-    def swipe_in_element(self, element, direction: str, percent: float) -> None:
+    def swipe_in_element(
+        self, element, direction: str, percent: float, speed: int | None = None
+    ) -> None:
         self._assert_fresh(element)
-        self.element_swipes.append((element.locator_value, direction, percent))
+        swipe = (element.locator_value, direction, percent)
+        self.element_swipes.append(swipe)
+        self.element_swipe_speeds.append(speed)
         self.swipe(direction)
 
     def swipe_in_region(
@@ -333,8 +361,11 @@ class MockDriver(BaseDriver):
         height: int,
         direction: str,
         percent: float,
+        speed: int | None = None,
     ) -> None:
-        self.region_swipes.append((left, top, width, height, direction, percent))
+        swipe = (left, top, width, height, direction, percent)
+        self.region_swipes.append(swipe)
+        self.region_swipe_speeds.append(speed)
         self.swipe(direction)
 
     def get_window_size(self) -> dict[str, int]:

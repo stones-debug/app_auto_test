@@ -194,6 +194,12 @@ def test_render_text_and_undefined():
         worker_service.render_text("${undefined_var}", {})
 
 
+def test_render_runtime_variable_keeps_placeholder_for_agent():
+    assert worker_service.render_value(
+        {"value": "prefix-${captured}"}, {}, {"captured"}
+    ) == {"value": "prefix-${captured}"}
+
+
 async def test_snapshot_selects_and_reorders_pre_main_post_steps(client: AsyncClient):
     token, case_id = await _setup_case(client)
     headers = {"Authorization": f"Bearer {token}"}
