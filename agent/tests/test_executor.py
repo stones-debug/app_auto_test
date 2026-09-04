@@ -2170,6 +2170,11 @@ class _ListScrollDriver(MockDriver):
         self.region_swipe_speeds.append(speed)
         self.swipe(direction)
 
+    def swipe_coordinate(self, start_x, start_y, end_x, end_y, duration_ms) -> None:
+        direction = "up" if end_y < start_y else "down"
+        self._apply_direction_page(direction)
+        super().swipe_coordinate(start_x, start_y, end_x, end_y, duration_ms)
+
 
 def _find_text_params(**overrides) -> dict:
     params = {
@@ -2310,11 +2315,11 @@ async def test_find_text_click_ignores_exhausted_direction_hint():
     assert result["found_after_swipes"] == 3
     assert driver.up_count == 2
     assert driver.down_count == 1
-    assert driver.element_swipes == [
-        ("list", "up", 0.3),
-        ("list", "up", 0.3),
+    assert driver.coordinate_swipes == [
+        (500, 1300, 500, 700, 300),
+        (500, 1300, 500, 700, 300),
+        (500, 700, 500, 1300, 300),
     ]
-    assert driver.region_swipes == [(0, 0, 1000, 2000, "down", 0.3)]
 
 
 async def test_find_text_click_locks_first_direction_before_reversing(caplog):
@@ -2340,11 +2345,11 @@ async def test_find_text_click_locks_first_direction_before_reversing(caplog):
 
     assert result["status"] == "passed"
     assert result["found_after_swipes"] == 3
-    assert driver.element_swipes == [
-        ("list", "up", 0.3),
-        ("list", "up", 0.3),
+    assert driver.coordinate_swipes == [
+        (500, 1300, 500, 700, 300),
+        (500, 1300, 500, 700, 300),
+        (500, 700, 500, 1300, 300),
     ]
-    assert driver.region_swipes == [(0, 0, 1000, 2000, "down", 0.3)]
     messages = [record.getMessage() for record in caplog.records]
     assert any("执行列表滑动: phase=forward direction=up" in message for message in messages)
     assert any("切换反向阶段: from=up to=down" in message for message in messages)
@@ -2395,8 +2400,7 @@ async def test_find_text_click_both_directions_exhaust_raises():
         await action.execute(driver, context, _find_text_params(max_swipes_per_direction=2))
     assert driver.up_count == 2
     assert driver.down_count == 4
-    assert len(driver.element_swipes) == 2
-    assert len(driver.region_swipes) == 4
+    assert len(driver.coordinate_swipes) == 6
 
 
 class _SwipeGestureNoResultDriver(_ListScrollDriver):
@@ -2425,12 +2429,12 @@ async def test_find_text_click_uses_configured_budget_and_reverses_direction():
     assert result["found_after_swipes"] == 4
     assert driver.up_count == 3
     assert driver.down_count == 1
-    assert driver.element_swipes == [
-        ("list", "up", 0.3),
-        ("list", "up", 0.3),
-        ("list", "up", 0.3),
+    assert driver.coordinate_swipes == [
+        (500, 1300, 500, 700, 300),
+        (500, 1300, 500, 700, 300),
+        (500, 1300, 500, 700, 300),
+        (500, 700, 500, 1300, 300),
     ]
-    assert driver.region_swipes == [(0, 0, 1000, 2000, "down", 0.3)]
 
 
 async def test_find_text_click_honors_down_preferred_direction():
@@ -2478,7 +2482,7 @@ class _StaleOnceScrollDriver(_ListScrollDriver):
         self.staled = False
         self.scroll_attempts = 0
 
-    def swipe_in_element(self, element, direction: str, percent: float, speed=None) -> None:
+    def swipe_coordinate(self, start_x, start_y, end_x, end_y, duration_ms) -> None:
         self.scroll_attempts += 1
         if not self.staled:
             self.staled = True
@@ -2486,7 +2490,7 @@ class _StaleOnceScrollDriver(_ListScrollDriver):
             from executor.driver import StaleObjectException
 
             raise StaleObjectException("元素已失效")
-        super().swipe_in_element(element, direction, percent, speed)
+        super().swipe_coordinate(start_x, start_y, end_x, end_y, duration_ms)
 
 
 async def test_find_text_click_scroll_stale_retries_relocates_container():

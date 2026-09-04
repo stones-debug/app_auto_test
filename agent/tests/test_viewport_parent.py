@@ -96,9 +96,9 @@ async def test_parent_viewport_is_used_for_swipe_region_after_target_moves():
 
     assert result["status"] == "passed"
     assert driver.clicked == ["目标"]
-    assert driver.element_swipes == [("list", "up", pytest.approx(3 / 14))]
+    assert driver.coordinate_swipes == [(500, 1150, 500, 850, 300)]
+    assert driver.element_swipes == []
     assert driver.region_swipes == []
-    assert driver.element_swipe_speeds == [1000]
 
 
 async def test_parent_viewport_down_swipe_uses_exact_parent_region():
@@ -115,8 +115,8 @@ async def test_parent_viewport_down_swipe_uses_exact_parent_region():
     assert result["status"] == "passed"
     assert driver.clicked == ["目标"]
     assert driver.element_swipes == []
-    assert driver.region_swipes == [(0, 400, 1000, 800, "down", 0.3)]
-    assert driver.region_swipe_speeds == [800]
+    assert driver.coordinate_swipes == [(500, 680, 500, 920, 300)]
+    assert driver.region_swipes == []
 
 
 async def test_up_then_reverse_down_uses_direction_specific_gestures():
@@ -128,10 +128,12 @@ async def test_up_then_reverse_down_uses_direction_specific_gestures():
     result = await _run(driver, _params(max_swipes_per_direction=1))
 
     assert result["status"] == "passed"
-    assert driver.element_swipes == [("list", "up", pytest.approx(3 / 14))]
-    assert driver.region_swipes == [(0, 200, 1000, 1000, "down", 0.3)]
-    assert driver.element_swipe_speeds == [1000]
-    assert driver.region_swipe_speeds == [1000]
+    assert driver.coordinate_swipes == [
+        (500, 1150, 500, 850, 300),
+        (500, 550, 500, 850, 300),
+    ]
+    assert driver.element_swipes == []
+    assert driver.region_swipes == []
 
 
 async def test_down_then_reverse_up_uses_direction_specific_gestures():
@@ -143,10 +145,12 @@ async def test_down_then_reverse_up_uses_direction_specific_gestures():
     result = await _run(driver, _params(preferred_direction="down", max_swipes_per_direction=1))
 
     assert result["status"] == "passed"
-    assert driver.region_swipes == [(0, 200, 1000, 1000, "down", 0.3)]
-    assert driver.element_swipes == [("list", "up", pytest.approx(3 / 14))]
-    assert driver.region_swipe_speeds == [1000]
-    assert driver.element_swipe_speeds == [1000]
+    assert driver.coordinate_swipes == [
+        (500, 550, 500, 850, 300),
+        (500, 1150, 500, 850, 300),
+    ]
+    assert driver.element_swipes == []
+    assert driver.region_swipes == []
 
 
 async def test_up_effective_percent_tracks_dynamic_list_height():
@@ -164,26 +168,123 @@ async def test_up_effective_percent_tracks_dynamic_list_height():
     large = run_for_list_height(2000)
     await _run(large, _params())
 
-    assert small.element_swipes == [("list", "up", pytest.approx(0.3))]
-    assert large.element_swipes == [("list", "up", pytest.approx(0.15))]
-    assert small.element_swipe_speeds == [1000]
-    assert large.element_swipe_speeds == [1000]
+    assert small.coordinate_swipes == [(500, 950, 500, 650, 300)]
+    assert large.coordinate_swipes == [(500, 1300, 500, 1000, 300)]
 
 
-async def test_duration_defaults_to_300_and_controls_speed():
+async def test_duration_defaults_to_300_and_is_passed_to_coordinate_gesture():
     driver = RecordingMockDriver()
     parent = {"x": 0, "y": 200, "width": 1000, "height": 1000}
     driver.set_screen(_screen(target_y=1600, parent_bounds=parent))
     driver.set_scroll_callback(lambda count: _screen(target_y=900, parent_bounds=parent) if count == 1 else None)
 
     await _run(driver, _params())
-    assert driver.element_swipe_speeds == [1000]
+    assert driver.coordinate_swipes == [(500, 1150, 500, 850, 300)]
 
     driver = RecordingMockDriver()
     driver.set_screen(_screen(target_y=1600, parent_bounds=parent))
     driver.set_scroll_callback(lambda count: _screen(target_y=900, parent_bounds=parent) if count == 1 else None)
     await _run(driver, _params(duration_ms=600))
-    assert driver.element_swipe_speeds == [500]
+    assert driver.coordinate_swipes == [(500, 1150, 500, 850, 600)]
+
+
+async def test_duration_changes_only_w3c_duration_not_coordinates():
+    parent = {"x": 0, "y": 200, "width": 1000, "height": 1000}
+
+    def make_driver():
+        driver = RecordingMockDriver()
+        driver.set_screen(_screen(target_y=1600, parent_bounds=parent))
+        driver.set_scroll_callback(
+            lambda count: _screen(target_y=900, parent_bounds=parent) if count == 1 else None
+        )
+        return driver
+
+    short = make_driver()
+    long = make_driver()
+    await _run(short, _params(duration_ms=300))
+    await _run(long, _params(duration_ms=3000))
+
+    assert short.coordinate_swipes[0][:4] == long.coordinate_swipes[0][:4]
+    assert short.coordinate_swipes[0][4] == 300
+    assert long.coordinate_swipes[0][4] == 3000
+
+
+async def test_swipe_distance_is_clamped_to_small_visible_region_without_overflow():
+    driver = RecordingMockDriver()
+    parent = {"x": 50, "y": 100, "width": 20, "height": 30}
+    driver.set_screen(_screen(
+        target_y=10,
+        parent_bounds=parent,
+        target_bounds={"x": 55, "y": 10, "width": 10, "height": 5},
+        list_height=30,
+    ))
+    driver.set_scroll_callback(lambda count: _screen(
+        target_y=110,
+        parent_bounds=parent,
+        target_bounds={"x": 55, "y": 110, "width": 10, "height": 5},
+        list_height=30,
+    ) if count == 1 else None)
+
+    await _run(driver, _params(percent=10.0, preferred_direction="down"))
+    start_x, start_y, end_x, end_y, duration = driver.coordinate_swipes[0]
+    assert (start_x, end_x) == (60, 60)
+    assert 100 <= start_y <= end_y <= 130
+    assert end_y - start_y == 13  # closed pixel interval minus 8px safety margin on each side
+    assert duration == 300
+
+
+def test_typical_792px_region_centers_track_away_from_navigation_edge():
+    from executor.actions import _vertical_swipe_points
+
+    region = {"x": 100, "y": 200, "width": 500, "height": 792}
+    start_x, start_y, end_x, end_y, actual = _vertical_swipe_points(region, "up", 600)
+
+    assert (start_x, end_x) == (350, 350)
+    assert (start_y, end_y) == (896, 296)
+    assert actual == 600
+    assert start_y < region["y"] + region["height"] - 8
+    assert abs((start_y + end_y) / 2 - (region["y"] + region["height"] / 2)) <= 0.5
+
+    max_start_x, max_start_y, max_end_x, max_end_y, max_actual = _vertical_swipe_points(
+        region, "down", 9999
+    )
+    assert (max_start_x, max_end_x) == (350, 350)
+    assert (max_start_y, max_end_y) == (240, 951)
+    assert max_actual == 711  # safe_bottom - safe_top, using closed pixel bounds
+
+
+def test_two_pixel_region_clamps_to_one_pixel_without_overflow():
+    from executor.actions import _vertical_swipe_points
+
+    points = _vertical_swipe_points({"x": 10, "y": 20, "width": 10, "height": 2}, "down", 100)
+
+    assert points == (15, 20, 15, 21, 1)
+
+
+def test_appium_coordinate_swipe_calls_driver_swipe_with_exact_duration():
+    from executor.appium_driver import AppiumDriver
+
+    class Appium:
+        def __init__(self):
+            self.calls = []
+
+        def swipe(self, *args):
+            self.calls.append(args)
+
+    appium = Appium()
+    driver = AppiumDriver(device={"platform": "android"})
+    driver.driver = cast(Any, appium)
+    driver.swipe_coordinate(10, 100, 10, 20, 3000)
+
+    assert appium.calls == [(10, 100, 10, 20, 3000)]
+
+
+def test_mock_coordinate_swipe_infers_direction_from_dominant_axis():
+    driver = MockDriver()
+    driver.swipe_coordinate(100, 100, 20, 95, 300)
+    driver.swipe_coordinate(20, 100, 25, 180, 300)
+
+    assert driver.swipes == [("left", 300), ("down", 300)]
 
 
 async def test_duration_must_be_positive():
@@ -244,8 +345,7 @@ async def test_parent_viewport_is_reacquired_after_stale():
     assert result["status"] == "passed"
     assert driver.parent_calls >= 3
     assert driver.element_swipes == []
-    assert driver.region_swipes == [(0, 400, 1000, 800, "down", 0.3)]
-    assert driver.region_swipe_speeds == [800]
+    assert driver.coordinate_swipes == [(500, 680, 500, 920, 300)]
 
 
 async def test_parent_viewport_missing_is_explicit_error():
@@ -282,8 +382,7 @@ async def test_parent_region_is_clipped_to_window():
 
     assert result["status"] == "passed"
     assert driver.element_swipes == []
-    assert driver.region_swipes == [(0, 0, 1000, 2000, "down", 0.3)]
-    assert driver.region_swipe_speeds == [2000]
+    assert driver.coordinate_swipes == [(500, 700, 500, 1300, 300)]
 
 
 async def test_zero_area_parent_is_explicit_error():

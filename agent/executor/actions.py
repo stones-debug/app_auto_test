@@ -978,53 +978,32 @@ class SwipeInElementFindTextClickAction(BaseAction):
                 parent_height,
                 max(1, round(parent_height * configured_percent)),
             )
-            speed = max(1, round(target_distance_px * 1000 / duration_ms))
-            effective_percent = target_distance_px / list_height
             if direction == "up":
-                effective_percent = min(1.0, max(0.001, effective_percent))
-                logger.info(
-                    "列表元素内向上滑动: element_id=%s direction=%s list_height=%s "
-                    "parent_height=%s configured_percent=%s effective_percent=%s "
-                    "target_distance_px=%s duration_ms=%s speed=%s",
-                    element_id,
-                    direction,
-                    list_height,
-                    parent_height,
-                    configured_percent,
-                    effective_percent,
-                    target_distance_px,
-                    duration_ms,
-                    speed,
-                )
-                return driver.swipe_in_element(
-                    container, direction, effective_percent, speed=speed
-                )
-            logger.info(
-                "父元素区域内向下滑动: element_id=%s direction=%s configured_percent=%s "
-                "list_height=%s parent_height=%s effective_percent=%s "
-                "target_distance_px=%s duration_ms=%s speed=%s region=(%s,%s,%s,%s)",
-                element_id,
-                direction,
-                configured_percent,
-                list_height,
-                parent_height,
-                configured_percent,
-                target_distance_px,
-                duration_ms,
-                speed,
-                region["x"],
-                region["y"],
-                region["width"],
-                region["height"],
+                # 向上手势必须限制在本轮 ListView 的自身可见区域，不能扩大到父视口。
+                gesture_region = _clip_rect(list_rect, driver.get_window_size())
+                region_type = "list_view_visible"
+            else:
+                gesture_region = region
+                region_type = "parent_visible"
+            start_x, start_y, end_x, end_y, actual_distance_px = _vertical_swipe_points(
+                gesture_region, direction, target_distance_px
             )
-            return driver.swipe_in_region(
-                region["x"],
-                region["y"],
-                region["width"],
-                region["height"],
+            logger.info(
+                "列表坐标滑动: gesture=duration_w3c region_type=%s direction=%s "
+                "start=(%s,%s) end=(%s,%s) target_distance_px=%s "
+                "actual_distance_px=%s duration_ms=%s",
+                region_type,
                 direction,
-                configured_percent,
-                speed=speed,
+                start_x,
+                start_y,
+                end_x,
+                end_y,
+                target_distance_px,
+                actual_distance_px,
+                duration_ms,
+            )
+            return driver.swipe_coordinate(
+                start_x, start_y, end_x, end_y, duration_ms
             )
 
         await with_stale_retry(
@@ -1205,6 +1184,46 @@ def _clip_rect(rect: dict[str, int], size: dict[str, int]) -> dict[str, int]:
     width = max(0, right - x)
     height = max(0, bottom - y)
     return {"x": x, "y": y, "width": width, "height": height}
+
+
+def _vertical_swipe_points(
+    region: dict[str, int], direction: str, target_distance_px: int
+) -> tuple[int, int, int, int, int]:
+    """在可见矩形内生成带安全边距的竖向坐标手势，并夹紧可用距离。"""
+    left = int(region.get("x", 0))
+    top = int(region.get("y", 0))
+    width = int(region.get("width", 0))
+    height = int(region.get("height", 0))
+    if width <= 0 or height <= 0:
+        raise DriverError(
+            f"列表滑动区域过小，无法执行坐标手势: region=({left},{top},{width},{height})"
+        )
+
+    # 轨迹整体位于区域中央，避免从底部/顶部边缘附近注入手势。
+    # 正常区域至少留出 8px 且约为高度的 5%；极小区域自动缩小边距。
+    margin = max(8, round(height * 0.05))
+    margin = min(margin, (height - 1) // 2)
+    safe_top = top + margin
+    safe_bottom = top + height - 1 - margin
+    available_distance = safe_bottom - safe_top
+    if available_distance <= 0:
+        raise DriverError(
+            f"列表滑动区域过小，无法容纳安全手势距离: region=({left},{top},{width},{height})"
+        )
+    actual_distance = min(max(1, int(target_distance_px)), available_distance)
+    start_x = left + width // 2
+    center_twice = safe_top + safe_bottom
+    # 向上取整起点处理奇偶像素，使轨迹中心尽可能贴近安全内框中心。
+    centered_start = (center_twice - actual_distance + 1) // 2
+    if direction == "up":
+        end_y = centered_start
+        start_y = end_y + actual_distance
+    elif direction == "down":
+        start_y = centered_start
+        end_y = start_y + actual_distance
+    else:
+        raise DriverError(f"不支持的列表滑动方向: {direction}")
+    return start_x, start_y, start_x, end_y, actual_distance
 
 
 def _intersect_rect(first: dict[str, int], second: dict[str, int]) -> dict[str, int]:

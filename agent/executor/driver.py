@@ -158,6 +158,12 @@ class BaseDriver:
     def tap_coordinate(self, x: int, y: int) -> None:
         raise NotImplementedError
 
+    def swipe_coordinate(
+        self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int
+    ) -> None:
+        """从起点到终点执行带明确持续时间的坐标滑动手势。"""
+        raise NotImplementedError
+
     def drag_coordinate(
         self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int
     ) -> None:
@@ -214,6 +220,7 @@ class MockDriver(BaseDriver):
         self.region_swipes: list[tuple] = []
         self.element_swipe_speeds: list[int | None] = []
         self.region_swipe_speeds: list[int | None] = []
+        self.coordinate_swipes: list[tuple[int, int, int, int, int]] = []
         self.coordinate_drags: list[tuple[int, int, int, int, int]] = []
         self.coordinate_taps: list[tuple[int, int]] = []
         self.element_scrolls: list[tuple[str, str, float, bool]] = []
@@ -403,6 +410,18 @@ class MockDriver(BaseDriver):
 
     def tap_coordinate(self, x: int, y: int) -> None:
         self.coordinate_taps.append((x, y))
+
+    def swipe_coordinate(
+        self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int
+    ) -> None:
+        self.coordinate_swipes.append((start_x, start_y, end_x, end_y, duration_ms))
+        delta_x = end_x - start_x
+        delta_y = end_y - start_y
+        if abs(delta_y) >= abs(delta_x):
+            direction = "up" if delta_y < 0 else "down"
+        else:
+            direction = "left" if delta_x < 0 else "right"
+        self.swipe(direction, duration=duration_ms)
 
     def drag_coordinate(
         self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int

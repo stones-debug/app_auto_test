@@ -627,6 +627,14 @@ class AppiumDriver(BaseDriver):
         driver = self._ensure()
         driver.tap([(x, y)])
 
+    def swipe_coordinate(
+        self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int
+    ) -> None:
+        """用 W3C 坐标滑动直接传递毫秒持续时间，不转换为 speed。"""
+        self._ensure_android_gesture()
+        driver = self._ensure()
+        driver.swipe(start_x, start_y, end_x, end_y, duration_ms)
+
     def drag_coordinate(
         self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int
     ) -> None:
