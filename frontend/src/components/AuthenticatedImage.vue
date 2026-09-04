@@ -4,7 +4,7 @@ import { onBeforeUnmount, ref, watch } from 'vue'
 import { getToken } from '@/utils/request'
 
 // V2 §7.10：鉴权图片 Blob 加载。禁止把 Access Token 拼入普通 URL。
-const props = defineProps<{ src: string; alt?: string }>()
+const props = defineProps<{ src: string; alt?: string; preview?: boolean }>()
 const objectUrl = ref<string | null>(null)
 const failed = ref(false)
 
@@ -40,7 +40,16 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <el-image v-if="objectUrl" :src="objectUrl" :alt="alt ?? ''" fit="contain" class="auth-image" />
+  <el-image
+    v-if="objectUrl"
+    :src="objectUrl"
+    :alt="alt ?? ''"
+    fit="contain"
+    class="auth-image"
+    :preview-src-list="props.preview ? [objectUrl] : []"
+    :preview-teleported="props.preview"
+    :hide-on-click-modal="props.preview"
+  />
   <div v-else-if="failed" class="img-failed v2-aux">截图不可用</div>
   <div v-else class="img-loading v2-aux">加载中…</div>
 </template>

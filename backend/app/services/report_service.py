@@ -16,7 +16,7 @@ from app.services.screenshot_store import resolve_screenshot_path, validate_obje
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates" / "reports"
 # Step 8：HTML 缓存版本标记——修改模板/数据规则后旧缓存不再复用
-_REPORT_HTML_VERSION = "step-assertions-html-v8"
+_REPORT_HTML_VERSION = "step-assertions-html-v9"
 
 
 def _execution_dict(execution: Execution) -> dict:

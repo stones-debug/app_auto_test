@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import type { ReportNode } from '@/api/reports'
+import { reportFileUrl } from '@/api/reports'
+import AuthenticatedImage from '@/components/AuthenticatedImage.vue'
 import { formatParameters } from '@/utils/parameters'
 
-defineProps<{ nodes: ReportNode[] }>()
+defineProps<{ nodes: ReportNode[]; reportId: number }>()
 
 function durationText(ms: number | null | undefined) {
   if (ms == null) return '-'
@@ -22,5 +24,25 @@ function durationText(ms: number | null | undefined) {
     <el-table-column prop="expected_value" label="期望" min-width="120" show-overflow-tooltip />
     <el-table-column prop="actual_value" label="实际" min-width="120" show-overflow-tooltip />
     <el-table-column prop="error_message" label="错误" min-width="160" show-overflow-tooltip />
+    <el-table-column label="截图" width="130">
+      <template #default="{ row }">
+        <AuthenticatedImage
+          v-if="row.screenshot"
+          :src="reportFileUrl(reportId, row.screenshot)"
+          :preview="true"
+          alt="节点截图"
+          class="thumb"
+        />
+      </template>
+    </el-table-column>
   </el-table>
 </template>
+
+<style scoped>
+.thumb {
+  width: 60px;
+  height: 80px;
+  border-radius: 4px;
+  border: 1px solid #eee;
+}
+</style>

@@ -46,7 +46,7 @@ function statusMeta(status: string) {
 
     <div v-if="expanded" class="case-body">
       <div v-if="caseItem.error_message" class="error-box">{{ caseItem.error_message }}</div>
-      <ReportNodeTable v-if="caseItem.nodes?.length" :nodes="caseItem.nodes" />
+      <ReportNodeTable v-if="caseItem.nodes?.length" :nodes="caseItem.nodes" :report-id="reportId" />
       <ReportStepTable
         v-else-if="caseItem.steps.length"
         :steps="caseItem.steps"

@@ -383,6 +383,7 @@ async def test_report_download_generates_and_caches(client: AsyncClient):
     assert "套件总数" in resp1.text
     assert "步骤总数" in resp1.text
     assert "虚拟套件" in resp1.text
+    assert "version: step-assertions-html-v9" in resp1.text
 
     html_path = reports_dir() / f"execution_{execution_id}" / "report.html"
     assert html_path.exists()
@@ -397,6 +398,115 @@ async def test_report_download_generates_and_caches(client: AsyncClient):
     assert resp2.text == resp1.text
 
     _cleanup(execution_id)
+
+
+def test_report_html_screenshot_lightbox_is_single_and_offline():
+    """下载报告中的步骤/节点截图共用一个可键盘操作的离线 lightbox。"""
+    from jinja2 import Environment, FileSystemLoader
+
+    template = Environment(
+        loader=FileSystemLoader(str(report_service._TEMPLATE_DIR)),
+        autoescape=True,
+    ).get_template("report.html")
+    step = {
+        "step_order": 1,
+        "phase": "case_main",
+        "action": "截图",
+        "parameters": {},
+        "status": "passed",
+        "actual_value": None,
+        "error_message": None,
+        "screenshot": "screenshots/step.png",
+        "screenshot_base64": "c3RlcA==",
+        "assertions": [],
+    }
+    node = {
+        "node_order": 1,
+        "phase": "case_main",
+        "kind": "action",
+        "action": "截图",
+        "assertion_type": None,
+        "parameters": {},
+        "status": "passed",
+        "attempt_count": 1,
+        "duration": 1,
+        "expected_value": None,
+        "actual_value": None,
+        "error_message": None,
+        "screenshot": "screenshots/node.png",
+        "screenshot_base64": "bm9kZQ==",
+    }
+    html = template.render(
+        execution={
+            "id": 1,
+            "type": "case",
+            "status": "passed",
+            "started_at": None,
+            "finished_at": None,
+            "duration": 1,
+            "retry_of": None,
+            "app_profile_name": None,
+            "app_release_version": None,
+            "profile_revision": None,
+            "test_asset_revision": None,
+            "parameters": {},
+        },
+        report={
+            "total": 1,
+            "passed": 1,
+            "failed": 0,
+            "error_count": 0,
+            "success_rate": 100,
+            "not_applicable": 0,
+            "suite_total": 1,
+            "suite_passed": 1,
+            "suite_failed": 0,
+            "suite_error_count": 0,
+            "suite_skipped": 0,
+            "suite_success_rate": 100,
+            "not_applicable_suites": 0,
+            "step_total": 1,
+            "step_passed": 1,
+            "step_failed": 0,
+            "step_error_count": 0,
+            "step_skipped": 0,
+            "step_success_rate": 100,
+        },
+        suites=[{
+            "suite_name": "套件",
+            "suite_id": 1,
+            "status": "passed",
+            "duration": 1,
+            "error_message": None,
+            "setup_steps": [step],
+            "cases": [{
+                "case_name": "用例",
+                "module_name": None,
+                "status": "passed",
+                "error_message": None,
+                "nodes": [node],
+                "steps": [],
+            }],
+            "teardown_steps": [],
+        }],
+        cases=[],
+        exclusions=[],
+        logs=[],
+        logs_total=0,
+        logs_truncated=False,
+        generated_at="now",
+    )
+
+    assert html.count('class="screenshot-trigger"') == 2
+    assert html.count('id="screenshot-lightbox"') == 1
+    assert 'role="dialog"' in html
+    assert 'aria-modal="true"' in html
+    assert 'lightboxImage.src = source.src' in html
+    assert "event.key === 'Escape'" in html
+    assert "event.key === 'Enter' || event.key === ' '" in html
+    assert "event.target === lightbox" in html
+    assert "<script src=" not in html
+    assert "https://" not in html
 
 
 async def test_report_html_suite_stats_with_setup_steps(client: AsyncClient):

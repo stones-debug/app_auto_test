@@ -82,6 +82,8 @@ function phaseLabel(phase?: string) {
         <AuthenticatedImage
           v-if="row.screenshot"
           :src="reportFileUrl(reportId, row.screenshot)"
+          :preview="true"
+          alt="步骤截图"
           class="thumb"
         />
       </template>
