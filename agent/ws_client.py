@@ -28,7 +28,7 @@ class AgentWSClient:
         url: str,
         agent_key: KeyProvider,
         agent_id: str,
-        version: str = "3.2.0",
+        version: str = "3.3.0",
         protocol_version: str | None = None,
         heartbeat_interval: int = 30,
     ) -> None:

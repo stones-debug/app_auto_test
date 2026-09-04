@@ -553,7 +553,7 @@ class AppiumDriver(BaseDriver):
     def _ensure_android_gesture(self) -> None:
         platform = (self.device.get("platform") or "").lower()
         if platform and platform != "android":
-            raise DriverError("控件内滑动和区域内滑动当前仅支持 Android（UiAutomator2）")
+            raise DriverError("控件内滑动、区域内滑动和滑块坐标拖动当前仅支持 Android（UiAutomator2）")
 
     def swipe_in_element(
         self, element, direction: str, percent: float, speed: int | None = None
@@ -626,6 +626,13 @@ class AppiumDriver(BaseDriver):
     def tap_coordinate(self, x: int, y: int) -> None:
         driver = self._ensure()
         driver.tap([(x, y)])
+
+    def drag_coordinate(
+        self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int
+    ) -> None:
+        self._ensure_android_gesture()
+        driver = self._ensure()
+        driver.swipe(start_x, start_y, end_x, end_y, duration_ms)
 
     def screenshot(self, path: str) -> None:
         driver = self._ensure()

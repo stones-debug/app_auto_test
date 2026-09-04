@@ -158,6 +158,12 @@ class BaseDriver:
     def tap_coordinate(self, x: int, y: int) -> None:
         raise NotImplementedError
 
+    def drag_coordinate(
+        self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int
+    ) -> None:
+        """从指定屏幕坐标拖动到目标坐标。"""
+        raise NotImplementedError
+
     def screenshot(self, path: str) -> None:
         raise NotImplementedError
 
@@ -208,6 +214,8 @@ class MockDriver(BaseDriver):
         self.region_swipes: list[tuple] = []
         self.element_swipe_speeds: list[int | None] = []
         self.region_swipe_speeds: list[int | None] = []
+        self.coordinate_drags: list[tuple[int, int, int, int, int]] = []
+        self.coordinate_taps: list[tuple[int, int]] = []
         self.element_scrolls: list[tuple[str, str, float, bool]] = []
         self.scroll_can_continue = True
         self.swipe_count = 0
@@ -394,7 +402,12 @@ class MockDriver(BaseDriver):
         pass
 
     def tap_coordinate(self, x: int, y: int) -> None:
-        pass
+        self.coordinate_taps.append((x, y))
+
+    def drag_coordinate(
+        self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int
+    ) -> None:
+        self.coordinate_drags.append((start_x, start_y, end_x, end_y, duration_ms))
 
     def screenshot(self, path: str) -> None:
         self.screenshots.append(path)

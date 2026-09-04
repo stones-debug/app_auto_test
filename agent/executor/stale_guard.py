@@ -148,5 +148,16 @@ async def with_stale_retry(
             remaining = None if deadline is None else deadline - asyncio.get_running_loop().time()
             if remaining is not None and remaining <= 0:
                 raise ElementNotFound(f"{label}达到最大等待时间") from exc
-            await asyncio.sleep(delay if remaining is None else min(delay, remaining))
+            # 页面重绘重试等待也必须可被 stop_test 打断。Appium 页面变化通常
+            # 只需几十毫秒即可稳定，分片等待不会改变正常重试节奏，却避免
+            # 在默认 0.5s 延迟期间吞掉停止请求。
+            sleep_for = delay if remaining is None else min(delay, remaining)
+            end = asyncio.get_running_loop().time() + max(0.0, sleep_for)
+            while True:
+                if stop is not None and stop():
+                    raise StopRequested("执行被用户停止") from None
+                rest = end - asyncio.get_running_loop().time()
+                if rest <= 0:
+                    break
+                await asyncio.sleep(min(0.05, rest))
     raise AssertionError("stale 重试状态异常")

@@ -108,6 +108,7 @@ def _render_py(manifest: dict) -> str:
     lines = [
         _HEADER,
         "",
+        "import math",
         "from typing import Literal",
         "",
         "from pydantic import BaseModel, Field, model_validator",
@@ -137,24 +138,56 @@ def _render_py(manifest: dict) -> str:
             else:
                 lines.append(_py_field_snippet(param).rstrip())
         for constraint in item.get("constraints", []):
-            if constraint["type"] != "percent_region":
+            if constraint["type"] == "percent_region":
+                left = constraint["left"]
+                top = constraint["top"]
+                width = constraint["width"]
+                height = constraint["height"]
+                lines.extend(
+                    [
+                        "",
+                        "    @model_validator(mode=\"after\")",
+                        "    def _validate_percent_region(self):",
+                        f"        if self.{left} + self.{width} > 100:",
+                        f"            raise ValueError(\"{left} + {width} 不能大于 100\")",
+                        f"        if self.{top} + self.{height} > 100:",
+                        f"            raise ValueError(\"{top} + {height} 不能大于 100\")",
+                        "        return self",
+                    ]
+                )
+            elif constraint["type"] == "numeric_range":
+                minimum = constraint["minimum"]
+                maximum = constraint["maximum"]
+                value = constraint["value"]
+                lines.extend(
+                    [
+                        "",
+                        "    @model_validator(mode=\"after\")",
+                        "    def _validate_numeric_range(self):",
+                        f"        if not math.isfinite(self.{minimum}) or not math.isfinite(self.{maximum}) or not math.isfinite(self.{value}):",
+                        f"            raise ValueError(\"{minimum}、{maximum}、{value} 必须是有限数字\")",
+                        f"        if self.{minimum} >= self.{maximum}:",
+                        f"            raise ValueError(\"{minimum} 必须小于 {maximum}\")",
+                        f"        if not self.{minimum} <= self.{value} <= self.{maximum}:",
+                        f"            raise ValueError(\"{value} 必须在 {minimum} 与 {maximum} 之间\")",
+                        "        return self",
+                    ]
+                )
+            elif constraint["type"] == "slider_insets":
+                left = constraint["left"]
+                right = constraint["right"]
+                lines.extend(
+                    [
+                        "",
+                        "    @model_validator(mode=\"after\")",
+                        "    def _validate_slider_insets(self):",
+                        f"        if self.{left} + self.{right} >= 100:",
+                        f"            raise ValueError(\"{left} + {right} 必须小于 100\")",
+                        "        return self",
+                    ]
+                )
+            else:
                 raise ValueError(f"不支持的协议约束: {constraint['type']}")
-            left = constraint["left"]
-            top = constraint["top"]
-            width = constraint["width"]
-            height = constraint["height"]
-            lines.extend(
-                [
-                    "",
-                    "    @model_validator(mode=\"after\")",
-                    "    def _validate_percent_region(self):",
-                    f"        if self.{left} + self.{width} > 100:",
-                    f"            raise ValueError(\"{left} + {width} 不能大于 100\")",
-                    f"        if self.{top} + self.{height} > 100:",
-                    f"            raise ValueError(\"{top} + {height} 不能大于 100\")",
-                    "        return self",
-                ]
-            )
         lines.append("")
         lines.append("")
     kind = "action" if len(models) <= len(manifest["actions"]) + 1 else "?"
@@ -278,13 +311,10 @@ def _render_ts(manifest: dict) -> str:
         "  constraints?: ActionConstraint[]",
         "}",
         "",
-        "export interface ActionConstraint {",
-        "  type: 'percent_region'",
-        "  left: string",
-        "  top: string",
-        "  width: string",
-        "  height: string",
-        "}",
+        "export type ActionConstraint =",
+        "  | { type: 'percent_region'; left: string; top: string; width: string; height: string }",
+        "  | { type: 'numeric_range'; minimum: string; maximum: string; value: string }",
+        "  | { type: 'slider_insets'; left: string; right: string }",
         "",
         "export interface AssertionMeta {",
         "  value: string",

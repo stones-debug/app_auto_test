@@ -67,7 +67,9 @@ class Settings(BaseSettings):
     # Agent
     agent_heartbeat_interval: int = 30
     agent_heartbeat_timeout: int = 120
-    min_agent_version: str = "1.0.0"
+    # Agent 准入版本以 Registry 产物为运行时事实来源；该配置默认值保持
+    # 与当前发布包一致，避免脱离数据库/协议文件启动时仍宣称支持旧包。
+    min_agent_version: str = "3.3.0"
     internal_token: str = "dev-internal-token-change-me"
     backend_base_url: str = "http://127.0.0.1:8001"
     # Windows 方案 §3.2：用户 Agent Key 可逆加密主密钥（生产必填）

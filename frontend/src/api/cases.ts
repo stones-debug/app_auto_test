@@ -136,13 +136,24 @@ export function validateActionParams(action: string, params: Record<string, unkn
     if (field.max !== undefined && numeric > field.max) return `“${field.label}”不能大于 ${field.max}`
   }
   for (const constraint of meta.constraints ?? []) {
-    if (constraint.type !== 'percent_region') continue
-    const left = Number(params[constraint.left])
-    const top = Number(params[constraint.top])
-    const width = Number(params[constraint.width])
-    const height = Number(params[constraint.height])
-    if (left + width > 100) return '左边界(%) + 宽度(%) 不能大于 100'
-    if (top + height > 100) return '上边界(%) + 高度(%) 不能大于 100'
+    if (constraint.type === 'percent_region') {
+      const left = Number(params[constraint.left])
+      const top = Number(params[constraint.top])
+      const width = Number(params[constraint.width])
+      const height = Number(params[constraint.height])
+      if (left + width > 100) return '左边界(%) + 宽度(%) 不能大于 100'
+      if (top + height > 100) return '上边界(%) + 高度(%) 不能大于 100'
+    } else if (constraint.type === 'numeric_range') {
+      const minimum = Number(params[constraint.minimum])
+      const maximum = Number(params[constraint.maximum])
+      const value = Number(params[constraint.value])
+      if (minimum >= maximum) return '最小值必须小于最大值'
+      if (value < minimum || value > maximum) return '目标值必须在最小值与最大值之间'
+    } else if (constraint.type === 'slider_insets') {
+      const left = Number(params[constraint.left])
+      const right = Number(params[constraint.right])
+      if (left + right >= 100) return '轨道左右留白之和必须小于 100%'
+    }
   }
   return null
 }

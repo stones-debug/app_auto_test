@@ -172,7 +172,7 @@ async def test_generated_artifacts_are_synced():
     from executor.protocol import load_manifest
 
     manifest = load_manifest()
-    assert manifest.get("protocol_version") == "3.2.0"
+    assert manifest.get("protocol_version") == "3.3.0"
     # 无多余控制字段进入 params：controls.step 均在 Step 顶层（生成产物已按此建模）
     for action in manifest.get("actions", []):
         param_names = {p["name"] for p in action.get("params", [])}

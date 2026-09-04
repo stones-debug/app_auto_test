@@ -566,6 +566,119 @@ async def test_limited_swipe_params_and_region_bounds_enforced(client: AsyncClie
     assert invalid_region.status_code == 422
 
 
+async def test_slider_value_range_and_secondary_element_are_validated(client: AsyncClient):
+    headers, project_id = await _setup(client)
+    slider_id = await _create_element(client, headers, project_id)
+    value_id = await _create_element(client, headers, project_id)
+    ok = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "设置滑块数值",
+            "steps": [
+                {
+                    "order": 1,
+                    "action": "set_slider_value",
+                    "element_id": slider_id,
+                    "params": {
+                        "min_value": 52,
+                        "max_value": 100,
+                        "target_value": 80,
+                        "value_element_id": value_id,
+                        "left_inset_percent": 50,
+                        "right_inset_percent": 5,
+                    },
+                }
+            ],
+        },
+        headers=headers,
+    )
+    assert ok.status_code == 201
+    params = ok.json()["steps"][0]["params"]
+    assert params["duration_ms"] == 300
+    assert params["verify_value"] is True
+    assert params["value_element_id"] == value_id
+    assert params["left_inset_percent"] == 50
+
+    invalid = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "滑块范围错误",
+            "steps": [
+                {
+                    "order": 1,
+                    "action": "set_slider_value",
+                    "element_id": slider_id,
+                    "params": {"min_value": 52, "max_value": 100, "target_value": 40},
+                }
+            ],
+        },
+        headers=headers,
+    )
+    assert invalid.status_code == 422
+
+    invalid_order = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "滑块范围顺序错误",
+            "steps": [
+                {
+                    "order": 1,
+                    "action": "set_slider_value",
+                    "element_id": slider_id,
+                    "params": {"min_value": 100, "max_value": 52, "target_value": 80},
+                }
+            ],
+        },
+        headers=headers,
+    )
+    assert invalid_order.status_code == 422
+
+    unknown_param = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "滑块未知参数",
+            "steps": [
+                {
+                    "order": 1,
+                    "action": "set_slider_value",
+                    "element_id": slider_id,
+                    "params": {
+                        "min_value": 52,
+                        "max_value": 100,
+                        "target_value": 80,
+                        "unexpected": 1,
+                    },
+                }
+            ],
+        },
+        headers=headers,
+    )
+    assert unknown_param.status_code == 422
+
+    invalid_insets = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "滑块留白错误",
+            "steps": [
+                {
+                    "order": 1,
+                    "action": "set_slider_value",
+                    "element_id": slider_id,
+                    "params": {
+                        "min_value": 52,
+                        "max_value": 100,
+                        "target_value": 80,
+                        "left_inset_percent": 95,
+                        "right_inset_percent": 5,
+                    },
+                }
+            ],
+        },
+        headers=headers,
+    )
+    assert invalid_insets.status_code == 422
+
+
 async def test_duplicate_orders_rejected(client: AsyncClient):
     """Step 4：step order 与 assertion order 不得重复。"""
     headers, project_id = await _setup(client)

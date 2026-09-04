@@ -13,7 +13,7 @@ import {
 } from '@/api/cases'
 
 describe('CR-09 动作/断言元数据契约', () => {
-  it('覆盖 Agent Registry 全部 18 个动作', () => {
+  it('覆盖 Agent Registry 全部 19 个动作', () => {
     const values = ACTIONS.map((a) => a.value).sort()
     expect(values).toEqual(
       [
@@ -23,6 +23,7 @@ describe('CR-09 动作/断言元数据契约', () => {
         'input',
         'clear',
         'set_checked',
+        'set_slider_value',
         'swipe',
         'swipe_to_find',
         'swipe_in_element',
@@ -109,6 +110,56 @@ describe('CR-09 动作/断言元数据契约', () => {
     expect(regionSwipe.constraints).toEqual([
       { type: 'percent_region', left: 'left_percent', top: 'top_percent', width: 'width_percent', height: 'height_percent' },
     ])
+  })
+
+  it('设置滑块数值提供闭环配置并校验目标范围', () => {
+    const slider = actionMeta('set_slider_value')
+    expect(slider.needsElement).toBe(true)
+    expect(slider.elementLabel).toBe('滑块或滑块所在行')
+    expect(defaultParams(slider.fields)).toMatchObject({
+      value_attribute: 'auto',
+      left_inset_percent: 3,
+      right_inset_percent: 3,
+      track_y_percent: 50,
+      duration_ms: 300,
+      settle_ms: 300,
+      verify_value: true,
+      tolerance: 0,
+      max_adjustments: 3,
+      wait_timeout: 10,
+    })
+    expect(slider.fields.find((field) => field.key === 'left_inset_percent')?.max).toBe(95)
+    expect(slider.fields.find((field) => field.key === 'right_inset_percent')?.max).toBe(95)
+    expect(slider.fields.find((field) => field.key === 'value_element_id')?.type).toBe('element')
+    expect(validateActionParams('set_slider_value', {
+      min_value: 52,
+      max_value: 100,
+      target_value: 40,
+    })).toBe('目标值必须在最小值与最大值之间')
+    expect(validateActionParams('set_slider_value', {
+      min_value: 10,
+      max_value: 10,
+      target_value: 10,
+    })).toBe('最小值必须小于最大值')
+    expect(validateActionParams('set_slider_value', {
+      min_value: 52,
+      max_value: 100,
+      target_value: 80,
+    })).toBeNull()
+    expect(validateActionParams('set_slider_value', {
+      min_value: 52,
+      max_value: 100,
+      target_value: 80,
+      left_inset_percent: 50,
+      right_inset_percent: 5,
+    })).toBeNull()
+    expect(validateActionParams('set_slider_value', {
+      min_value: 52,
+      max_value: 100,
+      target_value: 80,
+      left_inset_percent: 95,
+      right_inset_percent: 5,
+    })).toBe('轨道左右留白之和必须小于 100%')
   })
 
   it('区域内滑动会在保存前校验区域边界', () => {

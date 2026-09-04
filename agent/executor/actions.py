@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import math
+import re
 
 from .driver import (
     DriverError,
@@ -166,6 +168,337 @@ def _set_checked(driver, element, desired: bool) -> bool:
         return False
     driver.click(element)
     return True
+
+
+_SLIDER_NUMBER_RE = re.compile(r"[-+]?\d+(?:\.\d+)?")
+_SLIDER_VALUE_ATTRIBUTES = frozenset({"auto", "text", "content-desc", "value", "progress"})
+_MISSING_VALUE_ELEMENT_NAMES = frozenset({"ElementNotFound", "NoSuchElementException", "TimeoutException"})
+
+
+def _is_missing_value_element_error(error: BaseException) -> bool:
+    """仅把独立数值元素不存在识别为“读不到”，不吞驱动故障。"""
+    current: BaseException | None = error
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        if current.__class__.__name__ in _MISSING_VALUE_ELEMENT_NAMES:
+            return True
+        if "no such element" in str(current).lower():
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _parse_slider_number(raw: object) -> float | None:
+    """从一个值来源中保守地解析数值。
+
+    行容器经常同时包含当前值和范围（例如 ``4 52~100``）。只取
+    ``search`` 的第一个匹配会把范围端点当成当前值，进而把拖动起点算错；
+    因此自动读取只接受恰好一个数字的来源。明确指定的 value element/attribute
+    也沿用同一规则，避免错误读值造成危险拖动。
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    text = str(raw).strip().replace(",", "")
+    matches = _SLIDER_NUMBER_RE.findall(text)
+    if len(matches) != 1:
+        return None
+    try:
+        value = float(matches[0])
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _read_slider_value(
+    driver,
+    context,
+    slider,
+    *,
+    value_element_id,
+    value_attribute: str,
+    wait_timeout: float,
+) -> float | None:
+    if value_element_id is not None:
+        try:
+            # 数值元素与滑块可能同时重绘；每次调用都从快照重新定位，
+            # 不保存上一轮的 WebElement 句柄。
+            value_element = context.find_element(value_element_id, wait_timeout=wait_timeout)
+        except Exception as exc:
+            if _is_missing_value_element_error(exc):
+                return None
+            raise
+    else:
+        value_element = slider
+    if value_attribute == "text":
+        readers = (lambda: driver.get_text(value_element),)
+    elif value_attribute != "auto":
+        readers = (lambda: driver.get_attribute(value_element, value_attribute),)
+    else:
+        readers = (
+            lambda: driver.get_text(value_element),
+            *(lambda attribute=attribute: driver.get_attribute(value_element, attribute)
+              for attribute in ("value", "content-desc", "progress", "text")),
+        )
+    candidates = []
+    for read in readers:
+        # Appium returns an empty string for an absent optional attribute. Do
+        # not catch arbitrary driver/HTTP/session errors here: those indicate
+        # a broken session and must reach the runner as the real failure.
+        candidates.append(read())
+    for candidate in candidates:
+        parsed = _parse_slider_number(candidate)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _slider_point(
+    rect: dict[str, int],
+    value: float,
+    minimum: float,
+    maximum: float,
+    left_inset_percent: float,
+    right_inset_percent: float,
+    track_y_percent: float,
+) -> tuple[int, int]:
+    width = int(rect.get("width", 0))
+    height = int(rect.get("height", 0))
+    if width <= 1 or height <= 0:
+        raise DriverError(f"滑块区域无效: width={width}, height={height}")
+    if not minimum <= value <= maximum:
+        raise DriverError(f"滑块当前值 {value:g} 不在配置范围 {minimum:g}～{maximum:g} 内")
+    left = int(rect.get("x", 0)) + round(width * left_inset_percent / 100)
+    right = int(rect.get("x", 0)) + width - 1 - round(width * right_inset_percent / 100)
+    if right <= left:
+        raise DriverError("滑块左右留白过大，未留下可操作轨道")
+    ratio = (value - minimum) / (maximum - minimum)
+    x = left + round((right - left) * ratio)
+    y = int(rect.get("y", 0)) + round((height - 1) * track_y_percent / 100)
+    return x, y
+
+
+def _move_slider(
+    driver,
+    slider,
+    *,
+    current_value: float | None,
+    target_value: float,
+    minimum: float,
+    maximum: float,
+    left_inset_percent: float,
+    right_inset_percent: float,
+    track_y_percent: float,
+    duration_ms: int,
+) -> str:
+    rect = driver.get_element_rect(slider)
+    target_x, target_y = _slider_point(
+        rect,
+        target_value,
+        minimum,
+        maximum,
+        left_inset_percent,
+        right_inset_percent,
+        track_y_percent,
+    )
+    if current_value is None:
+        driver.tap_coordinate(target_x, target_y)
+        return "tap"
+    start_x, start_y = _slider_point(
+        rect,
+        current_value,
+        minimum,
+        maximum,
+        left_inset_percent,
+        right_inset_percent,
+        track_y_percent,
+    )
+    if (start_x, start_y) == (target_x, target_y):
+        driver.tap_coordinate(target_x, target_y)
+        return "tap"
+    driver.drag_coordinate(start_x, start_y, target_x, target_y, duration_ms)
+    return "drag"
+
+
+@register_action("set_slider_value")
+class SetSliderValueAction(BaseAction):
+    """按数值比例设置横向滑块，并可读取独立数值元素进行闭环修正。"""
+
+    async def execute(self, driver, context, params: dict) -> dict:
+        def finite_float(name: str, default=None) -> float:
+            raw = params.get(name, default)
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                raise DriverError(f"滑块参数 {name} 必须是数字") from None
+            if not math.isfinite(value):
+                raise DriverError(f"滑块参数 {name} 必须是有限数字")
+            return value
+
+        def bounded_float(
+            name: str, minimum_bound: float, maximum_bound: float, default: float
+        ) -> float:
+            value = finite_float(name, default)
+            if not minimum_bound <= value <= maximum_bound:
+                raise DriverError(
+                    f"滑块参数 {name} 必须在 {minimum_bound:g}～{maximum_bound:g} 之间"
+                )
+            return value
+
+        def bounded_int(name: str, default: int, minimum_bound: int, maximum_bound: int) -> int:
+            raw = params.get(name, default)
+            if isinstance(raw, bool):
+                raise DriverError(f"滑块参数 {name} 必须是整数")
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                raise DriverError(f"滑块参数 {name} 必须是整数") from None
+            if not math.isfinite(value) or not value.is_integer():
+                raise DriverError(f"滑块参数 {name} 必须是整数")
+            result = int(value)
+            if not minimum_bound <= result <= maximum_bound:
+                raise DriverError(
+                    f"滑块参数 {name} 必须在 {minimum_bound}～{maximum_bound} 之间"
+                )
+            return result
+
+        minimum = finite_float("min_value")
+        maximum = finite_float("max_value")
+        target = finite_float("target_value")
+        if minimum >= maximum:
+            raise DriverError("滑块最小值必须小于最大值")
+        if not minimum <= target <= maximum:
+            raise DriverError("滑块目标值必须在最小值与最大值之间")
+
+        element_id = params.get("element_id")
+        value_element_id = params.get("value_element_id")
+        value_attribute = str(params.get("value_attribute", "auto"))
+        if value_attribute not in _SLIDER_VALUE_ATTRIBUTES:
+            raise DriverError(f"滑块参数 value_attribute 不受支持: {value_attribute}")
+        left_inset = bounded_float("left_inset_percent", 0, 95, 3)
+        right_inset = bounded_float("right_inset_percent", 0, 95, 3)
+        if left_inset + right_inset >= 100:
+            raise DriverError("滑块参数 left_inset_percent + right_inset_percent 必须小于 100")
+        track_y = bounded_float("track_y_percent", 0, 100, 50)
+        duration_ms = bounded_int("duration_ms", 300, 1, 10000)
+        settle_ms = bounded_int("settle_ms", 300, 0, 5000)
+        verify_value = _coerce_bool(params.get("verify_value", True))
+        tolerance = finite_float("tolerance", 0)
+        if tolerance < 0:
+            raise DriverError("滑块参数 tolerance 不能小于 0")
+        max_adjustments = bounded_int("max_adjustments", 3, 0, 10)
+        wait_timeout = bounded_int("wait_timeout", 10, 0, 300)
+        settle_seconds = settle_ms / 1000
+
+        async def sleep_with_stop(seconds: float) -> None:
+            end = asyncio.get_running_loop().time() + max(0.0, seconds)
+            while True:
+                stop = getattr(context, "should_stop", None)
+                if stop is not None and stop():
+                    raise StopRequested("执行被用户停止")
+                remaining = end - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    return
+                await asyncio.sleep(min(0.05, remaining))
+
+        async def read_value() -> float | None:
+            return await with_stale_retry(
+                driver,
+                context,
+                element_id,
+                lambda slider: _read_slider_value(
+                    driver,
+                    context,
+                    slider,
+                    value_element_id=value_element_id,
+                    value_attribute=value_attribute,
+                    wait_timeout=wait_timeout,
+                ),
+                wait_timeout=wait_timeout,
+                label="读取滑块数值",
+            )
+
+        # verify=false 只关闭操作后的校验；操作前仍尽力读取当前值，
+        # 这样可读控件继续使用 drag，只有确实没有值来源才回退为 tap。
+        # 独立值元素使用立即定位，避免关闭校验时额外等待完整超时。
+        actual = await with_stale_retry(
+            driver,
+            context,
+            element_id,
+            lambda slider: _read_slider_value(
+                driver,
+                context,
+                slider,
+                value_element_id=value_element_id,
+                value_attribute=value_attribute,
+                wait_timeout=0 if value_element_id is not None else wait_timeout,
+            ),
+            wait_timeout=wait_timeout,
+            label="读取滑块数值",
+        )
+        if actual is not None and abs(actual - target) <= tolerance:
+            return {
+                "status": "passed",
+                "actual_value": f"{actual:g}",
+                "target_value": target,
+                "changed": False,
+                "verified": True,
+            }
+
+        last_interaction = ""
+        for adjustment in range(max_adjustments + 1):
+            last_interaction = await with_stale_retry(
+                driver,
+                context,
+                element_id,
+                lambda slider, current_value=actual: _move_slider(
+                    driver,
+                    slider,
+                    current_value=current_value,
+                    target_value=target,
+                    minimum=minimum,
+                    maximum=maximum,
+                    left_inset_percent=left_inset,
+                    right_inset_percent=right_inset,
+                    track_y_percent=track_y,
+                    duration_ms=duration_ms,
+                ),
+                wait_timeout=wait_timeout,
+                label="设置滑块数值",
+            )
+            if settle_seconds:
+                await sleep_with_stop(settle_seconds)
+            if not verify_value:
+                return {
+                    "status": "passed",
+                    "actual_value": None,
+                    "target_value": target,
+                    "changed": True,
+                    "verified": False,
+                    "interaction": last_interaction,
+                }
+
+            actual = await read_value()
+            if actual is None:
+                raise DriverError(
+                    "无法读取滑块当前数值；请配置正确的“数值显示元素/数值来源”，"
+                    "或关闭“校验最终数值”"
+                )
+            if abs(actual - target) <= tolerance:
+                return {
+                    "status": "passed",
+                    "actual_value": f"{actual:g}",
+                    "target_value": target,
+                    "changed": True,
+                    "verified": True,
+                    "interaction": last_interaction,
+                    "adjustments": adjustment,
+                }
+
+        raise DriverError(
+            f"设置滑块失败：目标值 {target:g}，实际值 {actual:g}，"
+            f"已修正 {max_adjustments} 次"
+        )
 
 
 @register_action("swipe")
