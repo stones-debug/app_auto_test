@@ -1745,13 +1745,13 @@ async def test_swipe_in_region_scales_percentages_to_current_window():
     assert driver.region_swipes == [(100, 400, 300, 800, "left", 0.5)]
 
 
-def _slider_screen(text="4", track_width=1000, slider_x=490):
+def _slider_screen(text="4", track_width=1000, slider_x=490, track_height=40, slider_y=205):
     return [{
-        "id": "track", "bounds": {"x": 100, "y": 200, "width": track_width, "height": 40},
+        "id": "track", "bounds": {"x": 100, "y": 200, "width": track_width, "height": track_height},
         "children": [{
-            "id": "slider-parent", "bounds": {"x": 100, "y": 200, "width": track_width, "height": 40},
+            "id": "slider-parent", "bounds": {"x": 100, "y": 200, "width": track_width, "height": track_height},
             "children": [{"id": "slider", "text": text,
-                          "bounds": {"x": slider_x, "y": 205, "width": 20, "height": 30}}],
+                          "bounds": {"x": slider_x, "y": slider_y, "width": 20, "height": 30}}],
         }],
     }]
 
@@ -1813,7 +1813,7 @@ async def test_set_slider_value_drags_from_current_value_and_verifies_result():
         "interaction": "drag",
         "adjustments": 0,
     }
-    assert driver.coordinate_drags == [(499, 219, 891, 219, 300)]
+    assert driver.coordinate_drags == [(499, 219, 899, 219, 300)]
     assert driver.coordinate_taps == []
 
 
@@ -1831,8 +1831,39 @@ async def test_set_slider_value_drags_left_using_track_span():
         driver, _slider_context(driver), _slider_case_params(target_value=0)
     )
     assert result["status"] == "passed"
-    assert driver.coordinate_drags == [(697, 219, 110, 219, 300)]
+    assert driver.coordinate_drags == [(697, 219, 100, 219, 300)]
     assert driver.coordinate_taps == []
+
+
+async def test_set_slider_value_thin_track_allows_oversized_thumb_and_uses_endpoints():
+    from executor.actions import SetSliderValueAction
+
+    class ThinTrackDriver(MockDriver):
+        def drag_coordinate(self, *args):
+            super().drag_coordinate(*args)
+            self.state["slider"] = "10"
+
+    driver = ThinTrackDriver({"slider": "0"})
+    driver.set_screen(_slider_screen(text="0", slider_x=91, track_height=4, slider_y=189))
+    result = await SetSliderValueAction().execute(
+        driver, _slider_context(driver), _slider_case_params(target_value=10)
+    )
+    assert result["status"] == "passed"
+    assert driver.coordinate_drags == [(100, 203, 1099, 203, 300)]
+
+
+async def test_set_slider_value_rejects_button_center_outside_thin_track():
+    from executor import ElementNotFound
+    from executor.actions import SetSliderValueAction
+
+    driver = MockDriver({"slider": "4"})
+    driver.set_screen(_slider_screen(slider_x=1200))
+    with pytest.raises(ElementNotFound, match="有效范围"):
+        await SetSliderValueAction().execute(driver, _slider_context(driver), _slider_case_params())
+
+    driver.set_screen(_slider_screen(track_height=4, slider_y=300))
+    with pytest.raises(ElementNotFound, match="有效范围"):
+        await SetSliderValueAction().execute(driver, _slider_context(driver), _slider_case_params())
 
 
 async def test_set_slider_value_rejects_missing_current_value_without_tap():
@@ -1969,7 +2000,7 @@ async def test_set_slider_value_relocates_and_recomputes_track_for_correction(mo
         driver, _slider_context(driver), _slider_case_params(max_adjustments=2)
     )
     assert result["adjustments"] == 1
-    assert driver.coordinate_drags[1] == (309, 219, 367, 219, 300)
+    assert driver.coordinate_drags[1] == (309, 219, 369, 219, 300)
 
 
 async def test_set_slider_value_settle_wait_honors_stop_request(monkeypatch):

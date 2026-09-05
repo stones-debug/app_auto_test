@@ -221,13 +221,17 @@ def _slider_snapshot(driver, slider, *, minimum: float, maximum: float, wait_tim
         raise DriverError(f"滑块轨道无效: width={track_width}, height={track_height}")
     if thumb_width <= 0 or thumb_height <= 0:
         raise DriverError(f"滑块按钮无效: width={thumb_width}, height={thumb_height}")
-    left = track_x + (thumb_width + 1) // 2
-    right = track_x + track_width - 1 - thumb_width // 2
+    # The second parent is the thin track itself.  Its endpoints are the
+    # complete travel for the thumb center; the thumb is expected to extend
+    # beyond the track at the minimum/maximum values.
+    left = track_x
+    right = track_x + track_width - 1
     if right <= left:
-        raise DriverError("滑块轨道宽度不足以容纳滑块按钮")
+        raise DriverError("滑块轨道有效水平行程不足")
     start_x = int(slider_rect.get("x", 0)) + (thumb_width - 1) // 2
     start_y = int(slider_rect.get("y", 0)) + (thumb_height - 1) // 2
-    if not left <= start_x <= right or not track_y <= start_y < track_y + track_height:
+    track_bottom = track_y + track_height - 1
+    if not left <= start_x <= right or not track_y <= start_y <= track_bottom:
         raise ElementNotFound("滑块按钮不在二级父节点轨道的有效范围内")
     if not minimum <= current <= maximum:
         raise DriverError(f"滑块当前值 {current:g} 不在配置范围 {minimum:g}～{maximum:g} 内")
