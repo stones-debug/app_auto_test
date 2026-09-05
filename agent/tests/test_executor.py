@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -298,6 +299,122 @@ async def test_runner_passing_flow():
     assert "步骤 1 input 执行通过" in log_messages[0]["message"]
     assertion_msg = next(m for m in sent if m["type"] == "assertion_result")
     assert assertion_msg["assertions"][0]["status"] == "passed"
+
+
+async def test_runner_v2_paces_consecutive_actions(monkeypatch):
+    """V2 连续动作之间补足 500ms，等待使用 runner 的单调时钟。"""
+    from executor import test_runner as runner_module
+
+    class FakeClock:
+        value = 100.0
+
+        @classmethod
+        def monotonic(cls):
+            return cls.value
+
+    action_times: list[float] = []
+    sleeps: list[float] = []
+
+    def fake_action(_action_cls, _driver, _context, _params):
+        action_times.append(FakeClock.value)
+        return {"status": "passed"}
+
+    async def fake_sleep(duration):
+        sleeps.append(duration)
+        FakeClock.value += duration
+
+    class PacingAction:
+        async def execute(self, _driver, _context, _params):
+            return {"status": "passed"}
+
+    monkeypatch.setitem(ACTION_REGISTRY, "_pacing_test", PacingAction)
+    monkeypatch.setattr(runner_module, "_run_action_in_thread", fake_action)
+    monkeypatch.setattr(runner_module, "time", SimpleNamespace(monotonic=FakeClock.monotonic))
+    monkeypatch.setattr(runner_module.asyncio, "sleep", fake_sleep)
+
+    sent: list[dict] = []
+
+    async def send(message):
+        sent.append(message)
+
+    case = _make_case([
+        {"order": 1, "action": "_pacing_test", "params": {}},
+        {"order": 2, "action": "_pacing_test", "params": {}},
+    ])
+    status = await TestRunner(MockDriver(), send, 100).run_case(case)
+
+    assert status == "passed"
+    assert action_times == [100.0, 100.5]
+    assert sum(sleeps) == pytest.approx(0.5)
+
+
+async def test_runner_v3_paces_actions_across_assertion(monkeypatch):
+    """V3 中断言/上报耗时后，下一动作仍以最近动作完成时刻为基准。"""
+    from executor import test_runner as runner_module
+
+    class FakeClock:
+        value = 200.0
+
+        @classmethod
+        def monotonic(cls):
+            return cls.value
+
+    action_times: list[float] = []
+    sleeps: list[float] = []
+
+    def fake_action(_action_cls, _driver, _context, _params):
+        action_times.append(FakeClock.value)
+        return {"status": "passed"}
+
+    async def fake_sleep(duration):
+        sleeps.append(duration)
+        FakeClock.value += duration
+
+    async def fake_verify_with_wait(*_args, **_kwargs):
+        # 模拟断言与上报占用少于 500ms 的时间。
+        FakeClock.value += 0.1
+        return {"status": "passed", "expected": "ok", "actual": "ok"}
+
+    class PacingAction:
+        async def execute(self, _driver, _context, _params):
+            return {"status": "passed"}
+
+    monkeypatch.setitem(ACTION_REGISTRY, "_pacing_test_v3", PacingAction)
+    monkeypatch.setattr(runner_module, "_run_action_in_thread", fake_action)
+    monkeypatch.setattr(runner_module, "verify_with_wait", fake_verify_with_wait)
+    monkeypatch.setattr(runner_module, "time", SimpleNamespace(monotonic=FakeClock.monotonic))
+    monkeypatch.setattr(runner_module.asyncio, "sleep", fake_sleep)
+
+    sent: list[dict] = []
+
+    async def send(message):
+        sent.append(message)
+
+    case = {
+        "execution_case_id": 2001,
+        "case_id": 1,
+        "case_name": "V3 节奏用例",
+        "flow_snapshot": [
+            {
+                "execution_node_id": 3001, "kind": "action", "phase": "case_main",
+                "order": 1, "action": "_pacing_test_v3", "params": {},
+            },
+            {
+                "execution_node_id": 3002, "kind": "assertion", "phase": "case_main",
+                "order": 2, "type": "text_equals", "params": {"expected": "ok"},
+            },
+            {
+                "execution_node_id": 3003, "kind": "action", "phase": "case_main",
+                "order": 3, "action": "_pacing_test_v3", "params": {},
+            },
+        ],
+        "elements_snapshot": {},
+    }
+    status = await TestRunner(MockDriver(), send, 100).run_case(case)
+
+    assert status == "passed"
+    assert action_times == [200.0, 200.5]
+    assert sum(sleeps) == pytest.approx(0.4)
 
 
 async def test_runner_resolves_get_text_variable_in_following_nodes():

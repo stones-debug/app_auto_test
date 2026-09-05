@@ -227,6 +227,11 @@ class RunnerReporter:
 class TestRunner:
     __test__ = False  # 防止被 pytest 当作测试类收集
 
+    # UI 自动化动作之间需要留出一小段时间让设备端页面完成状态收敛。
+    # 该时间由 Runner 统一维护，因此会跨 setup/main/teardown 以及 suite/case。
+    ACTION_MIN_INTERVAL_SECONDS = 0.5
+    ACTION_PACING_POLL_SECONDS = 0.05
+
     def __init__(
         self,
         driver,
@@ -246,6 +251,22 @@ class TestRunner:
         self.screenshots_dir = screenshots_dir
         self.session_token = session_token
         self.uploader = uploader
+        self._last_action_finished_at: float | None = None
+
+    async def _wait_for_action_interval(self) -> None:
+        """在下一次动作前补足间隔，并在等待期间及时响应停止请求。"""
+        if self.should_stop():
+            raise StopRequested("执行被用户停止")
+        if self._last_action_finished_at is None:
+            return
+        deadline = self._last_action_finished_at + self.ACTION_MIN_INTERVAL_SECONDS
+        while True:
+            if self.should_stop():
+                raise StopRequested("执行被用户停止")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(self.ACTION_PACING_POLL_SECONDS, remaining))
 
     async def _resolve_screenshot(self, result: dict) -> None:
         """CR-07：截图成功后立即 HTTP 上传，只回传服务端对象键；失败记录明确错误。"""
@@ -303,9 +324,13 @@ class TestRunner:
                     effective = context.render_value(dict(step.get("params") or {}))
                     if step.get("element_id") is not None and "element_id" not in effective:
                         effective["element_id"] = step["element_id"]
-                    result = await asyncio.to_thread(
-                        _run_action_in_thread, action_cls, self.driver, context, effective
-                    )
+                    await self._wait_for_action_interval()
+                    try:
+                        result = await asyncio.to_thread(
+                            _run_action_in_thread, action_cls, self.driver, context, effective
+                        )
+                    finally:
+                        self._last_action_finished_at = time.monotonic()
             except StopRequested:
                 raise
             except Exception as exc:
@@ -495,9 +520,13 @@ class TestRunner:
                         effective = context.render_value(dict(node.get("params") or node.get("parameters") or {}))
                         if node.get("element_id") is not None:
                             effective.setdefault("element_id", node["element_id"])
-                        result = await asyncio.to_thread(
-                            _run_action_in_thread, action_cls, self.driver, context, effective
-                        )
+                        await self._wait_for_action_interval()
+                        try:
+                            result = await asyncio.to_thread(
+                                _run_action_in_thread, action_cls, self.driver, context, effective
+                            )
+                        finally:
+                            self._last_action_finished_at = time.monotonic()
             except StopRequested:
                 raise
             except Exception as exc:

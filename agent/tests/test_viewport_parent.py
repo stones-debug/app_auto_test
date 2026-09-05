@@ -75,6 +75,38 @@ async def test_parent_viewport_clicks_inside_parent():
     assert driver.region_swipes == []
 
 
+async def test_find_text_click_waits_then_relocates_before_click(monkeypatch):
+    """命中后先稳定等待，等待期间页面重绘时点击必须使用新句柄。"""
+    from executor.actions import SwipeInElementFindTextClickAction
+
+    class RelocatingDriver(RecordingMockDriver):
+        def __init__(self):
+            super().__init__()
+            self.clicked_generations: list[int] = []
+
+        def click(self, element):
+            self._assert_fresh(element)
+            self.clicked_generations.append(element._generation)
+            super().click(element)
+
+    driver = RelocatingDriver()
+    driver.set_screen(_screen(target_y=900))
+    action = SwipeInElementFindTextClickAction()
+    wait_durations: list[float] = []
+
+    async def wait_and_redraw(context):
+        wait_durations.append(action._TARGET_CLICK_SETTLE_SECONDS)
+        driver.set_screen(_screen(target_y=700))
+
+    monkeypatch.setattr(action, "_wait_before_click", wait_and_redraw)
+    context, params = _context(driver, _params())
+    result = await action.execute(driver, context, params)
+
+    assert result["status"] == "passed"
+    assert wait_durations == [0.5]
+    assert driver.clicked_generations == [2]
+
+
 async def test_legacy_viewport_parameters_cannot_change_parent_behavior():
     driver = RecordingMockDriver()
     driver.set_screen(_screen(

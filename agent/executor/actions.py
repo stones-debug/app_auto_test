@@ -595,11 +595,13 @@ class SwipeInElementFindTextClickAction(BaseAction):
     停止条件。
     只接受中心点及安全边距落在 ListView 直接父元素视口内的匹配，
     点击距离父元素中心最近的匹配项。
-    找到后立即点击；如遇 stale，重新定位列表和目标重试，不能复用旧句柄。
+    找到后先等待页面稳定，再重新定位并复核视口后点击；如遇 stale，重新定位列表和目标重试，不能复用旧句柄。
     """
 
     _CLICK_STALE_RETRY_DELAYS = (0.2, 0.5)
     _OBSERVE_STALE_RETRY_DELAYS = (0.05, 0.15)
+    _TARGET_CLICK_SETTLE_SECONDS = 0.5
+    _TARGET_CLICK_SETTLE_POLL_SECONDS = 0.05
 
     async def execute(self, driver, context, params: dict) -> dict:
         element_id = params.get("element_id")
@@ -807,6 +809,9 @@ class SwipeInElementFindTextClickAction(BaseAction):
         if direction is not None:
             return False, None, direction
         try:
+            # 目标刚被观测为安全可点击时，页面仍可能在滚动/重绘。
+            # 等待期间不持有或使用旧句柄；点击流程会重新定位并再次校验视口。
+            await self._wait_before_click(context)
             clicked, click_direction = await self._click_with_stale_retry(
                 driver, context, element_id, target,
                 container_wait_timeout, selector,
@@ -822,6 +827,19 @@ class SwipeInElementFindTextClickAction(BaseAction):
             # 非 stale 的点击失败直接上抛（不继续寻找其他同文字元素）
             raise
         return True, None, None
+
+    async def _wait_before_click(self, context) -> None:
+        """安全命中后等待页面稳定，并在等待期间及时响应停止请求。"""
+        stop = getattr(context, "should_stop", None)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._TARGET_CLICK_SETTLE_SECONDS
+        while True:
+            if stop is not None and stop():
+                raise StopRequested("执行被用户停止")
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(self._TARGET_CLICK_SETTLE_POLL_SECONDS, remaining))
 
     async def _observe_target(
         self, driver, context, element_id,
