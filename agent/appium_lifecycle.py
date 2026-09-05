@@ -52,7 +52,10 @@ def dev_bundled_appium() -> tuple[Path, Path, Path | None] | None:
     与 devices/adb.py 的「开发目录 vendor 兜底」保持一致，使
     `uv run python main.py --config config.yaml` 无需额外配置即可自启 Appium。
     """
-    repo = Path(__file__).resolve().parents[1] / "vendor" / "appium"
+    # appium_lifecycle.py 位于 agent/ 根目录，vendor 也是 agent/vendor；
+    # 使用 parents[1] 会错误地退到仓库根目录，导致源码运行时永远找不到
+    # 随 Agent 提供的便携 Node/Appium。
+    repo = Path(__file__).resolve().parent / "vendor" / "appium"
     return _scan_appium_dir(repo)
 
 

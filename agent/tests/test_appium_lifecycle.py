@@ -56,6 +56,21 @@ def test_command_resolution_dev_vendor(monkeypatch):
     assert "--port" in cmd and cmd[cmd.index("--port") + 1] == "4730"
 
 
+def test_command_resolution_uses_agent_vendor_appium():
+    """源码直接执行 main.py 时必须定位 agent/vendor/appium。"""
+    vendor = Path(__file__).resolve().parents[1] / "vendor" / "appium"
+    if not (vendor / "node" / "node.exe").is_file():
+        pytest.skip("agent vendor Appium 未提供")
+
+    server = AppiumServer()
+    cmd = server._command()
+
+    assert Path(cmd[0]).resolve() == (vendor / "node" / "node.exe").resolve()
+    assert Path(cmd[1]).resolve() == (
+        vendor / "appium" / "node_modules" / "appium" / "build" / "lib" / "main.js"
+    ).resolve()
+
+
 def test_resolve_android_sdk_root_from_environment(tmp_path, monkeypatch):
     sdk = tmp_path / "Android" / "Sdk"
     (sdk / "platform-tools").mkdir(parents=True)
