@@ -63,12 +63,6 @@ class SetSliderValueParams(ParamsBase):
             raise ValueError("target_value 必须在 min_value 与 max_value 之间")
         return self
 
-    @model_validator(mode="after")
-    def _validate_slider_insets(self):
-        if self.left_inset_percent + self.right_inset_percent >= 100:
-            raise ValueError("left_inset_percent + right_inset_percent 必须小于 100")
-        return self
-
 
 class SwipeParams(ParamsBase):
     direction: Literal['up', 'down', 'left', 'right'] = 'up'
@@ -261,7 +255,7 @@ ASSERTION_NEEDS_ELEMENT = frozenset({
 
 ELEMENT_LABELS: dict[str, str] = {
     'set_checked': '复选框',
-    'set_slider_value': '滑块或滑块所在行',
+    'set_slider_value': '滑块按钮（文本为当前值）',
     'swipe_in_element_find_text_click': '列表控件',
 }
 

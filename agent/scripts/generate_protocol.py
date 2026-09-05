@@ -333,6 +333,8 @@ def _render_ts(manifest: dict) -> str:
             label_part = f"elementLabel: {item['element_label']!r}, "
         lines.append(f"  {{ value: {item['name']!r}, label: {item['label']!r}, needsElement: {str(item['needs_element']).lower()}, {label_part}fields: [")
         for param in item["params"]:
+            if param.get("ui_hidden"):
+                continue
             lines.append(_ts_field_snippet(param, "    ") + ",")
         constraints = item.get("constraints")
         if constraints:
@@ -345,6 +347,8 @@ def _render_ts(manifest: dict) -> str:
     for item in manifest["assertions"]:
         lines.append(f"  {{ value: {item['name']!r}, label: {item['label']!r}, needsElement: {str(item['needs_element']).lower()}, fields: [")
         for param in item["params"]:
+            if param.get("ui_hidden"):
+                continue
             lines.append(_ts_field_snippet(param, "    ") + ",")
         lines.append("  ] },")
     lines.append("]")

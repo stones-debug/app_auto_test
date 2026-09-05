@@ -56,17 +56,17 @@ actions:
     label: 设置滑块数值
     version: 1
     needs_element: true
-    element_label: 滑块或滑块所在行
+    element_label: 滑块按钮（文本为当前值）
     constraints:
       - { type: numeric_range, minimum: min_value, maximum: max_value, value: target_value }
-      - { type: slider_insets, left: left_inset_percent, right: right_inset_percent }
     params:
       - { name: min_value, type: number, required: true, label: 最小值 }
       - { name: max_value, type: number, required: true, label: 最大值 }
       - { name: target_value, type: number, required: true, label: 目标值 }
-      - { name: value_element_id, type: element, label: 数值显示元素（可选） }
+      - { name: value_element_id, type: element, ui_hidden: true, label: 历史数值显示元素 }
       - name: value_attribute
         type: select
+        ui_hidden: true
         default: auto
         label: 数值来源
         options:
@@ -75,12 +75,12 @@ actions:
           - { value: content-desc, label: content-desc }
           - { value: value, label: value 属性 }
           - { value: progress, label: progress 属性 }
-      - { name: left_inset_percent, type: number, default: 3, min: 0, max: 95, label: 轨道左侧留白(%) }
-      - { name: right_inset_percent, type: number, default: 3, min: 0, max: 95, label: 轨道右侧留白(%) }
-      - { name: track_y_percent, type: number, default: 50, min: 0, max: 100, label: 轨道纵向位置(%) }
+      - { name: left_inset_percent, type: number, ui_hidden: true, default: 3, min: 0, max: 95, label: 历史轨道左侧留白(%) }
+      - { name: right_inset_percent, type: number, ui_hidden: true, default: 3, min: 0, max: 95, label: 历史轨道右侧留白(%) }
+      - { name: track_y_percent, type: number, ui_hidden: true, default: 50, min: 0, max: 100, label: 历史轨道纵向位置(%) }
       - { name: duration_ms, type: integer, default: 300, min: 1, max: 10000, label: 拖动时长(ms) }
       - { name: settle_ms, type: integer, default: 300, min: 0, max: 5000, label: 操作后等待(ms) }
-      - { name: verify_value, type: boolean, default: true, label: 校验最终数值 }
+      - { name: verify_value, type: boolean, ui_hidden: true, default: true, label: 历史校验开关 }
       - { name: tolerance, type: number, default: 0, min: 0, label: 允许误差 }
       - { name: max_adjustments, type: integer, default: 3, min: 0, max: 10, label: 最大修正次数 }
       - { name: wait_timeout, type: integer, default: 10, min: 0, max: 300, label: 元素等待秒数 }

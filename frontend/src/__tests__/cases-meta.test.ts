@@ -143,25 +143,23 @@ describe('CR-09 动作/断言元数据契约', () => {
     )
   })
 
-  it('设置滑块数值提供闭环配置并校验目标范围', () => {
+  it('设置滑块数值仅展示新闭环参数并校验目标范围', () => {
     const slider = actionMeta('set_slider_value')
     expect(slider.needsElement).toBe(true)
-    expect(slider.elementLabel).toBe('滑块或滑块所在行')
-    expect(defaultParams(slider.fields)).toMatchObject({
-      value_attribute: 'auto',
-      left_inset_percent: 3,
-      right_inset_percent: 3,
-      track_y_percent: 50,
+    expect(slider.elementLabel).toBe('滑块按钮（文本为当前值）')
+    expect(slider.fields.map((field) => field.key)).toEqual([
+      'min_value', 'max_value', 'target_value', 'duration_ms', 'settle_ms',
+      'tolerance', 'max_adjustments', 'wait_timeout',
+    ])
+    expect(defaultParams(slider.fields)).toEqual({
       duration_ms: 300,
       settle_ms: 300,
-      verify_value: true,
       tolerance: 0,
       max_adjustments: 3,
       wait_timeout: 10,
     })
-    expect(slider.fields.find((field) => field.key === 'left_inset_percent')?.max).toBe(95)
-    expect(slider.fields.find((field) => field.key === 'right_inset_percent')?.max).toBe(95)
-    expect(slider.fields.find((field) => field.key === 'value_element_id')?.type).toBe('element')
+    expect(slider.fields.some((field) => field.key === 'value_element_id')).toBe(false)
+    expect(slider.fields.some((field) => field.key === 'verify_value')).toBe(false)
     expect(validateActionParams('set_slider_value', {
       min_value: 52,
       max_value: 100,
@@ -181,16 +179,7 @@ describe('CR-09 动作/断言元数据契约', () => {
       min_value: 52,
       max_value: 100,
       target_value: 80,
-      left_inset_percent: 50,
-      right_inset_percent: 5,
     })).toBeNull()
-    expect(validateActionParams('set_slider_value', {
-      min_value: 52,
-      max_value: 100,
-      target_value: 80,
-      left_inset_percent: 95,
-      right_inset_percent: 5,
-    })).toBe('轨道左右留白之和必须小于 100%')
   })
 
   it('区域内滑动会在保存前校验区域边界', () => {

@@ -580,7 +580,7 @@ async def test_limited_swipe_params_and_region_bounds_enforced(client: AsyncClie
     assert invalid_region.status_code == 422
 
 
-async def test_slider_value_range_and_secondary_element_are_validated(client: AsyncClient):
+async def test_slider_value_range_and_legacy_hidden_params_are_validated(client: AsyncClient):
     headers, project_id = await _setup(client)
     slider_id = await _create_element(client, headers, project_id)
     value_id = await _create_element(client, headers, project_id)
@@ -598,8 +598,11 @@ async def test_slider_value_range_and_secondary_element_are_validated(client: As
                         "max_value": 100,
                         "target_value": 80,
                         "value_element_id": value_id,
+                        "value_attribute": "progress",
                         "left_inset_percent": 50,
                         "right_inset_percent": 5,
+                        "track_y_percent": 50,
+                        "verify_value": False,
                     },
                 }
             ],
@@ -609,8 +612,10 @@ async def test_slider_value_range_and_secondary_element_are_validated(client: As
     assert ok.status_code == 201
     params = ok.json()["steps"][0]["params"]
     assert params["duration_ms"] == 300
-    assert params["verify_value"] is True
+    assert params["settle_ms"] == 300
+    assert params["tolerance"] == 0
     assert params["value_element_id"] == value_id
+    assert params["value_attribute"] == "progress"
     assert params["left_inset_percent"] == 50
 
     invalid = await client.post(
@@ -669,7 +674,7 @@ async def test_slider_value_range_and_secondary_element_are_validated(client: As
     )
     assert unknown_param.status_code == 422
 
-    invalid_insets = await client.post(
+    legacy_insets = await client.post(
         f"/api/projects/{project_id}/cases",
         json={
             "name": "滑块留白错误",
@@ -690,7 +695,7 @@ async def test_slider_value_range_and_secondary_element_are_validated(client: As
         },
         headers=headers,
     )
-    assert invalid_insets.status_code == 422
+    assert legacy_insets.status_code == 201
 
 
 async def test_duplicate_orders_rejected(client: AsyncClient):

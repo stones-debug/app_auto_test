@@ -57,22 +57,16 @@ export const ACTIONS: ActionMeta[] = [
   { value: 'set_checked', label: '勾选/取消勾选', needsElement: true, elementLabel: '复选框', fields: [
     { key: 'checked', label: '勾选状态', type: 'switch', default: true },
   ] },
-  { value: 'set_slider_value', label: '设置滑块数值', needsElement: true, elementLabel: '滑块或滑块所在行', fields: [
+  { value: 'set_slider_value', label: '设置滑块数值', needsElement: true, elementLabel: '滑块按钮（文本为当前值）', fields: [
     { key: 'min_value', label: '最小值', type: 'number', required: true },
     { key: 'max_value', label: '最大值', type: 'number', required: true },
     { key: 'target_value', label: '目标值', type: 'number', required: true },
-    { key: 'value_element_id', label: '数值显示元素（可选）', type: 'element' },
-    { key: 'value_attribute', label: '数值来源', type: 'select', options: [{ value: 'auto', label: '自动识别' }, { value: 'text', label: '文本' }, { value: 'content-desc', label: 'content-desc' }, { value: 'value', label: 'value 属性' }, { value: 'progress', label: 'progress 属性' }], default: 'auto' },
-    { key: 'left_inset_percent', label: '轨道左侧留白(%)', type: 'number', default: 3, min: 0, max: 95 },
-    { key: 'right_inset_percent', label: '轨道右侧留白(%)', type: 'number', default: 3, min: 0, max: 95 },
-    { key: 'track_y_percent', label: '轨道纵向位置(%)', type: 'number', default: 50, min: 0, max: 100 },
     { key: 'duration_ms', label: '拖动时长(ms)', type: 'number', default: 300, min: 1, max: 10000 },
     { key: 'settle_ms', label: '操作后等待(ms)', type: 'number', default: 300, min: 0, max: 5000 },
-    { key: 'verify_value', label: '校验最终数值', type: 'switch', default: true },
     { key: 'tolerance', label: '允许误差', type: 'number', default: 0, min: 0 },
     { key: 'max_adjustments', label: '最大修正次数', type: 'number', default: 3, min: 0, max: 10 },
     { key: 'wait_timeout', label: '元素等待秒数', type: 'number', default: 10, min: 0, max: 300 },
-  ], constraints: [{"type": "numeric_range", "minimum": "min_value", "maximum": "max_value", "value": "target_value"}, {"type": "slider_insets", "left": "left_inset_percent", "right": "right_inset_percent"}] },
+  ], constraints: [{"type": "numeric_range", "minimum": "min_value", "maximum": "max_value", "value": "target_value"}] },
   { value: 'swipe', label: '滑动', needsElement: false, fields: [
     { key: 'direction', label: '方向', type: 'select', options: [{ value: 'up', label: '上滑' }, { value: 'down', label: '下滑' }, { value: 'left', label: '左滑' }, { value: 'right', label: '右滑' }], default: 'up' },
     { key: 'duration', label: '时长(ms)', type: 'number', default: 500, min: 0 },

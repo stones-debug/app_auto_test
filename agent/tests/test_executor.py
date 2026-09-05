@@ -1745,28 +1745,48 @@ async def test_swipe_in_region_scales_percentages_to_current_window():
     assert driver.region_swipes == [(100, 400, 300, 800, "left", 0.5)]
 
 
+def _slider_screen(text="4", track_width=1000, slider_x=490):
+    return [{
+        "id": "track", "bounds": {"x": 100, "y": 200, "width": track_width, "height": 40},
+        "children": [{
+            "id": "slider-parent", "bounds": {"x": 100, "y": 200, "width": track_width, "height": 40},
+            "children": [{"id": "slider", "text": text,
+                          "bounds": {"x": slider_x, "y": 205, "width": 20, "height": 30}}],
+        }],
+    }]
+
+
+def _slider_case_params(**overrides):
+    params = {
+        "element_id": 1, "min_value": 0, "max_value": 10,
+        "target_value": 8, "settle_ms": 0,
+    }
+    params.update(overrides)
+    return params
+
+
+def _slider_context(driver):
+    return ExecutionContext(driver, _make_case([], elements={
+        "1": {"locator_type": "id", "locator_value": "slider"},
+    }))
+
+
 async def test_set_slider_value_drags_from_current_value_and_verifies_result():
     from executor.actions import SetSliderValueAction
 
     class SliderDriver(MockDriver):
         def drag_coordinate(self, start_x, start_y, end_x, end_y, duration_ms):
             super().drag_coordinate(start_x, start_y, end_x, end_y, duration_ms)
-            self.state["slider-value"] = "8"
+            self.state["slider"] = "8"
 
-    driver = SliderDriver()
-    driver.set_screen(
-        [
-            {"id": "slider", "bounds": {"x": 100, "y": 200, "width": 1000, "height": 100}},
-            {"id": "slider-value", "text": "4"},
-        ]
-    )
+    driver = SliderDriver({"slider": "4"})
+    driver.set_screen(_slider_screen(slider_x=490))
     context = ExecutionContext(
         driver,
         _make_case(
             [],
             elements={
                 "1": {"locator_type": "id", "locator_value": "slider"},
-                "2": {"locator_type": "id", "locator_value": "slider-value"},
             },
         ),
     )
@@ -1776,13 +1796,9 @@ async def test_set_slider_value_drags_from_current_value_and_verifies_result():
         context,
         {
             "element_id": 1,
-            "value_element_id": 2,
             "min_value": 0,
             "max_value": 10,
             "target_value": 8,
-            "left_inset_percent": 10,
-            "right_inset_percent": 10,
-            "track_y_percent": 50,
             "duration_ms": 300,
             "settle_ms": 0,
         },
@@ -1797,11 +1813,30 @@ async def test_set_slider_value_drags_from_current_value_and_verifies_result():
         "interaction": "drag",
         "adjustments": 0,
     }
-    assert driver.coordinate_drags == [(520, 250, 839, 250, 300)]
+    assert driver.coordinate_drags == [(499, 219, 891, 219, 300)]
     assert driver.coordinate_taps == []
 
 
-async def test_set_slider_value_taps_target_when_current_value_is_unavailable():
+async def test_set_slider_value_drags_left_using_track_span():
+    from executor.actions import SetSliderValueAction
+
+    class LeftSliderDriver(MockDriver):
+        def drag_coordinate(self, *args):
+            super().drag_coordinate(*args)
+            self.state["slider"] = "0"
+
+    driver = LeftSliderDriver({"slider": "6"})
+    driver.set_screen(_slider_screen(text="6", slider_x=688))
+    result = await SetSliderValueAction().execute(
+        driver, _slider_context(driver), _slider_case_params(target_value=0)
+    )
+    assert result["status"] == "passed"
+    assert driver.coordinate_drags == [(697, 219, 110, 219, 300)]
+    assert driver.coordinate_taps == []
+
+
+async def test_set_slider_value_rejects_missing_current_value_without_tap():
+    from executor import DriverError
     from executor.actions import SetSliderValueAction
 
     driver = MockDriver()
@@ -1813,25 +1848,11 @@ async def test_set_slider_value_taps_target_when_current_value_is_unavailable():
         _make_case([], elements={"1": {"locator_type": "id", "locator_value": "slider"}}),
     )
 
-    result = await SetSliderValueAction().execute(
-        driver,
-        context,
-        {
-            "element_id": 1,
-            "min_value": 0,
-            "max_value": 10,
-            "target_value": 5,
-            "left_inset_percent": 0,
-            "right_inset_percent": 0,
-            "track_y_percent": 50,
-            "settle_ms": 0,
-            "verify_value": False,
-        },
-    )
-
-    assert result["interaction"] == "tap"
-    assert result["verified"] is False
-    assert driver.coordinate_taps == [(50, 30)]
+    with pytest.raises(DriverError, match="自身文本"):
+        await SetSliderValueAction().execute(
+            driver, context, {"element_id": 1, "min_value": 0, "max_value": 10, "target_value": 5}
+        )
+    assert driver.coordinate_taps == []
 
 
 async def test_set_slider_value_rejects_invalid_runtime_range():
@@ -1847,6 +1868,7 @@ async def test_set_slider_value_rejects_invalid_runtime_range():
 
 
 async def test_set_slider_value_does_not_treat_range_text_as_current_value():
+    from executor import DriverError
     from executor.actions import SetSliderValueAction
 
     driver = MockDriver()
@@ -1863,25 +1885,16 @@ async def test_set_slider_value_does_not_treat_range_text_as_current_value():
         _make_case([], elements={"1": {"locator_type": "id", "locator_value": "slider-row"}}),
     )
 
-    result = await SetSliderValueAction().execute(
-        driver,
-        context,
-        {
-            "element_id": 1,
-            "min_value": 52,
-            "max_value": 100,
-            "target_value": 76,
-            "verify_value": False,
-            "settle_ms": 0,
-        },
-    )
-
-    assert result["interaction"] == "tap"
+    with pytest.raises(DriverError, match="自身文本"):
+        await SetSliderValueAction().execute(
+            driver, context, {"element_id": 1, "min_value": 52, "max_value": 100, "target_value": 76}
+        )
     assert driver.coordinate_drags == []
-    assert driver.coordinate_taps == [(120, 120)]
+    assert driver.coordinate_taps == []
 
 
-async def test_set_slider_value_verify_false_does_not_read_unavailable_value():
+async def test_set_slider_value_rejects_empty_slider_text():
+    from executor import DriverError
     from executor.actions import SetSliderValueAction
 
     class NoReadDriver(MockDriver):
@@ -1897,31 +1910,19 @@ async def test_set_slider_value_verify_false_does_not_read_unavailable_value():
         driver,
         _make_case([], elements={"1": {"locator_type": "id", "locator_value": "slider"}}),
     )
-    result = await SetSliderValueAction().execute(
-        driver,
-        context,
-        {
-            "element_id": 1,
-            "min_value": 0,
-            "max_value": 10,
-            "target_value": 5,
-            "verify_value": False,
-            "settle_ms": 0,
-        },
-    )
-    assert result["status"] == "passed"
-    assert driver.coordinate_taps == [(50, 10)]
+    with pytest.raises(DriverError, match="自身文本"):
+        await SetSliderValueAction().execute(
+            driver, context, {"element_id": 1, "min_value": 0, "max_value": 10, "target_value": 5}
+        )
+    assert driver.coordinate_taps == []
 
 
-async def test_set_slider_value_verify_false_still_drags_when_current_value_is_readable():
+async def test_set_slider_value_does_not_drag_when_already_at_target():
     from executor.actions import SetSliderValueAction
 
-    driver = MockDriver({"slider": "4"})
-    driver.set_screen([{"id": "slider", "bounds": {"x": 0, "y": 0, "width": 101, "height": 20}}])
-    context = ExecutionContext(
-        driver,
-        _make_case([], elements={"1": {"locator_type": "id", "locator_value": "slider"}}),
-    )
+    driver = MockDriver({"slider": "8"})
+    driver.set_screen(_slider_screen(slider_x=490))
+    context = _slider_context(driver)
     result = await SetSliderValueAction().execute(
         driver,
         context,
@@ -1930,14 +1931,45 @@ async def test_set_slider_value_verify_false_still_drags_when_current_value_is_r
             "min_value": 0,
             "max_value": 10,
             "target_value": 8,
-            "verify_value": False,
             "settle_ms": 0,
         },
     )
     assert result["status"] == "passed"
-    assert result["interaction"] == "drag"
-    assert driver.coordinate_drags == [(41, 10, 78, 10, 300)]
+    assert result["interaction"] == "noop"
+    assert result["changed"] is False
+    assert driver.coordinate_drags == []
     assert driver.coordinate_taps == []
+
+
+async def test_set_slider_value_relocates_and_recomputes_track_for_correction(monkeypatch):
+    from executor.actions import SetSliderValueAction
+
+    class CorrectingDriver(MockDriver):
+        def __init__(self):
+            super().__init__({"slider": "4"})
+            self.drag_count = 0
+
+        def drag_coordinate(self, *args):
+            super().drag_coordinate(*args)
+            self.drag_count += 1
+            if self.drag_count == 1:
+                self.state["slider"] = "7"
+                self.set_screen(_slider_screen(text="7", track_width=600, slider_x=300))
+            else:
+                self.state["slider"] = "8"
+
+    driver = CorrectingDriver()
+    driver.set_screen(_slider_screen(slider_x=490))
+
+    async def fake_sleep(seconds):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    result = await SetSliderValueAction().execute(
+        driver, _slider_context(driver), _slider_case_params(max_adjustments=2)
+    )
+    assert result["adjustments"] == 1
+    assert driver.coordinate_drags[1] == (309, 219, 367, 219, 300)
 
 
 async def test_set_slider_value_settle_wait_honors_stop_request(monkeypatch):
@@ -1952,13 +1984,10 @@ async def test_set_slider_value_settle_wait_honors_stop_request(monkeypatch):
         stopped = True
 
     monkeypatch.setattr(asyncio, "sleep", interruptible_sleep)
-    driver = MockDriver()
-    driver.set_screen([{"id": "slider", "bounds": {"x": 0, "y": 0, "width": 101, "height": 20}}])
-    context = ExecutionContext(
-        driver,
-        _make_case([], elements={"1": {"locator_type": "id", "locator_value": "slider"}}),
-        should_stop=lambda: stopped,
-    )
+    driver = MockDriver({"slider": "4"})
+    driver.set_screen(_slider_screen())
+    context = _slider_context(driver)
+    context.should_stop = lambda: stopped
 
     with pytest.raises(StopRequested):
         await SetSliderValueAction().execute(
@@ -1969,11 +1998,10 @@ async def test_set_slider_value_settle_wait_honors_stop_request(monkeypatch):
                 "min_value": 0,
                 "max_value": 10,
                 "target_value": 8,
-                "verify_value": False,
                 "settle_ms": 300,
             },
         )
-    assert driver.coordinate_taps == [(78, 10)]
+    assert driver.coordinate_taps == []
     # settle 等待按不超过 50ms 的片段运行，睡眠期间切换 stop 后立即退出。
     assert sleep_calls == [0.05]
 
@@ -2016,30 +2044,17 @@ async def test_set_slider_value_exhausted_adjustments_reports_correction_count()
     class InaccurateDriver(MockDriver):
         def drag_coordinate(self, start_x, start_y, end_x, end_y, duration_ms):
             super().drag_coordinate(start_x, start_y, end_x, end_y, duration_ms)
-            self.state["slider-value"] = "7"
+            self.state["slider"] = "7"
 
-    driver = InaccurateDriver()
-    driver.set_screen([
-        {"id": "slider", "bounds": {"x": 0, "y": 0, "width": 101, "height": 20}},
-        {"id": "slider-value", "text": "2"},
-    ])
-    context = ExecutionContext(
-        driver,
-        _make_case(
-            [],
-            elements={
-                "1": {"locator_type": "id", "locator_value": "slider"},
-                "2": {"locator_type": "id", "locator_value": "slider-value"},
-            },
-        ),
-    )
+    driver = InaccurateDriver({"slider": "2"})
+    driver.set_screen(_slider_screen(text="2", slider_x=290))
+    context = _slider_context(driver)
     with pytest.raises(DriverError, match="已修正 1 次"):
         await SetSliderValueAction().execute(
             driver,
             context,
             {
                 "element_id": 1,
-                "value_element_id": 2,
                 "min_value": 0,
                 "max_value": 10,
                 "target_value": 8,
