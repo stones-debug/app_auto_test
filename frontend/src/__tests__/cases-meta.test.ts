@@ -6,9 +6,11 @@ import {
   actionMeta,
   assertionMeta,
   defaultParams,
+  normalizeActionNode,
   normalizeStep,
   validateActionParams,
   validateStep,
+  type ActionNode,
   type Step,
 } from '@/api/cases'
 
@@ -282,5 +284,44 @@ describe('Step 4 步骤顶层 continue_on_failure 与 click 等待契约', () =>
     const params = defaultParams(meta.fields)
     expect(params.wait_timeout).toBe(10)
     expect(typeof params.wait_timeout).toBe('number')
+  })
+})
+
+describe('Step 26 加载旧动作参数时回填 registry 默认值', () => {
+  it('统一流动作节点回填 swipe_to_find 的新增参数', () => {
+    const node = normalizeActionNode({
+      kind: 'action',
+      order: 1,
+      action: 'swipe_to_find',
+      element_id: 7,
+      params: {
+        direction: 'up',
+        max_swipes: 5,
+        wait_timeout: 2,
+        duration: 500,
+        continue_on_failure: true,
+      },
+      continue_on_failure: false,
+    } as ActionNode)
+
+    expect(node.params).toMatchObject({ percent: 0.2, settle_ms: 500 })
+    expect('continue_on_failure' in (node.params ?? {})).toBe(false)
+  })
+
+  it('旧步骤路径回填默认值且保留显式边界值', () => {
+    const step = normalizeStep({
+      order: 1,
+      action: 'swipe_to_find',
+      element_id: 7,
+      params: {
+        percent: 0.05,
+        settle_ms: 0,
+      },
+      continue_on_failure: false,
+    })
+
+    expect(step.params).toMatchObject({ percent: 0.05, settle_ms: 0 })
+    expect(step.params?.duration).toBe(500)
+    expect(step.params?.wait_timeout).toBe(2)
   })
 })

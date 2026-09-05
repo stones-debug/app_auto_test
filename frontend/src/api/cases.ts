@@ -194,20 +194,28 @@ export function validateAssertion(assertion: Assertion): string | null {
 // 并把历史遗留塞入 params 的同名字段剔除
 // 方案 §2.8：步骤稳定 key 缺失/非法时兜底生成 UUID（后端同样兜底，读写一致）
 export function normalizeActionNode(step: ActionNode): ActionNode {
-  const { continue_on_failure: legacy, ...params } = (step.params ?? {}) as Record<string, unknown>
-  void legacy
   return {
     ...step,
     key: normalizeNodeKey(step.key),
     phase: step.phase ?? 'main',
-    params,
+    params: normalizeActionParams(step.action, step.params),
     continue_on_failure: step.continue_on_failure ?? false,
   }
 }
 
 export function normalizeStep(step: Step): Step {
-  const { continue_on_failure: _legacy, ...params } = (step.params ?? {}) as Record<string, unknown>
-  return { ...step, key: normalizeNodeKey(step.key), phase: step.phase ?? 'main', params, continue_on_failure: step.continue_on_failure ?? false }
+  return {
+    ...step,
+    key: normalizeNodeKey(step.key),
+    phase: step.phase ?? 'main',
+    params: normalizeActionParams(step.action, step.params),
+    continue_on_failure: step.continue_on_failure ?? false,
+  }
+}
+
+function normalizeActionParams(action: string, rawParams: Record<string, unknown> | undefined): Record<string, unknown> {
+  const { continue_on_failure: _legacy, ...params } = rawParams ?? {}
+  return { ...defaultParams(actionMeta(action).fields), ...params }
 }
 
 function normalizeNodeKey(raw: string | undefined): string {
