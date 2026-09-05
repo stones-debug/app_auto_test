@@ -678,6 +678,68 @@ def test_smart_selector_generation_strategies():
     assert locator_value == '//*[@text="行"]/ancestor::*[1]/descendant::*[@content-desc="连接"]'
 
 
+def test_smart_relative_class_equals_matches_node_name_or_class_attribute():
+    locator_type, locator_value = build_selector(
+        {
+            "anchor": [{"attribute": "resource_id", "operator": "equals", "value": "anchor"}],
+            "path": [{"axis": "descendant"}],
+            "target": [{"attribute": "class_name", "operator": "equals", "value": "android.widget.SeekBar"}],
+        }
+    )
+    assert locator_type == "xpath"
+    assert locator_value == (
+        '//*[@resource-id="anchor"]/descendant::*'
+        '[(name()="android.widget.SeekBar" or @class="android.widget.SeekBar")]'
+    )
+
+
+def test_smart_relative_class_literal_is_xpath_safe():
+    locator_type, locator_value = build_selector(
+        {
+            "anchor": [{"attribute": "resource_id", "operator": "equals", "value": "anchor"}],
+            "path": [{"axis": "descendant"}],
+            "target": [{"attribute": "class_name", "operator": "equals", "value": 'a"b\'c'}],
+        }
+    )
+    assert locator_type == "xpath"
+    assert 'name()=concat(' in locator_value
+    assert '@class=concat(' in locator_value
+
+
+async def test_smart_relative_class_equals_matches_xml_node_name_in_mock():
+    driver = MockDriver()
+    driver.set_screen([
+        _node(
+            resource_id="anchor",
+            children=[_node(children=[_node(node_name="android.widget.SeekBar", id="seekbar")])],
+        )
+    ])
+    config = _config(
+        [],
+        alternatives=[{
+            "anchor": [{"attribute": "resource_id", "operator": "equals", "value": "anchor"}],
+            "path": [{"axis": "descendant"}],
+            "target": [
+                {"attribute": "class_name", "operator": "equals", "value": "android.widget.SeekBar"},
+                {"attribute": "displayed", "operator": "equals", "value": True},
+            ],
+        }],
+    )
+    driver._screen_roots[0].children[0].children[0]._attributes["displayed"] = True
+    element = _context(driver, config).find_element("1")
+    assert element.locator_value == "seekbar"
+
+
+def test_smart_class_equals_without_relative_path_stays_uiautomator():
+    locator_type, locator_value = build_selector(
+        {"anchor": [], "path": [], "target": [
+            {"attribute": "class_name", "operator": "equals", "value": "android.widget.SeekBar"}
+        ]}
+    )
+    assert locator_type == "uiautomator"
+    assert locator_value == 'new UiSelector().className("android.widget.SeekBar")'
+
+
 # ---------- G2 门禁：parent 轴 depth≥2（转译 ancestor） ----------
 
 

@@ -38,6 +38,9 @@ class MockElement:
         self.locator_value = locator_value
         self._attributes = dict(attrs or {})
         self.text = str(self._attributes.get("text", ""))
+        self.node_name = str(
+            self._attributes.get("node_name", self._attributes.get("class_name", ""))
+        )
         self._generation = generation
         self.children: list[MockElement] = []
         self.parent: MockElement | None = None
@@ -454,6 +457,7 @@ class MockDriver(BaseDriver):
 # 真实语义由 Appium 执行；此处仅为可编程的确定性仿真。
 
 _XPATH_PRED_EQUALS = re.compile(r"^@([\w-]+)=(.*)$")
+_XPATH_PRED_CLASS_EQUALS = re.compile(r"^\(name\(\)=(.*) or @class=(.*)\)$")
 _XPATH_PRED_CONTAINS = re.compile(r"^contains\(@([\w-]+),\s*(.*)\)$")
 _XPATH_PRED_STARTS_WITH = re.compile(r"^starts-with\(@([\w-]+),\s*(.*)\)$")
 _XPATH_PRED_ENDS_WITH = re.compile(
@@ -654,6 +658,17 @@ def _eval_xpath_literal(text: str) -> str:
 def _decode_xpath_predicate(pred: str) -> dict:
     """把生成器产出的受限 XPath 谓词反解为条件。"""
     pred = pred.strip()
+    class_match = _XPATH_PRED_CLASS_EQUALS.match(pred)
+    if class_match:
+        name_value = _eval_xpath_literal(class_match.group(1))
+        class_value = _eval_xpath_literal(class_match.group(2))
+        if name_value != class_value:
+            raise ValueError("XPath class_name 双匹配字面量不一致")
+        return {
+            "attribute": "class_name_or_node_name",
+            "operator": "equals",
+            "value": name_value,
+        }
     match = _XPATH_PRED_ENDS_WITH.match(pred)
     if match:
         return {
@@ -771,6 +786,8 @@ def _mock_condition_matches(node: MockElement, cond: dict) -> bool:
     attribute = cond["attribute"]
     operator = cond["operator"]
     value = cond["value"]
+    if attribute == "class_name_or_node_name":
+        return node._attributes.get("class_name", "") == value or node.node_name == value
     node_value = _mock_node_value(node, attribute)
     if attribute in _MOCK_BOOL_ATTRIBUTES:
         return (str(node_value).lower() == "true") == bool(value)

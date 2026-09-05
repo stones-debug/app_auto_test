@@ -366,6 +366,10 @@ def _xpath_predicate(cond: dict) -> str:
     lit = _xpath_literal(value)
     operator = cond["operator"]
     if operator == "equals":
+        if cond["attribute"] == "class_name":
+            # UiAutomator2 exposes Android widget classes as XML node names in
+            # some page sources, while XPath @class is absent or inconsistent.
+            return f"(name()={lit} or {xattr}={lit})"
         return f"{xattr}={lit}"
     if operator == "contains":
         return f"contains({xattr}, {lit})"
