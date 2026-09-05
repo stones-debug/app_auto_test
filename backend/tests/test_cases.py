@@ -2,6 +2,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from app.schemas.generated_case_params import SwipeToFindParams
 
 OWNER = {"username": "pytest_caseowner", "email": "caseowner@tl-tek.com", "password": "test123"}
 
@@ -29,6 +30,19 @@ async def _create_element(client: AsyncClient, headers: dict, project_id: int) -
     )
     assert resp.status_code == 201
     return resp.json()["id"]
+
+
+def test_swipe_to_find_params_defaults_and_bounds():
+    params = SwipeToFindParams()
+
+    assert params.percent == 0.2
+    assert params.settle_ms == 500
+    assert SwipeToFindParams(percent=0.05, settle_ms=0).percent == 0.05
+    assert SwipeToFindParams(percent=0.95, settle_ms=5000).settle_ms == 5000
+    with pytest.raises(ValueError):
+        SwipeToFindParams(percent=0.04)
+    with pytest.raises(ValueError):
+        SwipeToFindParams(settle_ms=5001)
 
 
 async def test_case_crud(client: AsyncClient):

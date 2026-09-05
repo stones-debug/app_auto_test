@@ -112,6 +112,35 @@ describe('CR-09 动作/断言元数据契约', () => {
     ])
   })
 
+  it('滑动查找元素展示可控距离与稳定等待参数', () => {
+    const meta = actionMeta('swipe_to_find')
+    expect(meta.needsElement).toBe(true)
+    expect(defaultParams(meta.fields)).toEqual({
+      direction: 'up',
+      max_swipes: 5,
+      wait_timeout: 2,
+      percent: 0.2,
+      duration: 500,
+      settle_ms: 500,
+    })
+    expect(meta.fields.find((field) => field.key === 'percent')).toMatchObject({
+      min: 0.05,
+      max: 0.95,
+      default: 0.2,
+    })
+    expect(meta.fields.find((field) => field.key === 'settle_ms')).toMatchObject({
+      min: 0,
+      max: 5000,
+      default: 500,
+    })
+    expect(validateActionParams('swipe_to_find', { percent: 0.04 })).toBe(
+      '“滑动距离比例（0.05～0.95）”不能小于 0.05',
+    )
+    expect(validateActionParams('swipe_to_find', { settle_ms: 5001 })).toBe(
+      '“滑动后稳定等待(ms)”不能大于 5000',
+    )
+  })
+
   it('设置滑块数值提供闭环配置并校验目标范围', () => {
     const slider = actionMeta('set_slider_value')
     expect(slider.needsElement).toBe(true)

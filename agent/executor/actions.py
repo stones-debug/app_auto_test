@@ -510,17 +510,21 @@ class SwipeAction(BaseAction):
 
 @register_action("swipe_to_find")
 class SwipeToFindAction(BaseAction):
-    """上下滑动页面直至找到目标元素（最多 max_swipes 次滑动，每次滑动前短等待查找）。
+    """上下滑动页面直至找到目标元素（最多 max_swipes 次滑动）。
 
     找到返回 passed + found_after_swipes（0 表示未滑动即找到）；
     滑完仍未找到抛 ElementNotFound（步骤失败并附可读信息）。
     """
 
+    _SETTLE_POLL_SECONDS = 0.05
+
     async def execute(self, driver, context, params: dict) -> dict:
         max_swipes = int(params.get("max_swipes", 5))
         direction = params.get("direction", "up")
         wait_timeout = params.get("wait_timeout", 2)
+        percent = self._bounded_percent(params.get("percent", 0.2))
         duration = int(params.get("duration", 500))
+        settle_ms = self._bounded_settle_ms(params.get("settle_ms", 500))
         stop = getattr(context, "should_stop", None)
         last_error: ElementNotFound | None = None
         for i in range(max_swipes + 1):
@@ -532,8 +536,43 @@ class SwipeToFindAction(BaseAction):
             except ElementNotFound as exc:
                 last_error = exc
             if i < max_swipes:
-                driver.swipe(direction, duration=duration)
+                driver.swipe(direction, duration=duration, percent=percent)
+                await self._wait_for_settle(context, settle_ms / 1000.0)
         raise ElementNotFound(f"滑动 {max_swipes} 次后仍未找到元素（{direction}，{last_error}）")
+
+    @staticmethod
+    def _bounded_percent(raw) -> float:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            raise DriverError("滑动查找参数 percent 必须是数字") from None
+        if not math.isfinite(value) or not 0.05 <= value <= 0.95:
+            raise DriverError("滑动查找参数 percent 必须在 0.05～0.95 之间")
+        return value
+
+    @staticmethod
+    def _bounded_settle_ms(raw) -> int:
+        if isinstance(raw, bool):
+            raise DriverError("滑动查找参数 settle_ms 必须是整数")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            raise DriverError("滑动查找参数 settle_ms 必须是整数") from None
+        if not math.isfinite(value) or not value.is_integer() or not 0 <= value <= 5000:
+            raise DriverError("滑动查找参数 settle_ms 必须在 0～5000ms")
+        return int(value)
+
+    async def _wait_for_settle(self, context, seconds: float) -> None:
+        """滑动后等待页面稳定；等待分片执行以便及时响应停止请求。"""
+        deadline = asyncio.get_running_loop().time() + seconds
+        while True:
+            stop = getattr(context, "should_stop", None)
+            if stop is not None and stop():
+                raise StopRequested("执行被用户停止")
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(self._SETTLE_POLL_SECONDS, remaining))
 
 
 @register_action("swipe_in_element")

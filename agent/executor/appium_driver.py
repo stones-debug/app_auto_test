@@ -537,16 +537,37 @@ class AppiumDriver(BaseDriver):
             return bool(is_selected())
         return False
 
-    def swipe(self, direction: str, duration: int = 500) -> None:
+    def swipe(
+        self, direction: str, duration: int = 500, percent: float | None = None
+    ) -> None:
         driver = self._ensure()
         size = driver.get_window_size()
         w, h = size["width"], size["height"]
-        points = {
-            "up": ((w // 2, int(h * 0.8)), (w // 2, int(h * 0.2))),
-            "down": ((w // 2, int(h * 0.2)), (w // 2, int(h * 0.8))),
-            "left": ((int(w * 0.8), h // 2), (int(w * 0.2), h // 2)),
-            "right": ((int(w * 0.2), h // 2), (int(w * 0.8), h // 2)),
-        }
+        if percent is None:
+            # 保留普通 swipe 的历史轨迹（屏幕尺寸的 60%），避免已有动作回归。
+            points = {
+                "up": ((w // 2, int(h * 0.8)), (w // 2, int(h * 0.2))),
+                "down": ((w // 2, int(h * 0.2)), (w // 2, int(h * 0.8))),
+                "left": ((int(w * 0.8), h // 2), (int(w * 0.2), h // 2)),
+                "right": ((int(w * 0.2), h // 2), (int(w * 0.8), h // 2)),
+            }
+        else:
+            if not math.isfinite(percent) or not 0.05 <= percent <= 0.95:
+                raise DriverError("滑动比例必须在 0.05～0.95 之间")
+            # 以屏幕中心为中点计算位移，端点始终留出对称安全边距。
+            half_width = w * percent / 2
+            half_height = h * percent / 2
+            center_x, center_y = w / 2, h / 2
+            points = {
+                "up": ((round(center_x), round(center_y + half_height)),
+                       (round(center_x), round(center_y - half_height))),
+                "down": ((round(center_x), round(center_y - half_height)),
+                         (round(center_x), round(center_y + half_height))),
+                "left": ((round(center_x + half_width), round(center_y)),
+                         (round(center_x - half_width), round(center_y))),
+                "right": ((round(center_x - half_width), round(center_y)),
+                          (round(center_x + half_width), round(center_y))),
+            }
         start, end = points.get(direction, points["up"])
         driver.swipe(start[0], start[1], end[0], end[1], duration)
 

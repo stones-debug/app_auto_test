@@ -79,7 +79,9 @@ class SwipeToFindParams(ParamsBase):
     direction: Literal['up', 'down'] = 'up'
     max_swipes: int = Field(default=5, ge=1, le=50)
     wait_timeout: int = Field(default=2, ge=0, le=300)
+    percent: float = Field(default=0.2, ge=0.05, le=0.95)
     duration: int = Field(default=500, ge=0)
+    settle_ms: int = Field(default=500, ge=0, le=5000)
 
 
 class SwipeInElementParams(ParamsBase):

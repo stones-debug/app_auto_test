@@ -332,11 +332,27 @@
           "label": "每次查找等待秒数"
         },
         {
+          "name": "percent",
+          "type": "number",
+          "default": 0.2,
+          "min": 0.05,
+          "max": 0.95,
+          "label": "滑动距离比例（0.05～0.95）"
+        },
+        {
           "name": "duration",
           "type": "integer",
           "default": 500,
           "min": 0,
           "label": "滑动时长(ms)"
+        },
+        {
+          "name": "settle_ms",
+          "type": "integer",
+          "default": 500,
+          "min": 0,
+          "max": 5000,
+          "label": "滑动后稳定等待(ms)"
         }
       ]
     },

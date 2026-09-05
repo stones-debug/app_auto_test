@@ -111,7 +111,9 @@ class BaseDriver:
         """返回复选框当前是否处于勾选状态。"""
         raise NotImplementedError
 
-    def swipe(self, direction: str, duration: int = 500) -> None:
+    def swipe(
+        self, direction: str, duration: int = 500, percent: float | None = None
+    ) -> None:
         raise NotImplementedError
 
     def swipe_in_element(
@@ -216,6 +218,7 @@ class MockDriver(BaseDriver):
         self._next_node_id = 0
         self._scroll_callback = None
         self.swipes: list[tuple[str, int]] = []
+        self.swipe_percents: list[float | None] = []
         self.element_swipes: list[tuple] = []
         self.region_swipes: list[tuple] = []
         self.element_swipe_speeds: list[int | None] = []
@@ -351,8 +354,11 @@ class MockDriver(BaseDriver):
             return _coerce_bool(element._attributes["checked"])
         return _coerce_bool(element._attributes.get("selected", False))
 
-    def swipe(self, direction: str, duration: int = 500) -> None:
+    def swipe(
+        self, direction: str, duration: int = 500, percent: float | None = None
+    ) -> None:
         self.swipes.append((direction, duration))
+        self.swipe_percents.append(percent)
         self.swipe_count += 1
         if self._scroll_callback is not None:
             new_screen = self._scroll_callback(self.swipe_count)

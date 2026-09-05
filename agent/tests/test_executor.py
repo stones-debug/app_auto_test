@@ -1483,6 +1483,33 @@ async def test_appium_activity_resolution_failure_is_actionable(monkeypatch):
         driver.launch_app("com.missing.app", None)
 
 
+def test_appium_swipe_percent_is_centered_and_default_is_unchanged():
+    from executor.appium_driver import AppiumDriver
+
+    class Session:
+        def __init__(self):
+            self.swipes = []
+
+        def get_window_size(self):
+            return {"width": 1080, "height": 2400}
+
+        def swipe(self, *args):
+            self.swipes.append(args)
+
+    session = Session()
+    driver = AppiumDriver(device={"platform": "android"})
+    driver.driver = session
+    driver.swipe("up", duration=300, percent=0.2)
+    driver.swipe("down", duration=300, percent=0.2)
+    driver.swipe("up", duration=300)
+
+    assert session.swipes == [
+        (540, 1440, 540, 960, 300),
+        (540, 960, 540, 1440, 300),
+        (540, 1920, 540, 480, 300),
+    ]
+
+
 # ---------- swipe_to_find：滑动查找元素 ----------
 
 
@@ -1505,7 +1532,9 @@ class _FoundAfterSwipesDriver(MockDriver):
 
         return MockElement(locator_value)
 
-    def swipe(self, direction: str, duration: int = 500) -> None:
+    def swipe(
+        self, direction: str, duration: int = 500, percent: float | None = None
+    ) -> None:
         self.swipes.append((direction, duration))
 
 
@@ -1516,11 +1545,96 @@ async def test_swipe_to_find_found_after_swipes():
     driver = _FoundAfterSwipesDriver(after=3)
     context = ExecutionContext(driver, _make_case([]))
     result = await action.execute(
-        driver, context, {"element_id": 1, "direction": "up", "max_swipes": 5, "duration": 500}
+        driver, context, {
+            "element_id": 1, "direction": "up", "max_swipes": 5,
+            "duration": 500, "percent": 0.2, "settle_ms": 0,
+        }
     )
     assert result["status"] == "passed"
     assert result["found_after_swipes"] == 3
     assert driver.swipes == [("up", 500), ("up", 500), ("up", 500)]
+
+
+async def test_swipe_to_find_orders_swipe_settle_then_find(monkeypatch):
+    from executor.actions import SwipeToFindAction
+
+    class OrderedDriver(_FoundAfterSwipesDriver):
+        def __init__(self):
+            super().__init__(after=2)
+            self.events: list[str] = []
+
+        def find_element(self, locator_type, locator_value, wait_timeout=10):
+            self.events.append("find")
+            return super().find_element(locator_type, locator_value, wait_timeout)
+
+        def swipe(self, direction, duration=500, percent=None):
+            self.events.append("swipe")
+            super().swipe(direction, duration, percent)
+
+    driver = OrderedDriver()
+    action = SwipeToFindAction()
+    context = ExecutionContext(driver, _make_case([]))
+    settle_calls: list[float] = []
+
+    async def fake_settle(_context, seconds):
+        settle_calls.append(seconds)
+        driver.events.append("settle")
+
+    monkeypatch.setattr(action, "_wait_for_settle", fake_settle)
+    result = await action.execute(
+        driver,
+        context,
+        {
+            "element_id": 1,
+            "max_swipes": 2,
+            "percent": 0.2,
+            "settle_ms": 120,
+        },
+    )
+
+    assert result["status"] == "passed"
+    assert driver.events == ["find", "swipe", "settle", "find", "swipe", "settle", "find"]
+    assert settle_calls == [0.12, 0.12]
+
+
+async def test_swipe_to_find_settle_honors_stop(monkeypatch):
+    from executor.actions import SwipeToFindAction
+
+    driver = _FoundAfterSwipesDriver(after=99)
+    stopped = False
+
+    def should_stop():
+        return stopped
+
+    action = SwipeToFindAction()
+    context = ExecutionContext(driver, _make_case([]), should_stop=should_stop)
+    original_settle = action._wait_for_settle
+
+    async def stop_after_swipe(_context, _seconds):
+        nonlocal stopped
+        stopped = True
+        await original_settle(_context, 0)
+
+    monkeypatch.setattr(action, "_wait_for_settle", stop_after_swipe)
+    # The helper checks should_stop before every sleep; a real settle must
+    # therefore be interruptible immediately after the swipe.
+    with pytest.raises(StopRequested):
+        await action.execute(
+            driver, context, {"element_id": 1, "max_swipes": 1, "settle_ms": 500}
+        )
+
+
+def test_swipe_to_find_params_validate_new_bounds():
+    from executor.actions import SwipeToFindAction
+
+    assert SwipeToFindAction._bounded_percent(0.05) == 0.05
+    assert SwipeToFindAction._bounded_percent(0.95) == 0.95
+    assert SwipeToFindAction._bounded_settle_ms(0) == 0
+    assert SwipeToFindAction._bounded_settle_ms(5000) == 5000
+    with pytest.raises(Exception, match="percent"):
+        SwipeToFindAction._bounded_percent(0.04)
+    with pytest.raises(Exception, match="settle_ms"):
+        SwipeToFindAction._bounded_settle_ms(5001)
 
 
 async def test_swipe_to_find_found_without_swipe():
@@ -1530,7 +1644,9 @@ async def test_swipe_to_find_found_without_swipe():
     driver = _FoundAfterSwipesDriver(after=0)
     context = ExecutionContext(driver, _make_case([]))
     result = await action.execute(
-        driver, context, {"element_id": 1, "direction": "down", "max_swipes": 3}
+        driver, context, {
+            "element_id": 1, "direction": "down", "max_swipes": 3, "settle_ms": 0,
+        }
     )
     assert result["status"] == "passed"
     assert result["found_after_swipes"] == 0
@@ -1545,7 +1661,9 @@ async def test_swipe_to_find_exhausted_raises_with_message():
     driver = _FoundAfterSwipesDriver(after=99)  # 永远找不到
     context = ExecutionContext(driver, _make_case([]))
     with pytest.raises(ElementNotFound, match="滑动 2 次后仍未找到元素"):
-        await action.execute(driver, context, {"element_id": 1, "max_swipes": 2})
+        await action.execute(driver, context, {
+            "element_id": 1, "max_swipes": 2, "settle_ms": 0,
+        })
 
 
 async def test_swipe_to_find_respects_stop():
@@ -1562,7 +1680,10 @@ async def test_swipe_to_find_step_through_runner():
     """Runner 整链：滑动 3 次后找到元素 → 步骤 passed。"""
     case = _make_case(
         steps=[
-            {"order": 1, "action": "swipe_to_find", "element_id": 1, "params": {"max_swipes": 5}},
+            {
+                "order": 1, "action": "swipe_to_find", "element_id": 1,
+                "params": {"max_swipes": 5, "settle_ms": 0},
+            },
         ],
     )
     status, sent = await _run_and_capture(case, driver=_FoundAfterSwipesDriver(after=3))
