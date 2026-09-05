@@ -481,17 +481,31 @@ class SmartElementResolver:
                 self._check_stop(context)
                 if not allow_immediate:
                     self._check_deadline(deadline)
-                locator_type, locator_value = build_selector(alt)
-                logger.info(
-                    "智能定位候选 %s/%s: %s=%s", alt_index, len(alternatives), locator_type, locator_value
-                )
-                matches = self._find_all(
-                    driver, locator_type, locator_value, deadline, allow_immediate=allow_immediate
-                )
+                if self._is_scoped_descendant(alt):
+                    matches, selector_desc, anchor_count = self._find_scoped_descendant(
+                        driver, alt, deadline, allow_immediate=allow_immediate
+                    )
+                    logger.info(
+                        "智能定位候选 %s/%s: two-stage/scoped %s，锚点 %s 个，最终候选 %s 个",
+                        alt_index,
+                        len(alternatives),
+                        selector_desc,
+                        anchor_count,
+                        len(matches),
+                    )
+                else:
+                    locator_type, locator_value = build_selector(alt)
+                    selector_desc = locator_value
+                    logger.info(
+                        "智能定位候选 %s/%s: %s=%s", alt_index, len(alternatives), locator_type, locator_value
+                    )
+                    matches = self._find_all(
+                        driver, locator_type, locator_value, deadline, allow_immediate=allow_immediate
+                    )
                 count = len(matches)
                 logger.info("候选 %s 匹配 %s 个元素", alt_index, count)
                 if count >= 1:
-                    return self._select(matches, selection, locator_value)
+                    return self._select(matches, selection, selector_desc)
 
             if allow_immediate:
                 break
@@ -560,6 +574,55 @@ class SmartElementResolver:
                 f"智能定位匹配到 {count} 个元素，期望第 {index} 个（index 越界，候选: {selector_desc}）"
             )
         return matches[index - 1]
+
+    @staticmethod
+    def _is_scoped_descendant(alt: dict) -> bool:
+        path = alt.get("path") or []
+        target = alt.get("target") or []
+        return (
+            bool(alt.get("anchor"))
+            and len(path) == 1
+            and path[0].get("axis") == "descendant"
+            and not path[0].get("depth")
+            and len(target) == 1
+            and target[0].get("attribute") == "class_name"
+            and target[0].get("operator") == "equals"
+        )
+
+    @classmethod
+    def _find_scoped_descendant(
+        cls, driver, alt: dict, deadline: float, *, allow_immediate: bool = False
+    ) -> tuple[list, str, int]:
+        anchor_xpath = _build_xpath(alt["anchor"])
+        class_value = alt["target"][0]["value"]
+        anchors = cls._find_all(
+            driver, "xpath", anchor_xpath, deadline, allow_immediate=allow_immediate
+        )
+        matches: list = []
+        seen: set[object] = set()
+        for anchor in anchors:
+            cls_matches = cls._run_with_deadline(
+                driver,
+                deadline,
+                lambda anchor=anchor: driver.find_elements_in_element(
+                    anchor, "class_name", class_value, wait_timeout=0
+                ),
+                allow_immediate=allow_immediate,
+            )
+            for element in cls_matches:
+                identity = getattr(element, "id", None) or getattr(element, "locator_value", None)
+                key = ("element", identity) if identity is not None else ("object", id(element))
+                if key not in seen:
+                    seen.add(key)
+                    matches.append(element)
+        selector_desc = f"two-stage {anchor_xpath} -> class_name={class_value!r}"
+        logger.info(
+            "智能定位 two-stage/scoped：锚点 %s 个，最终候选 %s 个，selector=%s",
+            len(anchors),
+            len(matches),
+            selector_desc,
+        )
+        return matches, selector_desc, len(anchors)
 
     @staticmethod
     def _check_stop(context) -> None:

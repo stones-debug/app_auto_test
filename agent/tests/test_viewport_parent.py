@@ -462,6 +462,23 @@ def test_appium_parent_query_translates_missing_parent():
         driver.get_parent_element(Element(), wait_timeout=0)
 
 
+def test_appium_scoped_class_query_uses_class_name_strategy():
+    from appium.webdriver.common.appiumby import AppiumBy
+
+    from executor.appium_driver import AppiumDriver
+
+    class Element:
+        def find_elements(self, by, value):
+            assert (by, value) == (AppiumBy.CLASS_NAME, "android.widget.SeekBar")
+            return ["seekbar"]
+
+    driver = AppiumDriver(device={"platform": "android"})
+    driver.driver = cast(Any, object())
+    assert driver.find_elements_in_element(
+        Element(), "class_name", "android.widget.SeekBar", wait_timeout=0
+    ) == ["seekbar"]
+
+
 def test_appium_android_attach_applies_unlimited_xpath_context(monkeypatch):
     import appium.webdriver as appium_webdriver
 

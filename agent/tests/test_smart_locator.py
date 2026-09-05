@@ -730,6 +730,94 @@ async def test_smart_relative_class_equals_matches_xml_node_name_in_mock():
     assert element.locator_value == "seekbar"
 
 
+async def test_smart_scoped_descendant_uses_two_stage_driver_calls():
+    class RecordingDriver(MockDriver):
+        def __init__(self):
+            super().__init__()
+            self.global_calls = []
+            self.scoped_calls = []
+
+        def find_elements(self, locator_type, locator_value, wait_timeout=10):
+            self.global_calls.append((locator_type, locator_value, wait_timeout))
+            if "descendant" in locator_value:
+                raise AssertionError("组合 descendant XPath 不应执行")
+            return super().find_elements(locator_type, locator_value, wait_timeout)
+
+        def find_elements_in_element(self, element, locator_type, locator_value, wait_timeout=0):
+            self.scoped_calls.append((element.locator_value, locator_type, locator_value, wait_timeout))
+            return super().find_elements_in_element(element, locator_type, locator_value, wait_timeout)
+
+    driver = RecordingDriver()
+    driver.set_screen([_node(resource_id="anchor", id="anchor", children=[
+        _node(children=[_node(node_name="android.widget.SeekBar", id="seekbar")])
+    ])])
+    config = _config([], alternatives=[{
+        "anchor": [{"attribute": "resource_id", "operator": "equals", "value": "anchor"}],
+        "path": [{"axis": "descendant"}],
+        "target": [{"attribute": "class_name", "operator": "equals", "value": "android.widget.SeekBar"}],
+    }])
+    element = _context(driver, config).find_element("1")
+    assert element.locator_value == "seekbar"
+    assert driver.global_calls == [("xpath", '//*[@resource-id="anchor"]', 0)]
+    assert driver.scoped_calls == [("anchor", "class_name", "android.widget.SeekBar", 0)]
+
+
+async def test_smart_scoped_descendant_aggregates_and_deduplicates_overlapping_anchors():
+    driver = MockDriver()
+    driver.set_screen([_node(resource_id="anchor", children=[
+        _node(resource_id="anchor", children=[
+            _node(node_name="android.widget.SeekBar", id="seekbar")
+        ])
+    ])])
+    config = _config([], alternatives=[{
+        "anchor": [{"attribute": "resource_id", "operator": "equals", "value": "anchor"}],
+        "path": [{"axis": "descendant"}],
+        "target": [{"attribute": "class_name", "operator": "equals", "value": "android.widget.SeekBar"}],
+    }], selection={"policy": "index", "index": 1})
+    element = _context(driver, config).find_element("1")
+    assert element.locator_value == "seekbar"
+
+
+async def test_smart_scoped_descendant_no_match_uses_existing_not_found_error():
+    driver = MockDriver()
+    driver.set_screen([_node(resource_id="anchor", children=[_node(text="other")])])
+    config = _config([], alternatives=[{
+        "anchor": [{"attribute": "resource_id", "operator": "equals", "value": "anchor"}],
+        "path": [{"axis": "descendant"}],
+        "target": [{"attribute": "class_name", "operator": "equals", "value": "android.widget.SeekBar"}],
+    }])
+    with pytest.raises(ElementNotFound, match="未找到元素"):
+        _context(driver, config).find_element("1")
+
+
+async def test_smart_non_strict_descendant_keeps_combined_xpath_fallback():
+    class RecordingDriver(MockDriver):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def find_elements(self, locator_type, locator_value, wait_timeout=10):
+            self.calls.append((locator_type, locator_value))
+            return super().find_elements(locator_type, locator_value, wait_timeout)
+
+    driver = RecordingDriver()
+    driver.set_screen([_node(resource_id="anchor", children=[
+        _node(node_name="android.widget.SeekBar", displayed=True, id="seekbar")
+    ])])
+    config = _config([], alternatives=[{
+        "anchor": [{"attribute": "resource_id", "operator": "equals", "value": "anchor"}],
+        "path": [{"axis": "descendant"}],
+        "target": [
+            {"attribute": "class_name", "operator": "equals", "value": "android.widget.SeekBar"},
+            {"attribute": "displayed", "operator": "equals", "value": True},
+        ],
+    }])
+    element = _context(driver, config).find_element("1")
+    assert element.locator_value == "seekbar"
+    assert len(driver.calls) == 1
+    assert "descendant" in driver.calls[0][1]
+
+
 def test_smart_class_equals_without_relative_path_stays_uiautomator():
     locator_type, locator_value = build_selector(
         {"anchor": [], "path": [], "target": [

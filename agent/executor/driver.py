@@ -272,6 +272,13 @@ class MockDriver(BaseDriver):
         self, element, locator_type: str, locator_value: str, wait_timeout: int = 0
     ):
         self._assert_fresh(element)
+        if locator_type == "class_name":
+            return [
+                node
+                for node in _all_descendants(element)
+                if node._attributes.get("class_name", "") == locator_value
+                or node.node_name == locator_value
+            ]
         descendants = _all_descendants(element)
         if not descendants and element not in _flatten_mock_nodes(self):
             # 兼容旧测试/旧 mock：未把容器放入屏幕树时无法建立父子关系。
