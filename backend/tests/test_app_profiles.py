@@ -378,6 +378,15 @@ async def test_workspace_and_nodes(client: AsyncClient):
     assert nodes.status_code == 200
     assert nodes.json()["items"][0]["node_type"] == "case"
 
+    step_nodes = await client.get(
+        f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=case&parent_id={case_id}&ancestor_suite_id={suite_id}",
+        headers=h,
+    )
+    assert step_nodes.status_code == 200
+    step_item = next(item for item in step_nodes.json()["items"] if item["node_type"] == "step")
+    assert step_item["element_id"] == el_id
+    assert step_item["element_name"] == "按钮W"
+
     # 跳过一个用例后差异列表出现
     case_node = (await client.post(
         f"/api/app-profiles/{profile_id}/skip-rules/batch",
@@ -743,6 +752,77 @@ async def test_suite_steps_workspace_query(client: AsyncClient):
         headers=h,
     )
     assert bad.status_code == 422
+
+
+async def test_workspace_step_element_name_uses_node_patch_and_missing_fallback(client: AsyncClient):
+    """工作台批量返回步骤元素；普通与套件步骤均使用生效的 element_id。"""
+    token = await _register(client, {"username": f"pytest_element_{uuid.uuid4().hex[:8]}", "email": f"element_{uuid.uuid4().hex[:8]}@tl-tek.com", "password": "test123"})
+    h = {"Authorization": f"Bearer {token}"}
+    pid = (await client.post("/api/projects", json={"name": "工作台元素"}, headers=h)).json()["id"]
+    profile_id = (await client.post(
+        f"/api/projects/{pid}/app-profiles", json={"name": "E", "code": f"e{uuid.uuid4().hex[:6]}"}, headers=h,
+    )).json()["id"]
+    first = (await client.post(
+        f"/api/projects/{pid}/elements", json={"name": "初始元素", "locator_type": "id", "locator_value": "first"}, headers=h,
+    )).json()["id"]
+    second = (await client.post(
+        f"/api/projects/{pid}/elements", json={"name": "覆盖元素", "locator_type": "id", "locator_value": "second"}, headers=h,
+    )).json()["id"]
+    node_key = str(uuid.uuid4())
+    case_id = (await client.post(
+        f"/api/projects/{pid}/cases", json={"name": "元素用例", "steps": [{
+            "key": node_key, "order": 1, "action": "click", "element_id": first, "params": {},
+        }]}, headers=h,
+    )).json()["id"]
+    suite_id = (await client.post(f"/api/projects/{pid}/suites", json={"name": "元素套件"}, headers=h)).json()["id"]
+    await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)
+
+    initial = await client.get(
+        f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=case&parent_id={case_id}&ancestor_suite_id={suite_id}", headers=h,
+    )
+    step = initial.json()["items"][0]
+    assert (step["element_id"], step["element_name"]) == (first, "初始元素")
+
+    patched = await client.put(
+        f"/api/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/step/{node_key}",
+        json={"expected_revision": 1, "patch": {"element_id": second}}, headers=h,
+    )
+    assert patched.status_code == 200, patched.text
+    after = await client.get(
+        f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=case&parent_id={case_id}&ancestor_suite_id={suite_id}", headers=h,
+    )
+    step = after.json()["items"][0]
+    assert (step["element_id"], step["element_name"]) == (second, "覆盖元素")
+
+    missing = await client.put(
+        f"/api/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/step/{node_key}",
+        json={"expected_revision": 2, "patch": {"element_id": 999999999}}, headers=h,
+    )
+    assert missing.status_code == 200, missing.text
+    unknown = await client.get(
+        f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=case&parent_id={case_id}&ancestor_suite_id={suite_id}", headers=h,
+    )
+    assert (unknown.json()["items"][0]["element_id"], unknown.json()["items"][0]["element_name"]) == (999999999, None)
+
+    suite_step_key = str(uuid.uuid4())
+    suite_with_step = (await client.post(
+        f"/api/projects/{pid}/suites", json={"name": "元素前置", "setup_steps": [{
+            "key": suite_step_key, "order": 1, "action": "click", "element_id": first, "params": {},
+        }]}, headers=h,
+    )).json()["id"]
+    suite_initial = await client.get(
+        f"/api/app-profiles/{profile_id}/suite-steps/{suite_with_step}?phase=suite_setup", headers=h,
+    )
+    assert (suite_initial.json()["items"][0]["element_id"], suite_initial.json()["items"][0]["element_name"]) == (first, "初始元素")
+    suite_patch = await client.put(
+        f"/api/app-profiles/{profile_id}/suite-step-overrides/{suite_with_step}/{suite_step_key}",
+        json={"expected_revision": 3, "patch": {"element_id": second}}, headers=h,
+    )
+    assert suite_patch.status_code == 200, suite_patch.text
+    suite_after = await client.get(
+        f"/api/app-profiles/{profile_id}/suite-steps/{suite_with_step}?phase=suite_setup", headers=h,
+    )
+    assert (suite_after.json()["items"][0]["element_id"], suite_after.json()["items"][0]["element_name"]) == (second, "覆盖元素")
 
 
 async def test_suite_step_override_roundtrip(client: AsyncClient):

@@ -170,15 +170,18 @@ async def load_override_index(db: AsyncSession, profile_id: int) -> dict:
     element_rows, variable_rows, node_rows = loaded
     node_idx: dict[tuple[int, int], dict[str, str]] = {}
     suite_step_idx: dict[tuple[int, str], dict] = {}
+    node_patches: dict[tuple[int, int, str], dict] = {}
     for row in node_rows:
         if row.target_type == "suite_step" and row.suite_id is not None:
             suite_step_idx[(row.suite_id, str(row.node_key))] = row.patch
         elif row.suite_id is not None and row.case_id is not None:
             node_idx.setdefault((row.suite_id, row.case_id), {})[str(row.node_key)] = row.target_type
+            node_patches[(row.suite_id, row.case_id, str(row.node_key))] = deepcopy(row.patch)
     return {
         "element": [row.element_id for row in element_rows],
         "variable": [row.name for row in variable_rows],
         "node": node_idx,
+        "node_patches": node_patches,
         "suite_step": suite_step_idx,
     }
 

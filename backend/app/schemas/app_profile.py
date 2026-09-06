@@ -221,6 +221,8 @@ class WorkspaceNode(BaseModel):
     node_type: str
     id: int | None = None
     node_key: str | None = None
+    element_id: int | None = None
+    element_name: str | None = None
     name: str
     registry_key: str | None = None
     phase: str | None = None

@@ -152,21 +152,39 @@ async def workspace_nodes(
             if ancestor_suite_id is not None
             else None
         )
+        nodes = [node for node in (case.flow_nodes or case.steps or []) if isinstance(node, dict)]
+        effective_nodes: dict[str, dict] = {}
+        element_ids: set[int] = set()
+        for node in nodes:
+            node_key = str(node.get("key") or "")
+            patch = overrides["node_patches"].get((ancestor_suite_id, case.id, node_key), {})
+            effective_node = {**node, **({"element_id": patch["element_id"]} if "element_id" in patch else {})}
+            effective_nodes[node_key] = effective_node
+            try:
+                if effective_node.get("element_id") is not None:
+                    element_ids.add(int(effective_node["element_id"]))
+            except (TypeError, ValueError):
+                pass
+        element_names = {
+            row.id: row.name
+            for row in await resolution_repo.load_by_ids(db, project_id=profile.project_id, ids=element_ids)
+            if row.deleted_at is None
+        }
         items = []
-        for node in (case.flow_nodes or case.steps or []):
+        for node in nodes:
             if node.get("kind", "action") != "action":
                 continue
             node_key = str(node.get("key") or "")
             rule = skip["step"].get((ancestor_suite_id, case.id), {}).get(node_key)
             overridden = overrides["node"].get((ancestor_suite_id, case.id), {}).get(node_key) == "step"
-            items.append(_node_item("step", case.id, node_key, node, rule, case_rule, overridden))
-        for node in (case.flow_nodes or case.steps or []):
+            items.append(_node_item("step", case.id, node_key, effective_nodes[node_key], rule, case_rule, overridden, element_names))
+        for node in nodes:
             if node.get("kind") != "assertion":
                 continue
             node_key = str(node.get("key") or "")
             rule = skip["assertion"].get((ancestor_suite_id, case.id), {}).get(node_key)
             overridden = overrides["node"].get((ancestor_suite_id, case.id), {}).get(node_key) == "assertion"
-            items.append(_node_item("assertion", case.id, node_key, node, rule, case_rule, overridden))
+            items.append(_node_item("assertion", case.id, node_key, effective_nodes[node_key], rule, case_rule, overridden, element_names))
         start = (page - 1) * page_size
         return {"total": len(items), "page": page, "page_size": page_size, "items": items[start : start + page_size]}
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="parent_type 必须是 suite 或 case")
@@ -198,6 +216,27 @@ async def hub_suite_steps(
     skip = await resolution_repo.load_skip_index(db, profile_id)
     overrides = await resolution_repo.load_override_index(db, profile_id)
 
+    nodes = [
+        node for _phase_name, collection in (("suite_setup", suite.setup_steps or []), ("suite_teardown", suite.teardown_steps or []))
+        for node in collection if isinstance(node, dict)
+    ]
+    effective_nodes: dict[str, dict] = {}
+    element_ids: set[int] = set()
+    for node in nodes:
+        node_key = str(node.get("key") or "")
+        patch = overrides["suite_step"].get((suite_id, node_key), {})
+        effective_node = {**node, **({"element_id": patch["element_id"]} if "element_id" in patch else {})}
+        effective_nodes[node_key] = effective_node
+        try:
+            if effective_node.get("element_id") is not None:
+                element_ids.add(int(effective_node["element_id"]))
+        except (TypeError, ValueError):
+            pass
+    element_names = {
+        row.id: row.name
+        for row in await resolution_repo.load_by_ids(db, project_id=profile.project_id, ids=element_ids)
+        if row.deleted_at is None
+    }
     items: list[dict] = []
     for phase_name, collection in (("suite_setup", suite.setup_steps or []), ("suite_teardown", suite.teardown_steps or [])):
         if phase and phase != phase_name:
@@ -208,7 +247,7 @@ async def hub_suite_steps(
             node_key = str(node.get("key") or "")
             rule = skip["suite_step"].get((suite_id, node_key))
             overridden = (suite_id, node_key) in overrides["suite_step"]
-            items.append(_suite_step_item(suite_id, node_key, node, phase_name, rule, overridden))
+            items.append(_suite_step_item(suite_id, node_key, effective_nodes[node_key], phase_name, rule, overridden, element_names))
     start = (page - 1) * page_size
     return {
         "profile_revision": profile.revision,

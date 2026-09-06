@@ -64,23 +64,40 @@ def require_profile_manager():
     return _checker
 
 
-def _node_item(node_type: str, case_id: int, node_key: str, node: dict, rule, inherited_rule=None, overridden: bool = False) -> dict:
+def _element_info(node: dict, element_names: dict[int, str] | None = None) -> tuple[int | None, str | None]:
+    raw_element_id = node.get("element_id")
+    try:
+        element_id = int(raw_element_id) if raw_element_id is not None else None
+    except (TypeError, ValueError):
+        element_id = None
+    return element_id, (element_names or {}).get(element_id) if element_id is not None else None
+
+
+def _node_item(
+    node_type: str, case_id: int, node_key: str, node: dict, rule, inherited_rule=None,
+    overridden: bool = False, element_names: dict[int, str] | None = None,
+) -> dict:
     effective_rule = inherited_rule or rule
     effective = "skipped" if effective_rule else ("overridden" if overridden else "enabled")
     source = "inherited" if inherited_rule else ("direct" if rule else ("override" if overridden else "none"))
     reason = {"code": effective_rule.reason_code, "note": effective_rule.reason_note or ""} if effective_rule else None
-    return {"node_type": node_type, "id": None, "node_key": node_key, "name": node.get("description") or node.get("action") or node.get("type") or "", "registry_key": node.get("action") if node_type == "step" else node.get("type") or node.get("assertion_type"), "phase": node.get("phase"), "order": node.get("order"), "effective_status": effective, "status_source": source, "reason": reason, "override_count": 1 if overridden else 0, "override_template": _node_override_template(node), "has_children": False, "updated_at": None}
+    element_id, element_name = _element_info(node, element_names)
+    return {"node_type": node_type, "id": None, "node_key": node_key, "element_id": element_id, "element_name": element_name, "name": node.get("description") or node.get("action") or node.get("type") or "", "registry_key": node.get("action") if node_type == "step" else node.get("type") or node.get("assertion_type"), "phase": node.get("phase"), "order": node.get("order"), "effective_status": effective, "status_source": source, "reason": reason, "override_count": 1 if overridden else 0, "override_template": _node_override_template(node), "has_children": False, "updated_at": None}
 
 
 async def _broadcast_config(profile: AppProfile, user_id: int | None = None) -> None:
     await profile_config_manager.broadcast(profile.project_id, {"type": "profile_revision_changed", "project_id": profile.project_id, "profile_id": profile.id, "profile_revision": profile.revision, "changed_by": user_id, "changed_at": datetime.now(UTC).isoformat()})
 
 
-def _suite_step_item(suite_id: int, node_key: str, node: dict, phase: str, rule, overridden: bool = False) -> dict:
+def _suite_step_item(
+    suite_id: int, node_key: str, node: dict, phase: str, rule, overridden: bool = False,
+    element_names: dict[int, str] | None = None,
+) -> dict:
     effective = "skipped" if rule else ("overridden" if overridden else "enabled")
     source = "direct" if rule else ("override" if overridden else "none")
     reason = {"code": rule.reason_code, "note": rule.reason_note or ""} if rule else None
-    return {"node_type": "suite_step", "id": suite_id, "node_key": node_key, "name": node.get("description") or node.get("action") or node.get("type") or "", "registry_key": node.get("action"), "phase": phase, "order": node.get("order"), "effective_status": effective, "status_source": source, "reason": reason, "override_count": 1 if overridden else 0, "override_template": _node_override_template(node), "has_children": False, "updated_at": None}
+    element_id, element_name = _element_info(node, element_names)
+    return {"node_type": "suite_step", "id": suite_id, "node_key": node_key, "element_id": element_id, "element_name": element_name, "name": node.get("description") or node.get("action") or node.get("type") or "", "registry_key": node.get("action"), "phase": phase, "order": node.get("order"), "effective_status": effective, "status_source": source, "reason": reason, "override_count": 1 if overridden else 0, "override_template": _node_override_template(node), "has_children": False, "updated_at": None}
 
 
 def _sort_workspace(items: list[dict], sort_by: str, sort_order: str) -> list[dict]:

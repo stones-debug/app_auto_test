@@ -76,6 +76,11 @@ function canVariableOverride(row: DisplayNode): boolean {
   return (row.node_type === 'step' || row.node_type === 'suite_step') && variableNames(row).length > 0
 }
 
+function elementDisplayName(row: DisplayNode): string | null {
+  if ((row.node_type !== 'step' && row.node_type !== 'suite_step') || row.element_id == null) return null
+  return row.element_name ?? `未知元素（#${row.element_id}）`
+}
+
 const displayRows = computed<DisplayNode[]>(() => {
   const rows: DisplayNode[] = []
   for (const suite of store.suitePage?.items ?? []) {
@@ -452,7 +457,8 @@ onMounted(load)
           <template #default="{ row }">
             <span class="node-name" :style="{ paddingLeft: `${row._depth * 22}px` }">
               <button v-if="row.has_children" type="button" class="expand-button" @click="toggleNode(displayNode(row))">{{ store.expandedKeys.has(row._key) ? '▾' : '▸' }}</button>
-              <span v-else class="node-dot">·</span>{{ row.name }}
+              <span v-else class="node-dot">·</span>
+              <span class="node-label"><span>{{ row.name }}</span><small v-if="elementDisplayName(displayNode(row))" class="element-label">元素：{{ elementDisplayName(displayNode(row)) }}</small></span>
             </span>
           </template>
         </el-table-column>
@@ -496,6 +502,7 @@ onMounted(load)
           <el-tag size="small" effect="plain">变量列表修改</el-tag>
           <strong>{{ variableOverrideDialog.row.registry_key || variableOverrideDialog.row.name }}</strong>
           <span v-if="variableOverrideDialog.row.order != null">第 {{ variableOverrideDialog.row.order }} 项</span>
+          <span v-if="elementDisplayName(variableOverrideDialog.row)" class="element-context">元素：{{ elementDisplayName(variableOverrideDialog.row) }}</span>
         </div>
         <el-form label-width="140px">
           <el-form-item v-for="name in variableOverrideDialog.names" :key="name" :label="name">
@@ -532,6 +539,8 @@ onMounted(load)
 .rev, .override-help { color: var(--el-text-color-secondary); font-size: 12px; }
 .batch-bar { padding: 8px 12px; border-radius: 6px; background: var(--el-color-primary-light-9); }
 .node-name { display: inline-flex; align-items: center; }
+.node-label { display: inline-flex; flex-direction: column; gap: 2px; }
+.element-label, .element-context { color: var(--el-text-color-secondary); font-size: 12px; }
 .expand-button { width: 22px; padding: 0; border: 0; background: transparent; cursor: pointer; color: inherit; }
 .node-dot { display: inline-block; width: 22px; text-align: center; }
 .override-context { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; color: var(--el-text-color-regular); }

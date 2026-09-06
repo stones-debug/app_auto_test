@@ -39,6 +39,8 @@ export interface ProfileNode {
   node_type: 'suite' | 'case' | 'step' | 'assertion' | 'suite_step'
   id: number | null
   node_key: string | null
+  element_id?: number | null
+  element_name?: string | null
   name: string
   registry_key?: string | null
   phase?: string | null
