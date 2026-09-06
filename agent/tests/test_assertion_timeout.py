@@ -150,6 +150,61 @@ async def test_verify_with_wait_does_not_interrupt_driver_at_deadline():
     release.set()
 
 
+async def test_verify_with_wait_preserves_completed_mismatch_after_retry_interval():
+    attempts = 0
+
+    def verify(_deadline: float):
+        nonlocal attempts
+        attempts += 1
+        return {"status": "failed", "expected": "98", "actual": "98.0"}
+
+    result = await verify_with_wait(
+        verify,
+        max_wait_seconds=0.06,
+        interval_seconds=0.02,
+    )
+
+    assert attempts >= 2
+    assert result["status"] == "failed"
+    assert result["expected"] == "98"
+    assert result["actual"] == "98.0"
+    assert "最大等待时间" not in (result.get("error_message") or "")
+
+
+async def test_runner_v3_preserves_text_mismatch_when_wait_expires(monkeypatch):
+    import executor.test_runner as runner_module
+
+    original_verify_with_wait = runner_module.verify_with_wait
+
+    async def fast_verify_with_wait(verify, **kwargs):
+        return await original_verify_with_wait(verify, interval_seconds=0.01, **kwargs)
+
+    monkeypatch.setattr(runner_module, "verify_with_wait", fast_verify_with_wait)
+    sent: list[dict] = []
+
+    async def send(payload: dict) -> None:
+        sent.append(payload)
+
+    runner = TestRunner(MockDriver(initial_state={"username": "98.0"}), send, execution_id=100)
+    case = {
+        "execution_case_id": 2001,
+        "flow_snapshot": [{
+            "execution_node_id": 3001, "kind": "assertion", "phase": "case_main", "order": 1,
+            "type": "text_equals", "element_id": 1, "params": {"expected": "98"},
+            "max_wait_seconds": 0.04,
+        }],
+        "elements_snapshot": {"1": {"locator_type": "id", "locator_value": "username"}},
+    }
+
+    assert await runner.run_case(case) == "failed"
+    node_result = next(item for item in sent if item["type"] == "node_result")
+    assert node_result["status"] == "failed"
+    assert node_result["expected_value"] == "98"
+    assert node_result["actual_value"] == "98.0"
+    assert "断言数据不一致" in node_result["error_message"]
+    assert "最大等待时间" not in node_result["error_message"]
+
+
 class BlockingLookupDriver(RecordingDriver):
     def __init__(self) -> None:
         super().__init__()

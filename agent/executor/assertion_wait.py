@@ -65,13 +65,12 @@ async def verify_with_wait(
         await asyncio.gather(task, return_exceptions=True)
 
     async def sleep_until_retry() -> None:
-        while True:
+        sleep_deadline = min(deadline, time.monotonic() + max(0.0, float(interval_seconds)))
+        while time.monotonic() < sleep_deadline:
             if should_stop is not None and should_stop():
                 raise StopRequested("执行被用户停止")
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return
-            await asyncio.sleep(min(0.1, interval_seconds, remaining))
+            remaining = sleep_deadline - time.monotonic()
+            await asyncio.sleep(min(0.1, remaining))
 
     async def invoke_verify(current_deadline: float):
         result = verify(current_deadline)
@@ -130,3 +129,5 @@ async def verify_with_wait(
         if time.monotonic() >= deadline:
             return normalized
         await sleep_until_retry()
+        if time.monotonic() >= deadline:
+            return normalized
