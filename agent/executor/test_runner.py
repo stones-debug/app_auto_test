@@ -310,10 +310,11 @@ class TestRunner:
         *,
         execution_case_id: int | None = None,
         execution_suite_id: int | None = None,
-    ) -> tuple[bool, bool]:
-        """执行一个阶段，返回 (阶段是否失败, 是否因失败中断阶段)。"""
+    ) -> tuple[bool, bool, bool]:
+        """执行一个阶段，返回 (阶段是否失败, 是否中断阶段, 是否阻断后续用例)。"""
         failed = False
         halted = False
+        blocked = False
         phase_label = {
             "setup": "前置步骤",
             "teardown": "后置步骤",
@@ -329,6 +330,7 @@ class TestRunner:
             step_order = step.get("order") or step.get("step_order")
             start = time.monotonic()
             result: dict = {"status": "passed"}
+            action_failed = False
             action_name = str(step.get("action") or "unknown")
             try:
                 if self.parameters.get("attach_to_current_app") and action_name == "launch_app":
@@ -354,7 +356,11 @@ class TestRunner:
                 raise
             except Exception as exc:
                 result = {"status": "failed", "error_message": str(exc)}
+                action_failed = True
+            if result.get("status", "passed") != "passed":
+                action_failed = True
             assertion_results: list[AssertionItem] = []
+            assertion_error = False
             if result.get("status", "passed") == "passed":
                 for assertion_index, assertion in enumerate(step.get("assertions") or [], start=1):
                     try:
@@ -405,6 +411,9 @@ class TestRunner:
                             "actual": "",
                             "error_message": _assertion_exception_message(exc),
                         }
+                        assertion_error = not isinstance(exc, ElementNotFound)
+                    if assertion_result.get("status") == "error":
+                        assertion_error = True
                     failure_message = _assertion_failure_message(
                         assertion_result,
                         expected_fallback=(assertion.get("params") or {}).get("expected"),
@@ -469,10 +478,11 @@ class TestRunner:
                 await reporter.assertion_result(execution_step_id, assertion_results)
             if step_status == "failed":
                 failed = True
-                if not step.get("continue_on_failure", False):
+                blocked = blocked or action_failed or assertion_error
+                if (action_failed or assertion_error) and not step.get("continue_on_failure", False):
                     halted = True
                     break
-        return failed, halted
+        return failed, halted, blocked
 
     async def _run_flow_nodes(
         self,
@@ -482,13 +492,15 @@ class TestRunner:
         phase: str,
         execution_case_id: int | None = None,
         execution_suite_id: int | None = None,
-    ) -> tuple[str | None, bool]:
+    ) -> tuple[str | None, bool, bool]:
         """V3：动作/断言共用一个有序节点流。
 
         返回阶段的真实聚合状态，而不是仅返回是否失败；这样未知动作、
-        驱动异常和断言内部异常会以 ``error`` 继续向上汇总。
+        驱动异常和断言内部异常会以 ``error`` 继续向上汇总。普通断言
+        ``failed`` 只记录阶段失败，不阻断后续节点。
         """
         statuses: list[str] = []
+        blocked = False
         for node in nodes:
             if self.should_stop():
                 raise StopRequested("执行被用户停止")
@@ -588,9 +600,11 @@ class TestRunner:
                 int(node.get("order") or 0),
             )
             if status != "passed":
-                if not node.get("continue_on_failure", False):
-                    return aggregate_statuses(statuses), True
-        return (aggregate_statuses(statuses) if statuses else None), False
+                node_blocks_following = not (kind == "assertion" and status == "failed")
+                blocked = blocked or node_blocks_following
+                if node_blocks_following and not node.get("continue_on_failure", False):
+                    return aggregate_statuses(statuses), True, blocked
+        return (aggregate_statuses(statuses) if statuses else None), False, blocked
 
     async def run_case(self, case: dict, reporter: RunnerReporter | None = None) -> str:
         execution_case_id = int(case.get("execution_case_id") or 0)
@@ -612,18 +626,18 @@ class TestRunner:
             main_nodes = [node for node in all_steps if _case_phase_bucket(node.get("phase")) == "main"]
             teardown_nodes = [node for node in all_steps if _case_phase_bucket(node.get("phase")) == "teardown"]
             phase_statuses: list[str] = []
-            setup_status, setup_halted = await self._run_flow_nodes(
+            setup_status, setup_halted, _setup_blocked = await self._run_flow_nodes(
                 setup_nodes, context, reporter, "setup", execution_case_id=execution_case_id
             )
             if setup_status is not None:
                 phase_statuses.append(setup_status)
             if not setup_halted:
-                main_status, _main_halted = await self._run_flow_nodes(
+                main_status, _main_halted, _main_blocked = await self._run_flow_nodes(
                     main_nodes, context, reporter, "main", execution_case_id=execution_case_id
                 )
                 if main_status is not None:
                     phase_statuses.append(main_status)
-            teardown_status, _teardown_halted = await self._run_flow_nodes(
+            teardown_status, _teardown_halted, _teardown_blocked = await self._run_flow_nodes(
                 teardown_nodes, context, reporter, "teardown", execution_case_id=execution_case_id
             )
             if teardown_status is not None:
@@ -633,19 +647,19 @@ class TestRunner:
         main_steps = [s for s in all_steps if _case_phase_bucket(s.get("phase")) == "main"]
         teardown_steps = [s for s in all_steps if _case_phase_bucket(s.get("phase")) == "teardown"]
 
-        setup_failed, setup_halted = await self._run_steps(
+        setup_failed, setup_halted, _setup_blocked = await self._run_steps(
             setup_steps, context, reporter, "setup", execution_case_id=execution_case_id
         )
         if setup_failed:
             case_status = "failed"
         if not setup_halted:
-            main_failed, _main_halted = await self._run_steps(
+            main_failed, _main_halted, _main_blocked = await self._run_steps(
                 main_steps, context, reporter, "main", execution_case_id=execution_case_id
             )
             if main_failed:
                 case_status = "failed"
 
-        teardown_failed, _teardown_halted = await self._run_steps(
+        teardown_failed, _teardown_halted, _teardown_blocked = await self._run_steps(
             teardown_steps, context, reporter, "teardown", execution_case_id=execution_case_id
         )
         if teardown_failed:
@@ -677,20 +691,20 @@ class TestRunner:
         teardown_nodes = suite.get("teardown_nodes")
         phase_statuses: list[str] = []
         if setup_nodes is not None:
-            setup_status, setup_halted = await self._run_flow_nodes(
+            setup_status, setup_halted, setup_blocked = await self._run_flow_nodes(
                 setup_nodes, context, reporter, "suite_setup", execution_suite_id=suite_id
             )
             if setup_status is not None:
                 phase_statuses.append(setup_status)
         else:
-            setup_failed, setup_halted = await self._run_steps(
+            setup_failed, setup_halted, setup_blocked = await self._run_steps(
                 suite.get("setup_steps") or [], context, reporter, "suite_setup",
                 execution_suite_id=suite_id,
             )
             if setup_failed:
                 phase_statuses.append("failed")
         setup_failed = setup_status in {"failed", "error"} if setup_nodes is not None else setup_failed
-        if setup_failed:
+        if setup_blocked:
             for case in cases:
                 case_id = int(case.get("execution_case_id") or 0)
                 await reporter.case_status(case_id, "skipped")
@@ -704,13 +718,13 @@ class TestRunner:
                 case_statuses.append(cstatus)
 
         if teardown_nodes is not None:
-            teardown_status, _teardown_halted = await self._run_flow_nodes(
+            teardown_status, _teardown_halted, _teardown_blocked = await self._run_flow_nodes(
                 teardown_nodes, context, reporter, "suite_teardown", execution_suite_id=suite_id
             )
             if teardown_status is not None:
                 phase_statuses.append(teardown_status)
         else:
-            teardown_failed, _teardown_halted = await self._run_steps(
+            teardown_failed, _teardown_halted, _teardown_blocked = await self._run_steps(
                 suite.get("teardown_steps") or [], context, reporter, "suite_teardown",
                 execution_suite_id=suite_id,
             )

@@ -419,6 +419,108 @@ async def test_runner_v3_paces_actions_across_assertion(monkeypatch):
     assert sum(sleeps) == pytest.approx(0.4)
 
 
+async def test_runner_v3_continues_after_failed_assertion(monkeypatch):
+    monkeypatch.setattr(TestRunner, "ACTION_MIN_INTERVAL_SECONDS", 0)
+    driver = MockDriver()
+    case = {
+        "execution_case_id": 2001,
+        "flow_snapshot": [
+            {
+                "execution_node_id": 3001, "kind": "assertion", "phase": "case_main", "order": 1,
+                "type": "text_equals", "element_id": 1, "params": {"expected": "wrong"},
+                "max_wait_seconds": 0,
+            },
+            {
+                "execution_node_id": 3002, "kind": "action", "phase": "case_main", "order": 2,
+                "action": "input", "element_id": 2, "params": {"value": "after"},
+            },
+        ],
+        "elements_snapshot": {
+            "1": {"locator_type": "id", "locator_value": "username"},
+            "2": {"locator_type": "id", "locator_value": "target"},
+        },
+    }
+
+    sent: list[dict] = []
+
+    async def send(payload: dict) -> None:
+        sent.append(payload)
+
+    assert await TestRunner(driver, send, 100).run_case(case) == "failed"
+    assert driver.state["target"] == "after"
+    node_results = [message for message in sent if message["type"] == "node_result"]
+    assert [message["status"] for message in node_results] == ["failed", "passed"]
+
+
+async def test_runner_v3_case_setup_failed_assertion_still_runs_case_main(monkeypatch):
+    monkeypatch.setattr(TestRunner, "ACTION_MIN_INTERVAL_SECONDS", 0)
+    driver = MockDriver()
+    case = {
+        "execution_case_id": 2001,
+        "flow_snapshot": [
+            {
+                "execution_node_id": 3001, "kind": "assertion", "phase": "case_setup", "order": 1,
+                "type": "text_equals", "element_id": 1, "params": {"expected": "wrong"},
+                "max_wait_seconds": 0,
+            },
+            {
+                "execution_node_id": 3002, "kind": "action", "phase": "case_main", "order": 1,
+                "action": "input", "element_id": 2, "params": {"value": "main"},
+            },
+        ],
+        "elements_snapshot": {
+            "1": {"locator_type": "id", "locator_value": "username"},
+            "2": {"locator_type": "id", "locator_value": "target"},
+        },
+    }
+
+    sent: list[dict] = []
+
+    async def send(payload: dict) -> None:
+        sent.append(payload)
+
+    assert await TestRunner(driver, send, 100).run_case(case) == "failed"
+    assert driver.state["target"] == "main"
+    assert any(
+        message["execution_node_id"] == 3002
+        and message["status"] == "passed"
+        for message in sent
+        if message["type"] == "node_result"
+    )
+
+
+async def test_runner_v3_assertion_error_still_stops_following_nodes(monkeypatch):
+    monkeypatch.setattr(TestRunner, "ACTION_MIN_INTERVAL_SECONDS", 0)
+    driver = MockDriver()
+    case = {
+        "execution_case_id": 2001,
+        "flow_snapshot": [
+            {
+                "execution_node_id": 3001, "kind": "assertion", "phase": "case_main", "order": 1,
+                "type": "unknown_assertion", "params": {},
+            },
+            {
+                "execution_node_id": 3002, "kind": "action", "phase": "case_main", "order": 2,
+                "action": "input", "element_id": 1, "params": {"value": "must-not-run"},
+            },
+        ],
+        "elements_snapshot": {"1": {"locator_type": "id", "locator_value": "target"}},
+    }
+
+    sent: list[dict] = []
+
+    async def send(payload: dict) -> None:
+        sent.append(payload)
+
+    assert await TestRunner(driver, send, 100).run_case(case) == "error"
+    assert "target" not in driver.state
+    assert [
+        message["execution_node_id"]
+        for message in sent
+        if message["type"] == "node_result"
+    ] == [3001]
+
+
 async def test_runner_resolves_get_text_variable_in_following_nodes():
     """获取文本产生的变量应在后续动作和断言执行前解析。"""
     driver = MockDriver(initial_state={"username": "captured-value"})
@@ -689,6 +791,32 @@ async def test_runner_runs_assertions_before_teardown_and_keeps_assertion_failur
     assert result_messages[1]["assertions"][0]["status"] == "failed"
     assert driver.state["username"] == "cleaned"
     assert status == "failed"
+
+
+async def test_runner_v2_continues_after_failed_step_assertion(monkeypatch):
+    monkeypatch.setattr(TestRunner, "ACTION_MIN_INTERVAL_SECONDS", 0)
+    driver = MockDriver()
+    case = _make_case(
+        steps=[
+            {"order": 1, "action": "input", "element_id": 1, "params": {"value": "admin"}},
+        ],
+        assertions=[
+            {"order": 1, "type": "text_equals", "element_id": 1, "params": {"expected": "wrong"}},
+        ],
+    )
+    case["steps_snapshot"].append({
+        "execution_step_id": 3002,
+        "order": 2,
+        "action": "input",
+        "element_id": 2,
+        "params": {"value": "after"},
+    })
+
+    status, sent = await _run_and_capture(case, driver=driver)
+
+    assert status == "failed"
+    assert driver.state["login_btn"] == "after"
+    assert [message["step_order"] for message in sent if message["type"] == "step_result"] == [1, 2]
 
 
 async def test_runner_assertion_uses_snapshot_order_and_injected_id():
@@ -2426,6 +2554,48 @@ async def test_run_suite_uses_execution_nodes_for_suite_setup_and_teardown():
         if message.get("type") == "step_result"
         and message.get("phase") in {"suite_setup", "suite_teardown"}
     ]
+
+
+async def test_run_suite_continues_after_failed_suite_setup_assertion(monkeypatch):
+    monkeypatch.setattr(TestRunner, "ACTION_MIN_INTERVAL_SECONDS", 0)
+    driver = MockDriver()
+    suite = _make_suite(
+        [_suite_case(steps=[{"order": 1, "action": "input", "element_id": 2, "params": {"value": "case"}}])],
+        setup_steps=[],
+        teardown_steps=[],
+        elements_snapshot={
+            "1": {"locator_type": "id", "locator_value": "username"},
+            "2": {"locator_type": "id", "locator_value": "target"},
+        },
+    )
+    suite["setup_nodes"] = [
+        {
+            "execution_node_id": 5101, "kind": "assertion", "phase": "suite_setup", "order": 1,
+            "type": "text_equals", "element_id": 1, "params": {"expected": "wrong"},
+            "max_wait_seconds": 0,
+        },
+        {
+            "execution_node_id": 5102, "kind": "action", "phase": "suite_setup", "order": 2,
+            "action": "input", "element_id": 2, "params": {"value": "setup"},
+        },
+    ]
+    suite["teardown_nodes"] = []
+
+    status, sent = await _run_suite_and_capture(suite, driver=driver)
+
+    assert status == "failed"
+    assert driver.state["target"] == "setup"
+    assert driver.state["login_btn"] == "case"
+    setup_results = [
+        message for message in sent
+        if message["type"] == "node_result" and message.get("execution_suite_id") == 1001
+    ]
+    assert [message["execution_node_id"] for message in setup_results] == [5101, 5102]
+    assert [
+        message["status"]
+        for message in sent
+        if message["type"] == "case_status"
+    ] == ["running", "passed"]
 
 
 async def test_run_suite_preserves_node_error_status():
