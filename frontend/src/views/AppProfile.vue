@@ -81,6 +81,10 @@ function elementDisplayName(row: DisplayNode): string | null {
   return row.element_name ?? `未知元素（#${row.element_id}）`
 }
 
+function variableToken(name: string): string {
+  return `\${${name}}`
+}
+
 const displayRows = computed<DisplayNode[]>(() => {
   const rows: DisplayNode[] = []
   for (const suite of store.suitePage?.items ?? []) {
@@ -497,24 +501,61 @@ onMounted(load)
         <template #footer><el-button @click="skipDialog.visible = false">取消</el-button><el-button type="primary" :loading="saving" @click="confirmSkip">确认跳过</el-button></template>
       </el-dialog>
 
-      <el-dialog v-model="variableOverrideDialog.visible" :title="`${variableOverrideDialog.row?.name ?? ''}步骤变量覆盖`" width="520px">
-        <div v-if="variableOverrideDialog.row" class="override-context">
-          <el-tag size="small" effect="plain">变量列表修改</el-tag>
-          <strong>{{ variableOverrideDialog.row.registry_key || variableOverrideDialog.row.name }}</strong>
-          <span v-if="variableOverrideDialog.row.order != null">第 {{ variableOverrideDialog.row.order }} 项</span>
-          <span v-if="elementDisplayName(variableOverrideDialog.row)" class="element-context">元素：{{ elementDisplayName(variableOverrideDialog.row) }}</span>
+      <el-dialog v-model="variableOverrideDialog.visible" width="min(640px, calc(100vw - 32px))" class="variable-override-dialog">
+        <template #header>
+          <div class="override-dialog-header">
+            <div class="override-dialog-title">步骤变量覆盖</div>
+            <div class="override-dialog-subtitle">仅修改当前步骤引用的变量</div>
+          </div>
+        </template>
+        <div v-if="variableOverrideDialog.row" class="override-context-card">
+          <div class="context-main">
+            <span class="context-kicker">当前步骤</span>
+            <strong class="context-name" :title="variableOverrideDialog.row.name">{{ variableOverrideDialog.row.name }}</strong>
+            <span class="context-action">{{ variableOverrideDialog.row.registry_key || '动作' }}</span>
+          </div>
+          <div class="context-details">
+            <span v-if="variableOverrideDialog.row.order != null">第 {{ variableOverrideDialog.row.order }} 项</span>
+            <span v-if="elementDisplayName(variableOverrideDialog.row)" class="element-context" :title="elementDisplayName(variableOverrideDialog.row) ?? undefined">元素：{{ elementDisplayName(variableOverrideDialog.row) }}</span>
+          </div>
         </div>
-        <el-form label-width="140px">
-          <el-form-item v-for="name in variableOverrideDialog.names" :key="name" :label="name">
-            <div class="variable-row">
-              <el-switch v-model="variableOverrideDialog.enabled[name]" />
-              <el-input v-model="variableOverrideDialog.values[name]" :disabled="!variableOverrideDialog.enabled[name]" placeholder="未启用覆盖" />
+        <div class="override-hint" role="note">
+          覆盖值仅对当前步骤生效；未启用的变量继续继承原值，执行参数优先级仍高于此处。
+        </div>
+        <section class="variable-section" aria-labelledby="variable-section-title">
+          <div class="variable-section-head">
+            <span id="variable-section-title" class="variable-section-title">变量覆盖</span>
+            <span class="variable-section-count">已启用 {{ Object.values(variableOverrideDialog.enabled).filter(Boolean).length }} / 共 {{ variableOverrideDialog.names.length }}</span>
+          </div>
+          <div class="variable-list" role="list">
+            <div v-for="name in variableOverrideDialog.names" :key="name" class="variable-row" role="listitem">
+              <div class="variable-meta">
+                <el-tooltip :content="variableToken(name)" placement="top">
+                  <code class="variable-name">{{ variableToken(name) }}</code>
+                </el-tooltip>
+                <span class="variable-state">{{ variableOverrideDialog.enabled[name] ? '已启用覆盖' : '继承原值' }}</span>
+              </div>
+              <el-input
+                v-model="variableOverrideDialog.values[name]"
+                class="variable-input"
+                :disabled="!variableOverrideDialog.enabled[name]"
+                :placeholder="variableOverrideDialog.enabled[name] ? '输入当前步骤的覆盖值（可为空）' : '启用覆盖后输入值'"
+                :aria-label="`${name} 的步骤覆盖值`"
+              />
+              <el-switch v-model="variableOverrideDialog.enabled[name]" :aria-label="`启用 ${name} 覆盖`" />
             </div>
-          </el-form-item>
-        </el-form>
+          </div>
+        </section>
         <template #footer>
-          <el-button v-if="Object.prototype.hasOwnProperty.call(variableOverrideDialog.existingPatch, 'variable_overrides')" type="danger" plain @click="restoreVariableOverride">恢复变量覆盖</el-button>
-          <el-button @click="variableOverrideDialog.visible = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveVariableOverride">保存</el-button>
+          <div class="override-dialog-footer">
+            <div class="footer-left">
+              <el-button v-if="Object.prototype.hasOwnProperty.call(variableOverrideDialog.existingPatch, 'variable_overrides')" text type="danger" @click="restoreVariableOverride">恢复全部变量</el-button>
+            </div>
+            <div class="footer-right">
+              <el-button @click="variableOverrideDialog.visible = false">取消</el-button>
+              <el-button type="primary" :loading="saving" @click="saveVariableOverride">保存覆盖</el-button>
+            </div>
+          </div>
         </template>
       </el-dialog>
 
@@ -536,18 +577,44 @@ onMounted(load)
 .head-left, .head-right, .batch-bar { display: flex; align-items: center; gap: 8px; }
 .head-right { flex-wrap: wrap; justify-content: flex-end; }
 .profile-name { font-weight: 600; font-size: 16px; }
-.rev, .override-help { color: var(--el-text-color-secondary); font-size: 12px; }
+.rev { color: var(--el-text-color-secondary); font-size: 12px; }
 .batch-bar { padding: 8px 12px; border-radius: 6px; background: var(--el-color-primary-light-9); }
 .node-name { display: inline-flex; align-items: center; }
 .node-label { display: inline-flex; flex-direction: column; gap: 2px; }
 .element-label, .element-context { color: var(--el-text-color-secondary); font-size: 12px; }
 .expand-button { width: 22px; padding: 0; border: 0; background: transparent; cursor: pointer; color: inherit; }
 .node-dot { display: inline-block; width: 22px; text-align: center; }
-.override-context { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; color: var(--el-text-color-regular); }
-.override-context span { font-size: 12px; color: var(--el-text-color-secondary); }
-.override-alert { margin-bottom: 14px; }
-.override-editor-title { margin-bottom: 8px; font-size: 13px; font-weight: 600; }
-.override-help { margin: 8px 0 0; line-height: 1.6; }
-.variable-row { display: flex; align-items: center; gap: 10px; width: 100%; }
-.variable-row .el-input { flex: 1; }
+.override-dialog-header { display: flex; flex-direction: column; gap: 2px; }
+.override-dialog-title { color: var(--el-text-color-primary); font-size: 17px; font-weight: 600; line-height: 1.35; }
+.override-dialog-subtitle { color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.5; }
+.override-context-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; border: 1px solid var(--el-border-color-light); border-radius: 8px; background: var(--el-color-primary-light-9); }
+.context-main, .context-details { display: flex; align-items: center; min-width: 0; gap: 8px; }
+.context-main { flex: 1; flex-wrap: wrap; }
+.context-kicker { color: var(--el-text-color-secondary); font-size: 12px; }
+.context-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.context-action, .context-details { color: var(--el-text-color-secondary); font-size: 12px; }
+.context-details { flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+.element-context { overflow: hidden; max-width: 240px; text-overflow: ellipsis; white-space: nowrap; }
+.override-hint { margin-top: 12px; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.6; }
+.variable-section { margin-top: 18px; }
+.variable-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.variable-section-title { color: var(--el-text-color-primary); font-size: 14px; font-weight: 600; }
+.variable-section-count { color: var(--el-text-color-secondary); font-size: 12px; }
+.variable-list { display: flex; flex-direction: column; gap: 8px; max-height: min(46vh, 380px); overflow-y: auto; padding: 2px; }
+.variable-row { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 9px 10px; border: 1px solid var(--el-border-color-light); border-radius: 7px; background: var(--el-bg-color); }
+.variable-meta { display: flex; flex-direction: column; flex: 0 0 150px; min-width: 0; gap: 3px; }
+.variable-name { display: block; overflow: hidden; padding: 2px 6px; border-radius: 4px; background: var(--el-fill-color-light); color: var(--el-color-primary); text-overflow: ellipsis; white-space: nowrap; }
+.variable-state { overflow: hidden; color: var(--el-text-color-secondary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.variable-input { flex: 1; min-width: 120px; }
+.override-dialog-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; }
+.footer-left, .footer-right { display: flex; align-items: center; gap: 8px; }
+@media (max-width: 600px) {
+  .override-context-card { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .context-details { justify-content: flex-start; }
+  .variable-row { align-items: stretch; flex-wrap: wrap; }
+  .variable-meta { flex-basis: calc(100% - 40px); }
+  .variable-input { flex-basis: calc(100% - 40px); }
+  .override-dialog-footer { align-items: stretch; flex-direction: column-reverse; }
+  .footer-left, .footer-right { justify-content: flex-end; }
+}
 </style>
