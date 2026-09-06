@@ -1288,7 +1288,7 @@ def _screenshot_case() -> dict:
     )
 
 
-async def test_runner_uploads_screenshot_and_reports_server_key():
+async def test_runner_uploads_screenshot_and_reports_server_key(tmp_path):
     """CR-07：截图后立即上传，step_result 只携带服务端对象键。"""
     uploader = FakeUploader("execution_100/screenshots/abc123.png")
     sent: list[dict] = []
@@ -1297,7 +1297,7 @@ async def test_runner_uploads_screenshot_and_reports_server_key():
         sent.append(payload)
 
     runner = TestRunner(
-        MockDriver(), fake_send, 100, screenshots_dir=Path("."),
+        MockDriver(), fake_send, 100, screenshots_dir=tmp_path,
         session_token="sess", uploader=uploader,
     )
     status = await runner.run_case(_screenshot_case())
@@ -1312,7 +1312,7 @@ async def test_runner_uploads_screenshot_and_reports_server_key():
     assert local_path.endswith(".png")
 
 
-async def test_runner_upload_failure_keeps_local_path_out():
+async def test_runner_upload_failure_keeps_local_path_out(tmp_path):
     """CR-07：上传失败不得把本地路径回传服务端，须记录明确错误。"""
     uploader = FakeUploader(None)
     sent: list[dict] = []
@@ -1321,7 +1321,7 @@ async def test_runner_upload_failure_keeps_local_path_out():
         sent.append(payload)
 
     runner = TestRunner(
-        MockDriver(), fake_send, 100, screenshots_dir=Path("."),
+        MockDriver(), fake_send, 100, screenshots_dir=tmp_path,
         session_token="sess", uploader=uploader,
     )
     status = await runner.run_case(_screenshot_case())
@@ -1329,6 +1329,43 @@ async def test_runner_upload_failure_keeps_local_path_out():
     step_msg = sent[0]
     assert step_msg["screenshot_path"] is None
     assert "上传失败" in (step_msg["error_message"] or "")
+
+
+def test_save_screenshot_with_none_creates_png_in_nested_directory(tmp_path):
+    screenshots_dir = tmp_path / "nested" / "screenshots"
+    driver = MockDriver()
+    context = ExecutionContext(driver, {}, screenshots_dir=screenshots_dir)
+
+    path = context.save_screenshot(None)
+
+    target = Path(path)
+    assert target.parent == screenshots_dir
+    assert target.suffix == ".png"
+    assert target.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert driver.screenshots == [path]
+
+
+def test_save_screenshot_reports_when_driver_does_not_create_file(tmp_path):
+    class NoopScreenshotDriver(MockDriver):
+        def screenshot(self, path: str) -> None:
+            self.screenshots.append(path)
+
+    context = ExecutionContext(NoopScreenshotDriver(), {}, screenshots_dir=tmp_path)
+
+    with pytest.raises(RuntimeError, match="截图失败：驱动未生成截图文件"):
+        context.save_screenshot(None)
+
+
+def test_save_screenshot_wraps_driver_file_error(tmp_path):
+    class FailingScreenshotDriver(MockDriver):
+        def screenshot(self, path: str) -> None:
+            raise FileNotFoundError(path)
+
+    context = ExecutionContext(FailingScreenshotDriver(), {}, screenshots_dir=tmp_path)
+
+    with pytest.raises(RuntimeError, match="截图失败：无法生成截图文件") as error:
+        context.save_screenshot(None)
+    assert "Errno 2" not in str(error.value)
 
 
 # ---------- CR-08：真实 Appium 驱动接线 ----------

@@ -37,7 +37,15 @@ class Uploader:
 
     async def upload_screenshot(self, execution_id: int, path: str, session_token: str | None = None) -> str | None:
         file_path = Path(path)
-        if not file_path.exists() or file_path.stat().st_size > self.max_size:
+        try:
+            if not file_path.exists():
+                logger.warning("截图不存在或超限: %s", path)
+                return None
+            file_size = file_path.stat().st_size
+        except OSError as exc:
+            logger.warning("截图文件读取失败: %s", exc)
+            return None
+        if file_size > self.max_size:
             logger.warning("截图不存在或超限: %s", path)
             return None
         url = f"{self.base_url}/api/agent/upload"
@@ -51,20 +59,27 @@ class Uploader:
             "file": {
                 "name": file_path.name,
                 "content_type": "image/png",
-                "size": file_path.stat().st_size,
+                "size": file_size,
             }
         }
         log_http_request(logger, "POST", url, body=data, files=files)
         async with httpx.AsyncClient(
             timeout=30, transport=self._transport, trust_env=False
         ) as client:
-            with file_path.open("rb") as fh:
+            try:
+                fh = file_path.open("rb")
+            except OSError as exc:
+                logger.warning("截图文件读取失败: %s", exc)
+                return None
+            try:
                 resp = await client.post(
                     url,
                     headers={"X-Agent-Key": self._resolve_key()},
                     data=data,
                     files={"file": (file_path.name, fh, "image/png")},
                 )
+            finally:
+                fh.close()
         log_http_response(logger, "POST", url, resp.status_code, resp.text)
         if resp.status_code != 200:
             logger.warning("截图上传失败: %s %s", resp.status_code, resp.text)

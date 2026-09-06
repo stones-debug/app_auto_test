@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -266,3 +267,36 @@ async def test_uploader_resolves_callable_key(tmp_path, monkeypatch):
     assert b"agent-u" in body
     assert b"sess" in body
     assert b"shot.png" in body
+
+
+@pytest.mark.parametrize("race_stage", ["stat", "open"])
+async def test_uploader_file_race_returns_none(monkeypatch, tmp_path, race_stage):
+    file_path = tmp_path / "shot.png"
+    file_path.write_bytes(b"png-data")
+    uploader = Uploader("http://t", "sk-upload", "agent-u")
+    original_exists = Path.exists
+    original_stat = Path.stat
+    original_open = Path.open
+
+    if race_stage == "stat":
+        monkeypatch.setattr(
+            Path,
+            "exists",
+            lambda current: True if current == file_path else original_exists(current),
+        )
+
+        def disappearing_stat(current, *args, **kwargs):
+            if current == file_path:
+                raise FileNotFoundError(str(file_path))
+            return original_stat(current, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", disappearing_stat)
+    else:
+        def disappearing_open(current, *args, **kwargs):
+            if current == file_path:
+                raise FileNotFoundError(str(file_path))
+            return original_open(current, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", disappearing_open)
+
+    assert await uploader.upload_screenshot(1, str(file_path), "sess") is None

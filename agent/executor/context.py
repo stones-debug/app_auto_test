@@ -131,7 +131,7 @@ class ExecutionContext:
         """
         _ = element_id
 
-    def save_screenshot(self, filename: str = "screenshot.png") -> str:
+    def save_screenshot(self, filename: str | None = "screenshot.png") -> str:
         # 忽略用户提供的文件名，使用服务端安全文件名，避免任意路径写入（CR-13）
         _ = filename
         safe_name = f"{uuid4().hex}.png"
@@ -142,5 +142,10 @@ class ExecutionContext:
         if not target.is_relative_to(root):
             raise ValueError("截图路径越界")
         target.parent.mkdir(parents=True, exist_ok=True)
-        self.driver.screenshot(str(target))
+        try:
+            self.driver.screenshot(str(target))
+        except OSError as exc:
+            raise RuntimeError("截图失败：无法生成截图文件") from exc
+        if not target.is_file():
+            raise RuntimeError("截图失败：驱动未生成截图文件")
         return str(target)

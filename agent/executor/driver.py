@@ -1,5 +1,6 @@
 import hashlib
 import re
+from pathlib import Path
 
 
 def _coerce_bool(value) -> bool:
@@ -446,6 +447,15 @@ class MockDriver(BaseDriver):
 
     def screenshot(self, path: str) -> None:
         self.screenshots.append(path)
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(
+            bytes.fromhex(
+                "89504e470d0a1a0a0000000d4948445200000001000000010804000000"
+                "b51c0c020000000b4944415478da6364f80f00010501012718e366"
+                "0000000049454e44ae426082"
+            )
+        )
 
     def page_signature(self) -> str:
         """当前屏幕指纹：全部节点属性摘要的 sha256 前 16 位 + 节点数。"""
