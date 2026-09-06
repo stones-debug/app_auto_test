@@ -30,6 +30,8 @@ from app.services.profile_resolver import (
     ProfileRuleError,
     ResolutionRequest,
     _select_steps_for_run,
+    validate_node_patch,
+    variable_references,
 )
 
 OWNER = {"username": "pytest_resolver", "email": "resolver@tl-tek.com", "password": "test123"}
@@ -256,6 +258,39 @@ async def test_suite_step_override_applied_to_snapshot(client):
     assert result.suites[0].setup_steps_snapshot[0]["params"]["duration"] == 5
 
 
+async def test_suite_step_variable_override_is_rendered_per_step(client):
+    base = await _base(client)
+    case_id = await _setup_case_with_steps(client, base, "套件变量步骤")
+    suite_setup_key = str(uuid.uuid4())
+    async with SessionLocal() as db:
+        profile_id = await _make_profile(db, base)
+        suite = SuiteModel(
+            project_id=base["project_id"], name="套件变量覆盖",
+            setup_steps=[{"order": 1, "key": suite_setup_key, "action": "launch_app", "params": {"package": "${pkg}"}}],
+            teardown_steps=[],
+        )
+        db.add(suite)
+        await db.flush()
+        db.add(SuiteCaseModel(suite_id=suite.id, case_id=case_id, sort_order=1))
+        db.add(AppProfileNodeOverride(
+            profile_id=profile_id, target_type="suite_step", suite_id=suite.id, case_id=None,
+            node_key=suite_setup_key, patch={"variable_overrides": {"pkg": "from_suite_step"}},
+        ))
+        await db.commit()
+        result = await resolve_compat(
+            ResolutionRequest(
+                project_id=base["project_id"], profile_id=profile_id,
+                release_id=await _release_id(db, profile_id), target_type="suite", target_ids=[suite.id],
+                expected_profile_revision=1,
+                expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
+                run_options={"use_pre_steps": True},
+            ), db,
+        )
+    setup = result.suites[0].setup_steps_snapshot[0]
+    assert setup["params"]["package"] == "from_suite_step"
+    assert "variable_overrides" not in setup
+
+
 async def test_variable_override_priority(client):
     """变量优先级：执行参数 > APP档案 > 套件 > 用例。"""
     base = await _base(client)
@@ -276,6 +311,86 @@ async def test_variable_override_priority(client):
         )
     step0 = result.cases[0].steps_snapshot[0]
     assert step0["params"]["package"] == "from_exec"
+
+
+async def test_step_variable_override_is_local_and_not_in_snapshot(client):
+    base = await _base(client)
+    case_id = await _setup_case_with_steps(client, base, "步骤变量覆盖")
+    async with SessionLocal() as db:
+        profile_id = await _make_profile(db, base)
+        suite_id = await _attach_case_to_suite(db, base["project_id"], case_id, "步骤变量套件")
+        db.add(
+            AppProfileNodeOverride(
+                profile_id=profile_id,
+                target_type="step",
+                suite_id=suite_id,
+                case_id=case_id,
+                node_key=K1,
+                patch={"variable_overrides": {"pkg": "from_step"}},
+            )
+        )
+        await db.commit()
+        result = await resolve_compat(
+            ResolutionRequest(
+                project_id=base["project_id"], profile_id=profile_id,
+                release_id=await _release_id(db, profile_id), target_type="suite", target_ids=[suite_id],
+                expected_profile_revision=1,
+                expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
+                run_options={"use_pre_steps": True},
+            ),
+            db,
+        )
+    step = result.suites[0].cases[0].steps_snapshot[0]
+    assert step["params"]["package"] == "from_step"
+    assert "variable_overrides" not in step
+
+
+async def test_execution_variables_still_win_over_step_variable_override(client):
+    base = await _base(client)
+    case_id = await _setup_case_with_steps(client, base, "执行参数优先")
+    async with SessionLocal() as db:
+        profile_id = await _make_profile(db, base)
+        suite_id = await _attach_case_to_suite(db, base["project_id"], case_id, "执行参数套件")
+        db.add(
+            AppProfileNodeOverride(
+                profile_id=profile_id, target_type="step", suite_id=suite_id, case_id=case_id,
+                node_key=K1, patch={"variable_overrides": {"pkg": "from_step"}},
+            )
+        )
+        await db.commit()
+        result = await resolve_compat(
+            ResolutionRequest(
+                project_id=base["project_id"], profile_id=profile_id,
+                release_id=await _release_id(db, profile_id), target_type="suite", target_ids=[suite_id],
+                expected_profile_revision=1,
+                expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
+                run_options={"use_pre_steps": True}, execution_variables={"pkg": "from_execution"},
+            ),
+            db,
+        )
+    assert result.suites[0].cases[0].steps_snapshot[0]["params"]["package"] == "from_execution"
+
+
+def test_variable_override_references_are_recursive_and_ordered():
+    assert variable_references({"a": "${first}/${second}", "nested": ["${first}", {"x": "${third}"}]}) == [
+        "first", "second", "third"
+    ]
+
+
+def test_variable_override_patch_validates_source_and_keeps_empty_values():
+    source = {
+        "key": K1,
+        "action": "launch_app",
+        "params": {"package": "${pkg}"},
+    }
+    patched = validate_node_patch("step", source, {"variable_overrides": {"pkg": ""}})
+    assert patched["params"]["package"] == source["params"]["package"]
+    with pytest.raises(ProfileRuleError, match="变量未被目标步骤引用"):
+        validate_node_patch("step", source, {"variable_overrides": {"missing": "x"}})
+    with pytest.raises(ProfileRuleError, match="变量覆盖值必须是字符串"):
+        validate_node_patch("step", source, {"variable_overrides": {"pkg": 1}})
+    with pytest.raises(ProfileRuleError, match="只允许动作步骤"):
+        validate_node_patch("assertion", {"type": "element_exists", "params": {"x": "${pkg}"}}, {"variable_overrides": {"pkg": "x"}})
 
 
 async def test_suite_variable_overrides_case_and_suite_order_is_preserved(client):

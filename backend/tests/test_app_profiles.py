@@ -262,6 +262,35 @@ async def test_overrides(client: AsyncClient):
     assert got.json()["revision"] == 5
 
 
+async def test_step_variable_override_api_validates_references(client: AsyncClient):
+    """变量覆盖是步骤级补丁，必须匹配源参数中的变量且拒绝断言。"""
+    token = await _register(client, {"username": f"pytest_var_{uuid.uuid4().hex[:8]}", "email": f"var_{uuid.uuid4().hex[:8]}@tl-tek.com", "password": "test123"})
+    h = {"Authorization": f"Bearer {token}"}
+    pid = (await client.post("/api/projects", json={"name": "步骤变量项目"}, headers=h)).json()["id"]
+    profile_id = (await client.post(f"/api/projects/{pid}/app-profiles", json={"name": "V", "code": f"v{uuid.uuid4().hex[:6]}"}, headers=h)).json()["id"]
+    node_key = str(uuid.uuid4())
+    case_resp = await client.post(
+        f"/api/projects/{pid}/cases", headers=h,
+        json={"name": "变量步骤", "steps": [
+            {"key": node_key, "order": 1, "action": "launch_app", "params": {"package": "${pkg}"}},
+        ]},
+    )
+    assert case_resp.status_code == 201, case_resp.text
+    case_id = case_resp.json()["id"]
+    suite_id = (await client.post(f"/api/projects/{pid}/suites", json={"name": "变量套件"}, headers=h)).json()["id"]
+    await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)
+    valid = await client.put(
+        f"/api/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/step/{node_key}",
+        json={"expected_revision": 1, "patch": {"variable_overrides": {"pkg": ""}}}, headers=h,
+    )
+    assert valid.status_code == 200, valid.text
+    unknown = await client.put(
+        f"/api/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/step/{node_key}",
+        json={"expected_revision": 2, "patch": {"variable_overrides": {"other": "x"}}}, headers=h,
+    )
+    assert unknown.status_code == 422
+
+
 async def test_element_override_smart(client: AsyncClient):
     """smart 元素覆盖 upsert 成功返回完整 config；缺 config/普通带 config 被拒。
 

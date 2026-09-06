@@ -48,6 +48,8 @@ from app.services.profile_resolver_nodes import (
     render_value,
     runtime_variable_names,
     validate_node_patch,
+    validate_variable_override,
+    variable_references,
 )
 from app.services.profile_resolver_nodes import (
     assign_order as _assign_order,
@@ -74,6 +76,7 @@ __all__ = [
     "render_value",
     "resolve",
     "validate_node_patch",
+    "variable_references",
 ]
 
 
@@ -513,6 +516,7 @@ async def _resolve_case(
     exclusions: list[ExclusionItem] = []
     runtime_variables: set[str] = set()
     for node in selected_steps:
+        source_node = node
         is_assertion = node.get("kind") == "assertion" or "type" in node
         node_type = "assertion" if is_assertion else "step"
         rules = config["assertion_rules" if is_assertion else "step_rules"].get((suite_id, case.id), {})
@@ -524,7 +528,17 @@ async def _resolve_case(
         exclusions.extend(node_exclusions)
         if not kept:
             continue
-        rendered = _render_node_with_context(kept[0], variables, case.name, runtime_variables)
+        node = kept[0]
+        variable_patch = node.pop("variable_overrides", None)
+        if variable_patch is not None:
+            if is_assertion:
+                raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", "variable_overrides 只允许动作步骤")
+            variable_patch = validate_variable_override(source_node, variable_patch)
+        render_variables = dict(variables)
+        if variable_patch:
+            render_variables.update(variable_patch)
+        render_variables.update(request.execution_variables)
+        rendered = _render_node_with_context(node, render_variables, case.name, runtime_variables)
         validated = _registry_validate_assertion(rendered) if is_assertion else _registry_validate_step(rendered)
         kept_nodes.append(validated)
         runtime_variables.update(runtime_variable_names(validated))
@@ -596,7 +610,15 @@ async def _parse_suite_steps(
         )
         steps: list[dict] = []
         for node in kept:
-            rendered = _render_node_with_context(node, variables, suite_name, runtime_variables)
+            source_node = node
+            variable_patch = node.pop("variable_overrides", None)
+            if variable_patch is not None:
+                variable_patch = validate_variable_override(source_node, variable_patch)
+            render_variables = dict(variables)
+            if variable_patch:
+                render_variables.update(variable_patch)
+            render_variables.update(execution_variables)
+            rendered = _render_node_with_context(node, render_variables, suite_name, runtime_variables)
             validated = _registry_validate_step(rendered)
             steps.append(validated)
             runtime_variables.update(runtime_variable_names(validated))

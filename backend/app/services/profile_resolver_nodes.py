@@ -36,6 +36,7 @@ NODE_PATCH_ALLOWED = {
     "max_swipes",
     "duration",
     "max_wait_seconds",
+    "variable_overrides",
 }
 NODE_IDENTITY_FIELDS = {"key", "order", "phase", "action", "type", "assertion_type"}
 
@@ -69,6 +70,48 @@ def render_value(value: Any, variables: dict, runtime_variables: set[str] | froz
     if isinstance(value, list):
         return [render_value(v, variables, runtime_variables) for v in value]
     return value
+
+
+def variable_references(value: Any) -> list[str]:
+    """递归提取值中的变量名，保持首次出现顺序并去重。"""
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def visit(item: Any) -> None:
+        if isinstance(item, str):
+            for match in _VAR_RE.finditer(item):
+                name = match.group(1)
+                if name not in seen:
+                    seen.add(name)
+                    found.append(name)
+        elif isinstance(item, dict):
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return found
+
+
+def validate_variable_override(source_node: dict, value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", "variable_overrides 必须是字符串字典")
+    params = source_node.get("params")
+    if not isinstance(params, dict):
+        params = source_node.get("parameters")
+    references = set(variable_references(params if isinstance(params, dict) else {}))
+    result: dict[str, str] = {}
+    for name, override in value.items():
+        if not isinstance(name, str) or not name:
+            raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", "variable_overrides 的变量名不能为空")
+        if name not in references:
+            raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", f"变量未被目标步骤引用: {name}")
+        if not isinstance(override, str):
+            raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", f"变量覆盖值必须是字符串: {name}")
+        result[name] = override
+    return result
 
 
 def _apply_whitelist_patch(node: dict, patch: dict) -> dict:
@@ -143,7 +186,14 @@ def _registry_validate_assertion(assertion: dict) -> dict:
 
 def validate_node_patch(node_type: str, source_node: dict, patch: dict[str, Any]) -> dict:
     """保存覆盖前，以公共节点合并补丁并执行与解析阶段相同的 Registry 校验。"""
-    patched = _apply_whitelist_patch(deepcopy(source_node), patch)
+    variable_patch = patch.get("variable_overrides")
+    if variable_patch is not None:
+        if node_type != "step":
+            raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", "variable_overrides 只允许动作步骤")
+        validate_variable_override(source_node, variable_patch)
+    patched = _apply_whitelist_patch(
+        deepcopy(source_node), {key: value for key, value in patch.items() if key != "variable_overrides"}
+    )
     try:
         if node_type == "step":
             return _registry_validate_step(patched)
@@ -158,7 +208,7 @@ def validate_node_patch(node_type: str, source_node: dict, patch: dict[str, Any]
 
 def finalize_snapshot_node(node: dict, phase: str = "main", order_offset: int = 0) -> dict:
     """将内部节点转为执行快照节点：丢弃 _source 内部字段，写入 source_key/source_order。"""
-    out = {k: v for k, v in node.items() if not k.startswith("_")}
+    out = {k: v for k, v in node.items() if not k.startswith("_") and k != "variable_overrides"}
     out["phase"] = node.get("phase") or phase
     out["source_order"] = node.get("_source_order")
     out["source_key"] = node.get("_source_key")
@@ -169,7 +219,7 @@ _CASE_PHASE_MAP = {"setup": "case_setup", "main": "case_main", "teardown": "case
 
 
 def _finalize_case_step(node: dict) -> dict:
-    out = {k: v for k, v in node.items() if not k.startswith("_")}
+    out = {k: v for k, v in node.items() if not k.startswith("_") and k != "variable_overrides"}
     raw_phase = str(out.get("phase") or "main")
     out["phase"] = _CASE_PHASE_MAP.get(raw_phase, "case_main")
     out["source_order"] = node.get("_source_order")
@@ -179,7 +229,7 @@ def _finalize_case_step(node: dict) -> dict:
 
 
 def _finalize_suite_step(node: dict, phase: str) -> dict:
-    out = {k: v for k, v in node.items() if not k.startswith("_")}
+    out = {k: v for k, v in node.items() if not k.startswith("_") and k != "variable_overrides"}
     out["phase"] = phase
     out["source_order"] = node.get("_source_order")
     out["source_key"] = node.get("_source_key")
