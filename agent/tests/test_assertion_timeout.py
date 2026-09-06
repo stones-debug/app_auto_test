@@ -230,3 +230,56 @@ async def test_runner_v3_node_error_is_not_downgraded_to_failed():
     assert status == "error"
     node_result = next(item for item in sent if item["type"] == "node_result")
     assert node_result["status"] == "error"
+
+
+async def test_runner_v3_assertion_failure_reasons_are_explicit():
+    async def send(payload: dict) -> None:
+        sent.append(payload)
+
+    # 普通值不匹配：最终节点失败应说明期望和实际值。
+    sent: list[dict] = []
+    runner = TestRunner(MockDriver(initial_state={"username": "admin"}), send, execution_id=100)
+    mismatch_case = {
+        "execution_case_id": 2001,
+        "flow_snapshot": [{
+            "execution_node_id": 3001, "kind": "assertion", "phase": "case_main", "order": 1,
+            "type": "text_equals", "element_id": 1, "params": {"expected": "wrong"},
+            "max_wait_seconds": 0,
+        }],
+        "elements_snapshot": {"1": {"locator_type": "id", "locator_value": "username"}},
+    }
+    assert await runner.run_case(mismatch_case) == "failed"
+    mismatch = next(item for item in sent if item["type"] == "node_result")
+    assert mismatch["status"] == "failed"
+    assert "断言数据不一致" in mismatch["error_message"]
+    assert "wrong" in mismatch["error_message"] and "admin" in mismatch["error_message"]
+
+    # 元素未找到：定位异常使用专门前缀；不是数据不一致。
+    sent.clear()
+    missing_case = {
+        "execution_case_id": 2001,
+        "flow_snapshot": [{
+            "execution_node_id": 3002, "kind": "assertion", "phase": "case_main", "order": 1,
+            "type": "text_equals", "element_id": 99, "params": {"expected": "admin"},
+            "max_wait_seconds": 0,
+        }],
+        "elements_snapshot": {},
+    }
+    assert await runner.run_case(missing_case) == "failed"
+    missing = next(item for item in sent if item["type"] == "node_result")
+    assert missing["status"] == "failed"
+    assert missing["error_message"].startswith("断言元素未找到：")
+
+    # not_exists 的预期语义保持 passed，不能被失败归一化污染。
+    sent.clear()
+    not_exists_case = {
+        "execution_case_id": 2001,
+        "flow_snapshot": [{
+            "execution_node_id": 3003, "kind": "assertion", "phase": "case_main", "order": 1,
+            "type": "element_exists", "element_id": 99, "params": {"expected": "not_exists"},
+            "max_wait_seconds": 0,
+        }],
+        "elements_snapshot": {},
+    }
+    assert await runner.run_case(not_exists_case) == "passed"
+    assert next(item for item in sent if item["type"] == "node_result")["error_message"] is None

@@ -15,6 +15,7 @@ from executor import (
 )
 from executor.driver import MockElement, StaleObjectException
 from executor.status import aggregate_statuses
+from executor.test_runner import _assertion_failure_message
 
 
 def _make_case(steps, assertions=None, elements=None) -> dict:
@@ -490,6 +491,51 @@ async def test_runner_fails_on_mismatch_assertion():
     assertion_msg = next(m for m in sent if m["type"] == "assertion_result")
     assert assertion_msg["assertions"][0]["status"] == "failed"
     assert assertion_msg["assertions"][0]["actual"] == "admin"
+    assert "断言数据不一致" in (assertion_msg["assertions"][0]["error_message"] or "")
+    step_result = next(m for m in sent if m["type"] == "step_result")
+    assert "断言数据不一致" in (step_result["error_message"] or "")
+
+
+async def test_runner_v2_assertion_element_not_found_is_classified_and_not_exists_passes():
+    missing = _make_case(
+        steps=[{"order": 1, "action": "input", "element_id": 1, "params": {"value": "admin"}}],
+        assertions=[
+            {"order": 1, "type": "text_equals", "element_id": 99, "params": {"expected": "admin"}},
+        ],
+    )
+    status, sent = await _run_and_capture(missing)
+    assert status == "failed"
+    item = next(m for m in sent if m["type"] == "assertion_result")["assertions"][0]
+    assert item["status"] == "failed"
+    assert item["error_message"].startswith("断言元素未找到：")
+    step_result = next(m for m in sent if m["type"] == "step_result")
+    assert step_result["error_message"].startswith("断言元素未找到：")
+
+    allowed_missing = _make_case(
+        steps=[{"order": 1, "action": "input", "element_id": 1, "params": {"value": "admin"}}],
+        assertions=[
+            {"order": 1, "type": "element_exists", "element_id": 99, "params": {"expected": "not_exists"}},
+        ],
+    )
+    passed, passed_sent = await _run_and_capture(allowed_missing)
+    assert passed == "passed"
+    passed_item = next(m for m in passed_sent if m["type"] == "assertion_result")["assertions"][0]
+    assert passed_item["status"] == "passed"
+    assert passed_item["error_message"] is None
+
+
+def test_assertion_failure_message_preserves_falsy_expected_and_actual_values():
+    empty_expected = _assertion_failure_message(
+        {"status": "failed", "expected": "", "actual": False}
+    )
+    assert "期望=''" in empty_expected
+    assert "实际=False" in empty_expected
+
+    zero_expected = _assertion_failure_message(
+        {"status": "failed", "expected": 0, "actual": ""}
+    )
+    assert "期望=0" in zero_expected
+    assert "实际=''" in zero_expected
 
 
 async def test_runner_unknown_action_fails():

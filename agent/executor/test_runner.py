@@ -7,7 +7,7 @@ from .actions import ACTION_REGISTRY
 from .assertion_wait import verify_with_wait
 from .assertions import ASSERTION_REGISTRY
 from .context import ExecutionContext
-from .driver import StopRequested
+from .driver import ElementNotFound, StopRequested
 from .protocol_messages import (
     AssertionItem,
     AssertionResultMessage,
@@ -47,6 +47,25 @@ _CASE_PHASE_BUCKET = {
 def _case_phase_bucket(phase: str | None) -> str:
     """将用例步骤 phase 归一化为分桶阶段（缺省视为 main）。"""
     return _CASE_PHASE_BUCKET.get(str(phase or "main"), str(phase or "main"))
+
+
+def _assertion_failure_message(result: dict, expected_fallback=None) -> str | None:
+    """在上报前为无文案的断言失败补充稳定、可读的失败分类。"""
+    if result.get("status") != "failed" or result.get("error_message"):
+        return str(result["error_message"]) if result.get("error_message") else None
+    expected = result.get("expected")
+    if expected is None:
+        expected = expected_fallback
+    actual = result.get("actual")
+    if expected == "exists" and actual == "not_found":
+        return "断言元素未找到"
+    return f"断言数据不一致：期望={expected!r}，实际={actual!r}"
+
+
+def _assertion_exception_message(exc: BaseException) -> str:
+    if isinstance(exc, ElementNotFound):
+        return f"断言元素未找到：{exc}"
+    return str(exc)
 
 
 def _run_action_in_thread(action_cls, driver, context, params: dict) -> dict:
@@ -384,8 +403,16 @@ class TestRunner:
                             "status": "failed",
                             "expected": (assertion.get("params") or {}).get("expected"),
                             "actual": "",
-                            "error_message": str(exc),
+                            "error_message": _assertion_exception_message(exc),
                         }
+                    failure_message = _assertion_failure_message(
+                        assertion_result,
+                        expected_fallback=(assertion.get("params") or {}).get("expected"),
+                    )
+                    if failure_message is not None:
+                        assertion_result["error_message"] = failure_message
+                    expected_value = assertion_result.get("expected")
+                    actual_value = assertion_result.get("actual")
                     execution_assertion_id = int(assertion.get("execution_assertion_id") or 0)
                     if execution_assertion_id <= 0:
                         raise ValueError("协议快照缺少有效 execution_assertion_id")
@@ -393,8 +420,8 @@ class TestRunner:
                         "execution_assertion_id": execution_assertion_id,
                         "type": str(assertion.get("type") or ""),
                         "assertion_order": int(assertion.get("order") or assertion_index),
-                        "expected": str(assertion_result.get("expected") or ""),
-                        "actual": str(assertion_result.get("actual") or ""),
+                        "expected": "" if expected_value is None else str(expected_value),
+                        "actual": "" if actual_value is None else str(actual_value),
                         "status": str(assertion_result.get("status") or "failed"),
                         "error_message": (
                             str(assertion_result["error_message"])
@@ -509,6 +536,12 @@ class TestRunner:
                         should_stop=self.should_stop,
                         on_interrupt=interrupt_driver,
                     )
+                    failure_message = _assertion_failure_message(
+                        result,
+                        expected_fallback=(node.get("params") or node.get("parameters") or {}).get("expected"),
+                    )
+                    if failure_message is not None:
+                        result["error_message"] = failure_message
                 else:
                     action_name = str(node.get("action") or "unknown")
                     if self.parameters.get("attach_to_current_app") and action_name == "launch_app":
@@ -533,7 +566,9 @@ class TestRunner:
                 result = {"status": "error", "error_message": str(exc), "attempt_count": 1}
             duration = int((time.monotonic() - start) * 1000)
             await self._resolve_screenshot(result)
-            expected = result.get("expected") or (node.get("params") or {}).get("expected")
+            expected = result.get("expected")
+            if expected is None:
+                expected = (node.get("params") or node.get("parameters") or {}).get("expected")
             status = str(result.get("status") or "error")
             statuses.append(status)
             await reporter.node_result(

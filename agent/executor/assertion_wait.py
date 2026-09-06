@@ -119,7 +119,10 @@ async def verify_with_wait(
         except Exception as exc:
             if not _retryable_error(exc):
                 raise
-            normalized = {"status": "failed", "actual": "", "error_message": str(exc)}
+            error_message = str(exc)
+            if isinstance(exc, ElementNotFound):
+                error_message = f"断言元素未找到：{error_message}"
+            normalized = {"status": "failed", "actual": "", "error_message": error_message}
 
         normalized["attempt_count"] = attempts
         if normalized.get("status") == "passed":
