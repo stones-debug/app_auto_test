@@ -1,4 +1,4 @@
-const VARIABLE_PATTERN = /\$\{(\w+)\}/g
+const VARIABLE_PATTERN = /\$\{([\p{L}\p{N}_]+)\}/gu
 
 export function extractVariableReferences(value: unknown): string[] {
   const names: string[] = []

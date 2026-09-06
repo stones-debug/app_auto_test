@@ -30,4 +30,12 @@ describe('APP 档案步骤变量引用', () => {
       override_template: { parameters: { package: '${pkg}' } },
     })).toEqual(['pkg'])
   })
+
+  it('识别中文和混合 Unicode 变量名，但拒绝点号、连字符和空格', () => {
+    expect(extractVariableReferences({
+      chinese: '${用户名}',
+      mixed: '${用户Name_2}/${变量_3}',
+      invalid: '${with-dash} ${with.dot} ${带 空格}',
+    })).toEqual(['用户名', '用户Name_2', '变量_3'])
+  })
 })
