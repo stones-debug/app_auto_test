@@ -81,6 +81,7 @@ async def test_registries_loaded():
     assert "checked" in ASSERTION_REGISTRY
     assert "element_exists" in ASSERTION_REGISTRY
     assert "regex_match" in ASSERTION_REGISTRY
+    assert "number_compare" in ASSERTION_REGISTRY
 
 
 async def test_mock_driver_input_get_text():
@@ -1190,6 +1191,113 @@ async def test_regex_match_assertion():
     context.elements_snapshot = {"1": {"locator_type": "id", "locator_value": "greeting"}}
     result = await RegexMatchAssertion().verify(driver, context, {"element_id": 1, "pattern": r"\d{4}"})
     assert result["status"] == "passed"
+
+
+@pytest.mark.parametrize(
+    ("operator", "expected", "passed"),
+    [
+        (">", "97", True),
+        (">", "98", False),
+        (">=", "98", True),
+        (">=", "99", False),
+        ("<", "99", True),
+        ("<", "98", False),
+        ("<=", "98.0", True),
+        ("<=", "97", False),
+        ("==", "98", True),
+        ("==", "98.1", False),
+        ("!=", "97", True),
+        ("!=", "98.0", False),
+    ],
+)
+async def test_number_compare_assertion_uses_decimal(operator, expected, passed):
+    from executor.assertions import NumberCompareAssertion
+
+    driver = MockDriver(initial_state={"value": " 98.0 "})
+    context = ExecutionContext(
+        driver,
+        _make_case([], elements={"1": {"locator_type": "id", "locator_value": "value"}}),
+    )
+    result = await NumberCompareAssertion().verify(
+        driver, context, {"element_id": 1, "operator": operator, "expected": expected}
+    )
+    assert result["status"] == ("passed" if passed else "failed")
+    assert result["expected"] == f"{operator} {expected}"
+    assert result["actual"] == " 98.0 "
+
+
+@pytest.mark.parametrize(
+    ("actual", "expected", "operator", "message"),
+    [
+        ("not-a-number", "1", ">", "实际文本无法解析为数字"),
+        ("1", "not-a-number", ">", "目标值无法解析为数字"),
+        ("1", "1", "~", "不支持的数字比较符"),
+    ],
+)
+async def test_number_compare_rejects_invalid_inputs(actual, expected, operator, message):
+    from executor.assertions import NumberCompareAssertion
+
+    driver = MockDriver(initial_state={"value": actual})
+    context = ExecutionContext(
+        driver,
+        _make_case([], elements={"1": {"locator_type": "id", "locator_value": "value"}}),
+    )
+    with pytest.raises(ValueError, match=message):
+        await NumberCompareAssertion().verify(
+            driver, context, {"element_id": 1, "operator": operator, "expected": expected}
+        )
+
+
+async def test_number_compare_supports_variable_and_scientific_notation():
+    from executor.assertions import NumberCompareAssertion
+
+    driver = MockDriver(initial_state={"value": "-1.25e2"})
+    context = ExecutionContext(
+        driver,
+        _make_case([], elements={"1": {"locator_type": "id", "locator_value": "value"}}),
+        variables={"threshold": "-125"},
+    )
+    result = await NumberCompareAssertion().verify(
+        driver,
+        context,
+        {
+            "element_id": 1,
+            "operator": "==",
+            "expected": context.render("${threshold}"),
+        },
+    )
+    assert result["status"] == "passed"
+
+
+async def test_runner_reports_number_compare_mismatch_with_rendered_variable():
+    sent: list[dict] = []
+
+    async def send(payload: dict) -> None:
+        sent.append(payload)
+
+    runner = TestRunner(
+        MockDriver(initial_state={"value": "98.0"}),
+        send,
+        execution_id=100,
+        parameters={"variables": {"threshold": "99"}},
+    )
+    case = {
+        "execution_case_id": 2001,
+        "flow_snapshot": [{
+            "execution_node_id": 3001, "kind": "assertion", "phase": "case_main", "order": 1,
+            "type": "number_compare", "element_id": 1,
+            "params": {"operator": "==", "expected": "${threshold}"},
+            "max_wait_seconds": 0,
+        }],
+        "elements_snapshot": {"1": {"locator_type": "id", "locator_value": "value"}},
+    }
+
+    assert await runner.run_case(case) == "failed"
+    node_result = next(item for item in sent if item["type"] == "node_result")
+    assert node_result["status"] == "failed"
+    assert node_result["expected_value"] == "== 99"
+    assert node_result["actual_value"] == "98.0"
+    assert "断言数据不一致" in node_result["error_message"]
 
 
 async def test_sleep_action(monkeypatch):

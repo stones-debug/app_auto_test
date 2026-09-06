@@ -140,6 +140,10 @@ export const ASSERTION_TYPES: AssertionMeta[] = [
     { key: 'expected', label: '期望值', type: 'text', required: true },
     { key: 'trim', label: '去空格', type: 'switch', default: false },
   ] },
+  { value: 'number_compare', label: '数字比较', needsElement: true, fields: [
+    { key: 'operator', label: '比较符', type: 'select', options: [{ value: '>', label: '大于（>）' }, { value: '>=', label: '大于等于（>=）' }, { value: '<', label: '小于（<）' }, { value: '<=', label: '小于等于（<=）' }, { value: '==', label: '等于（==）' }, { value: '!=', label: '不等于（!=）' }], default: '>' },
+    { key: 'expected', label: '目标值', type: 'text', required: true, placeholder: "支持变量，如 ${threshold}" },
+  ] },
   { value: 'text_contains', label: '文本包含', needsElement: true, fields: [
     { key: 'expected', label: '期望值', type: 'text', required: true },
   ] },

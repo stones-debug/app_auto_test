@@ -2,7 +2,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
-from app.schemas.generated_case_params import SwipeToFindParams
+from app.schemas.generated_case_params import NumberCompareParams, SwipeToFindParams
 
 OWNER = {"username": "pytest_caseowner", "email": "caseowner@tl-tek.com", "password": "test123"}
 
@@ -43,6 +43,15 @@ def test_swipe_to_find_params_defaults_and_bounds():
         SwipeToFindParams(percent=0.04)
     with pytest.raises(ValueError):
         SwipeToFindParams(settle_ms=5001)
+
+
+def test_number_compare_params_support_operator_and_variable_text():
+    params = NumberCompareParams(operator=">=", expected="${threshold}")
+    assert params.operator == ">="
+    assert params.expected == "${threshold}"
+    assert NumberCompareParams(expected="98").operator == ">"
+    with pytest.raises(ValueError):
+        NumberCompareParams(operator="~", expected="98")
 
 
 async def test_case_crud(client: AsyncClient):

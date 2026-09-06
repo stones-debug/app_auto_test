@@ -1,4 +1,5 @@
 import re
+from decimal import Decimal, InvalidOperation
 
 from .driver import ElementNotFound, StopRequested, _coerce_bool
 from .stale_guard import with_stale_retry
@@ -104,6 +105,52 @@ class TextNotEqualsAssertion(BaseAssertion):
         expected = str(params.get("expected", ""))
         passed = actual != expected
         return {"status": "passed" if passed else "failed", "expected": expected, "actual": actual}
+
+
+@register_assertion("number_compare")
+class NumberCompareAssertion(BaseAssertion):
+    async def verify(self, driver, context, params: dict, *, deadline: float | None = None) -> dict:
+        operator = str(params.get("operator", "")).strip()
+        if operator not in {">", ">=", "<", "<=", "==", "!="}:
+            raise ValueError(f"不支持的数字比较符: {operator or '空'}")
+
+        actual_raw = await with_stale_retry(
+            driver,
+            context,
+            params.get("element_id"),
+            lambda element: driver.get_text(element),
+            deadline=deadline,
+            label="断言-读取数字文本",
+        )
+        actual_text = str(actual_raw)
+        try:
+            actual_value = Decimal(actual_text.strip())
+        except (InvalidOperation, ValueError):
+            raise ValueError(f"实际文本无法解析为数字: {actual_text!r}") from None
+        if not actual_value.is_finite():
+            raise ValueError(f"实际文本无法解析为数字: {actual_text!r}")
+
+        expected_text = str(params.get("expected", "")).strip()
+        try:
+            expected_value = Decimal(expected_text)
+        except (InvalidOperation, ValueError):
+            raise ValueError(f"目标值无法解析为数字: {expected_text!r}") from None
+        if not expected_value.is_finite():
+            raise ValueError(f"目标值无法解析为数字: {expected_text!r}")
+
+        passed = {
+            ">": actual_value > expected_value,
+            ">=": actual_value >= expected_value,
+            "<": actual_value < expected_value,
+            "<=": actual_value <= expected_value,
+            "==": actual_value == expected_value,
+            "!=": actual_value != expected_value,
+        }[operator]
+        return {
+            "status": "passed" if passed else "failed",
+            "expected": f"{operator} {expected_text}",
+            "actual": actual_text,
+        }
 
 
 @register_assertion("text_contains")

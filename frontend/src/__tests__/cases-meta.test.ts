@@ -42,7 +42,7 @@ describe('CR-09 动作/断言元数据契约', () => {
     )
   })
 
-  it('覆盖全部 10 个断言类型', () => {
+  it('覆盖全部 11 个断言类型', () => {
     expect(ASSERTION_TYPES.map((a) => a.value).sort()).toEqual(
       [
         'element_exists',
@@ -55,8 +55,32 @@ describe('CR-09 动作/断言元数据契约', () => {
         'attribute_contains',
         'value_equals',
         'regex_match',
+        'number_compare',
       ].sort(),
     )
+  })
+
+  it('数字比较使用比较符与可含变量的文本目标值', () => {
+    const assertion = assertionMeta('number_compare')
+    expect(assertion.label).toBe('数字比较')
+    expect(assertion.needsElement).toBe(true)
+    expect(assertion.fields).toMatchObject([
+      {
+        key: 'operator',
+        type: 'select',
+        default: '>',
+        options: [
+          { value: '>', label: '大于（>）' },
+          { value: '>=', label: '大于等于（>=）' },
+          { value: '<', label: '小于（<）' },
+          { value: '<=', label: '小于等于（<=）' },
+          { value: '==', label: '等于（==）' },
+          { value: '!=', label: '不等于（!=）' },
+        ],
+      },
+      { key: 'expected', type: 'text', required: true },
+    ])
+    expect(defaultParams(assertion.fields)).toEqual({ operator: '>' })
   })
 
   it('element_exists 需要元素选择器（修复原隐藏 bug）', () => {

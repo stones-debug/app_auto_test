@@ -160,6 +160,11 @@ class TextNotEqualsParams(ParamsBase):
     trim: bool = False
 
 
+class NumberCompareParams(ParamsBase):
+    operator: Literal['>', '>=', '<', '<=', '==', '!='] = '>'
+    expected: str
+
+
 class TextContainsParams(ParamsBase):
     expected: str
 
@@ -213,6 +218,7 @@ ASSERTION_PARAM_MODELS: dict[str, type[ParamsBase]] = {
     'checked': CheckedParams,  # noqa: F821
     'text_equals': TextEqualsParams,  # noqa: F821
     'text_not_equals': TextNotEqualsParams,  # noqa: F821
+    'number_compare': NumberCompareParams,  # noqa: F821
     'text_contains': TextContainsParams,  # noqa: F821
     'text_not_contains': TextNotContainsParams,  # noqa: F821
     'attribute_equals': AttributeEqualsParams,  # noqa: F821
@@ -245,6 +251,7 @@ ASSERTION_NEEDS_ELEMENT = frozenset({
     'checked',
     'text_equals',
     'text_not_equals',
+    'number_compare',
     'text_contains',
     'text_not_contains',
     'attribute_equals',
