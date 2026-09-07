@@ -45,17 +45,17 @@ def _clean_value(value: Any, *, drop_empty_containers: bool = False) -> tuple[An
 
     def visit(current: Any, in_parameters: bool) -> tuple[Any, int]:
         if isinstance(current, list):
-            result: list[Any] = []
+            list_result: list[Any] = []
             removed = 0
             for item in current:
                 new_item, item_removed = visit(item, in_parameters)
-                result.append(new_item)
+                list_result.append(new_item)
                 removed += item_removed
-            return result, removed
+            return list_result, removed
         if not isinstance(current, dict):
             return current, 0
 
-        result: dict[Any, Any] = {}
+        dict_result: dict[Any, Any] = {}
         removed = 0
         for key, child in current.items():
             if in_parameters and key in REMOVED_PARAMETER_KEYS:
@@ -73,8 +73,8 @@ def _clean_value(value: Any, *, drop_empty_containers: bool = False) -> tuple[An
                 and not new_child
             ):
                 continue
-            result[key] = new_child
-        return result, removed
+            dict_result[key] = new_child
+        return dict_result, removed
 
     return visit(copy.deepcopy(value), False)
 

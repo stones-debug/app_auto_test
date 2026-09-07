@@ -1,3 +1,5 @@
+from typing import Any, cast
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -51,7 +53,7 @@ def test_number_compare_params_support_operator_and_variable_text():
     assert params.expected == "${threshold}"
     assert NumberCompareParams(expected="98").operator == ">"
     with pytest.raises(ValueError):
-        NumberCompareParams(operator="~", expected="98")
+        NumberCompareParams(operator=cast(Any, "~"), expected="98")
 
 
 async def test_case_crud(client: AsyncClient):
