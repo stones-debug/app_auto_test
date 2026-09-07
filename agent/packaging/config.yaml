@@ -1,0 +1,19 @@
+# 安装包默认配置：不包含 agent_key、agent_id、机器 PSK 或用户 Key。
+# 首次运行可由桌面端保存服务器地址到 LocalAppData；此文件由用户按需修改。
+server: "ws://192.168.100.7:8001/ws/agent"
+
+heartbeat_interval: 30
+log_level: "INFO"
+
+registry_poll_interval: 3
+registry_full_interval: 30
+
+appium_host: "127.0.0.1"
+appium_port: 4723
+# Appium session idle timeout, in seconds (not an individual HTTP request timeout).
+appium_command_timeout: 300
+# Individual Appium HTTP request timeout, in seconds; the Agent clamps it to 5..30.
+appium_http_request_timeout: 30
+appium_ready_timeout: 60
+
+driver: "appium"

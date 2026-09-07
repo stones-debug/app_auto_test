@@ -10,6 +10,7 @@ vendor/appium/
 
 # 运行时状态
 config.yaml
+!packaging/config.yaml
 state/
 *.log
 __pycache__/

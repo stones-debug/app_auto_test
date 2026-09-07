@@ -38,6 +38,17 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(fh) or {}
 
 
+def default_config_path() -> Path:
+    """返回随 Agent 运行目录安装的默认配置路径。
+
+    PyInstaller 的 onedir 输出把 ``config.yaml`` 放在 EXE 同级；源码运行则
+    使用 agent 目录中的配置。显式传入 ``--config`` 仍然完全覆盖此默认值。
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "config.yaml"
+    return Path(__file__).resolve().parent / "config.yaml"
+
+
 def http_origin(ws_url: str) -> str:
     """ws://host:port/xxx → http://host:port（截图上传走 HTTP，CR-07）。
 
@@ -572,7 +583,7 @@ def run_desktop(app: AgentApp, client: AgentWSClient, state: Path, server_url: s
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="APP 自动化测试平台 Device Agent")
-    parser.add_argument("--config", default="config.yaml", help="配置文件路径")
+    parser.add_argument("--config", default=str(default_config_path()), help="配置文件路径")
     parser.add_argument("--bind", metavar="USER_KEY", help="绑定用户 Key 后退出（无头绑定）")
     parser.add_argument("--state-dir", help="状态目录覆盖（测试用）")
     parser.add_argument("--desktop", action="store_true", help="托盘/窗口模式（打包安装版默认）")

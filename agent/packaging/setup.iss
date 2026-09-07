@@ -41,7 +41,9 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "autostart"; Description: "Start Agent automatically after Windows login"; GroupDescription: "Startup options:"
 
 [Files]
-Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; config.yaml is user-editable; do not overwrite it on upgrade or remove it on uninstall.
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "config.yaml"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\config.yaml"; DestDir: "{app}"; Flags: onlyifdoesntexist uninsneveruninstall
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Parameters: "--desktop"

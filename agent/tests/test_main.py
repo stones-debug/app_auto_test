@@ -1,8 +1,19 @@
 import asyncio
+import sys
+from pathlib import Path
 
 import pytest
 
-from main import BANNER, AgentApp, build_agent_app, http_origin, print_banner, should_run_desktop
+from main import (
+    BANNER,
+    AgentApp,
+    build_agent_app,
+    default_config_path,
+    http_origin,
+    load_config,
+    print_banner,
+    should_run_desktop,
+)
 
 
 class FakeClient:
@@ -24,6 +35,43 @@ class FakeClient:
 )
 def test_desktop_mode_selection(explicit_desktop: bool, frozen: bool, expected: bool):
     assert should_run_desktop(explicit_desktop, frozen=frozen) is expected
+
+
+def test_default_config_path_uses_agent_directory_when_unfrozen():
+    assert default_config_path() == Path(__file__).resolve().parent.parent / "config.yaml"
+
+
+def test_default_config_path_uses_executable_directory_when_frozen(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "app-auto-test-agent.exe"))
+    assert default_config_path() == tmp_path / "config.yaml"
+
+
+def test_load_config_missing_path_returns_empty_config(tmp_path):
+    assert load_config(str(tmp_path / "missing.yaml")) == {}
+
+
+def test_packaged_default_config_is_safe_and_has_appium_timeouts():
+    config_path = Path(__file__).resolve().parent.parent / "packaging" / "config.yaml"
+    config = load_config(str(config_path))
+    assert config["server"] == "ws://192.168.100.7:8001/ws/agent"
+    assert config["appium_command_timeout"] == 300
+    assert config["appium_http_request_timeout"] == 30
+    assert not {"agent_key", "agent_id", "machine_psk", "user_key"} & config.keys()
+
+
+def test_publish_places_config_at_onedir_root_and_installer_uses_it():
+    root = Path(__file__).resolve().parent.parent
+    spec = (root / "packaging" / "pyinstaller.spec").read_text(encoding="utf-8")
+    publish = (root / "packaging" / "publish.ps1").read_text(encoding="utf-8")
+    setup = (root / "packaging" / "setup.iss").read_text(encoding="utf-8")
+
+    assert '(str(project_root / "packaging" / "config.yaml"), ".")' not in spec
+    assert '$defaultConfig = Join-Path $PSScriptRoot "config.yaml"' in publish
+    assert '$bundledConfig = Join-Path $bundledApp "config.yaml"' in publish
+    assert 'Copy-Item -LiteralPath $defaultConfig -Destination $bundledConfig -Force' in publish
+    assert 'Source: "{#SourceDir}\\config.yaml"; DestDir: "{app}"' in setup
+    assert "onlyifdoesntexist" in setup
 
 
 def test_banner_contains_brand(capsys: pytest.CaptureFixture[str]) -> None:

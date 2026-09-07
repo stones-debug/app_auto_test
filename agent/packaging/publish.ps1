@@ -58,6 +58,21 @@ if (-not $SkipBuild) {
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 }
 
+# 1.5) place the editable default config beside the onedir executable
+$defaultConfig = Join-Path $PSScriptRoot "config.yaml"
+$bundledConfig = Join-Path $bundledApp "config.yaml"
+if (-not (Test-Path -LiteralPath $defaultConfig -PathType Leaf)) {
+    throw "default config not found: $defaultConfig"
+}
+if (-not (Test-Path -LiteralPath $bundledApp -PathType Container)) {
+    throw "PyInstaller output not found: $bundledApp"
+}
+Write-Step "1.5-copy-config"
+Copy-Item -LiteralPath $defaultConfig -Destination $bundledConfig -Force
+if (-not (Test-Path -LiteralPath $bundledConfig -PathType Leaf)) {
+    throw "bundled config copy failed: $bundledConfig"
+}
+
 # 2) bundle platform-tools if present
 $vendor = "vendor"
 if (Test-Path "$vendor\platform-tools\adb.exe") {
