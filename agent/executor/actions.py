@@ -3,6 +3,7 @@ import json
 import logging
 import math
 import re
+import time
 
 from .driver import (
     DriverError,
@@ -809,6 +810,7 @@ class SwipeInElementFindTextClickAction(BaseAction):
     _OBSERVE_STALE_RETRY_DELAYS = (0.05, 0.15)
     _TARGET_CLICK_SETTLE_SECONDS = 0.5
     _TARGET_CLICK_SETTLE_POLL_SECONDS = 0.05
+    _DIAGNOSTIC_MAX_CANDIDATES = 20
 
     async def execute(self, driver, context, params: dict) -> dict:
         element_id = params.get("element_id")
@@ -828,6 +830,14 @@ class SwipeInElementFindTextClickAction(BaseAction):
         duration_ms = int(params.get("duration_ms", 300))
         if duration_ms <= 0:
             raise DriverError("滑动时长 duration_ms 必须为正数")
+
+        # 查询日志需要知道当前阶段，但阶段信息只用于诊断，不参与任何控制流。
+        self._diagnostic_phase = "forward"
+        self._diagnostic_direction = preferred
+        self._diagnostic_round = 0
+        self._diagnostic_target_text = target_text
+        self._diagnostic_match_mode = match_mode
+        self._diagnostic_container_locator = self._container_locator(context, element_id)
 
         # UiAutomator selector，转义防注入
         method = "text" if match_mode == "equals" else "textContains"
@@ -862,6 +872,13 @@ class SwipeInElementFindTextClickAction(BaseAction):
                 return self._make_result(done_swipes, target_text)
             if error is not None:
                 last_click_error = error
+            logger.info(
+                "列表文字查询未命中: action=swipe_in_element_find_text_click phase=forward "
+                "direction=%s next_scroll_direction=%s target=%r",
+                preferred,
+                preferred,
+                _diagnostic_value(target_text, limit=120),
+            )
             logger.info(
                 "列表观测: phase=forward count=%s/%s hint=%s ignored=true",
                 phase_swipes,
@@ -914,6 +931,8 @@ class SwipeInElementFindTextClickAction(BaseAction):
         # 阶段 2：固定使用反方向，执行正向预算 + max_swipes 次。
         # 例如 max_swipes=8 时，正向 8 次、反向 16 次；仍只在找到目标后提前结束。
         reverse_direction = opposite
+        self._diagnostic_phase = "reverse"
+        self._diagnostic_direction = reverse_direction
         reverse_budget = max_swipes * 2
         logger.info(
             "切换反向阶段: from=%s to=%s forward_swipes=%s reverse_budget=%s",
@@ -936,6 +955,13 @@ class SwipeInElementFindTextClickAction(BaseAction):
                 return self._make_result(done_swipes, target_text)
             if error is not None:
                 last_click_error = error
+            logger.info(
+                "列表文字查询未命中: action=swipe_in_element_find_text_click phase=reverse "
+                "direction=%s next_scroll_direction=%s target=%r",
+                reverse_direction,
+                reverse_direction,
+                _diagnostic_value(target_text, limit=120),
+            )
             logger.info(
                 "列表观测: phase=reverse count=%s/%s hint=%s ignored=true",
                 reverse_swipes,
@@ -1015,6 +1041,11 @@ class SwipeInElementFindTextClickAction(BaseAction):
             return False, None, direction
         if direction is not None:
             return False, None, direction
+        logger.info(
+            "列表目标命中候选: element_id=%s target=%r click_validation=pending",
+            self._diagnostic_element_id(target),
+            _diagnostic_value(getattr(self, "_diagnostic_target_text", ""), limit=120),
+        )
         try:
             # 目标刚被观测为安全可点击时，页面仍可能在滚动/重绘。
             # 等待期间不持有或使用旧句柄；点击流程会重新定位并再次校验视口。
@@ -1056,14 +1087,34 @@ class SwipeInElementFindTextClickAction(BaseAction):
         delays = self._OBSERVE_STALE_RETRY_DELAYS
         for attempt in range(len(delays) + 1):
             try:
+                self._diagnostic_round += 1
                 container, parent, parent_region = self._locate_container_and_parent(
                     driver, context, element_id, wait_timeout
                 )
+                self._log_target_query_start(container, parent_region, selector, element_id)
+                query_started = time.perf_counter()
                 target, direction = self._find_target_in_container(
                     driver, container, parent_region, selector
                 )
+                query_elapsed_ms = (time.perf_counter() - query_started) * 1000
+                logger.info(
+                    "列表目标查询完成: action=swipe_in_element_find_text_click "
+                    "round=%s phase=%s query_kind=target elapsed_ms=%.1f candidates=%s",
+                    self._diagnostic_round,
+                    getattr(self, "_diagnostic_phase", "unknown"),
+                    getattr(self, "_diagnostic_query_elapsed_ms", query_elapsed_ms),
+                    getattr(self, "_diagnostic_candidate_count", "unknown"),
+                )
                 return container, parent, parent_region, target, direction
             except Exception as exc:
+                logger.warning(
+                    "列表目标查询异常: action=swipe_in_element_find_text_click "
+                    "round=%s phase=%s exception_type=%s exception=%s",
+                    getattr(self, "_diagnostic_round", "unknown"),
+                    getattr(self, "_diagnostic_phase", "unknown"),
+                    type(exc).__name__,
+                    _diagnostic_value(str(exc), limit=240),
+                )
                 if not is_stale_element_error(exc):
                     raise
                 if attempt >= len(delays):
@@ -1093,14 +1144,106 @@ class SwipeInElementFindTextClickAction(BaseAction):
         return container, parent, visible
 
     @staticmethod
+    def _container_locator(context, element_id):
+        try:
+            snapshot = getattr(context, "elements_snapshot", {})
+            data = snapshot.get(str(element_id), {}) if isinstance(snapshot, dict) else {}
+            if isinstance(data, dict):
+                return {
+                    "locator_type": data.get("locator_type"),
+                    "locator_value": _diagnostic_value(data.get("locator_value"), limit=160),
+                }
+        except Exception:
+            pass
+        return {"element_id": element_id}
+
+    @staticmethod
+    def _diagnostic_element_id(element):
+        try:
+            value = getattr(element, "id", None)
+            if value not in (None, ""):
+                return _diagnostic_value(value, limit=120)
+        except Exception:
+            pass
+        try:
+            return _diagnostic_value(getattr(element, "locator_value", None), limit=120)
+        except Exception:
+            return None
+
+    def _log_target_query_start(self, container, parent_region, selector, element_id):
+        logger.info(
+            "列表目标查询开始: action=swipe_in_element_find_text_click round=%s phase=%s direction=%s "
+            "target=%r match_mode=%s container_locator=%s container_element_id=%s "
+            "parent_viewport=%s safe_click_region=%s strategy=uiautomator "
+            "selector=%s",
+            getattr(self, "_diagnostic_round", "unknown"),
+            getattr(self, "_diagnostic_phase", "unknown"),
+            getattr(self, "_diagnostic_direction", "unknown"),
+            _diagnostic_value(getattr(self, "_diagnostic_target_text", ""), limit=120),
+            getattr(self, "_diagnostic_match_mode", "unknown"),
+            getattr(self, "_diagnostic_container_locator", {"element_id": element_id}),
+            self._diagnostic_element_id(container),
+            parent_region,
+            parent_region,
+            _diagnostic_value(selector, limit=240),
+        )
+
+    def _log_actual_click(self, target, rect, message):
+        logger.info(
+            "列表目标%s: element_id=%s target=%r rect=%s expected_click_point=%s",
+            message,
+            self._diagnostic_element_id(target),
+            _diagnostic_value(getattr(self, "_diagnostic_target_text", ""), limit=120),
+            rect,
+            _rect_center_int(rect),
+        )
+
+    @staticmethod
     def _parent_region(driver, parent):
         size = driver.get_window_size()
         return _clip_rect(driver.get_element_rect(parent), size)
 
     def _find_target_in_container(self, driver, container, visible, selector):
+        query_started = time.perf_counter()
         matches = driver.find_elements_in_element(container, "uiautomator", selector, wait_timeout=0)
-        candidates = [m for m in matches if _is_displayed_and_enabled(driver, m)]
-        safe = [m for m in candidates if _is_safely_clickable(driver, m, visible)]
+        self._diagnostic_query_elapsed_ms = (time.perf_counter() - query_started) * 1000
+        self._diagnostic_candidate_count = len(matches)
+        if not matches:
+            logger.info(
+                "列表目标查询返回空: action=swipe_in_element_find_text_click query_kind=target "
+                "container_element_id=%s selector=%s elapsed_ms=%s",
+                self._diagnostic_element_id(container),
+                _diagnostic_value(selector, limit=240),
+                f"{self._diagnostic_query_elapsed_ms:.1f}",
+            )
+        candidates = []
+        safe = []
+        for index, match in enumerate(matches):
+            displayed, enabled, displayed_enabled = _displayed_enabled_state(driver, match)
+            reason = None
+            rect = None
+            if displayed_enabled:
+                rect = driver.get_element_rect(match)
+                safe_match, reason = self._safe_clickability(rect, visible)
+                candidates.append(match)
+                if safe_match:
+                    safe.append(match)
+            else:
+                reason = "not_displayed_or_disabled"
+            if index < self._DIAGNOSTIC_MAX_CANDIDATES:
+                logger.info(
+                    "列表目标候选: element_id=%s displayed=%s enabled=%s rect=%s "
+                    "safe_clickable=%s reject_reason=%s",
+                    self._diagnostic_element_id(match),
+                    displayed,
+                    enabled,
+                    rect,
+                    match in safe,
+                    reason or "none",
+                )
+        omitted = len(matches) - min(len(matches), self._DIAGNOSTIC_MAX_CANDIDATES)
+        if omitted > 0:
+            logger.info("列表目标候选日志省略: omitted=%s max=%s", omitted, self._DIAGNOSTIC_MAX_CANDIDATES)
         if safe:
             cx = visible["x"] + visible["width"] / 2
             cy = visible["y"] + visible["height"] / 2
@@ -1113,6 +1256,23 @@ class SwipeInElementFindTextClickAction(BaseAction):
         ), _direction_to_reveal(driver.get_element_rect(
             min(candidates, key=lambda m: _distance_to_rect(driver.get_element_rect(m), visible))
         ), visible)
+
+    @staticmethod
+    def _safe_clickability(rect, visible):
+        """与 _is_safely_clickable 保持同一判定，同时提供诊断原因。"""
+        if _rect_area(rect) <= 0:
+            return False, "empty_rect"
+        coverage = _intersection_area(rect, visible) / _rect_area(rect)
+        if coverage < 0.8:
+            return False, f"coverage={coverage:.3f}"
+        cx, cy = _rect_center(rect)
+        margin = max(4, min(int(rect.get("height", 0)) // 4, 24))
+        if not (
+            visible["x"] + margin <= cx <= visible["x"] + visible["width"] - margin
+            and visible["y"] + margin <= cy <= visible["y"] + visible["height"] - margin
+        ):
+            return False, f"center_outside_safe_margin={margin}"
+        return True, None
 
     async def _click_with_stale_retry(
         self, driver, context, element_id, target,
@@ -1136,8 +1296,11 @@ class SwipeInElementFindTextClickAction(BaseAction):
                 if direction is not None:
                     return False, direction
                 # 观测后再次校验，覆盖定位到点击之间的视口变化。
-                if not _is_safely_clickable(driver, target, visible):
-                    return False, _direction_to_reveal(driver.get_element_rect(target), visible)
+                target_rect = driver.get_element_rect(target)
+                safe, _reason = self._safe_clickability(target_rect, visible)
+                if not safe:
+                    return False, _direction_to_reveal(target_rect, visible)
+                self._log_actual_click(target, target_rect, "实际点击")
                 driver.click(target)
                 return True, None
             except Exception as exc:
@@ -1153,11 +1316,13 @@ class SwipeInElementFindTextClickAction(BaseAction):
                         if (
                             new_target is not None
                             and direction is None
-                            and _is_safely_clickable(driver, new_target, visible)
                         ):
                             rect = driver.get_element_rect(new_target)
-                            driver.tap_coordinate(*_rect_center_int(rect))
-                            return True, None
+                            safe, _reason = self._safe_clickability(rect, visible)
+                            if safe:
+                                self._log_actual_click(new_target, rect, "实际点击（坐标回退）")
+                                driver.tap_coordinate(*_rect_center_int(rect))
+                                return True, None
                         if direction is not None:
                             return False, direction
                     raise
@@ -1276,8 +1441,16 @@ class SwipeInElementFindTextClickAction(BaseAction):
     @classmethod
     def _read_list_signature(cls, driver, container, parent_region):
         try:
+            query_started = time.perf_counter()
             nodes = driver.find_elements_in_element(
                 container, "uiautomator", "new UiSelector()", wait_timeout=0
+            )
+            logger.info(
+                "列表签名查询完成: action=swipe_in_element_find_text_click "
+                "query_kind=signature container_element_id=%s elapsed_ms=%.1f nodes=%s",
+                cls._diagnostic_element_id(container),
+                (time.perf_counter() - query_started) * 1000,
+                len(nodes),
             )
             snapshot = []
             for node in nodes:
@@ -1486,24 +1659,32 @@ def _intersection_area(first: dict[str, int], second: dict[str, int]) -> int:
 
 
 def _is_displayed_and_enabled(driver, element) -> bool:
+    return _displayed_enabled_state(driver, element)[2]
+
+
+def _displayed_enabled_state(driver, element) -> tuple[bool, bool | None, bool]:
+    """Return displayed/enabled diagnostics while preserving the normal short-circuit order."""
+    state: dict[str, bool] = {}
     for method_name, attribute_name in (("is_displayed", "displayed"), ("is_enabled", "enabled")):
         method = getattr(element, method_name, None)
         if callable(method):
             try:
-                if not method():
-                    return False
-                continue
+                value = bool(method())
             except Exception:
-                pass
-        getter = getattr(driver, "get_attribute", None)
-        if callable(getter):
+                value = None
+        else:
+            value = None
+        if value is None:
+            getter = getattr(driver, "get_attribute", None)
             try:
-                value = getter(element, attribute_name)
+                value = getter(element, attribute_name) if callable(getter) else None
             except Exception:
                 value = ""
-            if value not in ("", None) and str(value).lower() == "false":
-                return False
-    return True
+            value = not (value not in ("", None) and str(value).lower() == "false")
+        state[attribute_name] = bool(value)
+        if not value:
+            return state.get("displayed", True), state.get("enabled"), False
+    return state.get("displayed", True), state.get("enabled"), True
 
 
 def _is_safely_clickable(driver, element, visible: dict[str, int]) -> bool:

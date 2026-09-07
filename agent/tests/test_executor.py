@@ -2954,6 +2954,140 @@ async def test_find_text_click_found_without_swipe():
     assert driver.region_swipes == []
 
 
+async def test_find_text_click_logs_empty_query_and_final_hit(caplog):
+    caplog.set_level(logging.INFO, logger="agent.actions")
+    driver = _ListScrollDriver(_FULL_SCREEN)
+    driver.set_screen([{"id": "i1", "text": "其他", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
+    driver.up_pages = lambda count: [
+        {"id": "target", "text": "系统时间", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}
+    ] if count == 1 else None
+
+    params = _find_text_params(max_swipes_per_direction=1)
+    action, context = _run_find_text(driver, params)
+    result = await action.execute(driver, context, params)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert result["status"] == "passed"
+    assert any("列表目标查询返回空" in message and "query_kind=target" in message for message in messages)
+    assert any("列表目标实际点击" in message and "expected_click_point=" in message for message in messages)
+    assert any("列表文字查询未命中" in message and "next_scroll_direction=up" in message for message in messages)
+
+
+async def test_find_text_click_logs_candidate_rejection_and_caps_long_list(caplog):
+    caplog.set_level(logging.INFO, logger="agent.actions")
+    driver = _ListScrollDriver(_FULL_SCREEN)
+    driver.set_screen([
+        {
+            "id": f"target-{index}",
+            "text": "系统时间",
+            "bounds": {"x": 100, "y": 500 + index * 100, "width": 200, "height": 50},
+        }
+        for index in range(25)
+    ])
+    action, context = _run_find_text(driver, _find_text_params())
+    action._diagnostic_target_text = "系统时间"
+    action._diagnostic_match_mode = "equals"
+    action._diagnostic_phase = "forward"
+    action._diagnostic_round = 1
+    container = context.find_element(1, wait_timeout=0)
+    container._bounds = dict(_FULL_SCREEN)
+
+    target, direction = action._find_target_in_container(
+        driver, container, _FULL_SCREEN, 'new UiSelector().text("系统时间")'
+    )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert target is not None
+    assert direction is None
+    assert any("safe_clickable=False" in message for message in messages)
+    assert any("列表目标候选日志省略" in message and "omitted=5" in message for message in messages)
+    assert sum("列表目标候选:" in message for message in messages) == 20
+
+
+def test_find_text_diagnostics_do_not_read_remote_candidate_attributes():
+    class CountingElement(MockElement):
+        def __init__(self, locator_value, rect):
+            super().__init__(locator_value, {"text": "目标"})
+            self.rect_value = rect
+            self.displayed_calls = 0
+            self.enabled_calls = 0
+            self.attribute_calls = 0
+
+        def is_displayed(self):
+            self.displayed_calls += 1
+            return True
+
+        def is_enabled(self):
+            self.enabled_calls += 1
+            return True
+
+        def get_attribute(self, name):
+            self.attribute_calls += 1
+            raise AssertionError(f"unexpected diagnostic attribute read: {name}")
+
+    class CountingDriver:
+        def __init__(self, elements):
+            self.elements = elements
+            self.find_elements_calls = 0
+            self.rect_calls = 0
+            self.attribute_calls = 0
+
+        def find_elements_in_element(self, element, locator_type, locator_value, wait_timeout=0):
+            self.find_elements_calls += 1
+            return self.elements
+
+        def get_element_rect(self, element):
+            self.rect_calls += 1
+            return element.rect_value
+
+        def get_attribute(self, element, name):
+            self.attribute_calls += 1
+            raise AssertionError(f"unexpected driver attribute read: {name}")
+
+    elements = [
+        CountingElement("first", {"x": 100, "y": 400, "width": 200, "height": 50}),
+        CountingElement("second", {"x": 100, "y": 700, "width": 200, "height": 50}),
+    ]
+    driver = CountingDriver(elements)
+    action = ACTION_REGISTRY["swipe_in_element_find_text_click"]()
+
+    target, direction = action._find_target_in_container(
+        driver, MockElement("list"), _FULL_SCREEN, 'new UiSelector().text("目标")'
+    )
+
+    assert target is elements[1]
+    assert direction is None
+    assert driver.find_elements_calls == 1
+    assert driver.attribute_calls == 0
+    assert driver.rect_calls == 4  # 一次安全判定 + 一次中心选择，每个候选各一次
+    assert all(element.displayed_calls == 1 for element in elements)
+    assert all(element.enabled_calls == 1 for element in elements)
+    assert all(element.attribute_calls == 0 for element in elements)
+
+
+class _FindTextQueryErrorDriver(_ListScrollDriver):
+    def find_elements_in_element(self, element, locator_type, locator_value, wait_timeout=0):
+        raise RuntimeError("synthetic target query failure")
+
+
+async def test_find_text_click_logs_query_exception_without_swallowing(caplog):
+    caplog.set_level(logging.WARNING, logger="agent.actions")
+    driver = _FindTextQueryErrorDriver(_FULL_SCREEN)
+    driver.set_screen([{"id": "i1", "text": "其他", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
+    params = _find_text_params(max_swipes_per_direction=1)
+    action, context = _run_find_text(driver, params)
+
+    with pytest.raises(RuntimeError, match="synthetic target query failure"):
+        await action.execute(driver, context, params)
+
+    assert any(
+        "列表目标查询异常" in record.getMessage()
+        and "exception_type=RuntimeError" in record.getMessage()
+        and "synthetic target query failure" in record.getMessage()
+        for record in caplog.records
+    )
+
+
 async def test_find_text_click_contains_match():
     driver = _ListScrollDriver(_FULL_SCREEN)
     driver.set_screen([{"id": "t1", "text": "前缀系统时间后缀", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
