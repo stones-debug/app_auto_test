@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   getExecution,
   getExecutionLogs,
+  canRetryExecution,
   stopExecution,
   type ExecutionDetail,
   type ExecutionLog,
@@ -297,6 +298,7 @@ function subscribe(id: number) {
 const timelineRef = ref<InstanceType<typeof ExecutionTimeline> | null>(null)
 
 const { picker, retry: retryEntry, running: retrying } = useExecutionRetry()
+const canRetry = computed(() => canRetryExecution(detail.value?.status))
 
 async function stop() {
   stopping.value = true
@@ -361,7 +363,7 @@ onBeforeUnmount(() => socket.value?.close())
       </div>
       <div class="head-actions">
         <el-button v-if="['queued', 'running', 'stopping'].includes(detail?.status ?? '')" type="warning" :loading="stopping" @click="stop">停止</el-button>
-        <el-button type="primary" :loading="retrying" @click="retry">重试</el-button>
+        <el-button v-if="canRetry" type="primary" :loading="retrying" @click="retry">重试</el-button>
         <el-button v-if="reportId != null" type="success" @click="viewReport">查看报告</el-button>
       </div>
     </div>

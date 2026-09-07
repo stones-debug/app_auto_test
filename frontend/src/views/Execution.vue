@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 
 import {
   EXECUTION_STATUS,
+  canRetryExecution,
   listExecutions,
   stopExecution,
   type ExecutionListItem,
@@ -196,7 +197,7 @@ onBeforeUnmount(() => {
         <template #default="{ row }">
           <el-button size="small" type="primary" text @click="openDetail(row.id)">详情</el-button>
           <el-button v-if="isActive(row.status)" size="small" text @click="stop(row as ExecutionListItem)">停止</el-button>
-          <el-button size="small" text @click="retry(row as ExecutionListItem)">重试</el-button>
+          <el-button v-if="canRetryExecution(row.status)" size="small" text @click="retry(row as ExecutionListItem)">重试</el-button>
         </template>
       </el-table-column>
     </el-table>

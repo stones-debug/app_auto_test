@@ -818,7 +818,8 @@ async def test_create_execution_snapshots_idempotent(client: AsyncClient):
             select(ExecutionStep).where(ExecutionStep.execution_case_id == ecs[0].id)
         )).scalars().all()
         assert len(steps) == len(ecs[0].steps_snapshot)
-        assert all(step.status == "pending" for step in steps)
+        # 已物化快照再次被 Worker 领取时直接复用原树，不重新生成 pending 行。
+        assert all(step.status == "passed" for step in steps)
 
 
 async def test_unprofiled_suite_snapshot_contains_suite_elements_and_variables(client: AsyncClient):

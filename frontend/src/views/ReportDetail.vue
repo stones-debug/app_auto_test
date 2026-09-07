@@ -2,7 +2,7 @@
 import { computed, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { executionStatusMeta } from '@/api/executions'
+import { canRetryExecution, executionStatusMeta } from '@/api/executions'
 import { downloadReport, getReportDetail, type ReportDetail, type ReportExclusion } from '@/api/reports'
 import DevicePicker from '@/components/DevicePicker.vue'
 import ExecutionParameters from '@/components/ExecutionParameters.vue'
@@ -41,6 +41,7 @@ const visibleLogLimit = ref(REPORT_LOG_PAGE_SIZE)
 let loadedReportId: number | null = null
 
 const { picker, retry: retryEntry, running: retrying } = useExecutionRetry()
+const canRetry = computed(() => canRetryExecution(detail.value?.execution.status))
 
 // 步骤在报告数据变化时只拆分一次，展开/收起不再重复过滤步骤数组。
 const preparedSuites = computed(() => prepareReportSuites(detail.value?.suites ?? []))
@@ -200,7 +201,7 @@ function viewExecution() {
           </el-tag>
           <div class="head-actions">
             <el-button @click="viewExecution">查看执行</el-button>
-            <el-button :loading="retrying" @click="retryThis">重试</el-button>
+            <el-button v-if="canRetry" :loading="retrying" @click="retryThis">重试</el-button>
             <el-button @click="navigation.back('report')">返回</el-button>
             <el-button type="primary" @click="download">下载 HTML 报告</el-button>
           </div>

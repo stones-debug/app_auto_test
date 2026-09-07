@@ -486,6 +486,7 @@ async def retry_execution(
 ):
     execution = await _get_execution_or_404(execution_id, db)
     await _require_execution_write(execution, user, db)
+    execution_service.ensure_retryable_status(execution)
     if body is None:
         raise api_error(
             status_code=status.HTTP_400_BAD_REQUEST,

@@ -228,12 +228,6 @@ async def soft_delete_many(
     cases = await cases_repo.load_deletable(db, ids=ids, project_id=project_id)
     if not cases:
         return []
-    referenced = await cases_repo.find_execution_references(db, [case.id for case in cases])
-    if referenced:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"用例已被执行引用: {sorted(referenced)}",
-        )
     try:
         await cases_repo.soft_delete_many(cases, datetime.now(UTC))
         await asset_service.commit_asset_change(db, [case.project_id for case in cases])
@@ -250,12 +244,6 @@ async def load_deletable(
 
 
 async def soft_delete(db: AsyncSession, *, case: TestCase) -> None:
-    referenced = await cases_repo.find_execution_references(db, [case.id])
-    if referenced:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"用例已被执行引用: {sorted(referenced)}",
-        )
     try:
         await cases_repo.soft_delete(case, datetime.now(UTC))
         await asset_service.commit_asset_change(db, [case.project_id])

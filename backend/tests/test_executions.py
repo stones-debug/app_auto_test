@@ -1,8 +1,13 @@
+from datetime import UTC, datetime
+
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 
+from app.core.database import SessionLocal
 from app.main import app
+from app.models import Execution, ExecutionQueue
+from app.services import worker_service
 from tests.helpers import create_bound_agent_device
 
 REG = {"username": "pytest_exec_user", "email": "pytest_exec@tl-tek.com", "password": "test123"}
@@ -96,6 +101,17 @@ async def _create_agent_device(client: AsyncClient, token: str) -> int:
     """创建绑定当前用户的在线 Agent + idle 设备，返回 device_id（Windows 方案 §3.3）。"""
     _agent_id, device_id = await create_bound_agent_device(REG["username"])
     return device_id
+
+
+async def _finish_with_snapshot(execution_id: int, status: str = "failed") -> None:
+    """模拟 Worker 已物化并结束执行，供重试契约测试使用。"""
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution is not None
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        execution.status = status
+        execution.finished_at = datetime.now(UTC)
+        await db.commit()
 
 
 async def test_create_case_execution(client: AsyncClient):
@@ -284,6 +300,14 @@ async def test_list_get_logs_stop_retry(client: AsyncClient):
     assert logs.status_code == 200
     assert logs.json()["total"] == 0
 
+    running_retry = await client.post(
+        f"/api/executions/{execution_id}/retry",
+        headers=headers,
+        json={"device_id": device_id},
+    )
+    assert running_retry.status_code == 409
+    assert running_retry.json()["detail"]["code"] == "EXECUTION_RETRY_NOT_ALLOWED"
+
     stopped = await client.post(f"/api/executions/{execution_id}/stop", headers=headers)
     assert stopped.status_code == 200
     assert stopped.json()["status"] == "cancelled"
@@ -296,18 +320,37 @@ async def test_list_get_logs_stop_retry(client: AsyncClient):
     again = await client.post(f"/api/executions/{execution_id}/stop", headers=headers)
     assert again.status_code == 409
 
-    # RQ-03/Step 5：retry 必须携带 body（{device_id, timeout_seconds?}），否则 400
-    missing = await client.post(f"/api/executions/{execution_id}/retry", headers=headers)
-    assert missing.status_code == 400
-
-    retried = await client.post(
+    async with SessionLocal() as db:
+        before_execution_count = await db.scalar(
+            select(func.count(Execution.id)).where(Execution.project_id == project_id)
+        )
+        before_queue_count = await db.scalar(
+            select(func.count(ExecutionQueue.id))
+            .join(Execution, Execution.id == ExecutionQueue.execution_id)
+            .where(Execution.project_id == project_id)
+        )
+    snapshot_retry = await client.post(
         f"/api/executions/{execution_id}/retry",
         headers=headers,
         json={"device_id": device_id},
     )
-    assert retried.status_code == 201
-    assert retried.json()["retry_of"] == execution_id
-    assert retried.json()["status"] == "queued"
+    assert snapshot_retry.status_code == 409
+    assert snapshot_retry.json()["detail"]["code"] == "EXECUTION_SNAPSHOT_NOT_READY"
+
+    # RQ-03/Step 5：retry 必须携带 body（{device_id, timeout_seconds?}），否则 400
+    missing = await client.post(f"/api/executions/{execution_id}/retry", headers=headers)
+    assert missing.status_code == 400
+
+    assert snapshot_retry.json()["detail"]["context"]["execution_id"] == execution_id
+    async with SessionLocal() as db:
+        assert await db.scalar(
+            select(func.count(Execution.id)).where(Execution.project_id == project_id)
+        ) == before_execution_count
+        assert await db.scalar(
+            select(func.count(ExecutionQueue.id))
+            .join(Execution, Execution.id == ExecutionQueue.execution_id)
+            .where(Execution.project_id == project_id)
+        ) == before_queue_count
 
 
 # ---------- Step 5：case/suite/batch 重试契约（retry_of / parameters / device / timeout） ----------
@@ -328,6 +371,7 @@ async def test_retry_case_copies_contract(client: AsyncClient):
         json={"device_id": device_id, "parameters": {"variables": {"btn_id": "btn_login"}}, "timeout_seconds": 900},
     )
     exec_id = created.json()["id"]
+    await _finish_with_snapshot(exec_id)
 
     retried = await client.post(
         f"/api/executions/{exec_id}/retry",
@@ -357,9 +401,10 @@ async def test_retry_suite_and_batch_copies_contract(client: AsyncClient):
     suite_run = await client.post(
         f"/api/executions/suites/{suite_id}",
         headers=headers,
-        json={"device_id": device_id, "parameters": {"variables": {"env": "staging"}}},
+        json={"device_id": device_id, "parameters": {"variables": {"env": "staging", "btn_id": "btn_login"}}},
     )
     suite_exec_id = suite_run.json()["id"]
+    await _finish_with_snapshot(suite_exec_id)
     suite_retry = await client.post(
         f"/api/executions/{suite_exec_id}/retry",
         headers=headers,
@@ -375,9 +420,10 @@ async def test_retry_suite_and_batch_copies_contract(client: AsyncClient):
     batch = await client.post(
         "/api/executions/suites/batch",
         headers=headers,
-        json={"suite_ids": [suite_id], "device_id": device_id, "parameters": {"marker": "batch-1"}},
+        json={"suite_ids": [suite_id], "device_id": device_id, "parameters": {"marker": "batch-1", "variables": {"btn_id": "btn_login"}}},
     )
     batch_exec_id = batch.json()["id"]
+    await _finish_with_snapshot(batch_exec_id)
     batch_retry = await client.post(
         f"/api/executions/{batch_exec_id}/retry",
         headers=headers,
@@ -404,9 +450,10 @@ async def test_retry_timeout_falls_back_to_original(client: AsyncClient):
     created = await client.post(
         f"/api/executions/cases/{case_id}",
         headers=headers,
-        json={"device_id": device_id, "timeout_seconds": 1500},
+        json={"device_id": device_id, "timeout_seconds": 1500, "parameters": {"variables": {"btn_id": "btn_login"}}},
     )
     exec_id = created.json()["id"]
+    await _finish_with_snapshot(exec_id)
     retried = await client.post(
         f"/api/executions/{exec_id}/retry",
         headers=headers,
@@ -414,6 +461,179 @@ async def test_retry_timeout_falls_back_to_original(client: AsyncClient):
     )
     assert retried.status_code == 201
     assert retried.json()["timeout_seconds"] == 1500
+
+
+async def test_retry_uses_deleted_case_snapshot_and_remaps_tree_ids(client: AsyncClient):
+    """历史用例软删后，重试仍克隆原树且不复用旧子节点 ID。"""
+    from app.models import (
+        ExecutionAssertion,
+        ExecutionCase,
+        ExecutionExclusion,
+        ExecutionNode,
+        ExecutionStep,
+        ExecutionSuite,
+    )
+
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+    element_id = await _create_element(client, token, project_id)
+    case_id = await _create_case(client, token, project_id, element_id)
+    device_id = await _create_agent_device(client, token)
+    headers = {"Authorization": f"Bearer {token}"}
+    created = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers=headers,
+        json={"device_id": device_id, "parameters": {"variables": {"before": "delete", "btn_id": "btn_login"}}},
+    )
+    execution_id = created.json()["id"]
+    await _finish_with_snapshot(execution_id)
+    async with SessionLocal() as db:
+        db.add(
+            ExecutionExclusion(
+                execution_id=execution_id,
+                app_profile_id=None,
+                target_type="case",
+                suite_id_snapshot=None,
+                suite_name_snapshot="虚拟套件",
+                case_id_snapshot=case_id,
+                case_name_snapshot="登录用例",
+                occurrence_order=2,
+                node_key=None,
+                node_name_snapshot=None,
+                source_type="direct",
+                source_rule_id=77,
+                reason_code="case_skipped",
+                reason_note="回归排除",
+                details={"na": True, "marker": "copy-me"},
+            )
+        )
+        await db.commit()
+
+    deleted = await client.delete(f"/api/cases/{case_id}", headers=headers)
+    assert deleted.status_code == 204
+    retried = await client.post(
+        f"/api/executions/{execution_id}/retry",
+        headers=headers,
+        json={"device_id": device_id},
+    )
+    assert retried.status_code == 201
+    retry_id = retried.json()["id"]
+    assert retried.json()["parameters"]["variables"]["before"] == "delete"
+
+    async with SessionLocal() as db:
+        old_suites = list((await db.execute(select(ExecutionSuite).where(ExecutionSuite.execution_id == execution_id))).scalars())
+        new_suites = list((await db.execute(select(ExecutionSuite).where(ExecutionSuite.execution_id == retry_id))).scalars())
+        old_cases = list((await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == execution_id))).scalars())
+        new_cases = list((await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == retry_id))).scalars())
+        old_steps = list((await db.execute(select(ExecutionStep).where(ExecutionStep.execution_case_id.in_([row.id for row in old_cases])))).scalars())
+        new_steps = list((await db.execute(select(ExecutionStep).where(ExecutionStep.execution_case_id.in_([row.id for row in new_cases])))).scalars())
+        old_assertions = list((await db.execute(select(ExecutionAssertion).where(ExecutionAssertion.execution_step_id.in_([row.id for row in old_steps])))).scalars())
+        new_assertions = list((await db.execute(select(ExecutionAssertion).where(ExecutionAssertion.execution_step_id.in_([row.id for row in new_steps])))).scalars())
+        old_nodes = list((await db.execute(select(ExecutionNode).where(ExecutionNode.execution_case_id.in_([row.id for row in old_cases])))).scalars())
+        new_nodes = list((await db.execute(select(ExecutionNode).where(ExecutionNode.execution_case_id.in_([row.id for row in new_cases])))).scalars())
+        old_exclusions = list((await db.execute(select(ExecutionExclusion).where(ExecutionExclusion.execution_id == execution_id))).scalars())
+        new_exclusions = list((await db.execute(select(ExecutionExclusion).where(ExecutionExclusion.execution_id == retry_id))).scalars())
+
+    assert len(new_suites) == len(old_suites) == 1
+    assert len(new_cases) == len(old_cases) == 1
+    assert len(new_steps) == len(old_steps)
+    assert len(new_assertions) == len(old_assertions)
+    assert len(new_nodes) == len(old_nodes)
+    assert len(new_exclusions) == len(old_exclusions) == 1
+    assert {row.id for row in new_suites}.isdisjoint(row.id for row in old_suites)
+    assert {row.id for row in new_cases}.isdisjoint(row.id for row in old_cases)
+    assert {row.id for row in new_steps}.isdisjoint(row.id for row in old_steps)
+    assert {row.id for row in new_assertions}.isdisjoint(row.id for row in old_assertions)
+    assert {row.id for row in new_nodes}.isdisjoint(row.id for row in old_nodes)
+    old_exclusion = old_exclusions[0]
+    new_exclusion = new_exclusions[0]
+    assert new_exclusion.execution_id == retry_id
+    assert {
+        key: getattr(new_exclusion, key)
+        for key in (
+            "app_profile_id", "target_type", "suite_id_snapshot", "suite_name_snapshot",
+            "case_id_snapshot", "case_name_snapshot", "occurrence_order", "node_key",
+            "node_name_snapshot", "source_type", "source_rule_id", "reason_code",
+            "reason_note", "details",
+        )
+    } == {
+        key: getattr(old_exclusion, key)
+        for key in (
+            "app_profile_id", "target_type", "suite_id_snapshot", "suite_name_snapshot",
+            "case_id_snapshot", "case_name_snapshot", "occurrence_order", "node_key",
+            "node_name_snapshot", "source_type", "source_rule_id", "reason_code",
+            "reason_note", "details",
+        )
+    }
+    assert all(row.status == "pending" for row in [*new_cases, *new_steps, *new_assertions, *new_nodes])
+
+
+async def test_retry_suite_uses_snapshot_after_case_delete(client: AsyncClient):
+    """真实套件执行的历史用例软删后仍可按原套件快照重试。"""
+    from app.models import ExecutionNode, ExecutionSuite
+
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+    element_id = await _create_element(client, token, project_id)
+    case_id = await _create_case(client, token, project_id, element_id)
+    suite_id = await _create_suite(client, token, project_id, case_id)
+    device_id = await _create_agent_device(client, token)
+    headers = {"Authorization": f"Bearer {token}"}
+    created = await client.post(
+        f"/api/executions/suites/{suite_id}",
+        headers=headers,
+        json={"device_id": device_id, "parameters": {"suite_marker": "before-delete", "variables": {"btn_id": "btn_login"}}},
+    )
+    assert created.status_code == 201
+    execution_id = created.json()["id"]
+    await _finish_with_snapshot(execution_id)
+    async with SessionLocal() as db:
+        source_suite = (
+            await db.execute(select(ExecutionSuite).where(ExecutionSuite.execution_id == execution_id))
+        ).scalar_one()
+        source_suite.setup_steps_snapshot = [{"phase": "suite_setup", "order": 1, "action": "sleep"}]
+        source_suite.teardown_steps_snapshot = [{"phase": "suite_teardown", "order": 1, "action": "back"}]
+        db.add_all([
+            ExecutionNode(
+                execution_suite_id=source_suite.id,
+                kind="action",
+                node_order=1,
+                phase="suite_setup",
+                action="sleep",
+                parameters={"duration": 0},
+                status="failed",
+            ),
+            ExecutionNode(
+                execution_suite_id=source_suite.id,
+                kind="action",
+                node_order=1,
+                phase="suite_teardown",
+                action="back",
+                parameters={},
+                status="passed",
+            ),
+        ])
+        await db.commit()
+    assert (await client.delete(f"/api/cases/{case_id}", headers=headers)).status_code == 204
+
+    retried = await client.post(
+        f"/api/executions/{execution_id}/retry",
+        headers=headers,
+        json={"device_id": device_id},
+    )
+    assert retried.status_code == 201
+    assert retried.json()["type"] == "suite"
+    assert retried.json()["parameters"]["suite_marker"] == "before-delete"
+    async with SessionLocal() as db:
+        source_nodes = list((await db.execute(select(ExecutionNode).where(ExecutionNode.execution_suite_id == source_suite.id))).scalars())
+        cloned_suite = (
+            await db.execute(select(ExecutionSuite).where(ExecutionSuite.execution_id == retried.json()["id"]))
+        ).scalar_one()
+        cloned_nodes = list((await db.execute(select(ExecutionNode).where(ExecutionNode.execution_suite_id == cloned_suite.id))).scalars())
+    assert cloned_suite.setup_steps_snapshot == source_suite.setup_steps_snapshot
+    assert cloned_suite.teardown_steps_snapshot == source_suite.teardown_steps_snapshot
+    assert {node.id for node in cloned_nodes}.isdisjoint(node.id for node in source_nodes)
+    assert all(node.status == "pending" for node in cloned_nodes)
 
 
 async def test_execution_permission_denied(client: AsyncClient):

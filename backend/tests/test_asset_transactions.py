@@ -62,7 +62,7 @@ async def test_suite_reorder_missing_item_does_not_partially_mutate(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_batch_delete_referenced_cases_does_not_partially_mutate(monkeypatch):
+async def test_batch_delete_referenced_cases_soft_deletes_all(monkeypatch):
     db = AsyncMock()
     first = CaseModel(id=201, project_id=9, name="引用", steps=[], variables={})
     second = CaseModel(id=202, project_id=9, name="未引用", steps=[], variables={})
@@ -71,19 +71,24 @@ async def test_batch_delete_referenced_cases_does_not_partially_mutate(monkeypat
         "load_deletable",
         AsyncMock(return_value=[first, second]),
     )
-    monkeypatch.setattr(
-        case_service.cases_repo,
-        "find_execution_references",
-        AsyncMock(return_value={201}),
-    )
+    monkeypatch.setattr(case_service.asset_service, "commit_asset_change", AsyncMock())
 
-    with pytest.raises(HTTPException) as exc_info:
-        await case_service.soft_delete_many(db, ids=[201, 202], project_id=9)
+    rows = await case_service.soft_delete_many(db, ids=[201, 202], project_id=9)
 
-    assert exc_info.value.status_code == 409
-    assert first.deleted_at is None
-    assert second.deleted_at is None
-    db.commit.assert_not_awaited()
+    assert rows == [first, second]
+    assert first.deleted_at is not None
+    assert second.deleted_at is not None
+
+
+@pytest.mark.asyncio
+async def test_single_delete_referenced_case_soft_deletes(monkeypatch):
+    db = AsyncMock()
+    case = CaseModel(id=203, project_id=9, name="历史引用", steps=[], variables={})
+    monkeypatch.setattr(case_service.asset_service, "commit_asset_change", AsyncMock())
+
+    await case_service.soft_delete(db, case=case)
+
+    assert case.deleted_at is not None
 
 
 @pytest.mark.asyncio

@@ -487,8 +487,8 @@ async def test_batch_shared_case_executes_from_unskipped_suite(client: AsyncClie
     assert report.not_applicable_suites == 1
 
 
-async def test_retry_reuses_profile(client: AsyncClient):
-    """重试复用原执行档案并按当前 revision 固化，retry_of 指向原执行。"""
+async def test_retry_reuses_profile_snapshot(client: AsyncClient):
+    """终态重试复用原执行档案快照，而不是重新解析当前档案。"""
     base = await _base(client)
     profile_id, release_id = await _make_profile(client, base)
     case_id = await _make_case(client, base)
@@ -499,6 +499,28 @@ async def test_retry_reuses_profile(client: AsyncClient):
     )
     assert created.status_code == 201
     original_id = created.json()["id"]
+    async with SessionLocal() as db:
+        original = await db.get(Execution, original_id)
+        original.status = "failed"
+        original_snapshot = {
+            "profile_revision": original.profile_revision,
+            "test_asset_revision": original.test_asset_revision,
+            "profile_resolution_summary": original.profile_resolution_summary,
+        }
+        original_case = (
+            await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == original_id))
+        ).scalar_one()
+        original_flow = [
+            {key: value for key, value in item.items() if key != "execution_node_id"}
+            for item in original_case.flow_snapshot
+        ]
+        original_case_snapshot = {
+            "steps_snapshot": original_case.steps_snapshot,
+            "elements_snapshot": original_case.elements_snapshot,
+        }
+        await db.commit()
+
+    assert (await client.delete(f"/api/cases/{case_id}", headers=base["headers"])).status_code == 204
 
     retried = await client.post(
         f"/api/executions/{original_id}/retry",
@@ -512,4 +534,17 @@ async def test_retry_reuses_profile(client: AsyncClient):
     async with SessionLocal() as db:
         exec2 = await db.get(Execution, data["id"])
         assert exec2.app_profile_id == profile_id
-        assert (await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == data["id"]))).scalars().first() is not None
+        assert {
+            key: getattr(exec2, key) for key in original_snapshot
+        } == original_snapshot
+        cloned_case = (
+            await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == data["id"]))
+        ).scalar_one()
+        assert {
+            key: getattr(cloned_case, key) for key in original_case_snapshot
+        } == original_case_snapshot
+        cloned_flow = [
+            {key: value for key, value in item.items() if key != "execution_node_id"}
+            for item in cloned_case.flow_snapshot
+        ]
+        assert cloned_flow == original_flow

@@ -492,16 +492,24 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
 
 async def create_execution_cases_from_execution(db: AsyncSession, execution: Execution) -> list[ExecutionCase]:
     # 方案 §6.1：档案执行的快照已在创建事务固化，Worker 直接消费，不重建。
+    snapshot_suites = await db.scalar(
+        select(ExecutionSuite.id)
+        .where(ExecutionSuite.execution_id == execution.id)
+        .limit(1)
+    )
+    existing = list(
+        (
+            await db.execute(
+                select(ExecutionCase)
+                .where(ExecutionCase.execution_id == execution.id)
+                .order_by(ExecutionCase.execution_suite_id, ExecutionCase.case_order)
+            )
+        ).scalars().all()
+    )
+    if existing or snapshot_suites is not None:
+        return existing
     if execution.app_profile_id is not None:
-        return list(
-            (
-                await db.execute(
-                    select(ExecutionCase)
-                    .where(ExecutionCase.execution_id == execution.id)
-                    .order_by(ExecutionCase.execution_suite_id, ExecutionCase.case_order)
-                )
-            ).scalars().all()
-        )
+        return []
     return await _materialize_unprofiled_tree(db, execution)
 
 

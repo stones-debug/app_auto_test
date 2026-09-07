@@ -13,7 +13,6 @@ from app.models import (
     User,
 )
 from app.repositories import executions as executions_repo
-from app.repositories import projects as projects_repo
 from app.repositories.app_profiles import profiles as profiles_repo
 from app.repositories.app_profiles import releases as releases_repo
 from app.services.profile_resolver import (
@@ -27,6 +26,19 @@ from app.services.profile_resolver import (
 
 class _ProfileRequired(Exception):
     pass
+
+
+RETRYABLE_EXECUTION_STATES = frozenset({"passed", "failed", "error", "stopped", "cancelled"})
+
+
+def ensure_retryable_status(execution: Execution) -> None:
+    if execution.status not in RETRYABLE_EXECUTION_STATES:
+        raise api_error(
+            status.HTTP_409_CONFLICT,
+            ErrorCode.EXECUTION_RETRY_NOT_ALLOWED,
+            f"执行状态为 {execution.status}，仅终态执行允许重试",
+            {"status": execution.status},
+        )
 
 
 async def apply_app_profile_feature_mode(db: AsyncSession, project_id: int, body):
@@ -357,48 +369,31 @@ async def retry_execution(
     device_id: int,
     timeout_seconds: int | None = None,
 ) -> Execution:
-    """方案 §6.5：重试复用原执行目标/档案/版本/运行选项，按当前档案 revision 创建新执行。"""
-    if execution.app_profile_id is None:
-        return await _create_and_enqueue(
+    """用原执行的完整物化树创建重试，不读取当前资产、档案或发布版本。"""
+    ensure_retryable_status(execution)
+    source_execution_id = execution.id
+    try:
+        retry = await executions_repo.clone_snapshot(
             db,
-            project_id=execution.project_id,
-            type_=execution.type,
-            user=user,
+            execution,
+            user_id=user.id,
             device_id=device_id,
-            parameters=execution.parameters or {},
-            timeout_seconds=timeout_seconds or execution.timeout_seconds,
-            suite_id=execution.suite_id,
-            case_id=execution.case_id,
-            retry_of=execution.id,
+            timeout_seconds=timeout_seconds if timeout_seconds is not None else execution.timeout_seconds,
         )
-    from types import SimpleNamespace
-
-    profile = await profiles_repo.get_by_id(db, execution.app_profile_id)
-    if profile is None or profile.deleted_at is not None:
-        raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.APP_PROFILE_NOT_FOUND, "APP 档案不存在")
-    project = await projects_repo.get_by_id(db, execution.project_id)
-    if project is None:
-        raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.PROJECT_NOT_FOUND, "项目不存在")
-    body = SimpleNamespace(
-        app_profile_id=execution.app_profile_id,
-        app_release_id=execution.app_release_id,
-        expected_profile_revision=profile.revision,
-        expected_test_asset_revision=project.test_asset_revision,
-        parameters=execution.parameters or {},
-    )
-    return await _create_execution_with_profile(
-        db,
-        project_id=execution.project_id,
-        type_=execution.type,
-        user=user,
-        device_id=device_id,
-        parameters=execution.parameters or {},
-        timeout_seconds=timeout_seconds or execution.timeout_seconds,
-        body=body,
-        suite_id=execution.suite_id,
-        case_id=execution.case_id,
-        retry_of=execution.id,
-    )
+        await db.commit()
+        await executions_repo.refresh(db, retry)
+        return retry
+    except executions_repo.SnapshotNotReadyError as exc:
+        await db.rollback()
+        raise api_error(
+            status.HTTP_409_CONFLICT,
+            ErrorCode.EXECUTION_SNAPSHOT_NOT_READY,
+            str(exc),
+            {"execution_id": source_execution_id},
+        ) from None
+    except Exception:
+        await db.rollback()
+        raise
 
 
 async def get_execution_logs(

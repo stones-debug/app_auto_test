@@ -1,10 +1,16 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 
-import { getExecution, type Execution, type ExecutionRunSettings } from '@/api/executions'
+import {
+  DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+  getExecution,
+  resolveRetryTimeout,
+  type Execution,
+  type ExecutionRunSettings,
+} from '@/api/executions'
 import { apiErrorCode, buildRunParameters, useDeviceSelect, type ProfileRunContext, type RunTarget } from '@/composables/useDeviceSelect'
 import { apiErrorMessage } from '@/utils/request'
-import { getAppProfile, listReleases, previewExecution, type ExecutionPreview } from '@/api/appProfiles'
+import { listReleases, previewExecution, type ExecutionPreview } from '@/api/appProfiles'
 import { useAppProfileStore } from '@/stores/appProfile'
 import { ElMessage } from 'element-plus'
 import type { Device } from '@/api/agents'
@@ -23,7 +29,7 @@ function deviceOptionLabel(d: Device): string {
   return parts.join(' · ')
 }
 
-const timeout = ref(1800)
+const timeout = ref(DEFAULT_EXECUTION_TIMEOUT_SECONDS)
 const usePreSteps = ref(false)
 const usePostSteps = ref(false)
 const attachToCurrentApp = ref(false)
@@ -72,6 +78,10 @@ async function run() {
       emit('created', exec)
     }
   } catch (error) {
+    if (['EXECUTION_RETRY_NOT_ALLOWED', 'EXECUTION_SNAPSHOT_NOT_READY'].includes(apiErrorCode(error) ?? '')) {
+      ElMessage.warning(apiErrorMessage(error, '该执行暂时不能重试'))
+      return
+    }
     if (['PROFILE_REVISION_CONFLICT', 'TEST_ASSET_REVISION_CONFLICT', 'APP_RELEASE_CHANGED'].includes(apiErrorCode(error) ?? '')) {
       ElMessage.warning('配置已变化，已重新预检，请确认后再次运行')
       await doPreview()
@@ -190,7 +200,8 @@ defineExpose({
     target: RunTarget,
     options: { timeout_seconds?: number; settings?: Partial<ExecutionRunSettings>; profile?: ProfileRunContext; targetId?: number } = {},
   ): Promise<Execution | null> => {
-    if (options.timeout_seconds) timeout.value = options.timeout_seconds
+    // 每次打开都先清掉上一次弹窗的编辑值；重试随后再覆盖为原执行值。
+    timeout.value = options.timeout_seconds ?? DEFAULT_EXECUTION_TIMEOUT_SECONDS
     usePreSteps.value = options.settings?.use_pre_steps ?? false
     usePostSteps.value = options.settings?.use_post_steps ?? false
     attachToCurrentApp.value = options.settings?.attach_to_current_app ?? false
@@ -208,23 +219,19 @@ defineExpose({
     retryRevisionNotice.value = ''
     if (target.kind === 'retry') {
       const original = await getExecution(target.executionId)
-      if (original.app_profile_id != null) {
-        const current = await getAppProfile(original.app_profile_id)
-        retryRevisionNotice.value = [
-          `原执行：${original.app_profile_name_snapshot ?? `档案 #${original.app_profile_id}`} / ${original.app_release_version_snapshot ?? '未标注版本'}`,
-          `配置 revision ${original.profile_revision ?? '-'} → 当前 ${current.revision}`,
-          `资产 revision ${original.test_asset_revision ?? '-'}。重试将按当前配置重新生成快照。`,
-        ].join('；')
-      } else {
-        retryRevisionNotice.value = '这是历史兼容执行，重试将继续使用原始公共测试资产流程。'
-      }
+      timeout.value = resolveRetryTimeout(original.timeout_seconds, options.timeout_seconds)
+      retryRevisionNotice.value = [
+        `原执行快照：${original.app_profile_name_snapshot ?? (original.app_profile_id != null ? `档案 #${original.app_profile_id}` : '公共资产')}`,
+        `发布版本 ${original.app_release_version_snapshot ?? '未标注版本'}，配置 revision ${original.profile_revision ?? '-'}，资产 revision ${original.test_asset_revision ?? '-'}`,
+        '重试将沿用原执行快照，不读取当前用例、套件或 APP 配置。',
+      ].join('；')
     }
     if (target.kind === 'batch') targetIdsTracker = target.suiteIds
     else if (options.targetId) targetIdsTracker = [options.targetId]
     else if (target.kind === 'case' || target.kind === 'suite') targetIdsTracker = [target.id]
     else targetIdsTracker = []
     store.projectId = props.projectId ?? store.projectId
-    if (props.projectId != null) {
+    if (target.kind !== 'retry' && props.projectId != null) {
       await store.loadProfiles()
     }
     if (profileReadonly.value && profileId.value != null) {

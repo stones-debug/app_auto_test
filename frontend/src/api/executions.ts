@@ -240,8 +240,26 @@ export interface RetryOptions {
   timeout_seconds?: number
 }
 
+export const DEFAULT_EXECUTION_TIMEOUT_SECONDS = 1800
+
+/** 重试默认沿用原执行超时；调用方显式传值优先，避免复用弹窗状态。 */
+export function resolveRetryTimeout(
+  originalTimeout: number | null | undefined,
+  explicitTimeout?: number,
+): number {
+  return explicitTimeout ?? originalTimeout ?? DEFAULT_EXECUTION_TIMEOUT_SECONDS
+}
+
 export function retryExecution(id: number, data: RetryOptions) {
   return request.post<Execution>(`/executions/${id}/retry`, data)
+}
+
+export const RETRYABLE_EXECUTION_STATUSES: ExecutionStatus[] = [
+  'passed', 'failed', 'error', 'stopped', 'cancelled',
+]
+
+export function canRetryExecution(status: string | null | undefined): boolean {
+  return RETRYABLE_EXECUTION_STATUSES.includes(status as ExecutionStatus)
 }
 
 export const EXECUTION_STATUS: { value: string; label: string; type: 'success' | 'info' | 'warning' | 'danger' | 'primary' }[] = [

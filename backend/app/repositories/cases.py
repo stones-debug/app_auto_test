@@ -149,17 +149,6 @@ async def load_deletable(
     return [by_id[case_id] for case_id in ids if case_id in by_id]
 
 
-async def find_execution_references(
-    db: AsyncSession, case_ids: list[int]
-) -> set[int]:
-    if not case_ids:
-        return set()
-    rows = await db.execute(
-        select(Execution.case_id).where(Execution.case_id.in_(case_ids))
-    )
-    return {case_id for case_id in rows.scalars().all() if case_id is not None}
-
-
 async def soft_delete_many(cases: list[TestCase], deleted_at: datetime) -> list[TestCase]:
     for case in cases:
         case.deleted_at = deleted_at
