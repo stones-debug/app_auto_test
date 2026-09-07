@@ -247,6 +247,7 @@ def filter_and_patch(
     suite_id: int | None,
     suite_name: str | None,
     phase: str | None = None,
+    occurrence_order: int | None = None,
     exclusion_cls: Any,
 ) -> tuple[list[dict], list[Any]]:
     """过滤被跳过节点并应用白名单覆盖，保留 _source_key/_source_order。"""
@@ -275,6 +276,7 @@ def filter_and_patch(
                         "node_name": node.get("description") or node.get("action") or node.get("type") or "",
                     },
                     phase=phase,
+                    occurrence_order=occurrence_order,
                 )
             )
             continue

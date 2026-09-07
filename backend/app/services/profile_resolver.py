@@ -170,6 +170,7 @@ class ExclusionItem:
     reason_note: str | None
     display_snapshot: dict[str, Any]
     phase: str | None = None
+    occurrence_order: int | None = None
 
 
 @dataclass(frozen=True)
@@ -446,6 +447,7 @@ async def _build_suite(
                             "name": case.name, "key": str(case.id),
                             "suite_name": suite_name, "case_name": case.name,
                         },
+                        occurrence_order=case_pos,
                     )
                 )
                 continue
@@ -524,6 +526,7 @@ async def _resolve_case(
         kept, node_exclusions = _filter_and_patch(
             [node], rules, overrides, node_type, case.id,
             case_name=case.name, suite_id=suite_id, suite_name=suite_name,
+            occurrence_order=case_order,
         )
         exclusions.extend(node_exclusions)
         if not kept:
@@ -552,6 +555,7 @@ async def _resolve_case(
                     "name": case.name, "key": str(case.id),
                     "suite_name": suite_name, "case_name": case.name,
                 },
+                occurrence_order=case_order,
             )
         )
         return None, exclusions, override_count

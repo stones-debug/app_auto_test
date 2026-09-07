@@ -13,7 +13,12 @@ async def get_by_id(db: AsyncSession, suite_id: int) -> TestSuite | None:
 
 
 async def get_case_relation(db: AsyncSession, suite_id: int, case_id: int) -> TestSuiteCase | None:
-    return (await db.execute(select(TestSuiteCase).where(TestSuiteCase.suite_id == suite_id, TestSuiteCase.case_id == case_id))).scalar_one_or_none()
+    return (await db.execute(
+        select(TestSuiteCase)
+        .where(TestSuiteCase.suite_id == suite_id, TestSuiteCase.case_id == case_id)
+        .order_by(TestSuiteCase.sort_order, TestSuiteCase.id)
+        .limit(1)
+    )).scalar_one_or_none()
 
 
 async def list_page(
@@ -99,7 +104,7 @@ async def list_cases(
         .join(TestCase, TestCase.id == TestSuiteCase.case_id)
         .outerjoin(TestModule, TestModule.id == TestCase.module_id)
         .where(TestSuiteCase.suite_id == suite_id, TestCase.deleted_at.is_(None))
-        .order_by(TestSuiteCase.sort_order)
+        .order_by(TestSuiteCase.sort_order, TestSuiteCase.id)
     )
     return list(rows.tuples().all())
 
@@ -115,19 +120,6 @@ async def find_cases(
         )
     )
     return list(rows.scalars().all())
-
-
-async def find_existing_case_ids(
-    db: AsyncSession, *, suite_id: int, case_ids: list[int]
-) -> set[int]:
-    if not case_ids:
-        return set()
-    rows = await db.execute(
-        select(TestSuiteCase.case_id).where(
-            TestSuiteCase.suite_id == suite_id, TestSuiteCase.case_id.in_(case_ids)
-        )
-    )
-    return set(rows.scalars().all())
 
 
 async def max_sort_order(db: AsyncSession, suite_id: int) -> int:
@@ -162,25 +154,26 @@ async def list_relations(db: AsyncSession, suite_id: int) -> list[TestSuiteCase]
         select(TestSuiteCase)
         .join(TestCase, TestCase.id == TestSuiteCase.case_id)
         .where(TestSuiteCase.suite_id == suite_id, TestCase.deleted_at.is_(None))
+        .order_by(TestSuiteCase.sort_order, TestSuiteCase.id)
         .with_for_update()
     )
     return list(rows.scalars().all())
 
 
 async def reorder_cases(
-    relations: list[TestSuiteCase], ordered_case_ids: list[int]
+    relations: list[TestSuiteCase], ordered_membership_ids: list[int]
 ) -> None:
-    by_case = {relation.case_id: relation for relation in relations}
-    for position, case_id in enumerate(ordered_case_ids, start=1):
-        by_case[case_id].sort_order = position
+    by_id = {relation.id: relation for relation in relations}
+    for position, membership_id in enumerate(ordered_membership_ids, start=1):
+        by_id[membership_id].sort_order = position
 
 
 async def find_relation(
-    db: AsyncSession, *, suite_id: int, case_id: int
+    db: AsyncSession, *, suite_id: int, membership_id: int
 ) -> TestSuiteCase | None:
     rows = await db.execute(
         select(TestSuiteCase).where(
-            TestSuiteCase.suite_id == suite_id, TestSuiteCase.case_id == case_id
+            TestSuiteCase.suite_id == suite_id, TestSuiteCase.id == membership_id
         )
     )
     return rows.scalar_one_or_none()

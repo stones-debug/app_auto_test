@@ -559,7 +559,7 @@ CREATE TABLE test_cases (
 );
 ```
 
-**test_suites & test_suite_cases**（不变）
+**test_suites & test_suite_cases**
 ```sql
 CREATE TABLE test_suites (
     id BIGSERIAL PRIMARY KEY,
@@ -578,9 +578,9 @@ CREATE TABLE test_suite_cases (
     case_id BIGINT NOT NULL REFERENCES test_cases(id),
     sort_order INT NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT NOW(),
-    UNIQUE(suite_id, case_id)
 );
-CREATE INDEX idx_suite_cases_order ON test_suite_cases(suite_id, sort_order);
+-- 同一 case 可作为多个 occurrence 编排；id 是 membership_id。
+CREATE INDEX idx_suite_cases_order_stable ON test_suite_cases(suite_id, sort_order, id);
 ```
 
 **devices**（修订，增加乐观锁字段）
@@ -893,10 +893,10 @@ GET    /api/suites/{id}
 PUT    /api/suites/{id}
 DELETE /api/suites/{id}
 
-GET    /api/suites/{id}/cases
-POST   /api/suites/{id}/cases            # body: {case_id}
-PUT    /api/suites/{id}/cases/order      # body: [{case_id, sort_order}]
-DELETE /api/suites/{id}/cases/{case_id}
+GET    /api/suites/{id}/cases            # 每行一个 occurrence，返回 membership id
+POST   /api/suites/{id}/cases            # body: {case_ids: [case_id, ...]}，保留原顺序和重复项
+PUT    /api/suites/{id}/cases/order      # body: {membership_ids: [membership_id, ...]}
+DELETE /api/suites/{id}/cases/{membership_id}
 ```
 
 #### 3.4.7 执行管理（关键修订）
@@ -2134,3 +2134,10 @@ Agent WebSocket 连接不持有长生命周期数据库 Session：注册、心�
 3. 执行快照使用 `execution_cases.flow_snapshot`，执行节点落库到 `execution_nodes`。Agent V3 仅通过 `node_started` 和 `node_result` 按 `execution_node_id` 回报，服务端不得按数组顺序猜测节点归属。
 4. 节点状态、阶段、元素快照、尝试次数和实际/期望值必须可在执行详情与报告中追溯；动作失败与断言失败分别统计，断言失败不修改已完成动作节点的结果。
 5. 数据库升级只执行一次性旧 `steps`/嵌套断言转换；新接口、解析器、Agent 和前端运行时以 `flow_nodes` 为唯一结构。
+
+### 10.18 套件用例 occurrence 编排（V1.7）
+
+1. `test_suite_cases.id` 是套件编排项的 `membership_id`；`case_id` 仅引用公共用例资产。同一套件允许同一 `case_id` 出现多次，列表按 `sort_order,id` 稳定排序，`case_count` 按关系行计数。
+2. 添加接口逐项校验用例项目归属和未删除状态，保留 `case_ids` 数组的原始顺序及重复项。排序接口必须提交恰好一次的完整 `membership_ids` 集合；删除接口按 `membership_id` 只删除一个 occurrence。
+3. `execution_cases` 不得按 `(execution_suite_id,case_id)` 唯一；仅以 `(execution_suite_id,case_order)` 保证顺序。每个 occurrence 必须生成独立 `ExecutionCase.id`，其步骤、断言、Agent 更新和报告统计均以该 ID 关联，不得用 `case_id` 去重或回退串写。
+4. APP 档案 skip/override/变量规则仍按 `(suite_id,case_id,node_key)` 共享给同一套件内的所有 occurrence；工作台展示同一资产只保留首次出现，但不影响执行解析。排除记录需保留 `occurrence_order` 以区分重复 occurrence。

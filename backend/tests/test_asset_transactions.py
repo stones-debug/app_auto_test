@@ -53,7 +53,7 @@ async def test_suite_reorder_missing_item_does_not_partially_mutate(monkeypatch)
 
     with pytest.raises(HTTPException) as exc_info:
         await suite_service.reorder_cases(
-            db, suite=suite, order=SuiteReorderRequest(order=[101]).order
+            db, suite=suite, membership_ids=SuiteReorderRequest(membership_ids=[1]).membership_ids or []
         )
 
     assert exc_info.value.status_code == 400

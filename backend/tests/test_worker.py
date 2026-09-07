@@ -238,6 +238,31 @@ async def test_snapshot_selects_and_reorders_pre_main_post_steps(client: AsyncCl
     assert [step["source_order"] for step in steps] == [1, 1, 1]
 
 
+async def test_unprofiled_suite_materializes_duplicate_case_occurrences(client: AsyncClient):
+    token, case_id = await _setup_case(client)
+    del token
+    async with SessionLocal() as db:
+        project_id = await db.scalar(select(CaseModel.project_id).where(CaseModel.id == case_id))
+        suite = SuiteModel(project_id=project_id, name="重复无档案套件")
+        db.add(suite)
+        await db.flush()
+        db.add_all([
+            SuiteCaseModel(suite_id=suite.id, case_id=case_id, sort_order=1),
+            SuiteCaseModel(suite_id=suite.id, case_id=case_id, sort_order=2),
+        ])
+        execution = Execution(
+            project_id=project_id, type="suite", suite_id=suite.id,
+            status="queued", parameters={"variables": {"btn_id": "login-button"}},
+        )
+        db.add(execution)
+        await db.flush()
+        rows = await worker_service.create_execution_cases_from_execution(db, execution)
+
+    assert [row.case_id for row in rows] == [case_id, case_id]
+    assert [row.case_order for row in rows] == [1, 2]
+    assert len({row.id for row in rows}) == 2
+
+
 # ---------- 队列认领 + Agent 不在线 ----------
 
 

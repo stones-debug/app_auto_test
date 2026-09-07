@@ -44,7 +44,8 @@ export function buildExclusionTree(exclusions: ReportExclusion[]): ExclusionTree
     if (row.case_id == null) return null
     const suiteId = row.suite_id == null ? '' : String(row.suite_id)
     const caseId = String(row.case_id)
-    const caseKey = `${suiteId}::${caseId}`
+    const occurrence = row.occurrence_order == null ? '' : `::${row.occurrence_order}`
+    const caseKey = `${suiteId}::${caseId}${occurrence}`
     if (!caseNodes.has(caseKey)) {
       const segments = segmentsOf(row)
       const caseNode: ExclusionTreeNode = {
@@ -69,7 +70,7 @@ export function buildExclusionTree(exclusions: ReportExclusion[]): ExclusionTree
       path: row.path,
     }
     const leaf: ExclusionTreeNode = {
-      key: `ex-${row.target_type}-${row.suite_id ?? ''}-${row.case_id ?? ''}-${row.node_key ?? row.path}`,
+      key: `ex-${row.target_type}-${row.suite_id ?? ''}-${row.case_id ?? ''}-${row.occurrence_order ?? ''}-${row.node_key ?? row.path}`,
       name: row.path || row.node_key || row.target_type,
       isLeaf: true,
       children: [],

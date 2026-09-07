@@ -86,12 +86,12 @@ export function addSuiteCases(suiteId: number, caseIds: number[]) {
   return request.post<SuiteCase[]>(`/suites/${suiteId}/cases`, { case_ids: caseIds })
 }
 
-export function reorderSuiteCases(suiteId: number, order: number[]) {
-  return request.put<void>(`/suites/${suiteId}/cases/order`, { order })
+export function reorderSuiteCases(suiteId: number, membershipIds: number[]) {
+  return request.put<void>(`/suites/${suiteId}/cases/order`, { membership_ids: membershipIds })
 }
 
-export function removeSuiteCase(suiteId: number, caseId: number) {
-  return request.delete<void>(`/suites/${suiteId}/cases/${caseId}`)
+export function removeSuiteCase(suiteId: number, membershipId: number) {
+  return request.delete<void>(`/suites/${suiteId}/cases/${membershipId}`)
 }
 
 export function listVariables(params?: {

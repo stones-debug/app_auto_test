@@ -136,7 +136,6 @@ class ExecutionCase(Base, TimestampMixin):
     __tablename__ = "execution_cases"
     __table_args__ = (
         Index("idx_exec_cases_suite", "execution_suite_id"),
-        UniqueConstraint("execution_suite_id", "case_id", name="uq_execution_cases_suite_case"),
         UniqueConstraint("execution_suite_id", "case_order", name="uq_execution_cases_suite_order"),
     )
 

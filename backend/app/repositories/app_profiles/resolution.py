@@ -142,9 +142,17 @@ async def suite_cases(db: AsyncSession, suite_id: int) -> list[TestCase]:
     rows = await db.execute(
         select(TestCase).join(TestSuiteCase, TestSuiteCase.case_id == TestCase.id).where(
             TestSuiteCase.suite_id == suite_id, TestCase.deleted_at.is_(None)
-        ).order_by(TestSuiteCase.sort_order)
+        ).order_by(TestSuiteCase.sort_order, TestSuiteCase.id)
     )
-    return list(rows.scalars().all())
+    # 工作台展示的是资产配置，不是套件编排 occurrence；同一用例只展示首次出现。
+    seen: set[int] = set()
+    result: list[TestCase] = []
+    for case in rows.scalars().all():
+        if case.id in seen:
+            continue
+        seen.add(case.id)
+        result.append(case)
+    return result
 
 
 async def load_skip_index(db: AsyncSession, profile_id: int) -> dict:
@@ -188,7 +196,7 @@ async def load_override_index(db: AsyncSession, profile_id: int) -> dict:
 
 async def case_counts(db: AsyncSession, project_id: int) -> dict[int, int]:
     rows = await db.execute(
-        select(TestSuiteCase.suite_id, func.count()).join(TestCase, TestCase.id == TestSuiteCase.case_id).where(
+        select(TestSuiteCase.suite_id, func.count(func.distinct(TestSuiteCase.case_id))).join(TestCase, TestCase.id == TestSuiteCase.case_id).where(
             TestCase.project_id == project_id, TestCase.deleted_at.is_(None)
         ).group_by(TestSuiteCase.suite_id)
     )

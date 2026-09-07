@@ -375,6 +375,8 @@ class ExecutionExclusion(Base):
     suite_id_snapshot: Mapped[int | None] = mapped_column(Integer)
     suite_name_snapshot: Mapped[str | None] = mapped_column(String(255))
     case_id_snapshot: Mapped[int | None] = mapped_column(Integer)
+    # 同一套件中重复编排同一用例时，用例 occurrence 的顺序快照。
+    occurrence_order: Mapped[int | None] = mapped_column(Integer)
     case_name_snapshot: Mapped[str | None] = mapped_column(String(255))
     node_key: Mapped[UUID | None] = mapped_column(nullable=True)
     node_name_snapshot: Mapped[str | None] = mapped_column(String(255))

@@ -158,6 +158,9 @@ class ReportSummaryOut(BaseModel):
 
 class ReportExclusionOut(BaseModel):
     target_type: str
+    suite_id: int | None = None
+    case_id: int | None = None
+    occurrence_order: int | None = None
     path: str
     reason_code: str
     reason_note: str | None

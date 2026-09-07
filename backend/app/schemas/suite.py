@@ -95,7 +95,6 @@ class SuiteAddCaseRequest(BaseModel):
     @model_validator(mode="after")
     def _normalize_case_ids(self):
         ids = self.case_ids or ([] if self.case_id is None else [self.case_id])
-        ids = list(dict.fromkeys(ids))
         if not ids:
             raise ValueError("case_ids 不能为空")
         self.case_ids = ids
@@ -103,7 +102,7 @@ class SuiteAddCaseRequest(BaseModel):
 
 
 class SuiteReorderRequest(BaseModel):
-    order: list[int]  # case_id 列表（按新顺序）
+    membership_ids: list[int] = Field(min_length=1)  # test_suite_cases.id 列表（按新顺序）
 
 
 class VariableCreate(BaseModel):

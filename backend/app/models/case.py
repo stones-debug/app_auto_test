@@ -6,7 +6,6 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
-    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -58,8 +57,7 @@ class TestSuite(Base, TimestampMixin, SoftDeleteMixin):
 class TestSuiteCase(Base, TimestampMixin):
     __tablename__ = "test_suite_cases"
     __table_args__ = (
-        UniqueConstraint("suite_id", "case_id"),
-        Index("idx_suite_cases_order", "suite_id", "sort_order"),
+        Index("idx_suite_cases_order_stable", "suite_id", "sort_order", "id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

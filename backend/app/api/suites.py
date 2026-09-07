@@ -159,13 +159,13 @@ async def reorder_suite_cases(
     _project, role = await get_project_permission(suite.project_id, user, db)
     if role not in ("owner", "admin", "member"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
-    await suite_service.reorder_cases(db, suite=suite, order=body.order)
+    await suite_service.reorder_cases(db, suite=suite, membership_ids=body.membership_ids)
 
 
-@router.delete("/suites/{suite_id}/cases/{case_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/suites/{suite_id}/cases/{membership_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def remove_suite_case(
     suite_id: int,
-    case_id: int,
+    membership_id: int,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -173,4 +173,4 @@ async def remove_suite_case(
     _project, role = await get_project_permission(suite.project_id, user, db)
     if role not in ("owner", "admin", "member"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
-    await suite_service.remove_case(db, suite=suite, case_id=case_id)
+    await suite_service.remove_case(db, suite=suite, membership_id=membership_id)

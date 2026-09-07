@@ -50,40 +50,43 @@ async def test_suite_crud(client: AsyncClient):
         )
         assert add.status_code == 201
 
-    # 重复添加 409
+    # 同一用例可重复编排，生成独立关系行
     dup = await client.post(
         f"/api/suites/{suite_id}/cases", json={"case_id": case_ids[0]}, headers=headers
     )
-    assert dup.status_code == 409
+    assert dup.status_code == 201
+    duplicate_membership_id = dup.json()[0]["id"]
 
     # 列表
     cases = await client.get(f"/api/suites/{suite_id}/cases", headers=headers)
     assert cases.status_code == 200
-    assert len(cases.json()) == 2
+    assert len(cases.json()) == 3
     assert cases.json()[0]["sort_order"] == 1
+    membership_ids = [item["id"] for item in cases.json()]
+    assert len(set(membership_ids)) == 3
 
     # 重排序
     reorder = await client.put(
         f"/api/suites/{suite_id}/cases/order",
-        json={"order": [case_ids[1], case_ids[0]]},
+        json={"membership_ids": [membership_ids[1], membership_ids[0], membership_ids[2]]},
         headers=headers,
     )
     assert reorder.status_code == 204
     cases = await client.get(f"/api/suites/{suite_id}/cases", headers=headers)
-    assert cases.json()[0]["case_id"] == case_ids[1]
+    assert cases.json()[0]["id"] == membership_ids[1]
 
     # 移除用例
     removed = await client.delete(
-        f"/api/suites/{suite_id}/cases/{case_ids[0]}", headers=headers
+        f"/api/suites/{suite_id}/cases/{duplicate_membership_id}", headers=headers
     )
     assert removed.status_code == 204
     cases = await client.get(f"/api/suites/{suite_id}/cases", headers=headers)
-    assert len(cases.json()) == 1
+    assert len(cases.json()) == 2
 
     # 套件详情含 case_count
     detail = await client.get(f"/api/suites/{suite_id}", headers=headers)
     assert detail.status_code == 200
-    assert detail.json()["case_count"] == 1
+    assert detail.json()["case_count"] == 2
 
     # 删除
     deleted = await client.delete(f"/api/suites/{suite_id}", headers=headers)
@@ -109,10 +112,65 @@ async def test_suite_reorder_ignores_soft_deleted_case(client: AsyncClient):
     assert [item["case_id"] for item in visible_cases.json()] == [case_ids[1]]
     reorder = await client.put(
         f"/api/suites/{suite_id}/cases/order",
-        json={"order": [case_ids[1]]},
+        json={"membership_ids": [visible_cases.json()[0]["id"]]},
         headers=headers,
     )
     assert reorder.status_code == 204
+
+
+async def test_suite_add_request_preserves_duplicate_occurrences(client: AsyncClient):
+    headers, project_id, case_ids = await _setup(client)
+    suite_id = (await client.post(
+        f"/api/projects/{project_id}/suites", json={"name": "重复编排套件"}, headers=headers
+    )).json()["id"]
+
+    added = await client.post(
+        f"/api/suites/{suite_id}/cases",
+        json={"case_ids": [case_ids[0], case_ids[0]]},
+        headers=headers,
+    )
+    assert added.status_code == 201
+    rows = await client.get(f"/api/suites/{suite_id}/cases", headers=headers)
+    assert [row["case_id"] for row in rows.json()] == [case_ids[0], case_ids[0]]
+    assert len({row["id"] for row in rows.json()}) == 2
+    detail = await client.get(f"/api/suites/{suite_id}", headers=headers)
+    assert detail.json()["case_count"] == 2
+    removed = await client.delete(
+        f"/api/suites/{suite_id}/cases/{rows.json()[0]['id']}", headers=headers
+    )
+    assert removed.status_code == 204
+    remaining = await client.get(f"/api/suites/{suite_id}/cases", headers=headers)
+    assert [row["case_id"] for row in remaining.json()] == [case_ids[0]]
+
+
+async def test_suite_reorder_validates_membership_ids_as_one_transaction(client: AsyncClient):
+    headers, project_id, case_ids = await _setup(client)
+    suite_id = (await client.post(
+        f"/api/projects/{project_id}/suites", json={"name": "编排项排序套件"}, headers=headers
+    )).json()["id"]
+    added = await client.post(
+        f"/api/suites/{suite_id}/cases", json={"case_ids": [case_ids[0], case_ids[0]]}, headers=headers
+    )
+    membership_ids = [row["id"] for row in added.json()]
+
+    for invalid in ([membership_ids[0]], [membership_ids[0], membership_ids[0]], [*membership_ids, 999999999]):
+        response = await client.put(
+            f"/api/suites/{suite_id}/cases/order",
+            json={"membership_ids": invalid},
+            headers=headers,
+        )
+        assert response.status_code == 400
+    unchanged = await client.get(f"/api/suites/{suite_id}/cases", headers=headers)
+    assert [row["id"] for row in unchanged.json()] == membership_ids
+
+    swapped = await client.put(
+        f"/api/suites/{suite_id}/cases/order",
+        json={"membership_ids": membership_ids[::-1]},
+        headers=headers,
+    )
+    assert swapped.status_code == 204
+    reordered = await client.get(f"/api/suites/{suite_id}/cases", headers=headers)
+    assert [row["id"] for row in reordered.json()] == membership_ids[::-1]
 
 
 async def test_variable_crud(client: AsyncClient):

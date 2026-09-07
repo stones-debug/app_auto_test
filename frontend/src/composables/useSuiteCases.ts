@@ -67,7 +67,7 @@ export function useSuiteCases(
 
   async function loadSuiteCases(id: number | null = activeSuite.value) {
     suiteCases.value = id ? await listSuiteCases(id) : []
-    persistedOrder.value = suiteCases.value.map((item) => item.case_id)
+    persistedOrder.value = suiteCases.value.map((item) => item.id)
     casesRefreshVersion.value += 1
   }
 
@@ -94,10 +94,8 @@ export function useSuiteCases(
         ),
       )
       if (activeSuite.value !== suiteId) return
-      const inSuite = new Set(suiteCases.value.map((item) => item.case_id))
       allCases.value = [firstPage, ...remainingPages]
         .flatMap((page) => page.items)
-        .filter((item) => !inSuite.has(item.id))
         .map((item) => ({ id: item.id, name: item.name, module_name: item.module_name ?? null, status: item.status }))
     } catch {
       ElMessage.error('加载可添加用例失败，请重试')
@@ -156,7 +154,7 @@ export function useSuiteCases(
     } catch {
       return
     }
-    await removeSuiteCase(activeSuite.value, suiteCase.case_id)
+    await removeSuiteCase(activeSuite.value, suiteCase.id)
     ElMessage.success('已移除用例')
     await onRefresh?.(true)
     await loadSuiteCases()
@@ -167,7 +165,7 @@ export function useSuiteCases(
     const suiteId = activeSuite.value
     const refreshVersion = casesRefreshVersion.value
     const previousOrder = [...persistedOrder.value]
-    const nextOrder = suiteCases.value.map((item) => item.case_id)
+    const nextOrder = suiteCases.value.map((item) => item.id)
     if (nextOrder.join(',') === persistedOrder.value.join(',')) return false
     ordering.value = true
     const requestId = ++reorderRequestId
@@ -180,7 +178,7 @@ export function useSuiteCases(
     } catch {
       if (activeSuite.value !== suiteId || casesRefreshVersion.value !== refreshVersion) return false
       suiteCases.value = [...suiteCases.value].sort(
-        (a, b) => previousOrder.indexOf(a.case_id) - previousOrder.indexOf(b.case_id),
+        (a, b) => previousOrder.indexOf(a.id) - previousOrder.indexOf(b.id),
       )
       ElMessage.error('保存用例顺序失败，已恢复原顺序')
       return false
@@ -189,11 +187,11 @@ export function useSuiteCases(
     }
   }
 
-  async function moveCaseToPosition(caseId: number, position: number) {
+  async function moveCaseToPosition(membershipId: number, position: number) {
     if (!activeSuite.value || ordering.value) return false
-    const fromIndex = suiteCases.value.findIndex((item) => item.case_id === caseId)
+    const fromIndex = suiteCases.value.findIndex((item) => item.id === membershipId)
     const next = moveToPosition(suiteCases.value, fromIndex, position)
-    if (!next || next.map((item) => item.case_id).join(',') === suiteCases.value.map((item) => item.case_id).join(',')) return false
+    if (!next || next.map((item) => item.id).join(',') === suiteCases.value.map((item) => item.id).join(',')) return false
     suiteCases.value = next
     try {
       return await onReorder()

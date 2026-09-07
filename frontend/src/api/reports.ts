@@ -189,6 +189,7 @@ export interface ReportExclusion {
   // 方案 §7.2：层级树所需结构字段（历史执行可能缺失）
   suite_id?: number | null
   case_id?: number | null
+  occurrence_order?: number | null
   phase?: string | null
 }
 

@@ -95,7 +95,7 @@ const {
   casesRefreshVersion,
 } = suiteCaseState
 
-const editingOrderCaseId = ref<number | null>(null)
+const editingOrderMembershipId = ref<number | null>(null)
 const editingOrderValue = ref('')
 const orderEditSignature = ref('')
 type OrderInputInstance = { focus: () => void; select: () => void }
@@ -111,9 +111,9 @@ let orderEditSubmitting = false
 function beginOrderEdit(item: SuiteCase, event: Event) {
   event.stopPropagation()
   if (!canWriteAssets || ordering.value) return
-  editingOrderCaseId.value = item.case_id
-  editingOrderValue.value = String(suiteCases.value.findIndex((candidate) => candidate.case_id === item.case_id) + 1)
-  orderEditSignature.value = suiteCases.value.map((candidate) => candidate.case_id).join(',')
+  editingOrderMembershipId.value = item.id
+  editingOrderValue.value = String(suiteCases.value.findIndex((candidate) => candidate.id === item.id) + 1)
+  orderEditSignature.value = suiteCases.value.map((candidate) => candidate.id).join(',')
   void nextTick(() => {
     orderInput.value?.focus()
     orderInput.value?.select()
@@ -125,13 +125,13 @@ function cleanOrderInput(value: string) {
 }
 
 function cancelOrderEdit() {
-  editingOrderCaseId.value = null
+  editingOrderMembershipId.value = null
   editingOrderValue.value = ''
   orderEditSubmitting = false
 }
 
 async function submitOrderEdit() {
-  if (orderEditSubmitting || editingOrderCaseId.value === null) return
+  if (orderEditSubmitting || editingOrderMembershipId.value === null) return
   orderEditSubmitting = true
   const raw = editingOrderValue.value
   const position = Number(raw)
@@ -140,7 +140,7 @@ async function submitOrderEdit() {
     cancelOrderEdit()
     return
   }
-  await moveCaseToPosition(editingOrderCaseId.value, position)
+  await moveCaseToPosition(editingOrderMembershipId.value, position)
   // onReorder 负责成功提示；这里仅结束编辑，避免 Enter 后 blur 重复提示。
   cancelOrderEdit()
 }
@@ -154,8 +154,8 @@ function onOrderKeydown(event: Event | KeyboardEvent) {
 
 watch(activeSuite, cancelOrderEdit)
 watch(casesRefreshVersion, cancelOrderEdit)
-watch(() => suiteCases.value.map((item) => item.case_id).join(','), (signature) => {
-  if (editingOrderCaseId.value !== null && signature !== orderEditSignature.value) cancelOrderEdit()
+watch(() => suiteCases.value.map((item) => item.id).join(','), (signature) => {
+  if (editingOrderMembershipId.value !== null && signature !== orderEditSignature.value) cancelOrderEdit()
 })
 
 const dialogVisible = ref(false)
@@ -420,7 +420,7 @@ onMounted(() => {
                 <template #item="{ element, index }">
                   <div class="case-card" @dblclick="openCaseEditor(element)">
                     <div class="case-row"><span class="drag-handle" title="拖拽排序">⠿</span>
-                      <span v-if="editingOrderCaseId !== element.case_id" class="case-order" :class="{ editable: canWriteAssets }"
+                      <span v-if="editingOrderMembershipId !== element.id" class="case-order" :class="{ editable: canWriteAssets }"
                         title="点击设置编号" @click.stop="beginOrderEdit(element, $event)" @dblclick.stop="beginOrderEdit(element, $event)">{{ index + 1 }}</span>
                       <el-input v-else :ref="setOrderInputRef" v-model="editingOrderValue" class="case-order-input" size="small" @click.stop @dblclick.stop
                         @input="cleanOrderInput" @keydown="onOrderKeydown" @blur="void submitOrderEdit()" />

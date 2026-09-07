@@ -3,7 +3,7 @@ import { ref } from 'vue'
 
 import type { SuiteCase } from '@/api/suites'
 
-const { reorder, list } = vi.hoisted(() => ({ reorder: vi.fn(), list: vi.fn() }))
+const { reorder, list, listCases } = vi.hoisted(() => ({ reorder: vi.fn(), list: vi.fn(), listCases: vi.fn() }))
 
 vi.mock('@/api/suites', () => ({
   addSuiteCases: vi.fn(),
@@ -11,7 +11,7 @@ vi.mock('@/api/suites', () => ({
   removeSuiteCase: vi.fn(),
   reorderSuiteCases: reorder,
 }))
-vi.mock('@/api/cases', () => ({ listCases: vi.fn() }))
+vi.mock('@/api/cases', () => ({ listCases }))
 
 import { useSuiteCases } from '@/composables/useSuiteCases'
 
@@ -20,10 +20,34 @@ const item = (caseId: number): SuiteCase => ({ id: caseId, case_id: caseId, case
 beforeEach(() => {
   reorder.mockReset()
   list.mockReset()
+  listCases.mockReset()
   ;(globalThis as any).ElMessage = { success: vi.fn(), error: vi.fn(), warning: vi.fn() }
 })
 
+it('候选列表保留已在套件中的用例，重复添加由新的 membership 形成', async () => {
+  const active = ref<number | null>(1)
+  const state = useSuiteCases(1, active)
+  list.mockResolvedValue([item(1)])
+  await state.loadSuiteCases()
+  listCases.mockResolvedValue({ total: 1, items: [{ id: 1, name: 'case-1', module_name: null, status: 'active' }] })
+  await state.openAddCase()
+  expect(state.allCases.value.map((entry) => entry.id)).toEqual([1])
+})
+
 describe('useSuiteCases 编排排序', () => {
+  it('相同 case_id 的两行按 membership id 独立移动', async () => {
+    const active = ref<number | null>(1)
+    const state = useSuiteCases(1, active)
+    list.mockResolvedValue([
+      { ...item(1), id: 10 },
+      { ...item(1), id: 11 },
+    ])
+    await state.loadSuiteCases()
+    reorder.mockResolvedValue(undefined)
+    await expect(state.moveCaseToPosition(11, 1)).resolves.toBe(true)
+    expect(reorder).toHaveBeenCalledWith(1, [11, 10])
+  })
+
   it('成功请求发送完整新顺序', async () => {
     const active = ref<number | null>(1)
     const state = useSuiteCases(1, active)

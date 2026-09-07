@@ -171,6 +171,9 @@ async def preview_execution(
             {
                 "target_type": e.target_type,
                 "path": e.display_snapshot.get("name") or "",
+                "suite_id": e.suite_id,
+                "case_id": e.case_id,
+                "occurrence_order": e.occurrence_order,
                 "reason_code": e.reason_code,
                 "reason_note": e.reason_note,
             }

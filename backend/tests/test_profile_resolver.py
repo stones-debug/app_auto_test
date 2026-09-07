@@ -19,6 +19,7 @@ from app.models import (
     AppProfileSkipRule,
     AppProfileVariableOverride,
     Execution,
+    ExecutionCase,
     Project,
     Variable,
 )
@@ -432,6 +433,63 @@ async def test_suite_variable_overrides_case_and_suite_order_is_preserved(client
         )
     assert [case.case_id for case in result.cases] == [case_b, case_a]
     assert result.cases[0].steps_snapshot[0]["params"]["package"] == "from_suite"
+
+
+async def test_duplicate_suite_memberships_resolve_and_materialize_independently(client):
+    """同一套件中的重复 occurrence 共享规则，但快照执行用例彼此独立。"""
+    base = await _base(client)
+    case_id = await _setup_case_with_steps(client, base, "重复资产用例")
+    async with SessionLocal() as db:
+        profile_id = await _make_profile(db, base)
+        suite = SuiteModel(project_id=base["project_id"], name="重复 occurrence 套件")
+        db.add(suite)
+        await db.flush()
+        db.add_all([
+            SuiteCaseModel(suite_id=suite.id, case_id=case_id, sort_order=1),
+            SuiteCaseModel(suite_id=suite.id, case_id=case_id, sort_order=2),
+            AppProfileSkipRule(
+                profile_id=profile_id, target_type="step", suite_id=suite.id,
+                case_id=case_id, node_key=uuid.UUID(K1), reason_code="unsupported",
+            ),
+        ])
+        await db.commit()
+        result = await resolve_compat(
+            ResolutionRequest(
+                project_id=base["project_id"], profile_id=profile_id,
+                release_id=await _release_id(db, profile_id), target_type="suite", target_ids=[suite.id],
+                expected_profile_revision=1,
+                expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
+                run_options={"use_pre_steps": True},
+            ),
+            db,
+        )
+        assert [item.case_id for item in result.suites[0].cases] == [case_id, case_id]
+        assert [item.case_order for item in result.suites[0].cases] == [1, 2]
+        assert all(item.steps_snapshot[0]["source_key"] == K2 for item in result.suites[0].cases)
+
+        execution = Execution(
+            project_id=base["project_id"], type="suite", suite_id=suite.id,
+            status="queued", parameters={}, app_profile_id=profile_id,
+            profile_revision=result.profile_revision, test_asset_revision=result.test_asset_revision,
+        )
+        db.add(execution)
+        await db.flush()
+        from app.services.execution_snapshot import materialize_snapshot
+        await materialize_snapshot(db, execution, result)
+        await db.commit()
+        rows = list((await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution.id).order_by(ExecutionCase.case_order)
+        )).scalars().all())
+    assert [row.case_id for row in rows] == [case_id, case_id]
+    assert [row.case_order for row in rows] == [1, 2]
+    assert len({row.id for row in rows}) == 2
+
+    workspace = await client.get(
+        f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=suite&parent_id={suite.id}",
+        headers=base["headers"],
+    )
+    assert workspace.status_code == 200
+    assert [item["id"] for item in workspace.json()["items"]] == [case_id]
 
 
 async def test_undefined_variable_rejected(client):

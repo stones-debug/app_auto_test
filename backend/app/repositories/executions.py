@@ -75,7 +75,7 @@ async def create_profiled(
         display = exclusion.display_snapshot or {}
         if exclusion.phase is not None:
             display = {**display, "phase": exclusion.phase}
-        db.add(ExecutionExclusion(execution_id=execution.id, app_profile_id=app_profile_id, target_type=exclusion.target_type, suite_id_snapshot=exclusion.suite_id, suite_name_snapshot=display.get("suite_name"), case_id_snapshot=exclusion.case_id, case_name_snapshot=display.get("case_name"), node_key=exclusion.node_key, node_name_snapshot=display.get("node_name"), source_type=exclusion.source_type, reason_code=exclusion.reason_code, reason_note=exclusion.reason_note, details=display))
+        db.add(ExecutionExclusion(execution_id=execution.id, app_profile_id=app_profile_id, target_type=exclusion.target_type, suite_id_snapshot=exclusion.suite_id, suite_name_snapshot=display.get("suite_name"), case_id_snapshot=exclusion.case_id, case_name_snapshot=display.get("case_name"), occurrence_order=exclusion.occurrence_order, node_key=exclusion.node_key, node_name_snapshot=display.get("node_name"), source_type=exclusion.source_type, reason_code=exclusion.reason_code, reason_note=exclusion.reason_note, details=display))
     await enqueue(db, execution.id)
     return execution
 

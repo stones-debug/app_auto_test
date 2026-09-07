@@ -436,7 +436,7 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
 
         if selected_case_ids is None:
             selected_case_ids = list((await db.execute(
-                select(TestSuiteCase.case_id).where(TestSuiteCase.suite_id == suite_id).order_by(TestSuiteCase.sort_order)
+                select(TestSuiteCase.case_id).where(TestSuiteCase.suite_id == suite_id).order_by(TestSuiteCase.sort_order, TestSuiteCase.id)
             )).scalars().all())
         for case_order, case_id in enumerate(selected_case_ids, start=1):
             case = await db.get(TestCase, case_id)
