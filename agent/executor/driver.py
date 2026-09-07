@@ -284,7 +284,10 @@ class MockDriver(BaseDriver):
         if not descendants and element not in _flatten_mock_nodes(self):
             # 兼容旧测试/旧 mock：未把容器放入屏幕树时无法建立父子关系。
             return _mock_find_elements(self, locator_type, locator_value)
-        return _mock_find_elements(self, locator_type, locator_value, roots=descendants)
+        roots = descendants
+        if locator_type == "xpath" and locator_value.startswith("./*"):
+            roots = list(element.children)
+        return _mock_find_elements(self, locator_type, locator_value, roots=roots)
 
     def set_screen(self, elements: list[dict]) -> None:
         """放置当前屏幕节点；generation+1 使此前返回的元素全部失效。"""
@@ -473,12 +476,13 @@ class MockDriver(BaseDriver):
 # 解析 smart_locator 生成的受限 XPath / UiAutomator 链，按属性语义匹配屏幕节点。
 # 真实语义由 Appium 执行；此处仅为可编程的确定性仿真。
 
-_XPATH_PRED_EQUALS = re.compile(r"^@([\w-]+)=(.*)$")
-_XPATH_PRED_CLASS_EQUALS = re.compile(r"^\(name\(\)=(.*) or @class=(.*)\)$")
-_XPATH_PRED_CONTAINS = re.compile(r"^contains\(@([\w-]+),\s*(.*)\)$")
-_XPATH_PRED_STARTS_WITH = re.compile(r"^starts-with\(@([\w-]+),\s*(.*)\)$")
+_XPATH_PRED_EQUALS = re.compile(r"^@([\w-]+)=(.*)$", re.DOTALL)
+_XPATH_PRED_CLASS_EQUALS = re.compile(r"^\(name\(\)=(.*) or @class=(.*)\)$", re.DOTALL)
+_XPATH_PRED_CONTAINS = re.compile(r"^contains\(@([\w-]+),\s*(.*)\)$", re.DOTALL)
+_XPATH_PRED_STARTS_WITH = re.compile(r"^starts-with\(@([\w-]+),\s*(.*)\)$", re.DOTALL)
 _XPATH_PRED_ENDS_WITH = re.compile(
-    r"^substring\(@([\w-]+),\s*string-length\(@[\w-]+\)-string-length\((.*)\)\+1\)=(.*)$"
+    r"^substring\(@([\w-]+),\s*string-length\(@[\w-]+\)-string-length\((.*)\)\+1\)=(.*)$",
+    re.DOTALL,
 )
 
 _UISELECTOR_PREFIX = "new UiSelector()"
@@ -722,6 +726,13 @@ def _parse_xpath_query(value: str) -> tuple[list[dict], list[tuple[str, int | No
 
     steps 为 (axis, depth) 列表；root_preds 为锚点/根条件，target_preds 为末端条件。
     """
+    if value.startswith("./*"):
+        rest = value[3:]
+        target_text, end = _match_bracketed(rest)
+        if rest[end:]:
+            raise ValueError(f"XPath 尾部多余内容: {rest[end:]!r}")
+        target_preds = [_decode_xpath_predicate(p) for p in _split_top_level(target_text, " and ")]
+        return [], [], target_preds
     if not value.startswith("//*"):
         raise ValueError(f"不支持的 XPath: {value!r}")
     rest = value[3:]

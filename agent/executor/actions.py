@@ -5,6 +5,7 @@ import math
 import re
 import time
 
+from .appium_driver import _xpath_literal
 from .driver import (
     DriverError,
     ElementNotFound,
@@ -12,7 +13,6 @@ from .driver import (
     StopRequested,
     _coerce_bool,
 )
-from .smart_locator import _java_string_escape
 from .stale_guard import is_not_editable_error, is_stale_element_error, with_stale_retry
 
 logger = logging.getLogger("agent.actions")
@@ -839,9 +839,13 @@ class SwipeInElementFindTextClickAction(BaseAction):
         self._diagnostic_match_mode = match_mode
         self._diagnostic_container_locator = self._container_locator(context, element_id)
 
-        # UiAutomator selector，转义防注入
-        method = "text" if match_mode == "equals" else "textContains"
-        selector = f"new UiSelector().{method}(\"{_java_string_escape(target_text)}\")"
+        # ListView 直接子项的相对 XPath；literal 由 Appium 驱动统一安全编码。
+        literal = _xpath_literal(target_text)
+        selector = (
+            f"./*[@text={literal}]"
+            if match_mode == "equals"
+            else f"./*[contains(@text,{literal})]"
+        )
 
         done_swipes = 0
         phase_swipes = 0
@@ -1174,7 +1178,7 @@ class SwipeInElementFindTextClickAction(BaseAction):
         logger.info(
             "列表目标查询开始: action=swipe_in_element_find_text_click round=%s phase=%s direction=%s "
             "target=%r match_mode=%s container_locator=%s container_element_id=%s "
-            "parent_viewport=%s safe_click_region=%s strategy=uiautomator "
+            "parent_viewport=%s safe_click_region=%s strategy=xpath "
             "selector=%s",
             getattr(self, "_diagnostic_round", "unknown"),
             getattr(self, "_diagnostic_phase", "unknown"),
@@ -1205,7 +1209,7 @@ class SwipeInElementFindTextClickAction(BaseAction):
 
     def _find_target_in_container(self, driver, container, visible, selector):
         query_started = time.perf_counter()
-        matches = driver.find_elements_in_element(container, "uiautomator", selector, wait_timeout=0)
+        matches = driver.find_elements_in_element(container, "xpath", selector, wait_timeout=0)
         self._diagnostic_query_elapsed_ms = (time.perf_counter() - query_started) * 1000
         self._diagnostic_candidate_count = len(matches)
         if not matches:

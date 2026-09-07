@@ -2855,6 +2855,7 @@ class _ListScrollDriver(MockDriver):
         self.up_count = 0
         self.down_count = 0
         self.parent_calls = 0
+        self.target_queries: list[tuple[str, str, int | float | None]] = []
 
     def find_element(self, locator_type, locator_value, wait_timeout=10):
         el = super().find_element(locator_type, locator_value, wait_timeout)
@@ -2886,6 +2887,11 @@ class _ListScrollDriver(MockDriver):
                 screen = self.down_pages(self.down_count)
                 if screen is not None:
                     self.set_screen(screen)
+
+    def find_elements_in_element(self, element, locator_type, locator_value, wait_timeout=0):
+        if locator_value != "new UiSelector()":
+            self.target_queries.append((locator_type, locator_value, wait_timeout))
+        return super().find_elements_in_element(element, locator_type, locator_value, wait_timeout)
 
     def swipe_in_element(self, element, direction: str, percent: float, speed=None) -> None:
         self._assert_fresh(element)
@@ -2954,6 +2960,94 @@ async def test_find_text_click_found_without_swipe():
     assert driver.region_swipes == []
 
 
+@pytest.mark.parametrize(
+    ("match_mode", "target_text", "expected_selector"),
+    [
+        ("equals", "系统时间", './*[@text="系统时间"]'),
+        ("contains", "系统", './*[contains(@text,"系统")]'),
+    ],
+)
+async def test_find_text_click_uses_direct_child_relative_xpath(
+    match_mode, target_text, expected_selector
+):
+    driver = _ListScrollDriver(_FULL_SCREEN)
+    driver.set_screen([{"id": "target", "text": "系统时间", "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
+    params = _find_text_params(match_mode=match_mode, target_text=target_text)
+    action, context = _run_find_text(driver, params)
+
+    result = await action.execute(driver, context, params)
+
+    assert result["status"] == "passed"
+    assert driver.target_queries
+    assert all(locator_type == "xpath" for locator_type, _value, _wait in driver.target_queries)
+    assert all(locator_value == expected_selector for _type, locator_value, _wait in driver.target_queries)
+    assert all(locator_value.startswith("./*") for _type, locator_value, _wait in driver.target_queries)
+    assert driver.region_swipes == []
+
+
+async def test_find_text_click_only_matches_direct_child_in_current_list():
+    driver = _IdRecordingScrollDriver(_FULL_SCREEN)
+    driver.set_screen([
+        {
+            "id": "target-list",
+            "bounds": _FULL_SCREEN,
+            "children": [
+                {
+                    "id": "direct-target",
+                    "text": "目标",
+                    "bounds": {"x": 100, "y": 500, "width": 300, "height": 80},
+                },
+                {
+                    "id": "row",
+                    "bounds": {"x": 100, "y": 700, "width": 300, "height": 80},
+                    "children": [
+                        {
+                            "id": "nested-target",
+                            "text": "目标",
+                            "bounds": {"x": 100, "y": 700, "width": 300, "height": 80},
+                        }
+                    ],
+                },
+            ],
+        },
+        {
+            "id": "other-list",
+            "bounds": _FULL_SCREEN,
+            "children": [{"id": "other-target", "text": "目标", "bounds": {"x": 100, "y": 600, "width": 300, "height": 80}}],
+        },
+    ])
+    params = _find_text_params(target_text="目标")
+    action = ACTION_REGISTRY["swipe_in_element_find_text_click"]()
+    context = ExecutionContext(
+        driver,
+        _list_case(params, elements={"1": {"locator_type": "id", "locator_value": "target-list"}}),
+    )
+
+    result = await action.execute(driver, context, params)
+
+    assert result["status"] == "passed"
+    assert driver.last_clicked_id == "direct-target"
+    assert driver.region_swipes == []
+
+
+async def test_find_text_click_xpath_literal_handles_quotes_backslash_and_newline():
+    target_text = 'a"b\'c\\\nline'
+    driver = _ListScrollDriver(_FULL_SCREEN)
+    driver.set_screen([{"id": "special", "text": target_text, "bounds": {"x": 100, "y": 500, "width": 200, "height": 50}}])
+    params = _find_text_params(target_text=target_text)
+    action, context = _run_find_text(driver, params)
+
+    result = await action.execute(driver, context, params)
+
+    assert result["status"] == "passed"
+    assert driver.clicked == [target_text]
+    assert driver.target_queries
+    assert driver.target_queries[0][0] == "xpath"
+    assert driver.target_queries[0][1].startswith("./*[@text=concat(")
+    assert "\\" in driver.target_queries[0][1]
+    assert "\n" in driver.target_queries[0][1]
+
+
 async def test_find_text_click_logs_empty_query_and_final_hit(caplog):
     caplog.set_level(logging.INFO, logger="agent.actions")
     driver = _ListScrollDriver(_FULL_SCREEN)
@@ -2969,6 +3063,7 @@ async def test_find_text_click_logs_empty_query_and_final_hit(caplog):
     messages = [record.getMessage() for record in caplog.records]
     assert result["status"] == "passed"
     assert any("列表目标查询返回空" in message and "query_kind=target" in message for message in messages)
+    assert any("strategy=xpath" in message and "./*[@text=\"系统时间\"]" in message for message in messages)
     assert any("列表目标实际点击" in message and "expected_click_point=" in message for message in messages)
     assert any("列表文字查询未命中" in message and "next_scroll_direction=up" in message for message in messages)
 
@@ -2993,7 +3088,7 @@ async def test_find_text_click_logs_candidate_rejection_and_caps_long_list(caplo
     container._bounds = dict(_FULL_SCREEN)
 
     target, direction = action._find_target_in_container(
-        driver, container, _FULL_SCREEN, 'new UiSelector().text("系统时间")'
+        driver, container, _FULL_SCREEN, './*[@text="系统时间"]'
     )
 
     messages = [record.getMessage() for record in caplog.records]
@@ -3052,7 +3147,7 @@ def test_find_text_diagnostics_do_not_read_remote_candidate_attributes():
     action = ACTION_REGISTRY["swipe_in_element_find_text_click"]()
 
     target, direction = action._find_target_in_container(
-        driver, MockElement("list"), _FULL_SCREEN, 'new UiSelector().text("目标")'
+        driver, MockElement("list"), _FULL_SCREEN, './*[@text="目标"]'
     )
 
     assert target is elements[1]
