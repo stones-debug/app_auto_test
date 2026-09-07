@@ -909,6 +909,63 @@ async def test_click_default_wait_timeout_none_means_default():
     assert driver.wait_timeouts == [None]  # None → AppiumDriver 侧用默认 10
 
 
+async def test_click_logs_element_rect_and_expected_calculated_center(caplog):
+    from executor.actions import ClickAction
+
+    caplog.set_level(logging.INFO, logger="agent.actions")
+    driver = MockDriver()
+    context = ExecutionContext(driver, _make_case([]))
+
+    result = await ClickAction().execute(driver, context, {"element_id": 2})
+
+    assert result["status"] == "passed"
+    messages = [record.getMessage() for record in caplog.records]
+    before = next(message for message in messages if '"click_phase": "before"' in message)
+    assert '"click_method": "element.click"' in before
+    assert '"rect": {"height": 2000, "width": 1000, "x": 0, "y": 0}' in before
+    assert '"expected_calculated_click_point": {"x": 500.0, "y": 1000.0}' in before
+    assert '"actual_touch_point": "unknown: element.click does not expose the Appium touch coordinates"' in before
+
+
+async def test_click_diagnostic_failure_does_not_hide_click_error():
+    from executor.actions import ClickAction
+
+    class FailingClickDriver(MockDriver):
+        def click(self, _element) -> None:
+            raise RuntimeError("click transport failure")
+
+    driver = FailingClickDriver()
+    context = ExecutionContext(driver, _make_case([]))
+
+    with pytest.raises(RuntimeError, match="click transport failure"):
+        await ClickAction().execute(driver, context, {"element_id": 2})
+
+
+async def test_click_attribute_diagnostic_failure_does_not_block_click():
+    from executor.actions import ClickAction
+
+    class BrokenAttributeElement:
+        id = "remote-1"
+
+        def get_attribute(self, _name):
+            raise RuntimeError("attribute unavailable")
+
+    class BrokenAttributeDriver(MockDriver):
+        def find_element(self, locator_type, locator_value, wait_timeout=10):
+            _ = locator_type, locator_value, wait_timeout
+            return BrokenAttributeElement()
+
+        def click(self, _element) -> None:
+            return None
+
+    driver = BrokenAttributeDriver()
+    context = ExecutionContext(driver, _make_case([]))
+
+    result = await ClickAction().execute(driver, context, {"element_id": 2})
+
+    assert result["status"] == "passed"
+
+
 class StaleClickDriver(RecordingDriver):
     """模拟 UI 重绘：旧元素 click stale，重新定位后的新元素可点击。"""
 
@@ -1872,6 +1929,37 @@ async def test_swipe_to_find_found_after_swipes():
     assert result["status"] == "passed"
     assert result["found_after_swipes"] == 3
     assert driver.swipes == [("up", 500), ("up", 500), ("up", 500)]
+
+
+async def test_swipe_to_find_logs_found_geometry_and_swipe_coordinates(caplog):
+    from executor.actions import SwipeToFindAction
+
+    caplog.set_level(logging.DEBUG, logger="agent.actions")
+    action = SwipeToFindAction()
+    driver = _FoundAfterSwipesDriver(after=1)
+    context = ExecutionContext(driver, _make_case([]))
+
+    result = await action.execute(
+        driver, context, {
+            "element_id": 1, "direction": "up", "max_swipes": 2,
+            "duration": 300, "percent": 0.2, "settle_ms": 0,
+        }
+    )
+
+    assert result["found_after_swipes"] == 1
+    messages = [record.getMessage() for record in caplog.records]
+    found = next(message for message in messages if '"event": "swipe_to_find_found"' in message)
+    assert '"found_after_swipes": 1' in found
+    assert '"rect": {"height": 2000, "width": 1000, "x": 0, "y": 0}' in found
+    assert '"element_center_point": {"x": 500.0, "y": 1000.0}' in found
+    assert "expected_calculated_click_point" not in found
+    assert "actual_touch_point" not in found
+    assert "click_method" not in found
+    assert '"touch_point": "not applicable: swipe_to_find only locates and does not click"' in found
+    swipe = next(message for message in messages if '"event": "swipe_to_find_swipe_before"' in message)
+    assert '"start_y": 1200' in swipe
+    assert '"end_y": 800' in swipe
+    assert '"duration_ms": 300' in swipe
 
 
 async def test_swipe_to_find_orders_swipe_settle_then_find(monkeypatch):

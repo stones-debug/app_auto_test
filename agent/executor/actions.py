@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import math
 import re
@@ -14,6 +15,194 @@ from .smart_locator import _java_string_escape
 from .stale_guard import is_not_editable_error, is_stale_element_error, with_stale_retry
 
 logger = logging.getLogger("agent.actions")
+
+
+def _diagnostic_value(value, *, limit: int = 200):
+    """Return a bounded, log-safe representation for action diagnostics."""
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        text = str(value)
+    else:
+        text = repr(value)
+    return text if len(text) <= limit else f"{text[:limit]}..."
+
+
+def _read_element_attribute(element, name: str, errors: list[str]):
+    try:
+        getter = getattr(element, "get_attribute", None)
+        if not callable(getter):
+            return None
+        return getter(name)
+    except Exception:
+        errors.append(f"attribute:{name}")
+        return None
+
+
+def _read_object_attribute(obj, name: str, errors: list[str], label: str):
+    try:
+        return getattr(obj, name, None)
+    except Exception:
+        errors.append(f"{label}:{name}")
+        return None
+
+
+def _context_reference(context, name: str, params: dict | None = None):
+    """Read optional execution references without requiring a context contract change."""
+    value = getattr(context, name, None)
+    if value is None:
+        case = getattr(context, "case", None)
+        if isinstance(case, dict):
+            value = case.get(name)
+    if value is None and isinstance(params, dict):
+        value = params.get(name)
+    return value
+
+
+def _smart_locator_summary(data: dict) -> str:
+    config = data.get("locator_config")
+    if not isinstance(config, dict):
+        return "smart"
+    alternatives = config.get("alternatives")
+    if not isinstance(alternatives, list):
+        return "smart"
+    target_parts: list[str] = []
+    for alternative in alternatives[:3]:
+        if not isinstance(alternative, dict):
+            continue
+        for condition in alternative.get("target") or []:
+            if not isinstance(condition, dict):
+                continue
+            attribute = condition.get("attribute")
+            operator = condition.get("operator")
+            value = _diagnostic_value(condition.get("value"), limit=80)
+            if attribute and operator:
+                target_parts.append(f"{attribute}{operator}{value}")
+    suffix = f" targets={','.join(target_parts)}" if target_parts else ""
+    return f"smart alternatives={len(alternatives)}{suffix}"
+
+
+def _element_diagnostics(driver, context, element_id, element, *, action: str, params: dict | None = None) -> dict:
+    """Collect best-effort identity/geometry data without affecting the action."""
+    errors: list[str] = []
+    snapshot = _read_object_attribute(context, "elements_snapshot", errors, "context") or {}
+    data = snapshot.get(str(element_id)) if isinstance(snapshot, dict) else {}
+    data = data if isinstance(data, dict) else {}
+    locator_type = data.get("locator_type")
+    locator_value = data.get("locator_value")
+    if locator_type == "smart":
+        locator_value = _smart_locator_summary(data)
+
+    real_driver = _read_object_attribute(driver, "driver", errors, "driver") or driver
+    try:
+        appium_context = getattr(real_driver, "current_context", None)
+    except Exception:
+        errors.append("driver:current_context")
+        appium_context = None
+
+    try:
+        rect = driver.get_element_rect(element)
+    except Exception:
+        errors.append("driver:rect")
+        rect = None
+    rect = rect if isinstance(rect, dict) else None
+    center = None
+    if rect is not None:
+        try:
+            center = {
+                "x": int(rect.get("x", 0)) + int(rect.get("width", 0)) / 2,
+                "y": int(rect.get("y", 0)) + int(rect.get("height", 0)) / 2,
+            }
+        except (TypeError, ValueError):
+            errors.append("rect:center")
+
+    bounds = _read_element_attribute(element, "bounds", errors)
+    if bounds in (None, ""):
+        bounds = _read_object_attribute(element, "_bounds", errors, "element")
+    if bounds in (None, "") and rect is not None:
+        # W3C rect is the only geometry some Appium backends expose; label it as
+        # a best-effort bounds fallback rather than claiming XML bounds were read.
+        bounds = rect
+
+    result = {
+        "event": "element_diagnostic",
+        "action": action,
+        "element_id": element_id,
+        "locator_type": locator_type,
+        "locator_value": _diagnostic_value(locator_value),
+        "appium_context": _diagnostic_value(appium_context),
+        "remote_element_id": _diagnostic_value(
+            _read_object_attribute(element, "id", errors, "element")
+        ),
+        "class": _diagnostic_value(_read_element_attribute(element, "className", errors)
+                                   or _read_element_attribute(element, "class", errors)),
+        "text": _diagnostic_value(_read_element_attribute(element, "text", errors)),
+        "content_desc": _diagnostic_value(_read_element_attribute(element, "content-desc", errors)),
+        "resource_id": _diagnostic_value(_read_element_attribute(element, "resource-id", errors)),
+        "displayed": _read_element_attribute(element, "displayed", errors),
+        "enabled": _read_element_attribute(element, "enabled", errors),
+        "rect": rect,
+        "bounds": bounds,
+        "element_center_point": center,
+    }
+    for reference in ("execution_node_id", "execution_step_id", "execution_case_id", "execution_suite_id"):
+        value = _context_reference(context, reference, params)
+        if value is not None:
+            result[reference] = value
+    if errors:
+        result["diagnostic_errors"] = errors
+    return result
+
+
+def _log_diagnostic(level: int, payload: dict) -> None:
+    """Log JSON diagnostics; never let formatting/serialization affect actions."""
+    try:
+        logger.log(level, "元素诊断 %s", json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str))
+    except Exception:
+        logger.log(level, "元素诊断记录失败（不影响动作）")
+
+
+def _swipe_geometry(driver, direction: str, percent: float | None) -> dict:
+    """Mirror AppiumDriver.swipe's direction-to-pixel conversion for diagnostics."""
+    try:
+        size = driver.get_window_size()
+        width, height = int(size["width"]), int(size["height"])
+        if percent is None:
+            points = {
+                "up": ((width // 2, int(height * 0.8)), (width // 2, int(height * 0.2))),
+                "down": ((width // 2, int(height * 0.2)), (width // 2, int(height * 0.8))),
+                "left": ((int(width * 0.8), height // 2), (int(width * 0.2), height // 2)),
+                "right": ((int(width * 0.2), height // 2), (int(width * 0.8), height // 2)),
+            }
+        else:
+            half_width = width * percent / 2
+            half_height = height * percent / 2
+            center_x, center_y = width / 2, height / 2
+            points = {
+                "up": ((round(center_x), round(center_y + half_height)),
+                       (round(center_x), round(center_y - half_height))),
+                "down": ((round(center_x), round(center_y - half_height)),
+                         (round(center_x), round(center_y + half_height))),
+                "left": ((round(center_x + half_width), round(center_y)),
+                         (round(center_x - half_width), round(center_y))),
+                "right": ((round(center_x - half_width), round(center_y)),
+                          (round(center_x + half_width), round(center_y))),
+            }
+        start, end = points.get(direction, points["up"])
+        return {
+            "window_width": width,
+            "window_height": height,
+            "start_x": start[0],
+            "start_y": start[1],
+            "end_x": end[0],
+            "end_y": end[1],
+            "coordinate_source": "driver.swipe direction conversion (mirrors AppiumDriver.swipe)",
+        }
+    except Exception as exc:
+        return {
+            "coordinate_source": "driver.swipe(direction, duration, percent)",
+            "coordinate_error": _diagnostic_value(str(exc)),
+        }
 
 
 class BaseAction:
@@ -80,11 +269,32 @@ class ClickAction(BaseAction):
     _STALE_RETRY_DELAYS = (0.2, 0.5)
 
     async def execute(self, driver, context, params: dict) -> dict:
+        element_id = params.get("element_id")
+
+        def click_with_diagnostics(element):
+            diagnostic = _element_diagnostics(
+                driver, context, element_id, element, action="click", params=params
+            )
+            diagnostic["expected_calculated_click_point"] = diagnostic.get("element_center_point")
+            diagnostic["actual_touch_point"] = (
+                "unknown: element.click does not expose the Appium touch coordinates"
+            )
+            diagnostic["click_method"] = "element.click"
+            diagnostic["click_phase"] = "before"
+            _log_diagnostic(logging.INFO, diagnostic)
+            # Keep the real click exception visible to stale_guard; diagnostics
+            # are best-effort and must never turn a click failure into a pass.
+            result = driver.click(element)
+            diagnostic["click_phase"] = "after"
+            diagnostic["click_status"] = "passed"
+            _log_diagnostic(logging.INFO, diagnostic)
+            return result
+
         await with_stale_retry(
             driver,
             context,
-            params.get("element_id"),
-            lambda element: driver.click(element),
+            element_id,
+            click_with_diagnostics,
             wait_timeout=params.get("wait_timeout"),
             retries=len(self._STALE_RETRY_DELAYS),
             delays=self._STALE_RETRY_DELAYS,
@@ -421,16 +631,80 @@ class SwipeToFindAction(BaseAction):
         settle_ms = self._bounded_settle_ms(params.get("settle_ms", 500))
         stop = getattr(context, "should_stop", None)
         last_error: ElementNotFound | None = None
+        element_id = params.get("element_id")
+        logger.info(
+            "swipe_to_find 开始 %s",
+            json.dumps(
+                {
+                    "event": "swipe_to_find_start",
+                    "action": "swipe_to_find",
+                    "element_id": element_id,
+                    "direction": direction,
+                    "max_swipes": max_swipes,
+                    "duration_ms": duration,
+                    "wait_timeout": wait_timeout,
+                    "percent": percent,
+                    "settle_ms": settle_ms,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        )
         for i in range(max_swipes + 1):
             if stop is not None and stop():
                 raise StopRequested("执行被用户停止")
             try:
-                context.find_element(params.get("element_id"), wait_timeout=wait_timeout)
+                element = context.find_element(element_id, wait_timeout=wait_timeout)
+                diagnostic = _element_diagnostics(
+                    driver, context, element_id, element,
+                    action="swipe_to_find", params=params,
+                )
+                diagnostic.update({
+                    "event": "swipe_to_find_found",
+                    "found_after_swipes": i,
+                    "touch_point": "not applicable: swipe_to_find only locates and does not click",
+                })
+                _log_diagnostic(logging.INFO, diagnostic)
                 return {"status": "passed", "found_after_swipes": i}
             except ElementNotFound as exc:
                 last_error = exc
+                logger.debug(
+                    "swipe_to_find 未命中 %s",
+                    json.dumps(
+                        {
+                            "event": "swipe_to_find_not_found",
+                            "action": "swipe_to_find",
+                            "element_id": element_id,
+                            "swipe_index": i,
+                            "error": _diagnostic_value(str(exc)),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                )
             if i < max_swipes:
+                geometry = _swipe_geometry(driver, direction, percent)
+                geometry.update({
+                    "event": "swipe_to_find_swipe_before",
+                    "action": "swipe_to_find",
+                    "element_id": element_id,
+                    "swipe_index": i + 1,
+                    "direction": direction,
+                    "duration_ms": duration,
+                    "settle_ms": settle_ms,
+                    "percent": percent,
+                })
+                logger.debug(
+                    "swipe_to_find 滑动前 %s",
+                    json.dumps(geometry, ensure_ascii=False, sort_keys=True),
+                )
                 driver.swipe(direction, duration=duration, percent=percent)
+                geometry["event"] = "swipe_to_find_swipe_after"
+                geometry["swipe_status"] = "sent"
+                logger.debug(
+                    "swipe_to_find 滑动后 %s",
+                    json.dumps(geometry, ensure_ascii=False, sort_keys=True),
+                )
                 await self._wait_for_settle(context, settle_ms / 1000.0)
         raise ElementNotFound(f"滑动 {max_swipes} 次后仍未找到元素（{direction}，{last_error}）")
 
