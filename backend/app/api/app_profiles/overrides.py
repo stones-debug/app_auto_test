@@ -37,13 +37,16 @@ from ._shared import (
 @router.get("/app-profiles/{profile_id}/overrides", response_model=dict)
 async def list_profile_overrides(
     profile_id: int,
+    include_nodes: bool = True,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """返回当前有效覆盖值，供工作台编辑器回显。"""
     profile = await _get_profile_or_404(profile_id, db)
     await get_project_permission(profile.project_id, user, db)
-    element_rows, variable_rows, node_rows = await overrides_repo.list_all(db, profile_id)
+    element_rows, variable_rows, node_rows = await overrides_repo.list_all(
+        db, profile_id, include_nodes=include_nodes
+    )
     return {
         "revision": profile.revision,
         "elements": [

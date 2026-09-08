@@ -235,6 +235,13 @@ async def test_overrides(client: AsyncClient):
     assert listed.json()["variables"][0]["name"] == "PKG"
     assert listed.json()["nodes"][0]["suite_id"] == suite_id
     assert listed.json()["nodes"][0]["node_key"] == node_key
+    without_nodes = await client.get(
+        f"/api/app-profiles/{profile_id}/overrides?include_nodes=false", headers=h
+    )
+    assert without_nodes.status_code == 200
+    assert without_nodes.json()["elements"][0]["locator_value"] == "dvr_id"
+    assert without_nodes.json()["variables"][0]["name"] == "PKG"
+    assert without_nodes.json()["nodes"] == []
     # 非法 patch（改 order）→ 422
     bad = await client.put(f"/api/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/step/{node_key}", json={"expected_revision": 4, "patch": {"order": 5}}, headers=h)
     assert bad.status_code == 422

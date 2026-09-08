@@ -14,13 +14,20 @@ from app.models import (
 )
 
 
-async def list_all(db: AsyncSession, profile_id: int) -> tuple[list, list, list]:
+async def list_all(
+    db: AsyncSession, profile_id: int, *, include_nodes: bool = True
+) -> tuple[list, list, list]:
     result = []
-    for model in (AppProfileElementOverride, AppProfileVariableOverride, AppProfileNodeOverride):
+    models = [AppProfileElementOverride, AppProfileVariableOverride]
+    if include_nodes:
+        models.append(AppProfileNodeOverride)
+    for model in models:
         rows = await db.execute(
             select(model).where(model.profile_id == profile_id, model.deleted_at.is_(None))
         )
         result.append(list(rows.scalars().all()))
+    if not include_nodes:
+        result.append([])
     return tuple(result)  # type: ignore[return-value]
 
 

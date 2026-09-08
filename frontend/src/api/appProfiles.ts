@@ -188,8 +188,8 @@ export function skipRulesBatch(profileId: number, data: { request_id?: string; e
 
 // ---------- 覆盖 ----------
 
-export function listProfileOverrides(profileId: number) {
-  return request.get<ProfileOverrides>(`/app-profiles/${profileId}/overrides`)
+export function listProfileOverrides(profileId: number, params?: { include_nodes?: boolean }) {
+  return request.get<ProfileOverrides>(`/app-profiles/${profileId}/overrides`, { params })
 }
 
 export function upsertElementOverride(profileId: number, elementId: number, data: { request_id?: string; expected_revision: number; locator_type: string; locator_value: string | null; locator_config?: SmartLocatorConfig | null }) {
