@@ -246,7 +246,7 @@ export function differences(profileId: number, params?: { type?: 'all' | 'skippe
 
 export function previewExecution(data: {
   project_id: number
-  target: { type: 'case' | 'suite' | 'batch'; ids: number[] }
+  target: { type: 'case' | 'suite' | 'batch'; ids: number[]; target_scope?: 'explicit' | 'profile_all' }
   app_profile_id: number
   app_release_id: number
   device_id?: number | null

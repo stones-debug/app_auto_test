@@ -20,7 +20,6 @@ import {
   upsertSuiteStepOverride,
   type ProfileNode,
   type SkipTarget,
-  workspace,
 } from '@/api/appProfiles'
 import { usePermission } from '@/composables/usePermission'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
@@ -359,6 +358,7 @@ async function runTarget(kind: 'suite' | 'case', id: number, name: string) {
       profile: {
         app_profile_id: store.selectedProfileId,
         app_release_id: release.id,
+        app_release_version: release.version,
         expected_profile_revision: store.profileRevision,
         expected_test_asset_revision: store.testAssetRevision,
       },
@@ -368,30 +368,9 @@ async function runTarget(kind: 'suite' | 'case', id: number, name: string) {
 }
 
 async function runAllSuites() {
-  if (!store.selectedProfileId) return
+  if (!store.selectedProfileId || store.profileRevision == null || store.testAssetRevision == null) return
   runAllLoading.value = true
   try {
-    const suiteIds: number[] = []
-    let pageNumber = 1
-    let total = 0
-    do {
-      const page = await workspace(store.selectedProfileId, {
-        page: pageNumber,
-        page_size: 200,
-        effective_status: 'all',
-        sort_by: 'name',
-        sort_order: 'asc',
-      })
-      suiteIds.push(...page.items.flatMap((item) => item.id == null ? [] : [item.id]))
-      total = page.total
-      store.markRevision(page.profile_revision, page.test_asset_revision)
-      pageNumber += 1
-    } while (suiteIds.length < total)
-
-    if (suiteIds.length === 0) {
-      ElMessage.warning('当前项目没有可执行的测试套件')
-      return
-    }
     const page = await listReleases(store.selectedProfileId, { status: 'active', page_size: 100 })
     const release = page.items[0]
     if (!release) {
@@ -399,13 +378,19 @@ async function runAllSuites() {
       return
     }
     const execution = await devicePicker.value?.open(
-      { kind: 'batch', suiteIds, name: `${store.currentProfile?.name ?? '当前 APP'}全部套件` },
+      {
+        kind: 'batch',
+        suiteIds: [],
+        targetScope: 'profile_all',
+        name: `${store.currentProfile?.name ?? '当前 APP'}全部套件`,
+      },
       {
         profile: {
           app_profile_id: store.selectedProfileId,
           app_release_id: release.id,
-          expected_profile_revision: store.profileRevision ?? 1,
-          expected_test_asset_revision: store.testAssetRevision ?? 1,
+          app_release_version: release.version,
+          expected_profile_revision: store.profileRevision,
+          expected_test_asset_revision: store.testAssetRevision,
         },
       },
     )

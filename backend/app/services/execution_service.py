@@ -1,4 +1,7 @@
+import logging
+import time
 from datetime import UTC, datetime
+from typing import Literal, cast
 
 from fastapi import status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +32,7 @@ class _ProfileRequired(Exception):
 
 
 RETRYABLE_EXECUTION_STATES = frozenset({"passed", "failed", "error", "stopped", "cancelled"})
+logger = logging.getLogger("app.execution")
 
 
 def ensure_retryable_status(execution: Execution) -> None:
@@ -133,6 +137,7 @@ async def _build_resolution_request(
     target_ids = [case_id] if case_id is not None else ([suite_id] if suite_id is not None else [])
     if type_ == "batch":
         target_ids = list((body.parameters or {}).get("suite_ids") or [])
+    target_scope = cast(Literal["explicit", "profile_all"], getattr(body, "target_scope", "explicit"))
     return ResolutionRequest(
         project_id=project_id,
         profile_id=body.app_profile_id,
@@ -144,6 +149,7 @@ async def _build_resolution_request(
         run_options=body.parameters or {},
         execution_variables=(body.parameters or {}).get("variables") or {},
         context_suite_id=context_suite_id if type_ == "case" else None,
+        target_scope=target_scope,
     )
 
 
@@ -167,6 +173,7 @@ async def _create_execution_with_profile(
     revision 二次检查：resolver 解析前要求 expected 与档案/项目当前 revision 一致，
     任一变化抛 ProfileRevisionConflict → 409，不创建任何执行。
     """
+    create_started = time.monotonic()
     request = await _build_resolution_request(
         db, project_id=project_id, type_=type_, suite_id=suite_id, case_id=case_id, body=body,
         context_suite_id=context_suite_id,
@@ -237,6 +244,18 @@ async def _create_execution_with_profile(
     observe_snapshot(snapshot_bytes, (_time.monotonic() - _t0) * 1000.0)
     await db.commit()
     await executions_repo.refresh(db, execution)
+    logger.info(
+        "execution_create stage=create project_id=%s profile_id=%s target_scope=%s "
+        "suite_count=%s case_count=%s node_count=%s snapshot_bytes=%s elapsed_ms=%.1f",
+        project_id,
+        body.app_profile_id,
+        request.target_scope,
+        result.summary.get("executable_suites", 0),
+        result.summary.get("executable_cases", 0),
+        result.summary.get("executable_steps", 0),
+        snapshot_bytes,
+        (time.monotonic() - create_started) * 1000,
+    )
     return execution
 
 
@@ -321,6 +340,8 @@ async def create_batch_execution(
     suite_ids = parameters.get("suite_ids") or []
     suite_ids = list(dict.fromkeys([*suite_ids, *[s.id for s in suites]]))
     parameters["suite_ids"] = suite_ids
+    if getattr(body, "target_scope", "explicit") == "profile_all":
+        parameters["target_scope"] = "profile_all"
     if body is None:
         return await _create_and_enqueue(
             db, project_id=project_id, type_="batch", user=user, device_id=device_id,

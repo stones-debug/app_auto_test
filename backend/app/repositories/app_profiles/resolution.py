@@ -89,6 +89,22 @@ async def load_cases_by_ids(db: AsyncSession, case_ids: list[int]) -> dict[int, 
     return {case.id: case for case in rows.scalars().all()}
 
 
+async def load_suites_by_ids(
+    db: AsyncSession, *, project_id: int, suite_ids: list[int]
+) -> dict[int, TestSuite]:
+    ids = list(dict.fromkeys(suite_ids))
+    if not ids:
+        return {}
+    rows = await db.execute(
+        select(TestSuite).where(
+            TestSuite.id.in_(ids),
+            TestSuite.project_id == project_id,
+            TestSuite.deleted_at.is_(None),
+        )
+    )
+    return {suite.id: suite for suite in rows.scalars().all()}
+
+
 async def load_resolution_variables(
     db: AsyncSession, *, project_id: int, suite_id: int | None
 ) -> list[Variable]:
@@ -118,7 +134,7 @@ async def load_by_ids(db: AsyncSession, *, project_id: int, ids: set[int]) -> li
 
 async def list_suites(db: AsyncSession, project_id: int) -> list[TestSuite]:
     rows = await db.execute(
-        select(TestSuite).where(TestSuite.project_id == project_id, TestSuite.deleted_at.is_(None)).order_by(TestSuite.name)
+        select(TestSuite).where(TestSuite.project_id == project_id, TestSuite.deleted_at.is_(None)).order_by(TestSuite.name, TestSuite.id)
     )
     return list(rows.scalars().all())
 
@@ -153,6 +169,27 @@ async def suite_cases(db: AsyncSession, suite_id: int) -> list[TestCase]:
         seen.add(case.id)
         result.append(case)
     return result
+
+
+async def load_resolution_variables_batch(
+    db: AsyncSession, *, project_id: int, suite_ids: set[int], case_ids: set[int]
+) -> list[Variable]:
+    """一次读取本次解析所需的所有变量作用域。"""
+    from sqlalchemy import or_
+    from sqlalchemy.sql.elements import ColumnElement
+
+    clauses: list[ColumnElement[bool]] = [
+        Variable.scope == "global",
+        (Variable.scope == "project") & (Variable.project_id == project_id),
+    ]
+    if suite_ids:
+        clauses.append((Variable.scope == "suite") & Variable.suite_id.in_(suite_ids))
+    if case_ids:
+        clauses.append((Variable.scope == "case") & Variable.case_id.in_(case_ids))
+    rows = await db.execute(
+        select(Variable).where(or_(*clauses))
+    )
+    return list(rows.scalars().all())
 
 
 async def load_skip_index(db: AsyncSession, profile_id: int) -> dict:
@@ -216,8 +253,10 @@ async def override_counts(db: AsyncSession, profile_id: int) -> dict[int, int]:
     }
 
 
-async def diff_counts(db: AsyncSession, profile_id: int) -> dict[int, int]:
-    skip = await load_skip_index(db, profile_id)
+async def diff_counts(
+    db: AsyncSession, profile_id: int, *, skip_index: dict | None = None
+) -> dict[int, int]:
+    skip = skip_index if skip_index is not None else await load_skip_index(db, profile_id)
     counts: dict[int, int] = {}
     for suite_id, _case_id in skip["case"]:
         counts[suite_id] = counts.get(suite_id, 0) + 1

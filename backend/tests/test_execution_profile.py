@@ -4,14 +4,14 @@ import uuid
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from app.core.config import settings
-from app.core.database import SessionLocal
+from app.core.database import SessionLocal, engine
 from app.main import app
 from app.models import Execution, ExecutionCase, ExecutionExclusion, ExecutionStep, Project, Report
 from app.services import worker_service
-from app.services.profile_resolver import ResolutionRequest, resolve
+from app.services.profile_resolver import ProfileResolver, ResolutionRequest, resolve
 from tests.helpers import create_bound_agent_device
 
 OWNER = {"username": "pytest_execline", "email": "execline@tl-tek.com", "password": "test123"}
@@ -401,6 +401,173 @@ async def test_batch_profile_execution_uses_all_suite_ids_and_excludes_skipped_s
     assert execution.parameters["suite_ids"] == suite_ids
     assert [row.case_id for row in rows] == [case_ids[1]]
     assert any(item.suite_id_snapshot == suite_ids[0] for item in exclusions)
+
+
+async def test_profile_all_batch_matches_explicit_batch_without_client_suite_paging(
+    client: AsyncClient,
+):
+    """profile_all 由服务端确定项目套件，解析结果与显式 suite_ids 等价。"""
+    base = await _base(client)
+    profile_id, release_id = await _make_profile(client, base)
+    case_ids = [await _make_case(client, base), await _make_case(client, base)]
+    suite_ids: list[int] = []
+    for index, case_id in enumerate(case_ids, start=1):
+        suite_id = (
+            await client.post(
+                f"/api/projects/{base['project_id']}/suites",
+                headers=base["headers"],
+                json={"name": f"全量语义套件{index}"},
+            )
+        ).json()["id"]
+        await client.post(
+            f"/api/suites/{suite_id}/cases",
+            headers=base["headers"],
+            json={"case_id": case_id},
+        )
+        suite_ids.append(suite_id)
+
+    skipped = await client.post(
+        f"/api/app-profiles/{profile_id}/skip-rules/batch",
+        headers=base["headers"],
+        json={
+            "expected_revision": 1,
+            "operation": "skip",
+            "reason": {"code": "unsupported"},
+            "targets": [{"type": "suite", "suite_id": suite_ids[0]}],
+        },
+    )
+    assert skipped.status_code == 200, skipped.text
+
+    preview_payload = {
+        "project_id": base["project_id"],
+        "app_profile_id": profile_id,
+        "app_release_id": release_id,
+    }
+    explicit = await client.post(
+        "/api/executions/preview",
+        headers=base["headers"],
+        json={
+            **preview_payload,
+            "target": {"type": "batch", "ids": suite_ids},
+        },
+    )
+    profile_all = await client.post(
+        "/api/executions/preview",
+        headers=base["headers"],
+        json={
+            **preview_payload,
+            "target": {"type": "batch", "ids": [], "target_scope": "profile_all"},
+        },
+    )
+    assert explicit.status_code == 200, explicit.text
+    assert profile_all.status_code == 200, profile_all.text
+    assert profile_all.json()["counts"] == explicit.json()["counts"]
+
+    conflict = await client.post(
+        "/api/executions/suites/batch",
+        headers=base["headers"],
+        json={
+            "target_scope": "profile_all",
+            "suite_ids": [],
+            "app_profile_id": profile_id,
+            "app_release_id": release_id,
+            "expected_profile_revision": 99,
+            "expected_test_asset_revision": await _asset_revision(base["project_id"]),
+            "device_id": base["device_id"],
+        },
+    )
+    assert conflict.status_code == 409
+
+    unauthorized = await client.post(
+        "/api/executions/suites/batch",
+        json={
+            "target_scope": "profile_all",
+            "suite_ids": [],
+            "app_profile_id": profile_id,
+            "app_release_id": release_id,
+            "expected_profile_revision": 2,
+            "expected_test_asset_revision": await _asset_revision(base["project_id"]),
+            "device_id": base["device_id"],
+        },
+    )
+    assert unauthorized.status_code == 401
+
+    created = await client.post(
+        "/api/executions/suites/batch",
+        headers=base["headers"],
+        json={
+            "target_scope": "profile_all",
+            "suite_ids": [],
+            "app_profile_id": profile_id,
+            "app_release_id": release_id,
+            "expected_profile_revision": 2,
+            "expected_test_asset_revision": await _asset_revision(base["project_id"]),
+            "device_id": base["device_id"],
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["parameters"]["target_scope"] == "profile_all"
+    assert created.json()["parameters"]["suite_ids"] == suite_ids
+    async with SessionLocal() as db:
+        execution_cases = (
+            await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == created.json()["id"]))
+        ).scalars().all()
+    assert [row.case_id for row in execution_cases] == [case_ids[1]]
+
+
+async def test_profile_resolution_query_count_is_bounded_for_multiple_suites(
+    client: AsyncClient,
+):
+    """批量解析的加载查询数不应随套件/用例数量线性增长。"""
+    base = await _base(client)
+    profile_id, release_id = await _make_profile(client, base)
+    case_ids = [await _make_case(client, base), await _make_case(client, base)]
+    suite_ids: list[int] = []
+    for index, case_id in enumerate(case_ids, start=1):
+        suite_id = (
+            await client.post(
+                f"/api/projects/{base['project_id']}/suites",
+                headers=base["headers"],
+                json={"name": f"查询趋势套件{index}"},
+            )
+        ).json()["id"]
+        await client.post(
+            f"/api/suites/{suite_id}/cases",
+            headers=base["headers"],
+            json={"case_id": case_id},
+        )
+        suite_ids.append(suite_id)
+
+    expected_asset_revision = await _asset_revision(base["project_id"])
+
+    async def counted_resolution(target_ids: list[int]) -> int:
+        calls: list[str] = []
+
+        def before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+            calls.append(statement)
+
+        request = ResolutionRequest(
+            project_id=base["project_id"],
+            profile_id=profile_id,
+            release_id=release_id,
+            target_type="batch",
+            target_ids=target_ids,
+            expected_profile_revision=1,
+            expected_test_asset_revision=expected_asset_revision,
+        )
+        event.listen(engine.sync_engine, "before_cursor_execute", before_cursor_execute)
+        try:
+            async with SessionLocal() as db:
+                await ProfileResolver().preview(request, db)
+        finally:
+            event.remove(engine.sync_engine, "before_cursor_execute", before_cursor_execute)
+        return len(calls)
+
+    one_suite_calls = await counted_resolution(suite_ids[:1])
+    many_suite_calls = await counted_resolution(suite_ids)
+    assert many_suite_calls <= one_suite_calls + 1, (
+        f"批量解析查询数不应随目标数量线性增长: one={one_suite_calls}, many={many_suite_calls}"
+    )
 
 
 async def test_batch_shared_case_executes_from_unskipped_suite(client: AsyncClient):

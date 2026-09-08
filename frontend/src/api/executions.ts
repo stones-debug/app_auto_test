@@ -189,6 +189,7 @@ export interface RunOptions {
   app_release_id?: number
   expected_profile_revision?: number
   expected_test_asset_revision?: number
+  target_scope?: 'explicit' | 'profile_all'
 }
 
 export interface ExecutionRunSettings {
@@ -227,7 +228,7 @@ export function createSuiteExecution(suiteId: number, data: RunOptions) {
   return request.post<Execution>(`/executions/suites/${suiteId}`, data)
 }
 
-export function createBatchExecution(data: RunOptions & { suite_ids: number[] }) {
+export function createBatchExecution(data: RunOptions & { suite_ids: number[]; target_scope?: 'explicit' | 'profile_all' }) {
   return request.post<Execution>('/executions/suites/batch', data)
 }
 

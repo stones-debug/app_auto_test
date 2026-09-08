@@ -22,6 +22,7 @@ from app.models import (
     Execution,
     ExecutionCase,
     Project,
+    TestCase,
     TestElement,
     Variable,
 )
@@ -36,6 +37,7 @@ from app.services.profile_resolver import (
     validate_node_patch,
     variable_references,
 )
+from app.utils.element_refs import collect_element_ids
 
 OWNER = {"username": "pytest_resolver", "email": "resolver@tl-tek.com", "password": "test123"}
 K1 = str(uuid.uuid4())
@@ -316,6 +318,75 @@ async def test_variable_override_priority(client):
     assert step0["params"]["package"] == "from_exec"
 
 
+async def test_variable_scope_priority_is_consistent_for_suite_setup_and_case(client):
+    """global < project < case < suite < profile < execution，前后置与用例一致。"""
+    base = await _base(client)
+    case_id = await _setup_case_with_steps(client, base, "变量作用域优先级")
+    async with SessionLocal() as db:
+        profile_id = await _make_profile(db, base)
+        case = await db.get(TestCase, case_id)
+        assert case is not None
+        case.variables = {}
+        suite = SuiteModel(
+            project_id=base["project_id"],
+            name="变量作用域套件",
+            setup_steps=[
+                {"key": str(uuid.uuid4()), "order": 1, "action": "launch_app", "params": {"package": "${pkg}"}}
+            ],
+            teardown_steps=[],
+        )
+        db.add(suite)
+        await db.flush()
+        db.add(SuiteCaseModel(suite_id=suite.id, case_id=case_id, sort_order=1))
+        db.add_all(
+            [
+                Variable(scope="global", name="pkg", value="from_global"),
+                Variable(scope="project", project_id=base["project_id"], name="pkg", value="from_project"),
+                Variable(scope="case", project_id=base["project_id"], case_id=case_id, name="pkg", value="from_case"),
+            ]
+        )
+        await db.commit()
+
+        async def resolve_with(**kwargs):
+            return await resolve_compat(
+                ResolutionRequest(
+                    project_id=base["project_id"],
+                    profile_id=profile_id,
+                    release_id=await _release_id(db, profile_id),
+                    target_type="suite",
+                    target_ids=[suite.id],
+                    expected_profile_revision=kwargs.pop("expected_profile_revision", 1),
+                    expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
+                    run_options={"use_pre_steps": True},
+                    **kwargs,
+                ),
+                db,
+            )
+
+        result = await resolve_with()
+        assert result.suites[0].setup_steps_snapshot[0]["params"]["package"] == "from_project"
+        assert result.suites[0].cases[0].steps_snapshot[0]["params"]["package"] == "from_case"
+
+        db.add(Variable(scope="suite", project_id=base["project_id"], suite_id=suite.id, name="pkg", value="from_suite"))
+        await db.commit()
+        result = await resolve_with()
+        assert result.suites[0].setup_steps_snapshot[0]["params"]["package"] == "from_suite"
+        assert result.suites[0].cases[0].steps_snapshot[0]["params"]["package"] == "from_suite"
+
+        db.add(AppProfileVariableOverride(profile_id=profile_id, name="pkg", value="from_profile"))
+        profile = await db.get(AppProfile, profile_id)
+        assert profile is not None
+        profile.revision = 2
+        await db.commit()
+        result = await resolve_with(expected_profile_revision=2)
+        assert result.suites[0].setup_steps_snapshot[0]["params"]["package"] == "from_profile"
+        assert result.suites[0].cases[0].steps_snapshot[0]["params"]["package"] == "from_profile"
+
+        result = await resolve_with(expected_profile_revision=2, execution_variables={"pkg": "from_execution"})
+        assert result.suites[0].setup_steps_snapshot[0]["params"]["package"] == "from_execution"
+        assert result.suites[0].cases[0].steps_snapshot[0]["params"]["package"] == "from_execution"
+
+
 async def test_step_variable_override_is_local_and_not_in_snapshot(client):
     base = await _base(client)
     case_id = await _setup_case_with_steps(client, base, "步骤变量覆盖")
@@ -378,6 +449,16 @@ def test_variable_override_references_are_recursive_and_ordered():
     assert variable_references({"a": "${first}/${second}", "nested": ["${first}", {"x": "${third}"}]}) == [
         "first", "second", "third"
     ]
+
+
+def test_element_preload_reference_scan_covers_nested_assertions_and_parameter_patches():
+    assert collect_element_ids(
+        {
+            "element_id": 11,
+            "assertions": [{"element_id": 12, "params": {"value_element_id": 13}}],
+        },
+        {"params": {"value_element_id": 14}},
+    ) == {11, 12, 13, 14}
 
 
 def test_variable_override_patch_validates_source_and_keeps_empty_values():

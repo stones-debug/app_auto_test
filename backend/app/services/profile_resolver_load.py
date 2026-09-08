@@ -1,13 +1,69 @@
 """解析器的纯组装逻辑；所有数据库加载委托给 app_profiles Repository。"""
 
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AppProfileElementOverride, TestCase, TestElement
+from app.models import AppProfileElementOverride, TestCase, TestElement, TestSuite, Variable
 from app.repositories.app_profiles import resolution as resolution_repo
-from app.schemas.generated_case_params import ELEMENT_PARAM_FIELDS
 from app.services.profile_resolver_nodes import ProfileRuleError, render_value
+from app.utils.element_refs import collect_element_ids
+
+
+@dataclass
+class ResolutionLoadContext:
+    """本次解析共享的批量加载索引，避免按 suite/case 重复访问数据库。"""
+
+    suites: dict[int, TestSuite] = field(default_factory=dict)
+    global_variables: list[Variable] = field(default_factory=list)
+    project_variables: list[Variable] = field(default_factory=list)
+    suite_variables: dict[int, list[Variable]] = field(default_factory=dict)
+    case_variables: dict[int, list[Variable]] = field(default_factory=dict)
+    elements: dict[int, TestElement] = field(default_factory=dict)
+
+
+async def prepare_load_context(
+    db: AsyncSession,
+    *,
+    project_id: int,
+    suites: list[TestSuite],
+    cases: dict[int, TestCase],
+    config: dict,
+) -> ResolutionLoadContext:
+    suite_ids = {suite.id for suite in suites}
+    case_ids = set(cases)
+    variables = await resolution_repo.load_resolution_variables_batch(
+        db, project_id=project_id, suite_ids=suite_ids, case_ids=case_ids
+    )
+    context = ResolutionLoadContext(
+        suites={suite.id: suite for suite in suites},
+        global_variables=[variable for variable in variables if variable.scope == "global"],
+        project_variables=[variable for variable in variables if variable.scope == "project"],
+    )
+    for variable in variables:
+        if variable.scope == "suite" and variable.suite_id is not None:
+            context.suite_variables.setdefault(variable.suite_id, []).append(variable)
+        elif variable.scope == "case" and variable.case_id is not None:
+            context.case_variables.setdefault(variable.case_id, []).append(variable)
+
+    element_ids: set[int] = set()
+    for suite in suites:
+        element_ids.update(collect_element_ids(suite.setup_steps, suite.teardown_steps))
+    for case in cases.values():
+        element_ids.update(collect_element_ids(case.flow_nodes or case.steps))
+    suite_ids = set(context.suites)
+    case_ids = set(cases)
+    for bucket in ("step_overrides", "assertion_overrides"):
+        for (suite_id, case_id), patches in config.get(bucket, {}).items():
+            if suite_id in suite_ids and case_id in case_ids:
+                element_ids.update(collect_element_ids(patches))
+    for (suite_id, _node_key), patch in config.get("suite_step_overrides", {}).items():
+        if suite_id in suite_ids:
+            element_ids.update(collect_element_ids(patch))
+    rows = await resolution_repo.load_by_ids(db, project_id=project_id, ids=element_ids)
+    context.elements = {element.id: element for element in rows}
+    return context
 
 
 async def load_config(db: AsyncSession, profile_id: int) -> dict:
@@ -24,13 +80,32 @@ async def load_cases_by_id(db: AsyncSession, case_ids: list[int]) -> dict[int, T
     return await resolution_repo.load_cases_by_ids(db, case_ids)
 
 
-async def merge_variables(db: AsyncSession, project_id: int, suite_id: int | None, case: TestCase | None, config: dict, execution_variables: dict) -> dict:
+async def merge_variables(
+    db: AsyncSession,
+    project_id: int,
+    suite_id: int | None,
+    case: TestCase | None,
+    config: dict,
+    execution_variables: dict,
+    context: ResolutionLoadContext | None = None,
+) -> dict:
     """变量优先级：全局 → 项目 → 用例 → 套件 → APP 档案 → 执行参数。"""
-    loaded = await resolution_repo.load_resolution_variables(db, project_id=project_id, suite_id=suite_id)
-    merged = {variable.name: variable.value for variable in loaded if variable.scope != "suite"}
+    loaded = (
+        [*context.global_variables, *context.project_variables]
+        if context is not None
+        else await resolution_repo.load_resolution_variables(db, project_id=project_id, suite_id=suite_id)
+    )
+    merged = {variable.name: variable.value for variable in loaded}
+    if context is not None and case is not None:
+        merged.update({variable.name: variable.value for variable in context.case_variables.get(case.id, [])})
     if case is not None and case.variables:
         merged.update(case.variables)
-    for variable in loaded:
+    suite_variables = (
+        context.suite_variables.get(suite_id, [])
+        if context is not None and suite_id is not None
+        else await resolution_repo.load_resolution_variables(db, project_id=project_id, suite_id=suite_id)
+    )
+    for variable in suite_variables:
         if variable.scope == "suite":
             merged[variable.name] = variable.value
     merged.update(config["variable_overrides"])
@@ -38,8 +113,25 @@ async def merge_variables(db: AsyncSession, project_id: int, suite_id: int | Non
     return merged
 
 
-async def merge_suite_variables(db: AsyncSession, project_id: int, suite_id: int | None, config: dict, execution_variables: dict) -> dict:
-    merged = {variable.name: variable.value for variable in await resolution_repo.load_resolution_variables(db, project_id=project_id, suite_id=suite_id)}
+async def merge_suite_variables(
+    db: AsyncSession,
+    project_id: int,
+    suite_id: int | None,
+    config: dict,
+    execution_variables: dict,
+    context: ResolutionLoadContext | None = None,
+) -> dict:
+    if context is not None:
+        loaded = [
+            *context.global_variables,
+            *context.project_variables,
+            *context.suite_variables.get(suite_id, []),
+        ] if suite_id is not None else [*context.global_variables, *context.project_variables]
+    else:
+        loaded = await resolution_repo.load_resolution_variables(
+            db, project_id=project_id, suite_id=suite_id
+        )
+    merged = {variable.name: variable.value for variable in loaded}
     merged.update(config["variable_overrides"])
     merged.update(execution_variables)
     return merged
@@ -52,27 +144,25 @@ async def resolve_element_snapshots(
     element_overrides: dict[int, AppProfileElementOverride],
     variables: dict,
     runtime_variables: set[str] | frozenset[str] = frozenset(),
+    preloaded_elements: dict[int, TestElement] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    ids: set[int] = set()
-    for item in steps:
-        if not isinstance(item, dict):
-            continue
-        values = [item.get("element_id")]
-        node_name = str(item.get("action") or item.get("type") or "")
-        values.extend(
-            item.get("params", {}).get(field)
-            for field in ELEMENT_PARAM_FIELDS.get(node_name, ())
-            if isinstance(item.get("params"), dict)
-        )
-        for element_id in values:
-            if element_id is not None:
-                try:
-                    ids.add(int(element_id))
-                except (TypeError, ValueError):
-                    continue
+    ids = collect_element_ids(steps)
     if not ids:
         return {}
-    rows = await resolution_repo.load_by_ids(db, project_id=project_id, ids=ids)
+    if preloaded_elements is not None:
+        missing = ids - preloaded_elements.keys()
+        if missing:
+            preloaded_elements.update(
+                {
+                    element.id: element
+                    for element in await resolution_repo.load_by_ids(
+                        db, project_id=project_id, ids=missing
+                    )
+                }
+            )
+        rows = [preloaded_elements[element_id] for element_id in ids if element_id in preloaded_elements]
+    else:
+        rows = await resolution_repo.load_by_ids(db, project_id=project_id, ids=ids)
     found = {row.id for row in rows}
     if found != ids:
         raise ProfileRuleError("PROFILE_ELEMENT_MISSING", f"步骤/断言引用的元素不存在、已删除或不属于该项目: {sorted(ids - found)}")

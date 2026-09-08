@@ -5,6 +5,8 @@
 ``ResolutionResult``。
 """
 
+import logging
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -18,6 +20,9 @@ from app.repositories.app_profiles import profiles as profiles_repo
 from app.repositories.app_profiles import releases as releases_repo
 from app.repositories.app_profiles import resolution as resolution_repo
 from app.services.profile_resolver_load import (
+    ResolutionLoadContext,
+)
+from app.services.profile_resolver_load import (
     collect_suite_cases as _collect_suite_cases,
 )
 from app.services.profile_resolver_load import (
@@ -26,11 +31,10 @@ from app.services.profile_resolver_load import (
 from app.services.profile_resolver_load import (
     load_config as _load_config,
 )
+from app.services.profile_resolver_load import merge_suite_variables as _merge_suite_variables
+from app.services.profile_resolver_load import merge_variables as _merge_variables
 from app.services.profile_resolver_load import (
-    merge_suite_variables as _merge_suite_variables,
-)
-from app.services.profile_resolver_load import (
-    merge_variables as _merge_variables,
+    prepare_load_context as _prepare_load_context,
 )
 from app.services.profile_resolver_load import (
     resolve_element_snapshots as _resolve_element_snapshots,
@@ -58,6 +62,8 @@ from app.services.profile_resolver_nodes import filter_and_patch as _filter_and_
 from app.services.profile_resolver_nodes import (
     select_steps_for_run as _select_steps_for_run,
 )
+
+logger = logging.getLogger("app.profile_resolver")
 
 __all__ = [
     "ExclusionItem",
@@ -110,6 +116,7 @@ class ResolutionRequest:
     run_options: dict[str, bool] = field(default_factory=dict)
     execution_variables: dict[str, Any] = field(default_factory=dict)
     context_suite_id: int | None = None
+    target_scope: Literal["explicit", "profile_all"] = "explicit"
 
 
 @dataclass(frozen=True)
@@ -254,6 +261,7 @@ def _case_scoped(
 async def resolve(
     request: ResolutionRequest, db: AsyncSession, cache: _LRUCache | None = None
 ) -> ResolutionResult:
+    resolve_started = time.monotonic()
     cache = cache or get_resolver().cache
     profile = await profiles_repo.get_by_id(db, request.profile_id)
     if profile is None or profile.deleted_at is not None:
@@ -285,10 +293,14 @@ async def resolve(
 
     cache_key = (request.project_id, project.test_asset_revision, request.profile_id, profile.revision)
     config = cache.get(cache_key)
+    config_cache_hit = config is not None
     if config is None:
         config = await _load_config(db, request.profile_id)
         cache.set(cache_key, config)
 
+    suite_rows = []
+    suite_ids: list[int] = []
+    load_started = time.monotonic()
     if request.target_type == "case":
         case_ids = list(dict.fromkeys(request.target_ids))
         if request.context_suite_id is not None:
@@ -299,12 +311,52 @@ async def resolve(
             suite_specs = [{"suite_id": None, "virtual": True, "case_ids": case_ids}]
         cases_by_id = await _load_cases_by_id(db, case_ids)
     else:
-        suite_ids = list(dict.fromkeys(request.target_ids))
+        if request.target_scope == "profile_all":
+            suite_rows = await resolution_repo.list_suites(db, request.project_id)
+            suite_ids = [suite.id for suite in suite_rows]
+        else:
+            suite_ids = list(dict.fromkeys(request.target_ids))
+            suite_rows = []
         suite_case_ids, cases_by_id = await _collect_suite_cases(db, suite_ids)
         suite_specs = [
             {"suite_id": suite_id, "virtual": False, "case_ids": suite_case_ids.get(suite_id, [])}
             for suite_id in suite_ids
         ]
+
+    if request.target_type == "case":
+        suite_rows = []
+        if request.context_suite_id is not None:
+            suite = await resolution_repo.load_suites_by_ids(
+                db, project_id=request.project_id, suite_ids=[request.context_suite_id]
+            )
+            suite_rows = list(suite.values())
+    else:
+        if not suite_rows:
+            suite_rows = list(
+                (
+                    await resolution_repo.load_suites_by_ids(
+                        db, project_id=request.project_id, suite_ids=suite_ids
+                    )
+                ).values()
+            )
+    load_context = await _prepare_load_context(
+        db,
+        project_id=request.project_id,
+        suites=suite_rows,
+        cases=cases_by_id,
+        config=config,
+    )
+    logger.info(
+        "profile_resolution stage=load project_id=%s profile_id=%s target_scope=%s "
+        "suite_count=%s case_count=%s cache=%s elapsed_ms=%.1f",
+        request.project_id,
+        request.profile_id,
+        request.target_scope,
+        len(suite_specs),
+        len(cases_by_id),
+        "hit" if config_cache_hit else "miss",
+        (time.monotonic() - load_started) * 1000,
+    )
 
     module_ids = {case.module_id for case in cases_by_id.values() if case.module_id is not None}
     module_names: dict[int, str] = {}
@@ -316,7 +368,7 @@ async def resolve(
     exclusions: list[ExclusionItem] = []
     for suite_order, spec in enumerate(suite_specs, start=1):
         resolved_suite, suite_exclusions, override_count = await _build_suite(
-            db, request, config, spec, suite_order, cases_by_id, module_names
+            db, request, config, spec, suite_order, cases_by_id, module_names, load_context
         )
         suites.append(resolved_suite)
         exclusions.extend(suite_exclusions)
@@ -349,7 +401,7 @@ async def resolve(
         "na_suite_cases": sum(1 for item in na_cases if item.suite_id is not None),
         "overrides": applied_override_count + len(config["variable_overrides"]),
     }
-    return ResolutionResult(
+    result = ResolutionResult(
         profile_revision=profile.revision,
         test_asset_revision=project.test_asset_revision,
         profile_name=profile.name,
@@ -359,6 +411,18 @@ async def resolve(
         summary=summary,
         warnings=[],
     )
+    logger.info(
+        "profile_resolution stage=resolve project_id=%s profile_id=%s target_scope=%s "
+        "suite_count=%s case_count=%s node_count=%s elapsed_ms=%.1f",
+        request.project_id,
+        request.profile_id,
+        request.target_scope,
+        len(result.suites),
+        len(executable_cases),
+        result.summary["executable_steps"],
+        (time.monotonic() - resolve_started) * 1000,
+    )
+    return result
 
 
 async def _build_suite(
@@ -369,6 +433,7 @@ async def _build_suite(
     suite_order: int,
     cases_by_id: dict[int, TestCase],
     module_names: dict[int, str],
+    load_context: ResolutionLoadContext,
 ) -> tuple[ResolvedSuite, list[ExclusionItem], int]:
     """按一个套件规格生成 ResolvedSuite，并返回排除项与覆盖计数。"""
     suite_id = spec["suite_id"]
@@ -381,7 +446,7 @@ async def _build_suite(
         teardown_snapshot: list[dict[str, Any]] = []
         suite_elements: dict[str, dict[str, Any]] = {}
     else:
-        suite = await resolution_repo.get_suite(db, suite_id)
+        suite = load_context.suites.get(suite_id)
         if suite is None or suite.deleted_at is not None:
             exclusions.append(
                 ExclusionItem(
@@ -414,6 +479,7 @@ async def _build_suite(
             await _parse_suite_steps(
                 db, request.project_id, suite.setup_steps or [], suite.teardown_steps or [],
                 config, suite_id, suite_name, request.execution_variables,
+                load_context,
             )
         )
         exclusions.extend(step_exclusions)
@@ -452,7 +518,7 @@ async def _build_suite(
                 )
                 continue
         resolved_case, case_exclusions, case_override_count = await _resolve_case(
-            db, request, config, case, suite_id, suite_name, case_pos, module_names
+            db, request, config, case, suite_id, suite_name, case_pos, module_names, load_context
         )
         exclusions.extend(case_exclusions)
         override_count += case_override_count
@@ -499,10 +565,11 @@ async def _resolve_case(
     suite_name: str | None,
     case_order: int,
     module_names: dict[int, str],
+    load_context: ResolutionLoadContext,
 ) -> tuple[ResolvedCase | None, list[ExclusionItem], int]:
     """解析单个用例（步骤/断言/元素），返回 ResolvedCase 或整体 N/A。"""
     variables = await _merge_variables(
-        db, request.project_id, suite_id, case, config, request.execution_variables
+        db, request.project_id, suite_id, case, config, request.execution_variables, load_context
     )
     selected_steps = _select_steps_for_run(case.flow_nodes or case.steps or [], request.run_options)
     step_overrides = _case_scoped(config, suite_id, case.id, "step")
@@ -560,7 +627,8 @@ async def _resolve_case(
         )
         return None, exclusions, override_count
     elements = await _resolve_element_snapshots(
-        db, request.project_id, nodes, config["element_overrides"], variables, runtime_variables
+        db, request.project_id, nodes, config["element_overrides"], variables, runtime_variables,
+        load_context.elements,
     )
     override_count += sum(1 for element_id in elements if int(element_id) in config["element_overrides"])
     return (
@@ -588,9 +656,12 @@ async def _parse_suite_steps(
     suite_id: int,
     suite_name: str,
     execution_variables: dict,
+    load_context: ResolutionLoadContext,
 ) -> tuple[list[dict], list[dict], dict[str, dict[str, Any]], list[ExclusionItem], int]:
     """套件前后置步骤：过滤、覆盖、渲染、校验并补全元素。"""
-    variables = await _merge_suite_variables(db, project_id, suite_id, config, execution_variables)
+    variables = await _merge_suite_variables(
+        db, project_id, suite_id, config, execution_variables, load_context
+    )
     suite_rules = {
         node_key: rule for (current_suite_id, node_key), rule in config["skip_suite_step"].items()
         if current_suite_id == suite_id
@@ -639,6 +710,7 @@ async def _parse_suite_steps(
         config["element_overrides"],
         variables,
         runtime_variables,
+        load_context.elements,
     )
     override_count += sum(1 for element_id in elements if int(element_id) in config["element_overrides"])
     return setup_snapshot, teardown_snapshot, elements, exclusions, override_count

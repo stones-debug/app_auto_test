@@ -12,6 +12,15 @@ async def get_by_id(db: AsyncSession, suite_id: int) -> TestSuite | None:
     return await db.get(TestSuite, suite_id)
 
 
+async def list_for_project(db: AsyncSession, project_id: int) -> list[TestSuite]:
+    rows = await db.execute(
+        select(TestSuite)
+        .where(TestSuite.project_id == project_id, TestSuite.deleted_at.is_(None))
+        .order_by(TestSuite.name, TestSuite.id)
+    )
+    return list(rows.scalars().all())
+
+
 async def get_case_relation(db: AsyncSession, suite_id: int, case_id: int) -> TestSuiteCase | None:
     return (await db.execute(
         select(TestSuiteCase)

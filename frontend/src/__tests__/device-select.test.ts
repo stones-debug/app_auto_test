@@ -17,7 +17,7 @@ vi.mock('@/api/executions', () => ({
 
 import { getDefaultDevice, listDevices, setDefaultDevice } from '@/api/agents'
 import { createBatchExecution, createCaseExecution, createSuiteExecution, retryExecution } from '@/api/executions'
-import { apiErrorCode, buildRunParameters, useDeviceSelect } from '@/composables/useDeviceSelect'
+import { apiErrorCode, buildRunParameters, profileReleaseOption, useDeviceSelect } from '@/composables/useDeviceSelect'
 
 const mGetDefault = vi.mocked(getDefaultDevice)
 const mListDevices = vi.mocked(listDevices)
@@ -33,6 +33,18 @@ const BUSY = { id: 22, status: 'busy', name: '设备B', platform: 'android', age
 function conflictError(code: string) {
   return { response: { data: { detail: { code } } } }
 }
+
+describe('ProfileRunContext release display', () => {
+  it('creates a stable readonly release option from the passed context', () => {
+    expect(profileReleaseOption({
+      app_profile_id: 12,
+      app_release_id: 34,
+      app_release_version: '2026.09',
+      expected_profile_revision: 2,
+      expected_test_asset_revision: 3,
+    })).toEqual({ id: 34, version: '2026.09' })
+  })
+})
 
 describe('useDeviceSelect（Windows 方案 §4.2 自动选机）', () => {
   beforeEach(() => {
@@ -84,6 +96,21 @@ describe('useDeviceSelect（Windows 方案 §4.2 自动选机）', () => {
     expect(execution?.id).toBe(250)
     expect(mCreateBatch).toHaveBeenCalledWith({
       suite_ids: [2, 5, 8],
+      timeout_seconds: 1200,
+      device_id: 11,
+    })
+  })
+
+  it('profile_all batch：不由客户端收集 suite_ids，交给服务端确定项目套件', async () => {
+    mGetDefault.mockResolvedValue({ device_id: 11, device: IDLE, available: true, reason: '' } as never)
+    const select = useDeviceSelect()
+    await select.open({ kind: 'batch', suiteIds: [], targetScope: 'profile_all', name: '当前 APP 全部套件' })
+
+    await select.confirmRun({ timeout_seconds: 1200 })
+
+    expect(mCreateBatch).toHaveBeenCalledWith({
+      suite_ids: [],
+      target_scope: 'profile_all',
       timeout_seconds: 1200,
       device_id: 11,
     })
@@ -236,6 +263,7 @@ describe('方案 §4.8 档案上下文（ProfileRunContext）', () => {
         profile: {
           app_profile_id: 12,
           app_release_id: 33,
+          app_release_version: '1.2.3',
           expected_profile_revision: 22,
           expected_test_asset_revision: 205,
         },

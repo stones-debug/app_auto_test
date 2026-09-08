@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -43,7 +43,8 @@ class ExecutionCreate(BaseModel):
 
 
 class BatchExecutionCreate(BaseModel):
-    suite_ids: list[int] = Field(min_length=1)
+    suite_ids: list[int] = Field(default_factory=list)
+    target_scope: Literal["explicit", "profile_all"] = "explicit"
     device_id: int | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
     timeout_seconds: int | None = Field(default=None, ge=60, le=7200)
@@ -56,6 +57,10 @@ class BatchExecutionCreate(BaseModel):
 
     @model_validator(mode="after")
     def _complete_profile_context(self):
+        if self.target_scope == "explicit" and not self.suite_ids:
+            raise ValueError("显式批量执行至少需要一个套件")
+        if self.target_scope == "profile_all" and self.app_profile_id is None:
+            raise ValueError("运行当前 APP 全部套件必须指定 APP 档案")
         values = (
             self.app_release_id,
             self.expected_profile_revision,
@@ -79,7 +84,16 @@ class ExecutionRetryRequest(BaseModel):
 
 class ExecutionPreviewTarget(BaseModel):
     type: str = Field(pattern="^(case|suite|batch)$")
-    ids: list[int] = Field(min_length=1)
+    ids: list[int] = Field(default_factory=list)
+    target_scope: Literal["explicit", "profile_all"] = "explicit"
+
+    @model_validator(mode="after")
+    def _require_explicit_ids(self):
+        if self.target_scope == "explicit" and not self.ids:
+            raise ValueError("显式预检至少需要一个目标")
+        if self.target_scope == "profile_all" and self.type != "batch":
+            raise ValueError("profile_all 仅支持批量套件预检")
+        return self
 
 
 class ExecutionPreviewRequest(BaseModel):

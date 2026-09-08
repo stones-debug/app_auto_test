@@ -1863,12 +1863,19 @@ POST /api/executions/cases/{case_id}
 POST /api/executions/suites/{suite_id}   // 同结构
 POST /api/executions/suites/batch
 {
-  "suite_ids": [1, 2],
+  "suite_ids": [1, 2],        // target_scope=explicit 时必填
+  "target_scope": "explicit", // explicit | profile_all
   "device_id": 12,
   "parameters": {},
   "timeout_seconds": 1800
 }
 ```
+
+APP 档案工作区运行“当前 APP 全部套件”时，预检与创建均使用
+`target_scope=profile_all`、`type=batch`，客户端不分页收集 `suite_ids`：
+服务端在同一项目、档案、发布版本和双 revision 口径下确定当前全部未删除套件，
+再由统一 ProfileResolver 应用跳过规则与覆盖。显式 `suite_ids` 批量协议保持兼容；
+`profile_all` 仍要求档案、发布版本、设备和双 revision，并执行相同权限校验。
 
 - `use_pre_steps/use_post_steps` 缺省均为 false；套件执行时逐个用例应用各自的前置/后置阶段。
 - `attach_to_current_app` 仅允许单用例执行。为 true 时 Agent 创建不含 `appPackage/appActivity/bundleId` 的 Appium 会话，保持设备当前前台界面，并将快照中的 `launch_app` 记录为已跳过；套件和批量执行携带该参数返回 400。

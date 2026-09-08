@@ -8,7 +8,7 @@ import {
   type Execution,
   type ExecutionRunSettings,
 } from '@/api/executions'
-import { apiErrorCode, buildRunParameters, useDeviceSelect, type ProfileRunContext, type RunTarget } from '@/composables/useDeviceSelect'
+import { apiErrorCode, buildRunParameters, profileReleaseOption, useDeviceSelect, type ProfileRunContext, type RunTarget } from '@/composables/useDeviceSelect'
 import { apiErrorMessage } from '@/utils/request'
 import { listReleases, previewExecution, type ExecutionPreview } from '@/api/appProfiles'
 import { useAppProfileStore } from '@/stores/appProfile'
@@ -47,6 +47,7 @@ const retryRevisionNotice = ref('')
 let previewSequence = 0
 
 let targetIdsTracker: number[] = []
+let targetScope: 'explicit' | 'profile_all' = 'explicit'
 
 /** 弹窗路径的 open() 挂起解析器（成功/取消时唤醒父级 await）。 */
 let openResolve: ((exec: Execution | null) => void) | null = null
@@ -67,6 +68,7 @@ async function run() {
     ? {
         app_profile_id: profileId.value,
         app_release_id: releaseId.value,
+        app_release_version: preview.value.release.version,
         expected_profile_revision: preview.value.profile_revision,
         expected_test_asset_revision: preview.value.test_asset_revision,
       }
@@ -143,6 +145,7 @@ async function doPreview() {
       target: {
         type: targetKind.value === 'batch' ? 'batch' : (targetKind.value === 'suite' ? 'suite' : 'case'),
         ids: targetIdsTracker,
+        ...(targetScope === 'profile_all' ? { target_scope: targetScope } : {}),
       },
       app_profile_id: profileId.value,
       app_release_id: releaseId.value,
@@ -209,6 +212,7 @@ defineExpose({
     if (options.profile) {
       profileId.value = options.profile.app_profile_id
       releaseId.value = options.profile.app_release_id
+      releases.value = [profileReleaseOption(options.profile)]
       profileReadonly.value = true
     } else {
       profileReadonly.value = false
@@ -226,17 +230,14 @@ defineExpose({
         '重试将沿用原执行快照，不读取当前用例、套件或 APP 配置。',
       ].join('；')
     }
+    targetScope = target.kind === 'batch' ? (target.targetScope ?? 'explicit') : 'explicit'
     if (target.kind === 'batch') targetIdsTracker = target.suiteIds
     else if (options.targetId) targetIdsTracker = [options.targetId]
     else if (target.kind === 'case' || target.kind === 'suite') targetIdsTracker = [target.id]
     else targetIdsTracker = []
     store.projectId = props.projectId ?? store.projectId
-    if (target.kind !== 'retry' && props.projectId != null) {
+    if (!options.profile && target.kind !== 'retry' && props.projectId != null) {
       await store.loadProfiles()
-    }
-    if (profileReadonly.value && profileId.value != null) {
-      const page = await listReleases(profileId.value, { status: 'active', page_size: 100 })
-      releases.value = page.items.map((release) => ({ id: release.id, version: release.version }))
     }
     return new Promise((resolve) => {
       openResolve = resolve

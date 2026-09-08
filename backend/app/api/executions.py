@@ -1,3 +1,5 @@
+import logging
+import time
 from datetime import datetime
 from typing import Literal, cast
 
@@ -59,6 +61,7 @@ from app.services.screenshot_store import resolve_screenshot_path
 from app.utils.pagination import get_pagination
 
 router = APIRouter(tags=["执行管理"])
+logger = logging.getLogger("app.execution")
 
 
 def _apply_artifact(step_out: ExecutionStepOut, src: dict) -> ExecutionStepOut:
@@ -110,6 +113,7 @@ async def preview_execution(
     db: AsyncSession = Depends(get_db),
 ):
     """执行预检（方案 §4.7）：只读解析，不创建执行、不抢设备。"""
+    preview_started = time.monotonic()
     project, role = await get_project_permission(body.project_id, user, db)
     if role not in ("owner", "admin", "member"):
         raise api_error(status.HTTP_403_FORBIDDEN, ErrorCode.PROJECT_FORBIDDEN, "无权执行")
@@ -130,6 +134,8 @@ async def preview_execution(
         target_ids=body.target.ids,
         context_suite_id=body.context_suite_id,
     )
+    if body.target.target_scope == "profile_all" and body.target.type != "batch":
+        raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_TARGET_INVALID", "profile_all 仅支持批量套件预检")
     request = ResolutionRequest(
         project_id=body.project_id,
         profile_id=body.app_profile_id,
@@ -141,6 +147,7 @@ async def preview_execution(
         run_options=body.parameters,
         execution_variables=(body.parameters or {}).get("variables") or {},
         context_suite_id=body.context_suite_id,
+        target_scope=body.target.target_scope,
     )
     try:
         result = await get_resolver().preview(request, db)
@@ -161,7 +168,7 @@ async def preview_execution(
     except ProfileRuleError as err:
         raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, err.code, err.message) from None
 
-    return ExecutionPreviewResponse(
+    response = ExecutionPreviewResponse(
         profile_revision=result.profile_revision,
         test_asset_revision=result.test_asset_revision,
         profile={"id": body.app_profile_id, "name": result.profile_name},
@@ -181,6 +188,18 @@ async def preview_execution(
         ],
         warnings=result.warnings,
     )
+    logger.info(
+        "execution_preview stage=preview project_id=%s profile_id=%s target_scope=%s "
+        "suite_count=%s case_count=%s node_count=%s elapsed_ms=%.1f",
+        body.project_id,
+        body.app_profile_id,
+        body.target.target_scope,
+        result.summary.get("executable_suites", 0),
+        result.summary.get("executable_cases", 0),
+        result.summary.get("executable_steps", 0),
+        (time.monotonic() - preview_started) * 1000,
+    )
+    return response
 
 
 async def _get_execution_or_404(execution_id: int, db: AsyncSession) -> Execution:
@@ -314,14 +333,21 @@ async def create_batch_execution(
     _reject_current_screen_for_non_case(body.parameters)
     suites: list[TestSuite] = []
     project_id: int | None = None
-    for sid in body.suite_ids:
-        suite = await _get_suite_or_404(sid, db)
-        if project_id is None:
-            project_id = suite.project_id
-        elif suite.project_id != project_id:
-            raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_TARGET_INVALID", "批量执行的套件必须属于同一项目")
-        suites.append(suite)
-    if project_id is None:
+    if body.target_scope == "profile_all":
+        profile = await profiles_repo.get_by_id(db, body.app_profile_id or 0)
+        if profile is None or profile.deleted_at is not None:
+            raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.APP_PROFILE_NOT_FOUND, "APP 档案不存在")
+        project_id = profile.project_id
+        suites = await suites_repo.list_for_project(db, project_id)
+    else:
+        for sid in body.suite_ids:
+            suite = await _get_suite_or_404(sid, db)
+            if project_id is None:
+                project_id = suite.project_id
+            elif suite.project_id != project_id:
+                raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_TARGET_INVALID", "批量执行的套件必须属于同一项目")
+            suites.append(suite)
+    if project_id is None or not suites:
         raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_TARGET_INVALID", "至少选择一个套件")
     await require_project_write(project_id, user, db)
     await _validate_device_for_execution(body.device_id, user, db)

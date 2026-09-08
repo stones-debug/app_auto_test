@@ -16,7 +16,7 @@ import {
 export type RunTarget =
   | { kind: 'case'; id: number; name: string }
   | { kind: 'suite'; id: number; name: string }
-  | { kind: 'batch'; suiteIds: number[]; name: string }
+  | { kind: 'batch'; suiteIds: number[]; name: string; targetScope?: 'explicit' | 'profile_all' }
   | { kind: 'retry'; executionId: number; name: string }
 
 export type RetryTarget = Extract<RunTarget, { kind: 'retry' }>
@@ -25,8 +25,13 @@ export type RetryTarget = Extract<RunTarget, { kind: 'retry' }>
 export interface ProfileRunContext {
   app_profile_id: number
   app_release_id: number
+  app_release_version: string
   expected_profile_revision: number
   expected_test_asset_revision: number
+}
+
+export function profileReleaseOption(profile: ProfileRunContext): { id: number; version: string } {
+  return { id: profile.app_release_id, version: profile.app_release_version }
 }
 
 /** 从 axios 错误中提取后端业务码（detail.code，如 DEVICE_REQUIRED / DEVICE_BUSY / AGENT_OFFLINE）。 */
@@ -91,7 +96,13 @@ export function useDeviceSelect() {
     }
     if (target.kind === 'case') return createCaseExecution(target.id, opts)
     if (target.kind === 'suite') return createSuiteExecution(target.id, opts)
-    if (target.kind === 'batch') return createBatchExecution({ ...opts, suite_ids: target.suiteIds })
+    if (target.kind === 'batch') {
+      return createBatchExecution({
+        ...opts,
+        suite_ids: target.suiteIds,
+        ...(target.targetScope ? { target_scope: target.targetScope } : {}),
+      })
+    }
     // retry：后端仅接受 {device_id, timeout_seconds?}，档案由服务端按原执行读取
     return retryExecution(target.executionId, {
       device_id: deviceId,

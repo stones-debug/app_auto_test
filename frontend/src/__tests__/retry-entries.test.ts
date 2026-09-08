@@ -39,7 +39,7 @@ describe('Step 5 三个重试入口统一走 DevicePicker（retry target）', ()
 
   it('重试设备选择不加载当前 APP 档案或重新预检', () => {
     expect(devicePickerSource).not.toContain('getAppProfile')
-    expect(devicePickerSource).toContain("if (target.kind !== 'retry' && props.projectId != null)")
+    expect(devicePickerSource).toContain("if (!options.profile && target.kind !== 'retry' && props.projectId != null)")
     expect(devicePickerSource).toContain('重试将沿用原执行快照')
   })
 

@@ -1,5 +1,8 @@
 """APP 档案workspace路由。"""
 
+import logging
+import time
+
 from fastapi import Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +22,8 @@ from ._shared import (
     _suite_step_item,
 )
 
+logger = logging.getLogger("app.profile_workspace")
+
 
 @router.get("/app-profiles/{profile_id}/workspace")
 async def workspace(
@@ -33,6 +38,7 @@ async def workspace(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    workspace_started = time.monotonic()
     profile = await _get_profile_or_404(profile_id, db)
     await get_project_permission(profile.project_id, user, db)
     project = await projects_repo.get_by_id(db, profile.project_id)
@@ -42,7 +48,7 @@ async def workspace(
     suites = await resolution_repo.list_suites(db, profile.project_id)
     skip = await resolution_repo.load_skip_index(db, profile_id)
     case_counts = await resolution_repo.case_counts(db, profile.project_id)
-    diff_counts = await resolution_repo.diff_counts(db, profile_id)
+    diff_counts = await resolution_repo.diff_counts(db, profile_id, skip_index=skip)
     override_counts = await resolution_repo.override_counts(db, profile_id)
 
     items: list[dict] = []
@@ -84,7 +90,7 @@ async def workspace(
     items = _sort_workspace(items, sort_by, sort_order)
     total = len(items)
     start = (page - 1) * page_size
-    return {
+    response = {
         "profile_revision": profile.revision,
         "test_asset_revision": project.test_asset_revision,
         "total": total,
@@ -92,6 +98,16 @@ async def workspace(
         "page_size": page_size,
         "items": items[start : start + page_size],
     }
+    logger.info(
+        "profile_workspace stage=workspace profile_id=%s suite_count=%s page=%s "
+        "page_size=%s elapsed_ms=%.1f",
+        profile_id,
+        len(suites),
+        page,
+        page_size,
+        (time.monotonic() - workspace_started) * 1000,
+    )
+    return response
 
 @router.get("/app-profiles/{profile_id}/workspace/nodes")
 async def workspace_nodes(
