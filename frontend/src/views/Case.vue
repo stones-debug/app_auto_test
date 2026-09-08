@@ -9,7 +9,7 @@ import RunButton from '@/components/RunButton.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { usePermission } from '@/composables/usePermission'
 import { formatDateTime } from '@/utils/format'
-import { caseListQuery, parseCaseListPage, parseModuleKey } from '@/utils/caseModuleNavigation'
+import { CASE_LIST_PAGE_SIZES, caseListQuery, parseCaseListPage, parseCaseListPageSize, parseModuleKey } from '@/utils/caseModuleNavigation'
 
 const route = useRoute()
 const router = useRouter()
@@ -102,7 +102,7 @@ async function load() {
 function openCreate() {
   router.push({
     path: `/projects/${projectId}/cases/new`,
-    query: caseListQuery(parseModuleKey(selectedModule.value), page.value),
+    query: caseListQuery(parseModuleKey(selectedModule.value), page.value, parseCaseListPageSize(pageSize.value)),
   })
 }
 
@@ -224,8 +224,19 @@ function openEdit(row: TestCase) {
   // 编辑页返回时保持当前列表筛选与页码，不切换到用例自身模块。
   router.push({
     path: `/projects/${projectId}/cases/${row.id}/edit`,
-    query: caseListQuery(parseModuleKey(selectedModule.value), page.value),
+    query: caseListQuery(parseModuleKey(selectedModule.value), page.value, parseCaseListPageSize(pageSize.value)),
   })
+}
+
+function onPageChange(nextPage: number) {
+  page.value = nextPage
+  void load()
+}
+
+function onPageSizeChange(nextPageSize: number) {
+  pageSize.value = parseCaseListPageSize(nextPageSize)
+  page.value = 1
+  void load()
 }
 
 async function remove(row: TestCase) {
@@ -272,6 +283,7 @@ function lastExecLabel(status: string | null) {
 onMounted(() => {
   // 编辑页返回会带回模块上下文；没有上下文时才使用“全部”。
   page.value = parseCaseListPage(route.query.page)
+  pageSize.value = parseCaseListPageSize(route.query.page_size)
   selectModule(parseModuleKey(route.query.module), false)
   void loadModules()
   window.addEventListener('click', closeModuleContextMenu)
@@ -418,12 +430,14 @@ onUnmounted(() => {
       </el-table>
 
       <el-pagination
-        v-model:current-page="page"
-        v-model:page-size="pageSize"
+        :current-page="page"
+        :page-size="pageSize"
         :total="total"
-        layout="total, prev, pager, next"
+        :page-sizes="[...CASE_LIST_PAGE_SIZES]"
+        layout="total, sizes, prev, pager, next, jumper"
         class="pager"
-        @change="load"
+        @current-change="onPageChange"
+        @size-change="onPageSizeChange"
       />
     </div>
   </div>

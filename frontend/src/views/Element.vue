@@ -184,19 +184,44 @@ function openGroupContextMenu(event: MouseEvent, group: ElementPageCount) {
 async function load() {
   loading.value = true
   try {
-    const data = await listElements({
-      page: page.value,
-      page_size: pageSize.value,
-      keyword: keyword.value || undefined,
-      platform: platform.value || undefined,
-      project_id: projectFilter.value,
-      page_name: elementPageFilter(selectedPage.value),
-    })
-    items.value = data.items
-    total.value = data.total
+    while (true) {
+      const data = await listElements({
+        page: page.value,
+        page_size: pageSize.value,
+        keyword: keyword.value || undefined,
+        platform: platform.value || undefined,
+        project_id: projectFilter.value,
+        page_name: elementPageFilter(selectedPage.value),
+      })
+      total.value = data.total
+      const lastPage = data.total > 0 ? Math.ceil(data.total / pageSize.value) : 1
+      const correctedPage = Math.min(page.value, lastPage)
+      if (correctedPage !== page.value) {
+        page.value = correctedPage
+        continue
+      }
+      items.value = data.items
+      break
+    }
   } finally {
     loading.value = false
   }
+}
+
+function resetPageAndLoad() {
+  page.value = 1
+  void load()
+}
+
+function onPageChange(nextPage: number) {
+  page.value = nextPage
+  void load()
+}
+
+function onPageSizeChange(nextPageSize: number) {
+  pageSize.value = [20, 50, 100].includes(nextPageSize) ? nextPageSize : 20
+  page.value = 1
+  void load()
 }
 
 async function loadPages() {
@@ -229,7 +254,7 @@ async function initialize() {
 function selectPage(name: string) {
   selectedPage.value = name
   page.value = 1
-  load()
+  void load()
 }
 
 function openCreate() {
@@ -603,16 +628,16 @@ onUnmounted(() => {
     <!-- 右：元素列表 -->
     <div class="elements-main">
       <div class="toolbar-card">
-        <el-input v-model="keyword" placeholder="按名称搜索" clearable class="search" @keyup.enter="page = 1; load()" />
-        <el-select v-model="projectFilter" placeholder="全部项目" clearable :disabled="isProjectMode" class="platform" @change="page = 1; load()">
+        <el-input v-model="keyword" placeholder="按名称搜索" clearable class="search" @keyup.enter="resetPageAndLoad" @clear="resetPageAndLoad" />
+        <el-select v-model="projectFilter" placeholder="全部项目" clearable :disabled="isProjectMode" class="platform" @change="resetPageAndLoad">
           <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
         </el-select>
-        <el-select v-model="platform" placeholder="平台" clearable class="platform" @change="page = 1; load()">
+        <el-select v-model="platform" placeholder="平台" clearable class="platform" @change="resetPageAndLoad">
           <el-option label="Android" value="android" />
           <el-option label="iOS" value="ios" />
           <el-option label="通用" value="both" />
         </el-select>
-        <el-button type="primary" @click="page = 1; load()">搜索</el-button>
+        <el-button type="primary" @click="resetPageAndLoad">搜索</el-button>
         <span class="spacer"></span>
         <el-button v-if="isProjectMode && canWriteSelectedProject" @click="openImport">导入 Excel</el-button>
         <el-button :loading="exportLoading" @click="exportExcel">导出 Excel</el-button>
@@ -660,12 +685,14 @@ onUnmounted(() => {
       </el-table>
 
       <el-pagination
-        v-model:current-page="page"
-        v-model:page-size="pageSize"
+        :current-page="page"
+        :page-size="pageSize"
         :total="total"
-        layout="total, prev, pager, next"
+        :page-sizes="[20, 50, 100]"
+        layout="total, sizes, prev, pager, next, jumper"
         class="pager"
-        @change="load"
+        @current-change="onPageChange"
+        @size-change="onPageSizeChange"
       />
     </div>
 

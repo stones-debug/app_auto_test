@@ -21,7 +21,7 @@ import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 import { usePermission } from '@/composables/usePermission'
 import { useProjectContextStore } from '@/stores/projectContext'
 import { buildCaseEditorSummary, caseEditorSummaryText } from '@/utils/caseEditorSummary'
-import { caseListQuery, moduleKeyFromId, parseCaseListPage, parseModuleKey, type CaseModuleKey } from '@/utils/caseModuleNavigation'
+import { caseListQuery, moduleKeyFromId, parseCaseListPage, parseCaseListPageSize, parseModuleKey, type CaseModuleKey } from '@/utils/caseModuleNavigation'
 import { mergeFlowNodes, normalizeFlowNodeOrders } from '@/utils/flowNodeOrder'
 import { parseSuiteReturnId, suiteLocation } from '@/utils/suiteNavigation'
 
@@ -55,10 +55,11 @@ const isEdit = computed(() => caseId.value !== null)
 // 返回列表时保留进入编辑页前的筛选与页码；新建成功后模块筛选按已保存模块返回。
 const returnModuleKey = ref<CaseModuleKey>(parseModuleKey(route.query.module))
 const returnPage = parseCaseListPage(route.query.page)
+const returnPageSize = parseCaseListPageSize(route.query.page_size)
 const returnSuiteId = parseSuiteReturnId(route.query)
 
 function casesLocation(moduleKey: CaseModuleKey) {
-  return { path: `/projects/${projectId}/cases`, query: caseListQuery(moduleKey, returnPage) }
+  return { path: `/projects/${projectId}/cases`, query: caseListQuery(moduleKey, returnPage, returnPageSize) }
 }
 
 function returnLocation(moduleKey: CaseModuleKey) {

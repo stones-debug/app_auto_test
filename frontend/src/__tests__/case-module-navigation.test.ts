@@ -5,6 +5,7 @@ import {
   moduleKeyFromId,
   moduleQuery,
   parseCaseListPage,
+  parseCaseListPageSize,
   parseModuleKey,
 } from '@/utils/caseModuleNavigation'
 import { parseSuiteId, parseSuiteReturnId, suiteLocation } from '@/utils/suiteNavigation'
@@ -34,8 +35,16 @@ describe('case module navigation', () => {
     expect(parseCaseListPage('0')).toBe(1)
     expect(parseCaseListPage('2.5')).toBe(1)
     expect(parseCaseListPage(undefined)).toBe(1)
+    expect(parseCaseListPageSize('20')).toBe(20)
+    expect(parseCaseListPageSize('50')).toBe(50)
+    expect(parseCaseListPageSize(100)).toBe(100)
+    expect(parseCaseListPageSize('25')).toBe(20)
+    expect(parseCaseListPageSize(['100', '20'])).toBe(100)
+    expect(parseCaseListPageSize(undefined)).toBe(20)
     expect(caseListQuery(parseModuleKey('7'), 2)).toEqual({ module: '7', page: '2' })
     expect(caseListQuery(parseModuleKey('7'), 1)).toEqual({ module: '7' })
+    expect(caseListQuery(parseModuleKey('7'), 3, 100)).toEqual({ module: '7', page: '3', page_size: '100' })
+    expect(caseListQuery(parseModuleKey('7'), 1, 50)).toEqual({ module: '7', page_size: '50' })
     expect(caseListQuery(parseModuleKey('all'), 2)).toEqual({ page: '2' })
     expect(caseListQuery(parseModuleKey(undefined), 2)).toEqual({ page: '2' })
   })
