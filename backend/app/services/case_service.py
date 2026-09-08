@@ -11,8 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import TestCase
 from app.repositories import cases as cases_repo
 from app.schemas.case import CaseCreate, CaseUpdate
-from app.schemas.generated_case_params import ASSERTION_NEEDS_ELEMENT, ELEMENT_PARAM_FIELDS
+from app.schemas.generated_case_params import ASSERTION_NEEDS_ELEMENT
 from app.services import asset_service
+from app.utils.element_refs import collect_element_ids
 
 
 def _legacy_steps_from_nodes(flow_nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -100,22 +101,7 @@ def validate_node_requirements(nodes: list | None) -> None:
 
 
 def _element_ids(steps: list | None, extra: list | None = None) -> set[int]:
-    items = [*(steps or []), *(extra or [])]
-    ids: set[int] = set()
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        values = [item.get("element_id")]
-        node_name = str(item.get("action") or item.get("type") or "")
-        values.extend(
-            item.get("params", {}).get(field)
-            for field in ELEMENT_PARAM_FIELDS.get(node_name, ())
-            if isinstance(item.get("params"), dict)
-        )
-        for value in values:
-            if value is not None:
-                ids.add(int(value))
-    return ids
+    return collect_element_ids(steps or [], extra or [])
 
 
 async def validate_elements(

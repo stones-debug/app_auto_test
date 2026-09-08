@@ -2050,6 +2050,7 @@ RUNNING ←── Worker 认领后经内部接口通知 FastAPI 更新
 4. **执行快照**：公共库运行必须选择档案和活动发布版本并调用 `POST /api/executions/preview`。正式提交携带 `app_profile_id`、`app_release_id`、`expected_profile_revision`、`expected_test_asset_revision`；服务端在同一事务内二次锁定双 revisions、生成完整执行快照、固化 `execution_exclusions` 并入队。Agent 只接收最终快照，不解析档案规则。
 5. **报告口径**：执行记录永久保存档案名、版本、双 revisions 和解析摘要快照；N/A 来自 `execution_exclusions`，不计入成功率分母，运行期 skipped 与 N/A 分开展示。历史 `app_profile_id IS NULL` 的执行显示“历史兼容执行”，不得查询当前配置回填历史结果；重试同样只使用原执行快照。
 6. **资产删除与重试**：用例删除为软删除，不因任何历史 `Execution` 或套件引用而阻止；历史执行详情/报告继续读取其快照。已终态执行的重试不依赖当前用例、套件或档案是否仍存在。
+   元素删除同样是软删除，但后端会拒绝仍被未删除用例（含嵌套断言和元素参数）、套件前后置步骤或未删除 APP 档案元素/节点覆盖引用的元素，返回 `ELEMENT_IN_USE`；历史 `Execution` 快照、报告以及已删除资产不构成阻止条件。
 7. **灰度与回滚**：`APP_PROFILE_FEATURE_MODE=off|compat|required`；`compat` 仅对 `APP_PROFILE_ENABLED_PROJECT_IDS` 中的项目将旧请求注入通用档案，`required` 要求所有新请求显式选择档案/版本，`off` 保持旧执行协议。关闭灰度不删除档案、审计或历史快照。
 8. **核心接口**：档案 `/api/projects/{id}/app-profiles`，版本 `/api/app-profiles/{id}/releases`，规则 `/api/app-profiles/{id}/skip-rules/batch`，覆盖 `/api/app-profiles/{id}/*-overrides`，工作台 `/api/app-profiles/{id}/workspace`，差异清单 `/api/app-profiles/{id}/differences`，预检 `/api/executions/preview`；报告列表支持 `app_profile_id/app_release_id` 筛选。
 9. **节点覆盖编辑口径**：工作台步骤、断言及套件步骤节点返回 `registry_key` 与 `override_template`；模板仅包含公共节点当前值中 Registry 允许覆盖的字段，不返回 `action/type/key/order/phase` 等身份字段。前端打开覆盖时以模板合并已有补丁并预填完整有效参数，保存时仅提交相对公共模板变化的顶层字段；无差异时不创建空覆盖，已有覆盖恢复为公共配置。

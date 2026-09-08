@@ -7,6 +7,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import ErrorCode, api_error
 from app.models import ElementGroup, Project, TestElement, TestModule, User
 from app.repositories import elements as elements_repo
 from app.schemas.element import (
@@ -224,6 +225,16 @@ async def update(
 
 
 async def delete(db: AsyncSession, *, element: TestElement) -> None:
+    references = await elements_repo.find_active_references(
+        db, project_id=element.project_id, element_id=element.id
+    )
+    if references:
+        raise api_error(
+            status.HTTP_409_CONFLICT,
+            ErrorCode.ELEMENT_IN_USE,
+            "元素仍被可执行资产引用，无法删除",
+            {"references": references},
+        )
     try:
         await elements_repo.soft_delete(element, datetime.now(UTC))
         await asset_service.commit_asset_change(db, [element.project_id])

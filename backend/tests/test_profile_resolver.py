@@ -4,6 +4,7 @@
 """
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -21,6 +22,7 @@ from app.models import (
     Execution,
     ExecutionCase,
     Project,
+    TestElement,
     Variable,
 )
 from app.models import TestSuite as SuiteModel
@@ -578,7 +580,7 @@ async def test_revision_conflict(client):
             await resolve_compat(request, db)
 
 
-async def test_preview_allows_soft_deleted_element_referenced_by_case(client):
+async def test_preview_allows_directly_soft_deleted_element_referenced_by_case(client):
     """设计 §10.3：快照补全含已逻辑删除元素——已保存用例引用被删元素仍可预览。
 
     校验仅要求元素存在且属于本项目；元素被软删除不应让预览报 PROFILE_ELEMENT_MISSING。
@@ -597,9 +599,12 @@ async def test_preview_allows_soft_deleted_element_referenced_by_case(client):
     )
     assert resp.status_code == 201
     case_id = resp.json()["id"]
-    # 软删除元素
-    deleted = await client.delete(f"/api/elements/{element_id}", headers=base["headers"])
-    assert deleted.status_code == 204
+    # 删除 API 会拒绝活动用例引用；这里直接固化历史数据状态，验证解析器仍能读取快照来源。
+    async with SessionLocal() as db:
+        element = await db.get(TestElement, element_id)
+        assert element is not None
+        element.deleted_at = datetime.now(UTC)
+        await db.commit()
     async with SessionLocal() as db:
         profile_id = await _make_profile(db, base)
         result = await resolve_compat(

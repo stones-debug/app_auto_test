@@ -1,9 +1,11 @@
 import json
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from hashlib import sha256
 from io import BytesIO
 from types import SimpleNamespace
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -12,7 +14,21 @@ from sqlalchemy import update
 
 from app.core.database import SessionLocal
 from app.main import app
-from app.models import TestElement as ElementModel
+from app.models import (
+    AppProfile,
+    AppProfileElementOverride,
+    AppProfileNodeOverride,
+    Execution,
+    ExecutionCase,
+    ExecutionSuite,
+    Project,
+    TestCase,
+    TestSuite,
+)
+from app.models import (
+    TestElement as ElementModel,
+)
+from app.services import asset_service
 from app.services.element_excel import (
     CONFIG_CHUNK_SIZE,
     CONFIG_HEADERS,
@@ -146,6 +162,245 @@ async def test_element_crud_and_usage(client: AsyncClient):
 
     deleted = await client.delete(f"/api/elements/{element_id}", headers=headers)
     assert deleted.status_code == 204
+
+
+@pytest.mark.parametrize("reference_kind", ["flow", "legacy_assertion", "parameter"])
+async def test_element_delete_rejects_each_case_reference_without_fallback(
+    client: AsyncClient, reference_kind: str
+):
+    """每种用例引用都必须单独阻止删除，不能依赖同一节点的其它字段。"""
+    headers, project_id = await _setup(client)
+    element = await client.post(
+        f"/api/projects/{project_id}/elements",
+        json={"name": f"受保护元素-{reference_kind}", "locator_type": "id", "locator_value": reference_kind},
+        headers=headers,
+    )
+    element_id = element.json()["id"]
+
+    async with SessionLocal() as db:
+        project = await db.get(Project, project_id)
+        assert project is not None
+        flow_nodes: list[dict[str, Any]]
+        steps: list[dict[str, Any]]
+        if reference_kind == "flow":
+            flow_nodes = [{"kind": "action", "element_id": element_id}]
+            steps = []
+        elif reference_kind == "legacy_assertion":
+            flow_nodes = []
+            steps = [{"action": "click", "assertions": [{"type": "text_equals", "element_id": element_id}]}]
+        else:
+            flow_nodes = [{"kind": "action", "action": "set_slider_value", "params": {"value_element_id": element_id}}]
+            steps = []
+        case = TestCase(
+            project_id=project_id,
+            name="当前用例引用",
+            flow_nodes=flow_nodes,
+            steps=steps,
+            variables={},
+        )
+        db.add(case)
+        revision_before = project.test_asset_revision
+        await db.commit()
+
+    deleted = await client.delete(f"/api/elements/{element_id}", headers=headers)
+    assert deleted.status_code == 409
+    detail = deleted.json()["detail"]
+    assert detail["code"] == "ELEMENT_IN_USE"
+    references = detail["context"]["references"]
+    assert len(references) == 1
+    assert references[0]["asset_type"] == "case"
+    assert references[0]["case_name"] == "当前用例引用"
+    assert references[0]["reference_type"] == "case_flow"
+
+    async with SessionLocal() as db:
+        current_element = await db.get(ElementModel, element_id)
+        project = await db.get(Project, project_id)
+        assert current_element is not None and current_element.deleted_at is None
+        assert project is not None and project.test_asset_revision == revision_before
+
+
+async def test_element_delete_rejects_suite_and_profile_references(client: AsyncClient):
+    """套件前后置与两类档案覆盖均是独立的当前资产引用。"""
+    headers, project_id = await _setup(client)
+    element = await client.post(
+        f"/api/projects/{project_id}/elements",
+        json={"name": "套件档案保护元素", "locator_type": "id", "locator_value": "protected"},
+        headers=headers,
+    )
+    element_id = element.json()["id"]
+
+    async with SessionLocal() as db:
+        project = await db.get(Project, project_id)
+        assert project is not None
+        suite = TestSuite(
+            project_id=project_id,
+            name="当前套件引用",
+            setup_steps=[{"action": "click", "element_id": element_id}],
+            teardown_steps=[{"action": "clear", "element_id": element_id}],
+        )
+        profile = AppProfile(
+            project_id=project_id, name="删除保护档案", code=f"delete-{uuid4().hex[:8]}"
+        )
+        db.add_all([suite, profile])
+        await db.flush()
+        db.add_all(
+            [
+                AppProfileElementOverride(
+                    profile_id=profile.id,
+                    element_id=element_id,
+                    locator_type="id",
+                    locator_value="profile-id",
+                ),
+                AppProfileNodeOverride(
+                    profile_id=profile.id,
+                    suite_id=suite.id,
+                    target_type="suite_step",
+                    case_id=None,
+                    node_key=uuid4(),
+                    patch={"params": {"value_element_id": element_id}},
+                ),
+            ]
+        )
+        await db.flush()
+        revision_before = project.test_asset_revision
+        await db.commit()
+
+    deleted = await client.delete(f"/api/elements/{element_id}", headers=headers)
+    assert deleted.status_code == 409
+    detail = deleted.json()["detail"]
+    assert detail["code"] == "ELEMENT_IN_USE"
+    assert {item["asset_type"] for item in detail["context"]["references"]} == {
+        "suite",
+        "profile",
+    }
+    assert {item["reference_type"] for item in detail["context"]["references"]} == {
+        "suite_setup_or_teardown",
+        "element_override",
+        "node_override",
+    }
+
+    async with SessionLocal() as db:
+        current_element = await db.get(ElementModel, element_id)
+        project = await db.get(Project, project_id)
+        assert current_element is not None and current_element.deleted_at is None
+        assert project is not None and project.test_asset_revision == revision_before
+
+
+async def test_element_delete_ignores_deleted_assets_and_execution_snapshots(
+    client: AsyncClient,
+):
+    headers, project_id = await _setup(client)
+    element = await client.post(
+        f"/api/projects/{project_id}/elements",
+        json={"name": "可删除历史元素", "locator_type": "id", "locator_value": "old"},
+        headers=headers,
+    )
+    element_id = element.json()["id"]
+
+    async with SessionLocal() as db:
+        deleted_at = datetime.now(UTC)
+        case = TestCase(
+            project_id=project_id,
+            name="已删除用例",
+            deleted_at=deleted_at,
+            flow_nodes=[{"element_id": element_id}],
+            steps=[],
+            variables={},
+        )
+        suite = TestSuite(
+            project_id=project_id,
+            name="已删除套件",
+            deleted_at=deleted_at,
+            setup_steps=[{"element_id": element_id}],
+            teardown_steps=[],
+        )
+        profile = AppProfile(
+            project_id=project_id,
+            name="已删除档案",
+            code=f"removed-{uuid4().hex[:8]}",
+            deleted_at=deleted_at,
+        )
+        db.add_all([case, suite, profile])
+        await db.flush()
+        db.add_all(
+            [
+                AppProfileElementOverride(
+                    profile_id=profile.id,
+                    element_id=element_id,
+                    locator_type="id",
+                    locator_value="deleted-profile-id",
+                ),
+                AppProfileNodeOverride(
+                    profile_id=profile.id,
+                    suite_id=suite.id,
+                    target_type="suite_step",
+                    case_id=None,
+                    node_key=uuid4(),
+                    patch={"element_id": element_id},
+                ),
+            ]
+        )
+        await db.flush()
+        execution = Execution(project_id=project_id, type="case", status="passed", parameters={})
+        db.add(execution)
+        await db.flush()
+        execution_suite = ExecutionSuite(
+            execution_id=execution.id,
+            suite_name="历史快照",
+            suite_order=1,
+            setup_steps_snapshot=[],
+            teardown_steps_snapshot=[],
+            elements_snapshot={str(element_id): {"locator_value": "old"}},
+        )
+        db.add(execution_suite)
+        await db.flush()
+        db.add(
+            ExecutionCase(
+                execution_id=execution.id,
+                execution_suite_id=execution_suite.id,
+                case_id=case.id,
+                case_name="历史快照用例",
+                case_order=1,
+                steps_snapshot=[{"element_id": element_id}],
+                flow_snapshot=[{"element_id": element_id}],
+                elements_snapshot={str(element_id): {"locator_value": "old"}},
+            )
+        )
+        await db.commit()
+
+    deleted = await client.delete(f"/api/elements/{element_id}", headers=headers)
+    assert deleted.status_code == 204
+    assert (await client.get(f"/api/elements/{element_id}", headers=headers)).status_code == 404
+
+
+async def test_element_delete_rolls_back_when_asset_revision_update_fails(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    headers, project_id = await _setup(client)
+    element = await client.post(
+        f"/api/projects/{project_id}/elements",
+        json={"name": "事务元素", "locator_type": "id", "locator_value": "rollback"},
+        headers=headers,
+    )
+    element_id = element.json()["id"]
+
+    async with SessionLocal() as db:
+        project = await db.get(Project, project_id)
+        assert project is not None
+        revision_before = project.test_asset_revision
+
+    async def fail_revision(*_args, **_kwargs):
+        raise RuntimeError("revision update failed")
+
+    monkeypatch.setattr(asset_service, "commit_asset_change", fail_revision)
+    with pytest.raises(RuntimeError, match="revision update failed"):
+        await client.delete(f"/api/elements/{element_id}", headers=headers)
+
+    async with SessionLocal() as db:
+        current_element = await db.get(ElementModel, element_id)
+        project = await db.get(Project, project_id)
+        assert current_element is not None and current_element.deleted_at is None
+        assert project is not None and project.test_asset_revision == revision_before
 
 
 async def test_element_pages_grouping(client: AsyncClient):

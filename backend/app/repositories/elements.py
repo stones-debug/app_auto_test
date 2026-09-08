@@ -6,7 +6,19 @@ from typing import Any
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import ElementGroup, Project, TestCase, TestElement, TestModule, User
+from app.models import (
+    AppProfile,
+    AppProfileElementOverride,
+    AppProfileNodeOverride,
+    ElementGroup,
+    Project,
+    TestCase,
+    TestElement,
+    TestModule,
+    TestSuite,
+    User,
+)
+from app.utils.element_refs import collect_element_ids
 
 
 async def list_modules(
@@ -268,6 +280,119 @@ async def find_by_ids(db: AsyncSession, ids: set[int]) -> list[TestElement]:
         select(TestElement).where(TestElement.id.in_(ids), TestElement.deleted_at.is_(None))
     )
     return list(rows.scalars().all())
+
+
+async def find_active_references(
+    db: AsyncSession, *, project_id: int, element_id: int
+) -> list[dict[str, object]]:
+    """Return compact references from current executable assets only.
+
+    Execution snapshots are intentionally not queried: they own their historical
+    element data and must not prevent lifecycle changes to the shared element.
+    """
+
+    references: list[dict[str, object]] = []
+    reference_keys: set[tuple[object, ...]] = set()
+
+    def add_reference(reference: dict[str, object]) -> None:
+        """Keep one compact entry per asset and reference kind."""
+        key = (
+            reference["asset_type"],
+            reference.get("case_id"),
+            reference.get("suite_id"),
+            reference.get("profile_id"),
+            reference["reference_type"],
+        )
+        if key not in reference_keys:
+            reference_keys.add(key)
+            references.append(reference)
+    cases = (
+        await db.execute(
+            select(TestCase).where(
+                TestCase.project_id == project_id, TestCase.deleted_at.is_(None)
+            )
+        )
+    ).scalars().all()
+    for case in cases:
+        if element_id in collect_element_ids(case.flow_nodes, case.steps):
+            add_reference(
+                {
+                    "asset_type": "case",
+                    "case_id": case.id,
+                    "case_name": case.name,
+                    "reference_type": "case_flow",
+                }
+            )
+
+    suites = (
+        await db.execute(
+            select(TestSuite).where(
+                TestSuite.project_id == project_id, TestSuite.deleted_at.is_(None)
+            )
+        )
+    ).scalars().all()
+    for suite in suites:
+        if element_id in collect_element_ids(suite.setup_steps, suite.teardown_steps):
+            add_reference(
+                {
+                    "asset_type": "suite",
+                    "suite_id": suite.id,
+                    "suite_name": suite.name,
+                    "reference_type": "suite_setup_or_teardown",
+                }
+            )
+
+    profiles = (
+        await db.execute(
+            select(AppProfile).where(
+                AppProfile.project_id == project_id, AppProfile.deleted_at.is_(None)
+            )
+        )
+    ).scalars().all()
+    profile_ids = [profile.id for profile in profiles]
+    profile_names = {profile.id: profile.name for profile in profiles}
+    if not profile_ids:
+        return references
+
+    element_overrides = (
+        await db.execute(
+            select(AppProfileElementOverride).where(
+                AppProfileElementOverride.profile_id.in_(profile_ids),
+                AppProfileElementOverride.element_id == element_id,
+                AppProfileElementOverride.deleted_at.is_(None),
+            )
+        )
+    ).scalars().all()
+    for override in element_overrides:
+        add_reference(
+            {
+                "asset_type": "profile",
+                "profile_id": override.profile_id,
+                "profile_name": profile_names[override.profile_id],
+                "reference_type": "element_override",
+            }
+        )
+
+    node_overrides = (
+        await db.execute(
+            select(AppProfileNodeOverride).where(
+                AppProfileNodeOverride.profile_id.in_(profile_ids),
+                AppProfileNodeOverride.deleted_at.is_(None),
+            )
+        )
+    ).scalars().all()
+    for override in node_overrides:
+        if element_id not in collect_element_ids(override.patch):
+            continue
+        add_reference(
+            {
+                "asset_type": "profile",
+                "profile_id": override.profile_id,
+                "profile_name": profile_names[override.profile_id],
+                "reference_type": "node_override",
+            }
+        )
+    return references
 
 
 async def list_pages(db: AsyncSession, project_id: int | None = None):
