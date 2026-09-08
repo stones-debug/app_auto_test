@@ -3,6 +3,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.core.config import settings
+
 RUN_OPTION_KEYS = ("use_pre_steps", "use_post_steps", "attach_to_current_app")
 
 
@@ -13,10 +15,24 @@ def _validate_run_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
     return parameters
 
 
-class ExecutionCreate(BaseModel):
+class _ExecutionTimeoutModel(BaseModel):
+    """Shared request validation for the configured execution timeout ceiling."""
+
+    timeout_seconds: int | None = Field(default=None, ge=60)
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def _validate_timeout_seconds(cls, value: int | None) -> int | None:
+        if value is not None and value > settings.max_execution_timeout:
+            raise ValueError(
+                f"timeout_seconds 不能超过 {settings.max_execution_timeout} 秒"
+            )
+        return value
+
+
+class ExecutionCreate(_ExecutionTimeoutModel):
     device_id: int | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
-    timeout_seconds: int | None = Field(default=None, ge=60, le=7200)
     # 方案 §4.8：执行创建必填档案/版本与双 revision（required 语义）
     app_profile_id: int | None = None
     app_release_id: int | None = None
@@ -43,12 +59,11 @@ class ExecutionCreate(BaseModel):
         return self
 
 
-class BatchExecutionCreate(BaseModel):
+class BatchExecutionCreate(_ExecutionTimeoutModel):
     suite_ids: list[int] = Field(default_factory=list)
     target_scope: Literal["explicit", "profile_all"] = "explicit"
     device_id: int | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
-    timeout_seconds: int | None = Field(default=None, ge=60, le=7200)
     app_profile_id: int | None = None
     app_release_id: int | None = None
     expected_profile_revision: int | None = Field(default=None, ge=1)
@@ -76,9 +91,8 @@ class BatchExecutionCreate(BaseModel):
         return self
 
 
-class ExecutionRetryRequest(BaseModel):
+class ExecutionRetryRequest(_ExecutionTimeoutModel):
     device_id: int
-    timeout_seconds: int | None = Field(default=None, ge=60, le=7200)
 
 
 # ---------- 执行预检（方案 §4.7） ----------
@@ -98,14 +112,13 @@ class ExecutionPreviewTarget(BaseModel):
         return self
 
 
-class ExecutionPreviewRequest(BaseModel):
+class ExecutionPreviewRequest(_ExecutionTimeoutModel):
     project_id: int
     target: ExecutionPreviewTarget
     app_profile_id: int
     app_release_id: int
     device_id: int | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
-    timeout_seconds: int | None = Field(default=None, ge=60, le=7200)
     # 方案 §2：预检可携带单用例套件上下文
     context_suite_id: int | None = None
 

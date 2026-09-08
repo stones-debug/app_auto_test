@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 
 import {
   DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+  MAX_EXECUTION_TIMEOUT_SECONDS,
   getExecution,
   resolveRetryTimeout,
   type Execution,
@@ -317,7 +318,7 @@ watch([selectedId, usePreSteps, usePostSteps, attachToCurrentApp], () => {
         <el-checkbox v-model="setAsDefault">运行后记住此设备</el-checkbox>
       </el-form-item>
       <el-form-item label="超时(s)">
-        <el-input-number v-model="timeout" :min="60" :max="7200" :step="60" />
+        <el-input-number v-model="timeout" :min="60" :max="MAX_EXECUTION_TIMEOUT_SECONDS" :step="60" />
       </el-form-item>
       <template v-if="targetKind === 'case' || targetKind === 'suite' || targetKind === 'batch'">
         <el-divider content-position="left">执行选项</el-divider>

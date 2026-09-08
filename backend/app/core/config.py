@@ -55,7 +55,7 @@ class Settings(BaseSettings):
 
     # 执行
     default_execution_timeout: int = 1800
-    max_execution_timeout: int = 7200
+    max_execution_timeout: int = Field(default=86400, ge=60, le=86400)
     # CR-06：停止宽限期（stopping 超过该期限强制终态并释放设备）
     execution_stop_grace_seconds: int = 60
     # stop_test 幂等重试退避；stop_command_sent_at 记录最近一次尝试

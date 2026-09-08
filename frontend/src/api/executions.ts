@@ -243,6 +243,7 @@ export interface RetryOptions {
 }
 
 export const DEFAULT_EXECUTION_TIMEOUT_SECONDS = 1800
+export const MAX_EXECUTION_TIMEOUT_SECONDS = 86400
 
 /** 重试默认沿用原执行超时；调用方显式传值优先，避免复用弹窗状态。 */
 export function resolveRetryTimeout(
