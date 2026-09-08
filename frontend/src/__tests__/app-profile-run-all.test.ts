@@ -24,4 +24,12 @@ describe('APP 档案运行全部套件', () => {
     expect(devicePickerSource).toContain('releases.value = [profileReleaseOption(options.profile)]')
     expect(devicePickerSource).toContain("if (!options.profile && target.kind !== 'retry'")
   })
+
+  it('预检 token 失效时提示重新预检并刷新预检结果', () => {
+    const branch = devicePickerSource.match(
+      /if \(apiErrorCode\(error\) === 'EXECUTION_PREPARE_INVALID'\) \{[\s\S]*?\n    \}/,
+    )?.[0] ?? ''
+    expect(branch).toContain('预检已失效，已重新预检，请再次运行')
+    expect(branch).toContain('await doPreview()')
+  })
 })

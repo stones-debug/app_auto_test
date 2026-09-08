@@ -71,6 +71,7 @@ async function run() {
         app_release_version: preview.value.release.version,
         expected_profile_revision: preview.value.profile_revision,
         expected_test_asset_revision: preview.value.test_asset_revision,
+        ...(preview.value.prepare_token ? { prepare_token: preview.value.prepare_token } : {}),
       }
     : undefined
   try {
@@ -86,6 +87,11 @@ async function run() {
     }
     if (['PROFILE_REVISION_CONFLICT', 'TEST_ASSET_REVISION_CONFLICT', 'APP_RELEASE_CHANGED'].includes(apiErrorCode(error) ?? '')) {
       ElMessage.warning('配置已变化，已重新预检，请确认后再次运行')
+      await doPreview()
+      return
+    }
+    if (apiErrorCode(error) === 'EXECUTION_PREPARE_INVALID') {
+      ElMessage.warning('预检已失效，已重新预检，请再次运行')
       await doPreview()
       return
     }

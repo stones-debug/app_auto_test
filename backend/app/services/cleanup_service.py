@@ -5,6 +5,7 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import reports_dir, settings
+from app.repositories import execution_prepares as prepares_repo
 from app.repositories import executions as executions_repo
 from app.repositories import reports as reports_repo
 
@@ -64,3 +65,12 @@ async def cleanup_old_logs(db: AsyncSession, *, dry_run: bool = False) -> dict:
     deleted = await executions_repo.delete_logs_before(db, cutoff)
     await db.commit()
     return {"logs_deleted": deleted}
+
+
+async def cleanup_expired_prepares(db: AsyncSession, *, dry_run: bool = False) -> dict:
+    """有界清理已过期预检行，避免短 token 表无限增长。"""
+    if dry_run:
+        return {"prepares_deleted": 0}
+    deleted = await prepares_repo.delete_expired(db, limit=100)
+    await db.commit()
+    return {"prepares_deleted": deleted}

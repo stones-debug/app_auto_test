@@ -47,7 +47,7 @@ from app.schemas.execution import (
     ExecutionStepOut,
     ExecutionSuiteOut,
 )
-from app.services import execution_service
+from app.services import execution_prepare, execution_service
 from app.services.access_scope import visible_project_ids
 from app.services.execution_detail_service import load_suite_tree
 from app.services.profile_resolver import (
@@ -188,6 +188,40 @@ async def preview_execution(
         ],
         warnings=result.warnings,
     )
+    prepare_token = None
+    prepare_expires_at = None
+    if body.device_id is not None:
+        await _validate_device_for_execution(body.device_id, user, db)
+        target_ids = [
+            suite.suite_id for suite in result.suites
+            if suite.suite_id is not None and not suite.is_virtual
+        ] if body.target.target_scope == "profile_all" else body.target.ids
+        target = execution_prepare.canonical_target(
+            target_type=body.target.type,
+            target_ids=body.target.ids,
+            target_scope=body.target.target_scope,
+            context_suite_id=body.context_suite_id,
+            resolved_ids=target_ids,
+        )
+        try:
+            prepare_token, prepare_expires_at = await execution_prepare.create_prepare(
+                db,
+                user_id=user.id,
+                project_id=body.project_id,
+                app_profile_id=body.app_profile_id,
+                app_release_id=body.app_release_id,
+                app_release_version=result.release_version,
+                profile_revision=result.profile_revision,
+                test_asset_revision=result.test_asset_revision,
+                target=target,
+                device_id=body.device_id,
+                parameters=body.parameters,
+                result=result,
+            )
+        except ValueError as err:
+            raise api_error(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, ErrorCode.SNAPSHOT_TOO_LARGE, str(err)) from None
+        response.prepare_token = prepare_token
+        response.prepare_expires_at = prepare_expires_at
     logger.info(
         "execution_preview stage=preview project_id=%s profile_id=%s target_scope=%s "
         "suite_count=%s case_count=%s node_count=%s elapsed_ms=%.1f",
@@ -301,21 +335,31 @@ async def create_case_execution(
     _rl: None = Depends(rate_limit("execution")),  # CR-21：执行创建限流
     db: AsyncSession = Depends(get_db),
 ):
-    case = await _get_case_or_404(case_id, db)
-    await require_project_write(case.project_id, user, db)
-    await _validate_context_suite(
-        db,
-        project_id=case.project_id,
-        target_type="case",
-        target_ids=[case.id],
-        context_suite_id=body.context_suite_id,
-    )
+    case = await _get_case_or_404(case_id, db) if body.prepare_token is None else None
+    project_id = case.project_id if case is not None else None
+    if body.prepare_token:
+        prepared = await execution_prepare.peek(db, body.prepare_token)
+        if prepared is None:
+            raise api_error(status.HTTP_409_CONFLICT, ErrorCode.EXECUTION_PREPARE_INVALID, "预检令牌无效")
+        project_id = prepared.project_id
+    assert project_id is not None
+    await require_project_write(project_id, user, db)
+    if case is not None:
+        await _validate_context_suite(
+            db,
+            project_id=project_id,
+            target_type="case",
+            target_ids=[case.id],
+            context_suite_id=body.context_suite_id,
+        )
     await _validate_device_for_execution(body.device_id, user, db)
-    profile_body = await execution_service.apply_app_profile_feature_mode(db, case.project_id, body)
+    profile_body = body if body.prepare_token else await execution_service.apply_app_profile_feature_mode(db, project_id, body)
     return await execution_service.create_case_execution(
         db, case, user, body.device_id, body.parameters, body.timeout_seconds,
         body=profile_body,
         context_suite_id=body.context_suite_id,
+        project_id=project_id,
+        asset_case_id=case_id,
     )
 
 
@@ -333,7 +377,12 @@ async def create_batch_execution(
     _reject_current_screen_for_non_case(body.parameters)
     suites: list[TestSuite] = []
     project_id: int | None = None
-    if body.target_scope == "profile_all":
+    if body.prepare_token:
+        prepared = await execution_prepare.peek(db, body.prepare_token)
+        if prepared is None:
+            raise api_error(status.HTTP_409_CONFLICT, ErrorCode.EXECUTION_PREPARE_INVALID, "预检令牌无效")
+        project_id = prepared.project_id
+    elif body.target_scope == "profile_all":
         profile = await profiles_repo.get_by_id(db, body.app_profile_id or 0)
         if profile is None or profile.deleted_at is not None:
             raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.APP_PROFILE_NOT_FOUND, "APP 档案不存在")
@@ -347,11 +396,11 @@ async def create_batch_execution(
             elif suite.project_id != project_id:
                 raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_TARGET_INVALID", "批量执行的套件必须属于同一项目")
             suites.append(suite)
-    if project_id is None or not suites:
+    if project_id is None or (not suites and body.prepare_token is None):
         raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_TARGET_INVALID", "至少选择一个套件")
     await require_project_write(project_id, user, db)
     await _validate_device_for_execution(body.device_id, user, db)
-    profile_body = await execution_service.apply_app_profile_feature_mode(db, project_id, body)
+    profile_body = body if body.prepare_token else await execution_service.apply_app_profile_feature_mode(db, project_id, body)
     return await execution_service.create_batch_execution(
         db, suites, user, body.device_id, body.parameters, body.timeout_seconds,
         body=profile_body,
@@ -371,13 +420,22 @@ async def create_suite_execution(
     db: AsyncSession = Depends(get_db),
 ):
     _reject_current_screen_for_non_case(body.parameters)
-    suite = await _get_suite_or_404(suite_id, db)
-    await require_project_write(suite.project_id, user, db)
+    suite = await _get_suite_or_404(suite_id, db) if body.prepare_token is None else None
+    if suite is not None:
+        project_id = suite.project_id
+    else:
+        prepared = await execution_prepare.peek(db, body.prepare_token or "")
+        if prepared is None:
+            raise api_error(status.HTTP_409_CONFLICT, ErrorCode.EXECUTION_PREPARE_INVALID, "预检令牌无效")
+        project_id = prepared.project_id
+    await require_project_write(project_id, user, db)
     await _validate_device_for_execution(body.device_id, user, db)
-    profile_body = await execution_service.apply_app_profile_feature_mode(db, suite.project_id, body)
+    profile_body = body if body.prepare_token else await execution_service.apply_app_profile_feature_mode(db, project_id, body)
     return await execution_service.create_suite_execution(
         db, suite, user, body.device_id, body.parameters, body.timeout_seconds,
         body=profile_body,
+        project_id=project_id,
+        asset_suite_id=suite_id,
     )
 
 

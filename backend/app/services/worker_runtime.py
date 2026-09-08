@@ -281,4 +281,5 @@ class WorkerRuntime:
     async def _daily_cleanup(db) -> None:
         await cleanup_service.cleanup_old_reports(db)
         await cleanup_service.cleanup_old_logs(db)
+        await cleanup_service.cleanup_expired_prepares(db)
         logger.info("每日清理完成")

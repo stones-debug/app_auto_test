@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     execution_stop_grace_seconds: int = 60
     # 方案 §3.6/§7.4：执行快照序列化上限（默认 20 MB）
     max_execution_snapshot_bytes: int = 20971520
+    # 预检快照仅用于紧邻的创建请求，防止服务端重复解析。
+    execution_prepare_ttl_seconds: int = Field(default=60, ge=1, le=600)
     # 多 APP 档案灰度：off=兼容旧流程；compat=仅指定项目自动注入默认档案；required=全量显式必选。
     app_profile_feature_mode: Literal["off", "compat", "required"] = "off"
     app_profile_enabled_project_ids: str = ""

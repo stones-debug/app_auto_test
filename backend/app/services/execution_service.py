@@ -1,5 +1,6 @@
 import logging
 import time
+from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Literal, cast
 
@@ -18,6 +19,7 @@ from app.models import (
 from app.repositories import executions as executions_repo
 from app.repositories.app_profiles import profiles as profiles_repo
 from app.repositories.app_profiles import releases as releases_repo
+from app.services import execution_prepare
 from app.services.profile_resolver import (
     ProfileEmpty,
     ProfileRevisionConflict,
@@ -174,37 +176,98 @@ async def _create_execution_with_profile(
     任一变化抛 ProfileRevisionConflict → 409，不创建任何执行。
     """
     create_started = time.monotonic()
-    request = await _build_resolution_request(
-        db, project_id=project_id, type_=type_, suite_id=suite_id, case_id=case_id, body=body,
-        context_suite_id=context_suite_id,
-    )
-    try:
-        result = await get_resolver().preview(request, db)
-    except ProfileRevisionConflict as err:
-        from app.services.metrics import inc_conflict
+    prepared = None
+    if getattr(body, "prepare_token", None):
+        prepared = await execution_prepare.lock_for_create(db, body.prepare_token)
+        now = datetime.now(UTC)
+        if prepared is None or prepared.user_id != user.id or prepared.project_id != project_id:
+            raise api_error(status.HTTP_409_CONFLICT, ErrorCode.EXECUTION_PREPARE_INVALID, "预检令牌无效")
+        if prepared.consumed_at is not None or prepared.expires_at <= now:
+            raise api_error(status.HTTP_409_CONFLICT, ErrorCode.EXECUTION_PREPARE_INVALID, "预检已失效，请重新预检")
+        if prepared.device_id != device_id:
+            raise api_error(status.HTTP_409_CONFLICT, ErrorCode.EXECUTION_PREPARE_INVALID, "预检设备已变化，请重新预检")
+        for field in ("app_profile_id", "app_release_id", "expected_profile_revision", "expected_test_asset_revision"):
+            value = getattr(body, field, None)
+            expected = {
+                "app_profile_id": prepared.app_profile_id,
+                "app_release_id": prepared.app_release_id,
+                "expected_profile_revision": prepared.profile_revision,
+                "expected_test_asset_revision": prepared.test_asset_revision,
+            }[field]
+            if value is not None and value != expected:
+                raise api_error(status.HTTP_409_CONFLICT, ErrorCode.EXECUTION_PREPARE_INVALID, "预检上下文已变化，请重新预检")
+        target_type = "case" if type_ == "case" else ("suite" if type_ == "suite" else "batch")
+        target_ids = [case_id] if type_ == "case" and case_id is not None else (
+            [suite_id] if type_ == "suite" and suite_id is not None else list(
+                getattr(body, "suite_ids", None) or (body.parameters or {}).get("suite_ids") or []
+            )
+        )
+        target_scope = cast(Literal["explicit", "profile_all"], getattr(body, "target_scope", "explicit"))
+        prepared_ids = list((prepared.target or {}).get("ids") or [])
+        if target_scope == "profile_all" and not target_ids:
+            target_ids = prepared_ids
+        target = execution_prepare.canonical_target(
+            target_type=target_type,
+            target_ids=target_ids,
+            target_scope=target_scope,
+            context_suite_id=context_suite_id if type_ == "case" else None,
+            resolved_ids=prepared_ids if target_scope == "profile_all" else None,
+        )
+        if target != prepared.target or execution_prepare.request_hash(
+            target=prepared.target, parameters=body.parameters or {}
+        ) != prepared.request_hash:
+            raise api_error(status.HTTP_409_CONFLICT, ErrorCode.EXECUTION_PREPARE_INVALID, "预检目标或参数已变化，请重新预检")
+        request = ResolutionRequest(
+            project_id=prepared.project_id,
+            profile_id=prepared.app_profile_id,
+            release_id=prepared.app_release_id,
+            target_type=prepared.target["type"],
+            target_ids=prepared_ids,
+            expected_profile_revision=prepared.profile_revision,
+            expected_test_asset_revision=prepared.test_asset_revision,
+            run_options=deepcopy(prepared.parameters or {}),
+            execution_variables=(prepared.parameters or {}).get("variables") or {},
+            context_suite_id=prepared.target.get("context_suite_id"),
+            target_scope=prepared.target.get("target_scope", "explicit"),
+        )
+        try:
+            result = execution_prepare.deserialize_result(prepared.resolution_payload)
+        except (KeyError, TypeError, ValueError):
+            raise api_error(status.HTTP_409_CONFLICT, ErrorCode.EXECUTION_PREPARE_INVALID, "预检快照不可用") from None
+    else:
+        request = await _build_resolution_request(
+            db, project_id=project_id, type_=type_, suite_id=suite_id, case_id=case_id, body=body,
+            context_suite_id=context_suite_id,
+        )
+        try:
+            result = await get_resolver().preview(request, db)
+        except ProfileRevisionConflict as err:
+            from app.services.metrics import inc_conflict
 
-        type_ = "profile" if "PROFILE_REVISION" in err.code else "asset"
-        inc_conflict(type_)
-        raise api_error(
-            status.HTTP_409_CONFLICT,
-            err.code,
-            "档案或测试资产版本已变化，请重新预检",
-            {"current": err.current, "expected": err.expected},
-        ) from None
-    except ProfileEmpty:
-        from app.services.metrics import inc_resolve
+            type_ = "profile" if "PROFILE_REVISION" in err.code else "asset"
+            inc_conflict(type_)
+            raise api_error(
+                status.HTTP_409_CONFLICT,
+                err.code,
+                "档案或测试资产版本已变化，请重新预检",
+                {"current": err.current, "expected": err.expected},
+            ) from None
+        except ProfileEmpty:
+            from app.services.metrics import inc_resolve
 
-        inc_resolve("empty")
-        raise api_error(status.HTTP_400_BAD_REQUEST, ErrorCode.PROFILE_EMPTY, "解析后没有可执行用例") from None
-    except ProfileRuleError as err:
-        from app.services.metrics import inc_resolve
+            inc_resolve("empty")
+            raise api_error(status.HTTP_400_BAD_REQUEST, ErrorCode.PROFILE_EMPTY, "解析后没有可执行用例") from None
+        except ProfileRuleError as err:
+            from app.services.metrics import inc_resolve
 
-        inc_resolve("invalid")
-        raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, err.code, err.message) from None
+            inc_resolve("invalid")
+            raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, err.code, err.message) from None
 
     from app.services.metrics import inc_resolve, observe_snapshot
 
-    inc_resolve("success")
+    resolution_mode = "prepare_hit" if prepared is not None else "fallback"
+    if prepared is None:
+        inc_resolve("success")
 
     await _lock_and_verify_resolution_revisions(
         db,
@@ -228,27 +291,45 @@ async def _create_execution_with_profile(
 
     import time as _time
     _t0 = _time.monotonic()
+    execution_parameters = dict(parameters or {})
+    execution_suite_id = suite_id
+    execution_case_id = case_id
+    if prepared is not None:
+        prepared_ids = list((prepared.target or {}).get("ids") or [])
+        if type_ == "batch":
+            execution_parameters["suite_ids"] = prepared_ids
+            if prepared.target.get("target_scope") == "profile_all":
+                execution_parameters["target_scope"] = "profile_all"
+        elif type_ == "case" and execution_case_id is None and prepared_ids:
+            execution_case_id = prepared_ids[0]
+        elif type_ == "suite" and execution_suite_id is None and prepared_ids:
+            execution_suite_id = prepared_ids[0]
     execution = await executions_repo.create_profiled(
         db,
         fields={
-            "project_id": project_id, "type": type_, "suite_id": suite_id,
-            "case_id": case_id, "device_id": device_id, "status": "queued",
-            "parameters": parameters or {}, "timeout_seconds": timeout_seconds or settings.default_execution_timeout,
-            "created_by": user.id, "retry_of": retry_of, "app_profile_id": body.app_profile_id,
-            "app_profile_name_snapshot": result.profile_name, "app_release_id": body.app_release_id,
+            "project_id": project_id, "type": type_, "suite_id": execution_suite_id,
+            "case_id": execution_case_id, "device_id": device_id, "status": "queued",
+            "parameters": execution_parameters, "timeout_seconds": timeout_seconds or settings.default_execution_timeout,
+            "created_by": user.id, "retry_of": retry_of,
+            "app_profile_id": prepared.app_profile_id if prepared else body.app_profile_id,
+            "app_profile_name_snapshot": result.profile_name,
+            "app_release_id": prepared.app_release_id if prepared else body.app_release_id,
             "app_release_version_snapshot": result.release_version or "", "profile_revision": result.profile_revision,
             "test_asset_revision": result.test_asset_revision, "profile_resolution_summary": {**result.summary},
         },
-        result=result, app_profile_id=body.app_profile_id,
+        result=result, app_profile_id=prepared.app_profile_id if prepared else body.app_profile_id,
     )
+    if prepared is not None:
+        prepared.consumed_at = datetime.now(UTC)
     observe_snapshot(snapshot_bytes, (_time.monotonic() - _t0) * 1000.0)
     await db.commit()
     await executions_repo.refresh(db, execution)
     logger.info(
-        "execution_create stage=create project_id=%s profile_id=%s target_scope=%s "
+        "execution_create stage=create prepare=%s project_id=%s profile_id=%s target_scope=%s "
         "suite_count=%s case_count=%s node_count=%s snapshot_bytes=%s elapsed_ms=%.1f",
+        resolution_mode,
         project_id,
-        body.app_profile_id,
+        prepared.app_profile_id if prepared else body.app_profile_id,
         request.target_scope,
         result.summary.get("executable_suites", 0),
         result.summary.get("executable_cases", 0),
@@ -286,43 +367,53 @@ async def _create_and_enqueue(
 
 async def create_case_execution(
     db: AsyncSession,
-    case: TestCase,
+    case: TestCase | None,
     user: User,
     device_id: int | None,
     parameters: dict,
     timeout_seconds: int | None,
     body=None,
     context_suite_id: int | None = None,
+    project_id: int | None = None,
+    asset_case_id: int | None = None,
 ) -> Execution:
     if body is None:
+        if case is None:
+            raise ValueError("case required without profile context")
         return await _create_and_enqueue(
             db, project_id=case.project_id, type_="case", user=user, device_id=device_id,
             parameters=parameters, timeout_seconds=timeout_seconds, case_id=case.id,
         )
     return await _create_execution_with_profile(
-        db, project_id=case.project_id, type_="case", user=user, device_id=device_id,
-        parameters=parameters, timeout_seconds=timeout_seconds, body=body, case_id=case.id,
+        db, project_id=project_id if project_id is not None else case.project_id if case is not None else 0, type_="case", user=user, device_id=device_id,
+        parameters=parameters, timeout_seconds=timeout_seconds, body=body,
+        case_id=asset_case_id if asset_case_id is not None else case.id if case is not None else None,
         context_suite_id=context_suite_id,
     )
 
 
 async def create_suite_execution(
     db: AsyncSession,
-    suite: TestSuite,
+    suite: TestSuite | None,
     user: User,
     device_id: int | None,
     parameters: dict,
     timeout_seconds: int | None,
     body=None,
+    project_id: int | None = None,
+    asset_suite_id: int | None = None,
 ) -> Execution:
     if body is None:
+        if suite is None:
+            raise ValueError("suite required without profile context")
         return await _create_and_enqueue(
             db, project_id=suite.project_id, type_="suite", user=user, device_id=device_id,
             parameters=parameters, timeout_seconds=timeout_seconds, suite_id=suite.id,
         )
     return await _create_execution_with_profile(
-        db, project_id=suite.project_id, type_="suite", user=user, device_id=device_id,
-        parameters=parameters, timeout_seconds=timeout_seconds, body=body, suite_id=suite.id,
+        db, project_id=project_id if project_id is not None else suite.project_id if suite is not None else 0, type_="suite", user=user, device_id=device_id,
+        parameters=parameters, timeout_seconds=timeout_seconds, body=body,
+        suite_id=asset_suite_id if asset_suite_id is not None else suite.id if suite is not None else None,
     )
 
 
@@ -335,8 +426,21 @@ async def create_batch_execution(
     timeout_seconds: int | None,
     body=None,
 ) -> Execution:
-    project_id = suites[0].project_id
+    if suites:
+        project_id = suites[0].project_id
+    elif body is not None and getattr(body, "prepare_token", None):
+        prepared = await execution_prepare.peek(db, body.prepare_token)
+        if prepared is None:
+            raise api_error(status.HTTP_409_CONFLICT, ErrorCode.EXECUTION_PREPARE_INVALID, "预检令牌无效")
+        project_id = prepared.project_id
+    else:
+        raise ValueError("suite required for batch execution")
     parameters = dict(parameters or {})
+    if body is not None and getattr(body, "prepare_token", None):
+        return await _create_execution_with_profile(
+            db, project_id=project_id, type_="batch", user=user, device_id=device_id,
+            parameters=parameters, timeout_seconds=timeout_seconds, body=body,
+        )
     suite_ids = parameters.get("suite_ids") or []
     suite_ids = list(dict.fromkeys([*suite_ids, *[s.id for s in suites]]))
     parameters["suite_ids"] = suite_ids

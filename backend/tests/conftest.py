@@ -63,6 +63,7 @@ from app.models import (  # noqa: E402
     ExecutionCase,
     ExecutionExclusion,
     ExecutionLog,
+    ExecutionPrepare,
     ExecutionQueue,
     ExecutionStep,
     ExecutionSuite,
@@ -168,6 +169,9 @@ async def _cleanup_test_data():
                         select(Execution.id).where(Execution.project_id.in_(project_ids))
                     )
                 ).scalars().all()
+                await session.execute(
+                    delete(ExecutionPrepare).where(ExecutionPrepare.project_id.in_(project_ids))
+                )
                 if exec_ids:
                     exec_suite_ids = (
                         await session.execute(

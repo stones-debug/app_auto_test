@@ -1,6 +1,7 @@
 ﻿"""Step B10：执行创建快照前移——档案执行固化快照/排除项/队列；revision 冲突 409。"""
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -17,13 +18,15 @@ from app.models import (
     ExecutionCase,
     ExecutionExclusion,
     ExecutionNode,
+    ExecutionPrepare,
     ExecutionStep,
     ExecutionSuite,
     Project,
     Report,
     TestSuite,
 )
-from app.services import worker_service
+from app.services import execution_prepare, worker_service
+from app.services.cleanup_service import cleanup_expired_prepares
 from app.services.profile_resolver import ProfileResolver, ResolutionRequest, resolve
 from tests.helpers import create_bound_agent_device
 
@@ -104,6 +107,177 @@ async def test_case_execution_materializes_snapshot(client: AsyncClient):
         assert cases[0].steps_snapshot[0]["action"] == "sleep"
         steps = (await db.execute(select(ExecutionStep).where(ExecutionStep.execution_case_id == cases[0].id))).scalars().all()
         assert len(steps) == 1
+
+
+async def test_preview_prepare_token_reuses_resolution_and_is_single_use(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    """带设备预检会固化 token；创建直接复用快照且 token 只能消费一次。"""
+    base = await _base(client)
+    profile_id, release_id = await _make_profile(client, base)
+    case_id = await _make_case(client, base)
+    revision = await _asset_revision(base["project_id"])
+    preview = await client.post(
+        "/api/executions/preview",
+        headers=base["headers"],
+        json={
+            "project_id": base["project_id"],
+            "target": {"type": "case", "ids": [case_id]},
+            "app_profile_id": profile_id,
+            "app_release_id": release_id,
+            "device_id": base["device_id"],
+            "parameters": {"use_pre_steps": False, "use_post_steps": False},
+        },
+    )
+    assert preview.status_code == 200, preview.text
+    token = preview.json()["prepare_token"]
+    assert isinstance(token, str) and len(token) >= 40
+
+    async def fail_resolve(*args, **kwargs):
+        raise AssertionError("带 prepare_token 的创建不应再次解析")
+
+    monkeypatch.setattr("app.services.execution_service.get_resolver", lambda: SimpleNamespace(preview=fail_resolve))
+    created = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers=base["headers"],
+        json={
+            "prepare_token": token,
+            "app_profile_id": profile_id,
+            "app_release_id": release_id,
+            "expected_profile_revision": 1,
+            "expected_test_asset_revision": revision,
+            "device_id": base["device_id"],
+            "parameters": {"use_pre_steps": False, "use_post_steps": False},
+        },
+    )
+    assert created.status_code == 201, created.text
+    repeated = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers=base["headers"],
+        json={"prepare_token": token, "device_id": base["device_id"], "parameters": {"use_pre_steps": False, "use_post_steps": False}},
+    )
+    assert repeated.status_code == 409
+    assert repeated.json()["detail"]["code"] == "EXECUTION_PREPARE_INVALID"
+
+
+async def test_profile_all_prepare_keeps_skipped_suite_ids_and_reuses_tree(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    """profile_all token 固化全部目标套件，物化仍只落可执行树。"""
+    base = await _base(client)
+    profile_id, release_id = await _make_profile(client, base)
+    case_id = await _make_case(client, base)
+    suite_ids: list[int] = []
+    for name in ("保留套件", "跳过套件"):
+        suite_id = (
+            await client.post(
+                f"/api/projects/{base['project_id']}/suites",
+                headers=base["headers"],
+                json={"name": name},
+            )
+        ).json()["id"]
+        relation = await client.post(
+            f"/api/suites/{suite_id}/cases",
+            headers=base["headers"],
+            json={"case_id": case_id},
+        )
+        assert relation.status_code in {200, 201}
+        suite_ids.append(suite_id)
+    skipped = await client.post(
+        f"/api/app-profiles/{profile_id}/skip-rules/batch",
+        headers=base["headers"],
+        json={
+            "expected_revision": 1,
+            "operation": "skip",
+            "reason": {"code": "unsupported"},
+            "targets": [{"type": "suite", "suite_id": suite_ids[1]}],
+        },
+    )
+    assert skipped.status_code == 200, skipped.text
+    preview = await client.post(
+        "/api/executions/preview",
+        headers=base["headers"],
+        json={
+            "project_id": base["project_id"],
+            "target": {"type": "batch", "ids": [], "target_scope": "profile_all"},
+            "app_profile_id": profile_id,
+            "app_release_id": release_id,
+            "device_id": base["device_id"],
+        },
+    )
+    assert preview.status_code == 200, preview.text
+    token = preview.json()["prepare_token"]
+
+    async def fail_resolve(*args, **kwargs):
+        raise AssertionError("profile_all prepare 不应重新解析")
+
+    monkeypatch.setattr("app.services.execution_service.get_resolver", lambda: SimpleNamespace(preview=fail_resolve))
+    created = await client.post(
+        "/api/executions/suites/batch",
+        headers=base["headers"],
+        json={"target_scope": "profile_all", "suite_ids": [], "prepare_token": token, "device_id": base["device_id"]},
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["parameters"]["suite_ids"] == suite_ids
+    async with SessionLocal() as db:
+        rows = (
+            await db.execute(select(ExecutionExclusion).where(ExecutionExclusion.execution_id == created.json()["id"]))
+        ).scalars().all()
+        assert any(row.suite_id_snapshot == suite_ids[1] for row in rows)
+
+
+async def test_prepare_rejects_parameter_mismatch_and_expiry_without_consuming(
+    client: AsyncClient,
+):
+    base = await _base(client)
+    profile_id, release_id = await _make_profile(client, base)
+    case_id = await _make_case(client, base)
+
+    async def make_preview() -> str:
+        response = await client.post(
+            "/api/executions/preview",
+            headers=base["headers"],
+            json={
+                "project_id": base["project_id"],
+                "target": {"type": "case", "ids": [case_id]},
+                "app_profile_id": profile_id,
+                "app_release_id": release_id,
+                "device_id": base["device_id"],
+                "parameters": {"use_pre_steps": False},
+            },
+        )
+        assert response.status_code == 200, response.text
+        return response.json()["prepare_token"]
+
+    token = await make_preview()
+    mismatch = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers=base["headers"],
+        json={"prepare_token": token, "device_id": base["device_id"], "parameters": {"use_pre_steps": True}},
+    )
+    assert mismatch.status_code == 409
+    assert mismatch.json()["detail"]["code"] == "EXECUTION_PREPARE_INVALID"
+    async with SessionLocal() as db:
+        row = await db.scalar(select(ExecutionPrepare).where(ExecutionPrepare.token_hash == execution_prepare.token_hash(token)))
+        assert row is not None and row.consumed_at is None
+        row.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        await db.commit()
+        assert await cleanup_expired_prepares(db) == {"prepares_deleted": 1}
+    expired = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers=base["headers"],
+        json={"prepare_token": token, "device_id": base["device_id"], "parameters": {"use_pre_steps": False}},
+    )
+    assert expired.status_code == 409
+    assert expired.json()["detail"]["code"] == "EXECUTION_PREPARE_INVALID"
+    unicode_invalid = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers=base["headers"],
+        json={"prepare_token": "无效令牌" * 8, "device_id": base["device_id"], "parameters": {}},
+    )
+    assert unicode_invalid.status_code == 409
+    assert unicode_invalid.json()["detail"]["code"] == "EXECUTION_PREPARE_INVALID"
+    assert await make_preview()
 
 
 async def test_materialize_snapshot_batches_dependency_layers_and_backfills_nodes(

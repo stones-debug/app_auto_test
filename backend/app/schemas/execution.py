@@ -24,6 +24,7 @@ class ExecutionCreate(BaseModel):
     expected_test_asset_revision: int | None = Field(default=None, ge=1)
     # 方案 §2：单用例执行可指定套件上下文（引用该套件规则，而非虚拟套件）
     context_suite_id: int | None = None
+    prepare_token: str | None = Field(default=None, min_length=20, max_length=128)
 
     _run_parameters = field_validator("parameters")(_validate_run_parameters)
 
@@ -35,9 +36,9 @@ class ExecutionCreate(BaseModel):
             self.expected_test_asset_revision,
         )
         if self.app_profile_id is None:
-            if any(value is not None for value in values):
+            if any(value is not None for value in values) and self.prepare_token is None:
                 raise ValueError("未指定 app_profile_id 时不能提交档案上下文字段")
-        elif any(value is None for value in values):
+        elif any(value is None for value in values) and self.prepare_token is None:
             raise ValueError("指定 APP 档案时，发布版本与双 revision 均必填")
         return self
 
@@ -52,6 +53,7 @@ class BatchExecutionCreate(BaseModel):
     app_release_id: int | None = None
     expected_profile_revision: int | None = Field(default=None, ge=1)
     expected_test_asset_revision: int | None = Field(default=None, ge=1)
+    prepare_token: str | None = Field(default=None, min_length=20, max_length=128)
 
     _run_parameters = field_validator("parameters")(_validate_run_parameters)
 
@@ -59,7 +61,7 @@ class BatchExecutionCreate(BaseModel):
     def _complete_profile_context(self):
         if self.target_scope == "explicit" and not self.suite_ids:
             raise ValueError("显式批量执行至少需要一个套件")
-        if self.target_scope == "profile_all" and self.app_profile_id is None:
+        if self.target_scope == "profile_all" and self.app_profile_id is None and self.prepare_token is None:
             raise ValueError("运行当前 APP 全部套件必须指定 APP 档案")
         values = (
             self.app_release_id,
@@ -67,9 +69,9 @@ class BatchExecutionCreate(BaseModel):
             self.expected_test_asset_revision,
         )
         if self.app_profile_id is None:
-            if any(value is not None for value in values):
+            if any(value is not None for value in values) and self.prepare_token is None:
                 raise ValueError("未指定 app_profile_id 时不能提交档案上下文字段")
-        elif any(value is None for value in values):
+        elif any(value is None for value in values) and self.prepare_token is None:
             raise ValueError("指定 APP 档案时，发布版本与双 revision 均必填")
         return self
 
@@ -118,6 +120,8 @@ class ExecutionPreviewResponse(BaseModel):
     counts: dict[str, int]
     exclusion_preview: list[dict[str, Any]]
     warnings: list[dict[str, Any]]
+    prepare_token: str | None = None
+    prepare_expires_at: datetime | None = None
 
 
 class ExecutionCaseOut(BaseModel):

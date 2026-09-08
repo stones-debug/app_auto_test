@@ -288,4 +288,26 @@ describe('方案 §4.8 档案上下文（ProfileRunContext）', () => {
     await select.confirmRun({ timeout_seconds: 600 })
     expect(mCreateCase).toHaveBeenCalledWith(1, { timeout_seconds: 600, device_id: 11 })
   })
+
+  it('预检 token 会随档案上下文传给创建请求', async () => {
+    const select = useDeviceSelect()
+    await select.open(
+      { kind: 'case', id: 1, name: '用例' },
+      {
+        profile: {
+          app_profile_id: 12,
+          app_release_id: 33,
+          app_release_version: '1.2.3',
+          expected_profile_revision: 22,
+          expected_test_asset_revision: 205,
+          prepare_token: 'opaque-prepare-token',
+        },
+      },
+    )
+    select.selectedId.value = 11
+    await select.confirmRun({ timeout_seconds: 600 })
+    expect(mCreateCase).toHaveBeenCalledWith(1, expect.objectContaining({
+      prepare_token: 'opaque-prepare-token',
+    }))
+  })
 })

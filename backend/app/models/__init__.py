@@ -23,6 +23,7 @@ from app.models.execution import (
     ExecutionSuite,
     Report,
 )
+from app.models.execution_prepare import ExecutionPrepare
 from app.models.project import Project, ProjectMember
 from app.models.user import User
 from app.models.variable import RefreshToken, Variable
@@ -56,6 +57,7 @@ __all__ = [
     "ExecutionQueue",
     "ExecutionStep",
     "ExecutionSuite",
+    "ExecutionPrepare",
     "Report",
     "Project",
     "ProjectMember",

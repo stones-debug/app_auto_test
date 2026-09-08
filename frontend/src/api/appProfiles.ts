@@ -99,6 +99,8 @@ export interface ExecutionPreview {
   counts: PreviewCounts
   exclusion_preview: { target_type: string; path: string; reason_code: string | null; reason_note: string | null }[]
   warnings: unknown[]
+  prepare_token: string | null
+  prepare_expires_at: string | null
 }
 
 export interface SkipTarget {

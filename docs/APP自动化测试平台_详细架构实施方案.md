@@ -2054,7 +2054,7 @@ RUNNING ←── Worker 认领后经内部接口通知 FastAPI 更新
 1. **测试资产口径**：测试套件、用例、步骤、断言、元素和变量仍只有一份公共资产；`app_profiles` 只保存差异规则，不复制套件。步骤和断言的 JSON `key` 必须是稳定且唯一的 UUID，排序和改名不得改变 key。
 2. **档案与版本**：每个项目可建多个 `app_profiles`，发布版本由 `app_profile_releases` 管理。迁移为活动项目幂等创建“通用配置（待调整）/未标注历史版本”。`profile.revision` 只在有效规则变化时递增；公共测试资产变化递增 `projects.test_asset_revision`。
 3. **差异规则**：`app_profile_skip_rules` 支持 suite/case/step/assertion 四级跳过，父级规则优先；`app_profile_element_overrides`、`app_profile_variable_overrides`、`app_profile_node_overrides` 分别覆盖定位、变量和 Registry 允许的节点参数。所有写命令携带 `expected_revision` 与 `request_id`，Owner/Admin 可写，项目成员只读。
-4. **执行快照**：公共库运行必须选择档案和活动发布版本并调用 `POST /api/executions/preview`。正式提交携带 `app_profile_id`、`app_release_id`、`expected_profile_revision`、`expected_test_asset_revision`；服务端在同一事务内二次锁定双 revisions、生成完整执行快照、固化 `execution_exclusions` 并入队。Agent 只接收最终快照，不解析档案规则。
+4. **执行快照**：公共库运行必须选择档案和活动发布版本并调用 `POST /api/executions/preview`。正式提交携带 `app_profile_id`、`app_release_id`、`expected_profile_revision`、`expected_test_asset_revision`；服务端在同一事务内二次锁定双 revisions、生成完整执行快照、固化 `execution_exclusions` 并入队。Agent 只接收最终快照，不解析档案规则。若预检指定了设备，服务端会把解析结果写入短期 `execution_prepares` 行并返回一次性不透明 `prepare_token`；创建请求可携带该 token 复用同一解析结果，服务端以 SHA-256 哈希、用户/项目/设备/目标/参数/版本和 60 秒 TTL 校验，成功创建与消费在同一事务内完成。token 过期、重复消费或任一上下文不匹配均返回 `EXECUTION_PREPARE_INVALID`，不接受客户端提交解析快照。
 5. **报告口径**：执行记录永久保存档案名、版本、双 revisions 和解析摘要快照；N/A 来自 `execution_exclusions`，不计入成功率分母，运行期 skipped 与 N/A 分开展示。历史 `app_profile_id IS NULL` 的执行显示“历史兼容执行”，不得查询当前配置回填历史结果；重试同样只使用原执行快照。
 6. **资产删除与重试**：用例删除为软删除，不因任何历史 `Execution` 或套件引用而阻止；历史执行详情/报告继续读取其快照。已终态执行的重试不依赖当前用例、套件或档案是否仍存在。
    元素删除同样是软删除，但后端会拒绝仍被未删除用例（含嵌套断言和元素参数）、套件前后置步骤或未删除 APP 档案元素/节点覆盖引用的元素，返回 `ELEMENT_IN_USE`；历史 `Execution` 快照、报告以及已删除资产不构成阻止条件。

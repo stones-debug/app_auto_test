@@ -190,6 +190,7 @@ export interface RunOptions {
   expected_profile_revision?: number
   expected_test_asset_revision?: number
   target_scope?: 'explicit' | 'profile_all'
+  prepare_token?: string
 }
 
 export interface ExecutionRunSettings {

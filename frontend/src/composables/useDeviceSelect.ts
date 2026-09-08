@@ -28,6 +28,7 @@ export interface ProfileRunContext {
   app_release_version: string
   expected_profile_revision: number
   expected_test_asset_revision: number
+  prepare_token?: string
 }
 
 export function profileReleaseOption(profile: ProfileRunContext): { id: number; version: string } {
@@ -93,6 +94,7 @@ export function useDeviceSelect() {
       opts.app_release_id = profileCtx.app_release_id
       opts.expected_profile_revision = profileCtx.expected_profile_revision
       opts.expected_test_asset_revision = profileCtx.expected_test_asset_revision
+      if (profileCtx.prepare_token) opts.prepare_token = profileCtx.prepare_token
     }
     if (target.kind === 'case') return createCaseExecution(target.id, opts)
     if (target.kind === 'suite') return createSuiteExecution(target.id, opts)
