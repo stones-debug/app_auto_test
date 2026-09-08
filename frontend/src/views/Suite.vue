@@ -404,7 +404,7 @@ onMounted(() => {
           </div>
 
           <section class="detail-section">
-            <header class="section-head">
+            <header class="section-head case-orchestration-head">
               <div class="section-title-wrap"><span class="section-accent accent-indigo"></span>
                 <div>
                   <div class="v2-card-title">用例编排</div>
@@ -673,6 +673,16 @@ onMounted(() => {
   border-bottom: 1px solid var(--border);
 }
 
+.case-orchestration-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--card-bg);
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, .08);
+}
+
 .section-title-wrap {
   display: flex;
   align-items: flex-start;
@@ -701,6 +711,17 @@ onMounted(() => {
   align-items: center;
   gap: 10px;
   flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  .case-orchestration-head {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .case-orchestration-head .section-head-right {
+    margin-left: auto;
+  }
 }
 
 .section-body {
