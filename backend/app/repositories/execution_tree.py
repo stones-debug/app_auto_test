@@ -1,8 +1,13 @@
 """执行快照、执行详情树及状态归并的数据访问。"""
 
+import logging
+import time
+from copy import deepcopy
+
 from sqlalchemy import case as sql_case
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models import (
     ExecutionAssertion,
@@ -11,6 +16,8 @@ from app.models import (
     ExecutionStep,
     ExecutionSuite,
 )
+
+logger = logging.getLogger("app.execution_tree")
 
 
 def _node_phase_rank():
@@ -26,21 +33,28 @@ def _node_phase_rank():
 
 
 async def materialize_snapshot(db: AsyncSession, execution, result) -> None:
-    for suite in result.suites:
-        if suite.is_na:
-            continue
-        exec_suite = ExecutionSuite(
+    started = time.monotonic()
+    suites = [suite for suite in result.suites if not suite.is_na]
+    execution_suites = [
+        ExecutionSuite(
             execution_id=execution.id, suite_id=suite.suite_id, suite_name=suite.suite_name,
             suite_order=suite.suite_order, is_virtual=suite.is_virtual, status="pending",
-            setup_steps_snapshot=suite.setup_steps_snapshot, teardown_steps_snapshot=suite.teardown_steps_snapshot,
+            setup_steps_snapshot=suite.setup_steps_snapshot,
+            teardown_steps_snapshot=suite.teardown_steps_snapshot,
             elements_snapshot=suite.elements_snapshot,
         )
-        db.add(exec_suite)
-        await db.flush()
+        for suite in suites
+    ]
+    db.add_all(execution_suites)
+    await db.flush()
+    flush_count = 1
+
+    suite_nodes: list[ExecutionNode] = []
+    for suite, execution_suite in zip(suites, execution_suites, strict=True):
         for phase_steps in (suite.setup_steps_snapshot, suite.teardown_steps_snapshot):
             for node_order, step in enumerate(phase_steps, start=1):
-                db.add(ExecutionNode(
-                    execution_suite_id=exec_suite.id,
+                suite_nodes.append(ExecutionNode(
+                    execution_suite_id=execution_suite.id,
                     kind="action", node_order=node_order,
                     phase=step.get("phase") or "suite_setup",
                     node_key=step.get("source_key") or step.get("key"),
@@ -49,54 +63,99 @@ async def materialize_snapshot(db: AsyncSession, execution, result) -> None:
                     element_id=step.get("element_id"), parameters=step.get("params") or {},
                     continue_on_failure=bool(step.get("continue_on_failure", False)), status="pending",
                 ))
-        for case in suite.cases:
-            exec_case = ExecutionCase(
-                execution_id=execution.id, execution_suite_id=exec_suite.id, case_id=case.case_id,
-                case_name=case.case_name, module_name=case.module_name, case_order=case.case_order,
-            status="pending", steps_snapshot=case.steps_snapshot, elements_snapshot=case.elements_snapshot,
-            flow_snapshot=case.flow_snapshot,
+
+    execution_cases: list[ExecutionCase] = []
+    case_node_refs: list[tuple[ExecutionCase, dict, dict]] = []
+    case_inputs = [
+        (suite, execution_suite, case)
+        for suite, execution_suite in zip(suites, execution_suites, strict=True)
+        for case in suite.cases
+    ]
+    for _suite, execution_suite, case in case_inputs:
+        flow_snapshot = deepcopy(case.flow_snapshot)
+        execution_case = ExecutionCase(
+            execution_id=execution.id, execution_suite_id=execution_suite.id, case_id=case.case_id,
+            case_name=case.case_name, module_name=case.module_name, case_order=case.case_order,
+            status="pending", steps_snapshot=deepcopy(case.steps_snapshot),
+            elements_snapshot=deepcopy(case.elements_snapshot), flow_snapshot=flow_snapshot,
         )
-            db.add(exec_case)
-            await db.flush()
-            for node in case.flow_snapshot:
-                execution_node = ExecutionNode(
-                    execution_case_id=exec_case.id,
-                    kind=node.get("kind") or ("assertion" if node.get("type") else "action"),
-                    node_order=int(node.get("order") or 0),
-                    phase=node.get("phase") or "case_main",
-                    node_key=node.get("source_key") or node.get("key"),
-                    action=node.get("action"), assertion_type=node.get("type") or node.get("assertion_type"),
-                    description=node.get("description"),
-                    element_id=node.get("element_id"),
-                    parameters=node.get("params") or node.get("parameters") or {},
-                    max_wait_seconds=node.get("max_wait_seconds"),
-                    continue_on_failure=bool(node.get("continue_on_failure", False)), status="pending",
-                    expected_value=str((node.get("params") or {}).get("expected")) if node.get("kind") == "assertion" and (node.get("params") or {}).get("expected") is not None else None,
-                )
-                db.add(execution_node)
-                await db.flush()
-                node["execution_node_id"] = execution_node.id
-            exec_case.flow_snapshot = case.flow_snapshot
-            for step in case.steps_snapshot:
-                exec_step = ExecutionStep(
-                    execution_case_id=exec_case.id, phase=step.get("phase") or "case_main",
-                    step_order=int(step.get("order") or 0), action=step.get("action") or "",
-                    source_key=step.get("source_key"), source_order=step.get("source_order"),
-                    parameters=step.get("params") or {}, continue_on_failure=bool(step.get("continue_on_failure", False)), status="pending",
-                )
-                db.add(exec_step)
-                await db.flush()
-                for assertion in step.get("assertions") or []:
-                    expected = assertion.get("expected")
-                    if expected is None:
-                        expected = assertion.get("expected_value")
-                    if expected is None:
-                        expected = (assertion.get("params") or {}).get("expected")
-                    db.add(ExecutionAssertion(
-                        execution_step_id=exec_step.id, assertion_order=int(assertion.get("order") or 0),
-                        assertion_type=assertion.get("type") or assertion.get("assertion_type") or "",
-                        expected_value=str(expected) if expected is not None else None, status="pending",
-                    ))
+        execution_cases.append(execution_case)
+        for node, snapshot_node in zip(case.flow_snapshot, flow_snapshot, strict=True):
+            case_node_refs.append((execution_case, node, snapshot_node))
+
+    db.add_all([*suite_nodes, *execution_cases])
+    await db.flush()
+    flush_count += 1
+
+    case_nodes: list[ExecutionNode] = []
+    for execution_case, _source_node, snapshot_node in case_node_refs:
+        case_nodes.append(ExecutionNode(
+            execution_case_id=execution_case.id,
+            kind=snapshot_node.get("kind") or ("assertion" if snapshot_node.get("type") else "action"),
+            node_order=int(snapshot_node.get("order") or 0),
+            phase=snapshot_node.get("phase") or "case_main",
+            node_key=snapshot_node.get("source_key") or snapshot_node.get("key"),
+            action=snapshot_node.get("action"),
+            assertion_type=snapshot_node.get("type") or snapshot_node.get("assertion_type"),
+            description=snapshot_node.get("description"),
+            element_id=snapshot_node.get("element_id"),
+            parameters=snapshot_node.get("params") or snapshot_node.get("parameters") or {},
+            max_wait_seconds=snapshot_node.get("max_wait_seconds"),
+            continue_on_failure=bool(snapshot_node.get("continue_on_failure", False)), status="pending",
+            expected_value=(
+                str((snapshot_node.get("params") or {}).get("expected"))
+                if snapshot_node.get("kind") == "assertion"
+                and (snapshot_node.get("params") or {}).get("expected") is not None
+                else None
+            ),
+        ))
+    db.add_all(case_nodes)
+    await db.flush()
+    flush_count += 1
+    for (_, _source_node, snapshot_node), execution_node in zip(case_node_refs, case_nodes, strict=True):
+        snapshot_node["execution_node_id"] = execution_node.id
+    for execution_case in execution_cases:
+        flag_modified(execution_case, "flow_snapshot")
+
+    execution_steps: list[ExecutionStep] = []
+    step_assertions: list[tuple[ExecutionStep, dict]] = []
+    for execution_case, (_suite, _execution_suite, case) in zip(
+        execution_cases, case_inputs, strict=True
+    ):
+        for step in case.steps_snapshot:
+            execution_step = ExecutionStep(
+                execution_case_id=execution_case.id, phase=step.get("phase") or "case_main",
+                step_order=int(step.get("order") or 0), action=step.get("action") or "",
+                source_key=step.get("source_key"), source_order=step.get("source_order"),
+                parameters=deepcopy(step.get("params") or {}),
+                continue_on_failure=bool(step.get("continue_on_failure", False)), status="pending",
+            )
+            execution_steps.append(execution_step)
+            step_assertions.extend((execution_step, assertion) for assertion in step.get("assertions") or [])
+    db.add_all(execution_steps)
+    await db.flush()
+    flush_count += 1
+
+    assertions = []
+    for execution_step, assertion in step_assertions:
+        expected = assertion.get("expected")
+        if expected is None:
+            expected = assertion.get("expected_value")
+        if expected is None:
+            expected = (assertion.get("params") or {}).get("expected")
+        assertions.append(ExecutionAssertion(
+            execution_step_id=execution_step.id, assertion_order=int(assertion.get("order") or 0),
+            assertion_type=assertion.get("type") or assertion.get("assertion_type") or "",
+            expected_value=str(expected) if expected is not None else None, status="pending",
+        ))
+    db.add_all(assertions)
+    logger.info(
+        "execution_snapshot stage=materialize execution_id=%s suite_count=%s case_count=%s "
+        "node_count=%s step_count=%s assertion_count=%s flush_count=%s elapsed_ms=%.1f",
+        execution.id, len(execution_suites), len(execution_cases),
+        len(suite_nodes) + len(case_nodes), len(execution_steps), len(assertions),
+        flush_count, (time.monotonic() - started) * 1000,
+    )
 
 
 async def load_case_tree_rows(db: AsyncSession, execution_id: int):

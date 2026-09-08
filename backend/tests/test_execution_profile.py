@@ -1,15 +1,28 @@
 ﻿"""Step B10：执行创建快照前移——档案执行固化快照/排除项/队列；revision 冲突 409。"""
 
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event, select
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import SessionLocal, engine
 from app.main import app
-from app.models import Execution, ExecutionCase, ExecutionExclusion, ExecutionStep, Project, Report
+from app.models import (
+    Execution,
+    ExecutionAssertion,
+    ExecutionCase,
+    ExecutionExclusion,
+    ExecutionNode,
+    ExecutionStep,
+    ExecutionSuite,
+    Project,
+    Report,
+    TestSuite,
+)
 from app.services import worker_service
 from app.services.profile_resolver import ProfileResolver, ResolutionRequest, resolve
 from tests.helpers import create_bound_agent_device
@@ -91,6 +104,101 @@ async def test_case_execution_materializes_snapshot(client: AsyncClient):
         assert cases[0].steps_snapshot[0]["action"] == "sleep"
         steps = (await db.execute(select(ExecutionStep).where(ExecutionStep.execution_case_id == cases[0].id))).scalars().all()
         assert len(steps) == 1
+
+
+async def test_materialize_snapshot_batches_dependency_layers_and_backfills_nodes(
+    client: AsyncClient,
+):
+    """多套件共享用例的物化保持独立树，flush 次数不随节点数增长。"""
+    base = await _base(client)
+    from app.services.execution_snapshot import materialize_snapshot
+
+    async with SessionLocal() as db:
+        suites = [
+            TestSuite(project_id=base["project_id"], name=f"批量套件{index}")
+            for index in (1, 2)
+        ]
+        db.add_all(suites)
+        await db.flush()
+        execution = Execution(
+            project_id=base["project_id"], type="batch", status="queued", parameters={}
+        )
+        db.add(execution)
+        await db.flush()
+        flow = [
+            {"kind": "action", "order": 1, "phase": "case_main", "action": "sleep", "source_key": "action-1", "params": {"duration": 1}},
+            {"kind": "assertion", "order": 2, "phase": "case_main", "type": "text_equals", "source_key": "assert-1", "params": {"expected": "ok"}},
+        ]
+        steps = [
+            {"order": 1, "phase": "case_main", "action": "sleep", "source_key": "step-1", "params": {"duration": 1}, "assertions": [{"order": 1, "type": "text_equals", "expected": "ok"}]}
+        ]
+        result = SimpleNamespace(
+            suites=[
+                SimpleNamespace(
+                    suite_id=suite.id,
+                    suite_name=suite.name,
+                    suite_order=order,
+                    is_virtual=False,
+                    is_na=False,
+                    setup_steps_snapshot=[{"phase": "suite_setup", "action": "sleep", "source_key": "setup", "params": {"duration": 1}}],
+                    teardown_steps_snapshot=[{"phase": "suite_teardown", "action": "sleep", "source_key": "teardown", "params": {"duration": 1}}],
+                    elements_snapshot={},
+                    cases=[SimpleNamespace(
+                        case_id=77,
+                        case_name="共享用例",
+                        module_name=None,
+                        case_order=1,
+                        steps_snapshot=steps,
+                        elements_snapshot={},
+                        flow_snapshot=flow,
+                    )],
+                )
+                for order, suite in enumerate(suites, start=1)
+            ]
+        )
+        flushes = 0
+
+        def before_flush(session, flush_context, instances):
+            nonlocal flushes
+            if session is db.sync_session:
+                flushes += 1
+
+        event.listen(Session, "before_flush", before_flush)
+        try:
+            await materialize_snapshot(db, execution, result)
+            assert flushes == 4
+            await db.commit()
+        finally:
+            event.remove(Session, "before_flush", before_flush)
+
+        execution_suites = (
+            await db.execute(select(ExecutionSuite).where(ExecutionSuite.execution_id == execution.id).order_by(ExecutionSuite.suite_order))
+        ).scalars().all()
+        execution_cases = (
+            await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == execution.id).order_by(ExecutionCase.execution_suite_id))
+        ).scalars().all()
+        case_nodes = (
+            await db.execute(select(ExecutionNode).where(ExecutionNode.execution_case_id.in_([case.id for case in execution_cases])))
+        ).scalars().all()
+        suite_nodes = (
+            await db.execute(select(ExecutionNode).where(ExecutionNode.execution_suite_id.in_([suite.id for suite in execution_suites])))
+        ).scalars().all()
+        steps_rows = (
+            await db.execute(select(ExecutionStep).where(ExecutionStep.execution_case_id.in_([case.id for case in execution_cases])))
+        ).scalars().all()
+        assertions = (
+            await db.execute(select(ExecutionAssertion).where(ExecutionAssertion.execution_step_id.in_([step.id for step in steps_rows])))
+        ).scalars().all()
+
+    assert len(execution_suites) == 2
+    assert len(execution_cases) == 2
+    assert {case.execution_suite_id for case in execution_cases} == {suite.id for suite in execution_suites}
+    assert len(case_nodes) == 4
+    assert len({node.id for node in case_nodes}) == 4
+    assert all(node["execution_node_id"] for case in execution_cases for node in case.flow_snapshot)
+    assert len(suite_nodes) == 4
+    assert len(steps_rows) == 2
+    assert len(assertions) == 2
 
 
 async def test_case_execution_revision_conflict(client: AsyncClient):
