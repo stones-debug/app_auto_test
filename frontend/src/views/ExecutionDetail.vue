@@ -37,6 +37,11 @@ import {
   applySuiteStatus,
   settleExecutionSuites,
 } from '@/utils/executionRealtime'
+import {
+  extractActiveExecutionTarget,
+  findRunningExecutionTarget,
+  type ActiveExecutionTarget,
+} from '@/utils/executionAutofollow'
 import { formatDateTime } from '@/utils/format'
 
 const route = useRoute()
@@ -63,6 +68,7 @@ const socket = shallowRef<ReturnType<typeof useExecutionSocket> | null>(null)
 let staleId = 0 // loadAll 的异步完成检查：只允许当前路由的请求生效
 
 const timelineSuites = shallowRef<TimelineSuite[]>([])
+const activeTarget = ref<ActiveExecutionTarget | null>(null)
 
 function toTimelineSuites(suites: ExecutionDetail['suites']): TimelineSuite[] {
   return (suites ?? []).map((s) => ({
@@ -131,7 +137,9 @@ function toTimelineStep(s: {
 }
 
 function updateExecutionStatus(status: ExecutionStatus) {
-  if (!detail.value || detail.value.status === status) return
+  if (!detail.value) return
+  if (isTerminal(status)) activeTarget.value = null
+  if (detail.value.status === status) return
   detail.value = { ...detail.value, status }
 }
 
@@ -179,6 +187,7 @@ async function fetchAllLogs(id: number): Promise<ExecutionLog[]> {
 async function loadAll(id: number) {
   const myStale = ++staleId
   loading.value = true
+  activeTarget.value = null
   try {
     const data = await getExecution(id)
     if (staleId !== myStale) return // 旧请求晚到，不覆盖当前路由数据
@@ -186,6 +195,7 @@ async function loadAll(id: number) {
     if (staleId !== myStale) return
     detail.value = data
     timelineSuites.value = toTimelineSuites(data.suites)
+    activeTarget.value = findRunningExecutionTarget(timelineSuites.value)
     resetLogs()
     const allLogs = await fetchAllLogs(id)
     if (staleId !== myStale) return
@@ -193,6 +203,7 @@ async function loadAll(id: number) {
     reportId.value = null
     completedPulled = false
     if (isTerminal(data.status)) {
+      activeTarget.value = null
       socket.value?.close()
       socket.value = null
       const rid = await findReportByExecution(id)
@@ -214,6 +225,7 @@ async function resyncAfterConnect(id: number) {
     if (staleId !== myStale || executionId.value !== id || realtimeVersion !== versionAtStart) return
     detail.value = data
     timelineSuites.value = toTimelineSuites(data.suites)
+    activeTarget.value = findRunningExecutionTarget(timelineSuites.value)
     // 断线窗口补拉日志：以当前已显示日志（含 live，即 logEntries）的最大时间为游标，
     // 把新的 REST 行并入 logs.value（appendLogs 按 id 去重、live 容差去重交给 logEntries computed）。
     const cursor = nextLogCursor(logEntries.value)
@@ -224,6 +236,7 @@ async function resyncAfterConnect(id: number) {
       }
     }
     if (isTerminal(data.status)) {
+      activeTarget.value = null
       socket.value?.close()
       const rid = await findReportByExecution(id)
       if (staleId === myStale && executionId.value === id) reportId.value = rid
@@ -264,6 +277,7 @@ function subscribe(id: number) {
     } else if (type === 'node_started') {
       realtimeVersion += 1
       applyNodeStarted(timelineSuites.value, msg)
+      activeTarget.value = extractActiveExecutionTarget(msg)
       notifyTimelineChanged()
     } else if (type === 'node_result') {
       realtimeVersion += 1
@@ -286,6 +300,7 @@ function subscribe(id: number) {
         const status = (msg.status as ExecutionStatus) ?? detail.value.status
         updateExecutionStatus(status)
         settleExecutionSuites(timelineSuites.value, status)
+        activeTarget.value = null
         notifyTimelineChanged()
       }
       ws.close()
@@ -334,6 +349,7 @@ watch(
     socket.value = null
     detail.value = null
     timelineSuites.value = []
+    activeTarget.value = null
     logs.value = []
     liveLogs.value = []
     reportId.value = null
@@ -389,7 +405,12 @@ onBeforeUnmount(() => socket.value?.close())
             <el-button size="small" text @click="timelineRef?.collapseAll()">全部折叠</el-button>
           </div>
         </div>
-        <ExecutionTimeline ref="timelineRef" :key="executionId" :suites="timelineSuites" />
+        <ExecutionTimeline
+          ref="timelineRef"
+          :key="executionId"
+          :suites="timelineSuites"
+          :active-target="activeTarget"
+        />
       </div>
       <div class="content-card log-card">
         <div class="v2-card-title">实时日志</div>

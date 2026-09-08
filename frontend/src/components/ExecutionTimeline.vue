@@ -4,12 +4,17 @@
 // 按需展开：套件/用例默认收起，点击头部逐层展开；收起内容用 v-if 真正卸载。
 // 步骤/断言行使用稳定 id 作 key（不用数组下标），避免实时 WS 插入/更新时
 // keyed patch 误复用组件实例（el-popover/el-button）导致 emitsOptions null 崩溃。
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 
 import { useRoute } from 'vue-router'
 
 import AuthenticatedImage from '@/components/AuthenticatedImage.vue'
 import { assertionPassed } from '@/utils/executionOrder'
+import {
+  executionCaseKey,
+  isFirstPassedTransition,
+  type ActiveExecutionTarget,
+} from '@/utils/executionAutofollow'
 import { formatParameters } from '@/utils/parameters'
 
 export type TimelineStepPhase =
@@ -91,7 +96,10 @@ export interface TimelineSuite {
   teardown_steps: TimelineStep[]
 }
 
-const props = defineProps<{ suites: TimelineSuite[] }>()
+const props = defineProps<{
+  suites: TimelineSuite[]
+  activeTarget?: ActiveExecutionTarget | null
+}>()
 const route = useRoute()
 const executionId = computed(() => Number(route.params.executionId))
 
@@ -100,13 +108,119 @@ const expandedSuites = ref<Set<string>>(new Set())
 const expandedCases = ref<Set<string>>(new Set())
 let seeded = false
 let userControlled = false
+const knownCaseStatuses = new Map<string, string>()
+const passedCollapseHandled = new Set<string>()
+const timelineRoot = ref<HTMLElement | null>(null)
+let scrollRequest = 0
+
+function suiteExecutionId(suite: TimelineSuite): number | null {
+  return suite.id ?? null
+}
+
+function caseExecutionId(executionCase: TimelineCase): number | null {
+  return executionCase.id ?? null
+}
+
+function isActiveSuite(suite: TimelineSuite, target: ActiveExecutionTarget): boolean {
+  return target.execution_suite_id != null && suiteExecutionId(suite) === target.execution_suite_id
+}
+
+function findActivePath(target: ActiveExecutionTarget): { suiteIndex: number; caseIndex: number } | null {
+  if (target.execution_suite_id == null && target.execution_case_id == null) return null
+  for (let si = 0; si < props.suites.length; si += 1) {
+    const suite = props.suites[si]
+    if (target.execution_suite_id != null && !isActiveSuite(suite, target)) continue
+    if (target.execution_case_id == null) return { suiteIndex: si, caseIndex: -1 }
+    const caseIndex = suite.cases.findIndex((executionCase) => caseExecutionId(executionCase) === target.execution_case_id)
+    if (caseIndex >= 0) return { suiteIndex: si, caseIndex }
+  }
+  return null
+}
+
+function ensureActivePathExpanded(target: ActiveExecutionTarget): boolean {
+  const path = findActivePath(target)
+  if (!path) return false
+  let changed = false
+  const nextSuites = new Set(expandedSuites.value)
+  const suiteKey = String(path.suiteIndex)
+  if (!nextSuites.has(suiteKey)) {
+    nextSuites.add(suiteKey)
+    changed = true
+  }
+  if (path.caseIndex >= 0) {
+    const nextCases = new Set(expandedCases.value)
+    const caseKey = `${path.suiteIndex}:${path.caseIndex}`
+    if (!nextCases.has(caseKey)) {
+      nextCases.add(caseKey)
+      expandedCases.value = nextCases
+      changed = true
+    }
+  }
+  if (changed) expandedSuites.value = nextSuites
+  return true
+}
+
+function scrollActiveTarget(target: ActiveExecutionTarget): void {
+  const request = ++scrollRequest
+  void nextTick(() => {
+    if (request !== scrollRequest) return
+    const root = timelineRoot.value
+    if (!root) return
+    const row = [...root.querySelectorAll<HTMLElement>('[data-execution-node-id]')]
+      .find((element) => element.dataset.executionNodeId === String(target.execution_node_id))
+    if (!row) return
+
+    // AppShell owns the page scroll. Calculate the target inside that element
+    // so horizontal scroll/other ancestors are not disturbed by the follow.
+    const content = row.closest('.content') as HTMLElement | null
+    if (content) {
+      const rowRect = row.getBoundingClientRect()
+      const contentRect = content.getBoundingClientRect()
+      const top = content.scrollTop + rowRect.top - contentRect.top
+        - (content.clientHeight - rowRect.height) / 2
+      content.scrollTo({ top: Math.max(0, top), behavior: 'auto' })
+    }
+  })
+}
+
+watch(
+  () => {
+    const target = props.activeTarget
+    return target == null
+      ? ''
+      : `${target.execution_suite_id ?? ''}:${target.execution_case_id ?? ''}:${target.execution_node_id}`
+  },
+  () => {
+    const target = props.activeTarget
+    if (!target) return
+    if (ensureActivePathExpanded(target)) scrollActiveTarget(target)
+  },
+)
 
 // 默认展开策略：套件默认收起；仅展开「含失败/error 用例的套件 + 其失败用例」以及「running 状态」的套件，
 // running 套件内的 running 用例一并展开以便实时查看当前进度。用户点击后不再自动改状态。
 watch(
   () => props.suites,
   (suites) => {
-    if (!suites.length || (seeded && userControlled)) return
+    if (!suites.length) return
+
+    // Track status transitions separately from disclosure seeding. This must
+    // continue after a user clicks a disclosure control.
+    suites.forEach((suite, si) => {
+      suite.cases.forEach((executionCase, ci) => {
+        const identity = executionCaseKey(suiteExecutionId(suite), caseExecutionId(executionCase))
+        const previous = knownCaseStatuses.get(identity)
+        if (isFirstPassedTransition(previous, executionCase.status, passedCollapseHandled.has(identity))) {
+          passedCollapseHandled.add(identity)
+          const next = new Set(expandedCases.value)
+          next.delete(`${si}:${ci}`)
+          expandedCases.value = next
+        }
+        knownCaseStatuses.set(identity, executionCase.status)
+      })
+    })
+
+    if (seeded && userControlled) return
     const es = new Set<string>()
     const ec = new Set<string>()
     suites.forEach((s, si) => {
@@ -262,8 +376,13 @@ function phaseLabel(phase?: TimelineStepPhase | string): { text: string; type: '
 </script>
 
 <template>
-  <div class="exec-timeline">
-    <div v-for="(s, si) in suites" :key="s.id ?? s.suite_id ?? si" class="suite-block">
+  <div ref="timelineRoot" class="exec-timeline">
+    <div
+      v-for="(s, si) in suites"
+      :key="s.id ?? s.suite_id ?? si"
+      class="suite-block"
+      :data-execution-suite-id="s.id"
+    >
       <div class="suite-head" @click="toggleSuite(si)">
         <span class="caret" :class="{ 'is-open': expandedSuites.has(String(si)) }">▸</span>
         <span class="suite-name v2-card-title">{{ s.suite_name }}</span>
@@ -277,7 +396,7 @@ function phaseLabel(phase?: TimelineStepPhase | string): { text: string; type: '
         <div v-if="s.setup_steps.length" class="phase-group">
           <div class="phase-label v2-aux">套件前置</div>
           <template v-for="item in suiteItems(s, s.setup_steps, 'su')" :key="item.key">
-            <div class="step-row">
+            <div class="step-row" :data-execution-node-id="item.value.id">
               <span class="step-icon" :class="item.value.status">{{ item.value.status === 'passed' ? '✓' : item.value.status === 'failed' ? '✕' : '○' }}</span>
               <span class="step-order">#{{ item.value.step_order }}</span>
               <el-tag v-if="item.value.phase" size="small" :type="phaseLabel(item.value.phase).type">{{ phaseLabel(item.value.phase).text }}</el-tag>
@@ -293,7 +412,12 @@ function phaseLabel(phase?: TimelineStepPhase | string): { text: string; type: '
           </template>
         </div>
 
-        <div v-for="(c, ci) in s.cases" :key="c.id ?? c.case_id ?? ci" class="case-block">
+        <div
+          v-for="(c, ci) in s.cases"
+          :key="c.id ?? c.case_id ?? ci"
+          class="case-block"
+          :data-execution-case-id="c.id"
+        >
           <div class="case-head" @click="toggleCase(si, ci)">
             <span class="caret" :class="{ 'is-open': expandedCases.has(`${si}:${ci}`) }">▸</span>
             <span class="case-name v2-card-title">{{ c.case_name }}</span>
@@ -301,7 +425,7 @@ function phaseLabel(phase?: TimelineStepPhase | string): { text: string; type: '
           </div>
           <template v-if="expandedCases.has(`${si}:${ci}`)">
             <template v-for="item in executionItems(c)" :key="item.key">
-              <div v-if="item.kind === 'step'" class="step-row">
+              <div v-if="item.kind === 'step'" class="step-row" :data-execution-node-id="item.value.id">
                 <span class="step-icon" :class="item.value.status">{{ item.value.status === 'passed' ? '✓' : item.value.status === 'failed' ? '✕' : '○' }}</span>
                 <span class="step-order">#{{ item.value.step_order }}</span>
                 <el-tag v-if="item.value.phase" size="small" :type="phaseLabel(item.value.phase).type">{{ phaseLabel(item.value.phase).text }}</el-tag>
@@ -322,7 +446,7 @@ function phaseLabel(phase?: TimelineStepPhase | string): { text: string; type: '
                 </el-popover>
                 <span v-if="item.value.error_message" class="step-error v2-aux" :title="item.value.error_message">{{ item.value.error_message }}</span>
               </div>
-              <div v-else class="assertion-row">
+              <div v-else class="assertion-row" :data-execution-node-id="item.value.id">
                 <span class="step-icon" :class="assertionPassed(item.value.status) ? 'passed' : 'failed'">
                   {{ assertionPassed(item.value.status) ? '✓' : 'x' }}
                 </span>
@@ -346,7 +470,7 @@ function phaseLabel(phase?: TimelineStepPhase | string): { text: string; type: '
         <div v-if="s.teardown_steps.length" class="phase-group">
           <div class="phase-label v2-aux">套件后置</div>
           <template v-for="item in suiteItems(s, s.teardown_steps, 'st')" :key="item.key">
-            <div class="step-row">
+            <div class="step-row" :data-execution-node-id="item.value.id">
               <span class="step-icon" :class="item.value.status">{{ item.value.status === 'passed' ? '✓' : item.value.status === 'failed' ? '✕' : '○' }}</span>
               <span class="step-order">#{{ item.value.step_order }}</span>
               <el-tag v-if="item.value.phase" size="small" :type="phaseLabel(item.value.phase).type">{{ phaseLabel(item.value.phase).text }}</el-tag>
