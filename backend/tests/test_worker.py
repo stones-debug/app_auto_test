@@ -1439,10 +1439,128 @@ async def test_timeout_scan(client: AsyncClient):
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
-        assert execution.status == "error"
+        assert execution.status == "stopping"
+        assert execution.finalized_at is None
+        assert execution.timeout_requested_at is not None
+        assert execution.termination_reason == "timeout"
         device = await db.get(Device, device_id)
-        assert device.status == "idle"
-        assert device.locked_by_execution is None
+        assert device.status == "busy"
+        assert device.locked_by_execution == execution_id
+
+
+async def test_timeout_scan_sends_one_stop_and_keeps_pending_tree(client: AsyncClient):
+    """超时只进入 stopping；原子认领保证多次扫描只发一个 stop_test。"""
+    token, case_id = await _setup_case(client)
+    agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
+    sent: list[dict] = []
+
+    async def sender(sender_agent_id: int, payload: dict) -> bool:
+        sent.append({"agent_id": sender_agent_id, **payload})
+        return True
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        execution.status = "running"
+        execution.started_at = datetime.now(UTC) - timedelta(minutes=10)
+        execution.timeout_seconds = 60
+        device = await db.get(Device, device_id)
+        device.status = "busy"
+        device.locked_by_execution = execution_id
+        await db.commit()
+        await worker_service.timeout_scan(db, agent_sender=sender)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        case = (await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == execution_id))).scalar_one()
+        device = await db.get(Device, device_id)
+        assert execution.status == "stopping"
+        assert execution.finalized_at is None
+        assert execution.stop_command_sent_at is not None
+        assert case.status == "pending"
+        assert device.status == "busy"
+        assert device.locked_by_execution == execution_id
+        await worker_service.timeout_scan(db, agent_sender=sender)
+
+    assert sent == [{"agent_id": agent_id, "type": "stop_test", "execution_id": execution_id}]
+
+
+async def test_timeout_scan_concurrent_workers_have_one_transition_and_send(client: AsyncClient):
+    """两个扫描者竞争同一执行时，仅 CAS 获胜者发送 stop_test。"""
+    token, case_id = await _setup_case(client)
+    agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
+    sent: list[dict] = []
+
+    async def sender(sender_agent_id: int, payload: dict) -> bool:
+        sent.append({"agent_id": sender_agent_id, **payload})
+        return True
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        execution.status = "running"
+        execution.started_at = datetime.now(UTC) - timedelta(minutes=10)
+        execution.timeout_seconds = 60
+        device = await db.get(Device, device_id)
+        device.status = "busy"
+        device.locked_by_execution = execution_id
+        await db.commit()
+
+    async with SessionLocal() as db_a, SessionLocal() as db_b:
+        await asyncio.gather(
+            worker_service.timeout_scan(db_a, agent_sender=sender),
+            worker_service.timeout_scan(db_b, agent_sender=sender),
+        )
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution.status == "stopping"
+        assert execution.finalized_at is None
+        assert execution.stop_command_sent_at is not None
+    assert sent == [{"agent_id": agent_id, "type": "stop_test", "execution_id": execution_id}]
+
+
+async def test_timeout_stop_send_failure_retries_after_persisted_backoff(client: AsyncClient):
+    """stop_test 失败不会卡死：退避窗口后可由重启扫描重新认领。"""
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
+    sent: list[dict] = []
+
+    async def sender(agent_id: int, payload: dict) -> bool:
+        sent.append({"agent_id": agent_id, **payload})
+        return len(sent) > 1
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        execution.status = "running"
+        execution.started_at = datetime.now(UTC) - timedelta(minutes=10)
+        execution.timeout_seconds = 60
+        device = await db.get(Device, device_id)
+        device.status = "busy"
+        device.locked_by_execution = execution_id
+        await db.commit()
+        await worker_service.timeout_scan(db, agent_sender=sender)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution.status == "stopping"
+        assert execution.finalized_at is None
+        first_attempt = execution.stop_command_sent_at
+        assert first_attempt is not None
+        # 模拟服务重启后发现已超过退避窗口的陈旧尝试。
+        execution.stop_command_sent_at = datetime.now(UTC) - timedelta(
+            seconds=settings.execution_stop_retry_seconds + 1
+        )
+        await db.commit()
+        await worker_service.timeout_scan(db, agent_sender=sender)
+
+    assert len(sent) == 2
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution.stop_command_sent_at is not None
+        assert execution.stop_command_sent_at > first_attempt
 
 
 async def test_reclaim_stale_claimed(client: AsyncClient):
@@ -1469,7 +1587,7 @@ async def test_reclaim_stale_claimed(client: AsyncClient):
 async def test_reclaim_stale_reserved_restores_execution_and_device(client: AsyncClient):
     token, case_id = await _setup_case(client)
     _agent_id, device_id = await _create_agent_device()
-    execution_id = await _create_execution(client, token, case_id, {}, device_id)
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
 
     async with SessionLocal() as db:
         await worker_service.claim_next_queue(db, "dead-worker")
@@ -1547,7 +1665,11 @@ async def test_mark_terminal_derives_case_status(client: AsyncClient):
         execution.timeout_seconds = 60
         await db.commit()
 
-        await worker_service.timeout_scan(db)  # 触发终态（超时时间短）
+        await worker_service.timeout_scan(db)  # 只请求停止，不提前汇总
+        await db.refresh(execution)
+        assert execution.status == "stopping"
+        assert execution.finalized_at is None
+        await worker_service._mark_terminal(db, execution, "error", "执行超时（>60s）")
 
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
@@ -1732,6 +1854,41 @@ async def test_timeout_scan_keeps_stopping_within_grace(client: AsyncClient):
     async with SessionLocal() as db:
         execution = await db.get(Execution, execution_id)
         assert execution.status == "stopping"
+
+
+async def test_timeout_scan_forces_timeout_error_after_grace(client: AsyncClient):
+    """超时 stopping 宽限期到期才 error，并在同一终态汇总中释放设备。"""
+    token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(client, token, case_id, {"variables": {"btn_id": "x"}}, device_id)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        execution.status = "stopping"
+        execution.device_id = device_id
+        execution.started_at = datetime.now(UTC) - timedelta(minutes=2)
+        execution.timeout_seconds = 60
+        execution.stop_requested_at = datetime.now(UTC) - timedelta(
+            seconds=settings.execution_stop_grace_seconds + 1
+        )
+        execution.timeout_requested_at = execution.stop_requested_at
+        execution.termination_reason = "timeout"
+        device = await db.get(Device, device_id)
+        device.status = "busy"
+        device.locked_by_execution = execution_id
+        await db.commit()
+        await worker_service.timeout_scan(db)
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        device = await db.get(Device, device_id)
+        assert execution.status == "error"
+        assert execution.finalized_at is not None
+        assert device.status == "idle"
+        assert device.locked_by_execution is None
+        log = (await db.execute(select(ExecutionLog).where(ExecutionLog.execution_id == execution_id))).scalars().all()
+        assert any("执行超时" in item.message for item in log)
 
 
 async def test_timeout_scan_forces_stopped_from_stop_requested_at(client: AsyncClient):

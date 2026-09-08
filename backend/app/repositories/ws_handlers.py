@@ -180,7 +180,13 @@ async def _bound_execution(
     """
     if execution_id is None:
         return None
-    execution = await db.get(Execution, execution_id)
+    execution = (
+        await db.execute(
+            select(Execution)
+            .where(Execution.id == execution_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
     if execution is None:
         return None
     device = await db.get(Device, execution.device_id) if execution.device_id else None
@@ -778,6 +784,16 @@ async def handle_execution_result(db: AsyncSession, agent_id: int, payload: dict
     # 也不能让 Agent 的 failed/stopped 覆盖已落库的 error。
     stored_status, failure_source = await _stored_execution_terminal(db, execution.id)
     merged_status = _merge_terminal_status(status, stored_status)
+    forced_termination_message: str | None = None
+    if execution.status == "stopping" and execution.termination_reason == "timeout":
+        # A timeout is an execution-level error even when Agent acknowledges
+        # with stopped/passed after receiving stop_test.
+        merged_status = "error"
+        forced_termination_message = f"执行超时（>{execution.timeout_seconds}s）"
+    elif execution.status == "stopping" and execution.termination_reason == "user_stop":
+        # A user stop keeps its explicit stopped semantics despite an in-flight
+        # Agent result racing the stop request.
+        merged_status = "stopped"
     if merged_status != status:
         db.add(
             ExecutionLog(
@@ -798,6 +814,15 @@ async def handle_execution_result(db: AsyncSession, agent_id: int, payload: dict
         execution.duration = int((now - execution.started_at).total_seconds() * 1000)
     await _settle_execution_cases(db, execution.id, status, now)
     error_message = payload.get("error_message")
+    if forced_termination_message:
+        db.add(
+            ExecutionLog(
+                execution_id=execution_id,
+                level="ERROR",
+                message=forced_termination_message,
+                source="worker",
+            )
+        )
     if error_message:
         db.add(
             ExecutionLog(

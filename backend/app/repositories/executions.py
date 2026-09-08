@@ -4,7 +4,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -577,14 +577,59 @@ async def get_artifact(
 
 
 async def stop_queued(db: AsyncSession, execution_id: int, now) -> int:
-    result = await db.execute(update(Execution).where(Execution.id == execution_id, Execution.status == "queued").values(status="cancelled", finished_at=now, stop_requested_at=now, finalized_at=now))
+    result = await db.execute(update(Execution).where(Execution.id == execution_id, Execution.status == "queued").values(status="cancelled", finished_at=now, stop_requested_at=now, termination_reason="user_stop", finalized_at=now))
     await db.execute(update(ExecutionQueue).where(ExecutionQueue.execution_id == execution_id).values(status="done"))
     return int(getattr(result, "rowcount", 0))
 
 
 async def stop_running(db: AsyncSession, execution_id: int, now) -> int:
-    result = await db.execute(update(Execution).where(Execution.id == execution_id, Execution.status == "running").values(status="stopping", stop_requested_at=now))
+    result = await db.execute(update(Execution).where(Execution.id == execution_id, Execution.status == "running").values(status="stopping", stop_requested_at=now, termination_reason="user_stop"))
     return int(getattr(result, "rowcount", 0))
+
+
+async def request_timeout_stop(db: AsyncSession, execution_id: int, now: datetime) -> bool:
+    """Atomically enter the timeout stopping phase without finalizing children."""
+    result = await db.execute(
+        update(Execution)
+        .where(
+            Execution.id == execution_id,
+            Execution.status == "running",
+            Execution.finalized_at.is_(None),
+            Execution.timeout_requested_at.is_(None),
+        )
+        .values(
+            status="stopping",
+            stop_requested_at=now,
+            timeout_requested_at=now,
+            termination_reason="timeout",
+        )
+        .returning(Execution.id)
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def claim_stop_command(
+    db: AsyncSession,
+    execution_id: int,
+    now: datetime,
+    retry_before: datetime,
+) -> bool:
+    """Claim one stop_test attempt, with a persisted cross-worker backoff."""
+    result = await db.execute(
+        update(Execution)
+        .where(
+            Execution.id == execution_id,
+            Execution.status == "stopping",
+            Execution.finalized_at.is_(None),
+            or_(
+                Execution.stop_command_sent_at.is_(None),
+                Execution.stop_command_sent_at < retry_before,
+            ),
+        )
+        .values(stop_command_sent_at=now)
+        .returning(Execution.id)
+    )
+    return result.scalar_one_or_none() is not None
 
 
 async def claim_running(db: AsyncSession, execution_id: int, session_token: str, now) -> bool:

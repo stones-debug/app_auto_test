@@ -36,6 +36,7 @@ class Execution(Base, TimestampMixin):
         Index("idx_executions_retry", "retry_of"),
         Index("idx_executions_profile_created", "app_profile_id", text("created_at DESC")),
         Index("idx_executions_release_created", "app_release_id", text("created_at DESC")),
+        Index("idx_executions_timeout_stopping", "status", "timeout_requested_at"),
         CheckConstraint(
             "profile_revision IS NULL OR profile_revision >= 1", name="ck_executions_profile_revision"
         ),
@@ -50,6 +51,10 @@ class Execution(Base, TimestampMixin):
         CheckConstraint(
             "dispatch_state IN ('pending','reserved','dispatching','dispatched')",
             name="ck_executions_dispatch_state",
+        ),
+        CheckConstraint(
+            "termination_reason IS NULL OR termination_reason IN ('user_stop','timeout')",
+            name="ck_executions_termination_reason",
         ),
     )
 
@@ -72,6 +77,10 @@ class Execution(Base, TimestampMixin):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Windows 方案 §2：停止宽限期从用户请求停止时刻起算
     stop_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 两阶段终止：超时请求与实际 stop_test 尝试必须可诊断、可跨 Worker 恢复。
+    timeout_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    termination_reason: Mapped[str | None] = mapped_column(String(30))
+    stop_command_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Windows 方案 §2：唯一终态汇总完成时刻（_mark_terminal 写入）
     finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     duration: Mapped[int | None] = mapped_column(Integer)

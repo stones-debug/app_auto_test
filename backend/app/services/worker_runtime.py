@@ -233,7 +233,11 @@ class WorkerRuntime:
             coalesce=True,
         )
         scheduler.add_job(
-            self._session_job(worker_service.timeout_scan),
+            self._session_job(
+                lambda db: worker_service.timeout_scan(
+                    db, agent_sender=self.agent_sender or worker_service._default_agent_sender
+                )
+            ),
             "interval",
             seconds=60,
             id="timeout_scan",

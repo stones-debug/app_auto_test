@@ -58,6 +58,8 @@ class Settings(BaseSettings):
     max_execution_timeout: int = 7200
     # CR-06：停止宽限期（stopping 超过该期限强制终态并释放设备）
     execution_stop_grace_seconds: int = 60
+    # stop_test 幂等重试退避；stop_command_sent_at 记录最近一次尝试
+    execution_stop_retry_seconds: int = Field(default=5, ge=1, le=60)
     # 方案 §3.6/§7.4：执行快照序列化上限（默认 20 MB）
     max_execution_snapshot_bytes: int = 20971520
     # 预检快照仅用于紧邻的创建请求，防止服务端重复解析。

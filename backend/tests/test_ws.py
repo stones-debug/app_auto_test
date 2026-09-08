@@ -1,7 +1,7 @@
 import asyncio
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import pytest
@@ -765,6 +765,106 @@ async def test_case_and_suite_status_broadcast_full_realtime_fields(client: Asyn
     assert suite_message["error_message"] == "套件失败"
     assert suite_message["duration"] is None
     await execution_manager.disconnect(execution_id, front)
+
+
+async def test_timeout_confirmation_forces_error_and_late_result_is_ignored(client: AsyncClient):
+    """超时 stopping 允许在途结果，但 Agent 确认后只能以 error 汇总。"""
+    _token, _case_id, execution_id = await _setup_case_execution(client)
+    sent: list[dict] = []
+
+    async def sender(agent_id: int, payload: dict) -> bool:
+        sent.append({"agent_id": agent_id, **payload})
+        return True
+
+    async with SessionLocal() as db:
+        agent_id = await _create_agent()
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        await _bind_execution_to_agent(db, execution_id, agent_id)
+        execution = await db.get(Execution, execution_id)
+        execution.started_at = datetime.now(UTC) - timedelta(minutes=10)
+        execution.timeout_seconds = 60
+        device = await db.get(Device, execution.device_id)
+        device.locked_by_execution = execution_id
+        await db.commit()
+
+        await worker_service.timeout_scan(db, agent_sender=sender)
+        await db.refresh(execution)
+        assert execution.status == "stopping"
+        execution_case, steps, _assertions = await _snapshot_ids(db, execution_id)
+        step = steps[0]
+        await handlers.handle_step_result(
+            db,
+            agent_id,
+            {
+                "execution_id": execution_id,
+                "session_token": "sess-token",
+                "execution_case_id": execution_case.id,
+                "execution_step_id": step.id,
+                "step_order": 1,
+                "action": "click",
+                "status": "passed",
+            },
+        )
+        assert step.status == "passed"
+        acknowledged = await handlers.handle_execution_result(
+            db,
+            agent_id,
+            {"execution_id": execution_id, "session_token": "sess-token", "status": "stopped"},
+        )
+        assert acknowledged is True
+        await db.commit()
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution.status == "error"
+        assert execution.finalized_at is None
+        await worker_service._mark_terminal(db, execution, "error", "执行超时（>60s）")
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution.status == "error"
+        assert execution.finalized_at is not None
+        before = (
+            await db.execute(select(ExecutionStep).where(ExecutionStep.execution_case_id == execution_case.id))
+        ).scalars().all()
+        acknowledged = await handlers.handle_execution_result(
+            db,
+            agent_id,
+            {"execution_id": execution_id, "session_token": "sess-token", "status": "passed"},
+        )
+        after = (
+            await db.execute(select(ExecutionStep).where(ExecutionStep.execution_case_id == execution_case.id))
+        ).scalars().all()
+        assert acknowledged is True
+        assert [item.status for item in after] == [item.status for item in before]
+
+    assert sent == [{"agent_id": agent_id, "type": "stop_test", "execution_id": execution_id}]
+
+
+async def test_user_stop_confirmation_remains_stopped(client: AsyncClient):
+    """用户停止与 Agent 终态竞争时仍保持 stopped 语义。"""
+    _token, _case_id, execution_id = await _setup_case_execution(client)
+    async with SessionLocal() as db:
+        agent_id = await _create_agent()
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        await _bind_execution_to_agent(db, execution_id, agent_id, status="stopping")
+        execution = await db.get(Execution, execution_id)
+        execution.stop_requested_at = datetime.now(UTC)
+        execution.termination_reason = "user_stop"
+        await db.commit()
+        acknowledged = await handlers.handle_execution_result(
+            db,
+            agent_id,
+            {"execution_id": execution_id, "session_token": "sess-token", "status": "passed"},
+        )
+        assert acknowledged is True
+        await db.commit()
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution.status == "stopped"
 
 
 async def test_case_and_suite_skipped_status_is_terminal(client: AsyncClient):

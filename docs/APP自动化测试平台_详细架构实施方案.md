@@ -2014,7 +2014,7 @@ RUNNING ←── Worker 认领后经内部接口通知 FastAPI 更新
   ├── 断言失败 ────► FAILED
   ├── 执行异常 ────► ERROR
   ├── 用户停止 ────► STOPPING ──► STOPPED
-  └── 超时/Agent 失联 ─► ERROR（超时引擎触发）
+  └── 超时 ───────────► STOPPING ──► ERROR（Agent 确认或宽限期兜底）
 ```
 
 禁止反向转换；重试必须创建新 Execution 并关联 `retry_of`。
@@ -2024,7 +2024,7 @@ RUNNING ←── Worker 认领后经内部接口通知 FastAPI 更新
 ### 10.11 Windows Agent 安装与多用户绑定（V1.2 增量）
 
 > 依据《Windows_Agent安装与设备管理实施方案.md》（V1.0）实施后固化，为最新口径。
-> 涉及表：`user_agent_keys`、`agent_users`、`device_preferences`；`devices.connection_type/address`；`executions.stop_requested_at/finalized_at`。
+> 涉及表：`user_agent_keys`、`agent_users`、`device_preferences`；`devices.connection_type/address`；`executions.stop_requested_at/timeout_requested_at/termination_reason/stop_command_sent_at/finalized_at`。
 
 1. **多用户绑定与权限**：
    - 每用户一条专属 Key `uak_<public_id>_<secret>`（public_id 为 hex，secret 可含下划线）；库中仅存 Argon2 哈希 + Fernet 密文（`AGENT_USER_KEY_ENCRYPTION_KEY` 派生密钥），明文仅 GET `/api/me/agent-key` 解密返回。
@@ -2042,7 +2042,10 @@ RUNNING ←── Worker 认领后经内部接口通知 FastAPI 更新
    - 机器 PSK/撤销凭据存 Windows Credential Manager（回退 LocalAppData 文件）；机器 PSK 不参与绑定授权，只用于绑定成功后的机器通信认证，并会在每次绑定时自动替换。最近使用的用户 Key 按桌面交互要求明文保存在运行目录 `user_key.txt`，输入框默认掩码；Appium 按需隐藏启动（127.0.0.1），执行结束/退出清理 Session 与子进程树。
    - 安装包托管于后端 `AGENT_RELEASES_PATH`：`latest.json`（version/filename/sha256/size/published_at）+ 5 分钟限定文件名下载 JWT + FileResponse 流式下载（防路径穿越）。
 4. **执行时间戳**：
-   - `stop_requested_at`：用户请求停止时刻（queued 取消与 running→stopping 均写入）；停止宽限期从此起算（`execution_stop_grace_seconds`），无值时回退 started_at+timeout 口径。
+   - `stop_requested_at`：停止请求时刻（queued 取消、用户停止或超时 running→stopping 均写入）；停止宽限期从此起算（`execution_stop_grace_seconds`）。
+   - `timeout_requested_at` / `termination_reason`：超时扫描以条件更新原子地把 `running` 变为 `stopping` 时写入，原因固定为 `timeout`；用户停止写入 `user_stop`。此阶段不得汇总子节点、释放设备或结束队列。
+   - `stop_command_sent_at`：跨 Worker 的最近一次 `stop_test` 尝试时间；只有距上次尝试达到 `execution_stop_retry_seconds`（默认 5 秒）才可再次 CAS 认领。发送失败仍保留 `stopping`，由后续扫描/服务重启后的退避重试继续发送，宽限期最终兜底。
+   - Agent 回传终态确认后，`timeout` 强制归并为 `error`（错误信息为“执行超时（>Ns）”），`user_stop` 保持 `stopped`。宽限期到期时执行同样的唯一终态汇总、pending 子节点跳过、报告生成和设备释放；终态后的迟到消息只确认、不改写执行树。
    - `finalized_at`：唯一终态汇总完成时刻（`_mark_terminal`/queued 取消写入）。
 
 ---

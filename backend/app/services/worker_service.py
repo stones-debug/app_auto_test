@@ -8,7 +8,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -106,9 +106,56 @@ async def reclaim_stale_claimed(db, stale_minutes: int = 10) -> None:
     await commit(db)
 
 
-async def timeout_scan(db) -> None:
-    await _timeout_scan(db)
+async def _send_stop_once(
+    factory,
+    execution_id: int,
+    sender: Callable[[int, dict], Awaitable[bool]],
+    *,
+    worker_id: str = "scan",
+) -> bool:
+    """Claim and send one stop_test through the existing internal HTTP path."""
+    async with _session_scope(factory) as send_db:
+        claimed = await executions_repo.claim_stop_command(
+            send_db,
+            execution_id,
+            datetime.now(UTC),
+            datetime.now(UTC) - timedelta(seconds=settings.execution_stop_retry_seconds),
+        )
+        execution = await executions_repo.get_by_id(send_db, execution_id)
+        device = (
+            await executions_repo.get_device_for_execution(send_db, execution)
+            if claimed and execution is not None
+            else None
+        )
+        agent_id = device.agent_id if device is not None else None
+        await send_db.commit()
+    if not claimed or agent_id is None:
+        return False
+    try:
+        ok = await sender(agent_id, {"type": "stop_test", "execution_id": execution_id})
+        if not ok:
+            logger.warning(
+                "[%s] stop_test rejected execution=%s; grace scan will finalize it",
+                worker_id,
+                execution_id,
+            )
+        return bool(ok)
+    except Exception:
+        logger.exception(
+            "[%s] stop_test send failed execution=%s; grace scan will finalize it",
+            worker_id,
+            execution_id,
+        )
+        return False
+
+
+async def timeout_scan(db, agent_sender: Callable[[int, dict], Awaitable[bool]] | None = None) -> None:
+    candidates = await _timeout_scan(db)
     await commit(db)
+    if agent_sender is None:
+        return
+    for execution_id in candidates:
+        await _send_stop_once(SessionLocal, execution_id, agent_sender)
 
 
 async def finalize_unfinished_terminal(db) -> None:
@@ -279,11 +326,12 @@ async def _observe_execution(
     *,
     worker_id: str,
 ) -> None:
-    """观察已下发或下发结果不确定的执行，并持续转发停止请求。
+    """观察已下发或下发结果不确定的执行，并一次性转发停止请求。
 
     start_test 写入 Agent 后，HTTP/WS 响应可能在返回前丢失，因此 dispatching
     不能直接恢复为 queued。观察任务保留设备锁和队列认领，直到 Agent 上报终态，
-    或 timeout_scan/停止宽限期将执行收敛为终态。
+    或 timeout_scan/停止宽限期将执行收敛为终态。停止命令认领时间持久化，
+    因而发送失败时不在轮询中重复向 Agent 下发。
     """
     while True:
         async with _session_scope(factory) as poll_db:
@@ -297,26 +345,44 @@ async def _observe_execution(
                 await poll_db.commit()
                 return
             stopping = current.status == "stopping"
+            stop_claimed = False
             if stopping and _stop_grace_exceeded(current):
+                forced_status = "error" if current.termination_reason == "timeout" else "stopped"
+                forced_message = (
+                    f"执行超时（>{current.timeout_seconds}s），停止宽限期到期，强制结束"
+                    if current.termination_reason == "timeout"
+                    else f"停止宽限期超时（>{settings.execution_stop_grace_seconds}s），强制结束"
+                )
                 await _mark_terminal_repo(
                     poll_db,
                     current,
-                    "stopped",
-                    f"停止宽限期超时（>{settings.execution_stop_grace_seconds}s），强制结束",
+                    forced_status,
+                    forced_message,
                 )
                 await poll_db.commit()
                 return
+            retry_before = datetime.now(UTC) - timedelta(
+                seconds=settings.execution_stop_retry_seconds
+            )
+            if stopping and (
+                current.stop_command_sent_at is None
+                or current.stop_command_sent_at < retry_before
+            ):
+                stop_claimed = await executions_repo.claim_stop_command(
+                    poll_db, execution_id, datetime.now(UTC), retry_before
+                )
             device = await executions_repo.get_device_for_execution(poll_db, current)
             device_agent_id = device.agent_id if device is not None else None
+            if stop_claimed:
+                await poll_db.commit()
 
-        if stopping and device_agent_id is not None:
+        if stop_claimed and device_agent_id is not None:
             try:
                 await sender(device_agent_id, {"type": "stop_test", "execution_id": execution_id})
             except Exception:
-                # stop_test 同样可能在写入后丢失响应；观察任务继续重试，
-                # 直到 Agent 上报终态或停止宽限期收敛执行。
+                # stop_command_sent_at 已持久化；不重复发送，宽限期扫描负责兜底。
                 logger.exception(
-                    "[%s] stop_test 发送失败 execution=%s，观察任务将继续重试",
+                    "[%s] stop_test 发送失败 execution=%s，等待宽限期兜底",
                     worker_id,
                     execution_id,
                 )
@@ -476,11 +542,8 @@ async def run_reserved_execution(
                     marked, stopping, device_agent_id, _dispatch_state = (
                         await _record_dispatch_success(factory, execution_id, session_token)
                     )
-                    if marked and stopping and device_agent_id is not None:
-                        await sender(
-                            device_agent_id,
-                            {"type": "stop_test", "execution_id": execution_id},
-                        )
+                    if marked and stopping:
+                        await _send_stop_once(factory, execution_id, sender, worker_id=worker_id)
                 except Exception:
                     logger.exception("[%s] 停机期间记录下发结果失败 execution=%s", worker_id, execution_id)
             raise
@@ -530,11 +593,8 @@ async def run_reserved_execution(
             execution_id,
         )
         return
-    if stopping and device_agent_id is not None:
-        try:
-            await sender(device_agent_id, {"type": "stop_test", "execution_id": execution_id})
-        except Exception:
-            logger.exception("[%s] 首次下发后立即 stop_test 发送失败 execution=%s", worker_id, execution_id)
+    if stopping:
+        await _send_stop_once(factory, execution_id, sender, worker_id=worker_id)
     try:
         await _observe_execution(
             factory,

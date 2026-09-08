@@ -34,6 +34,7 @@ from app.models import (
     TestSuiteCase,
     Variable,
 )
+from app.repositories import executions as executions_repo
 from app.schemas.generated_case_params import ELEMENT_PARAM_FIELDS
 from app.services.execution_summary import (
     CaseStatusInput,
@@ -1444,8 +1445,15 @@ async def reclaim_stale_claimed(db: AsyncSession, stale_minutes: int = 10) -> No
     await db.flush()
 
 
-async def timeout_scan(db: AsyncSession) -> None:
+async def timeout_scan(db: AsyncSession) -> list[int]:
+    """Request timeout termination and return executions needing stop_test.
+
+    The atomic running -> stopping update is the only action for a newly timed
+    out execution. Child rows and the device lock remain untouched until Agent
+    confirmation or the persisted grace deadline.
+    """
     now = datetime.now(UTC)
+    stop_candidates: list[int] = []
     active = (
         await db.execute(select(Execution).where(Execution.status.in_(["running", "stopping"])))
     ).scalars().all()
@@ -1453,16 +1461,33 @@ async def timeout_scan(db: AsyncSession) -> None:
         if execution.started_at is None and execution.stop_requested_at is None:
             continue
         if execution.status == "stopping":
-            # Windows 方案 §2：stopping 宽限期从 stop_requested_at 起算，到点强制 stopped
+            # stopping 执行只在 Agent 确认或宽限期到期时汇总；超时请求必须落 error。
             if _stop_grace_exceeded(execution):
-                await _mark_terminal(
-                    db, execution, "stopped",
-                    f"停止宽限期超时（>{settings.execution_stop_grace_seconds}s），强制结束",
+                forced_status = "error" if execution.termination_reason == "timeout" else "stopped"
+                forced_message = (
+                    f"执行超时（>{execution.timeout_seconds}s），停止宽限期到期，强制结束"
+                    if execution.termination_reason == "timeout"
+                    else f"停止宽限期超时（>{settings.execution_stop_grace_seconds}s），强制结束"
                 )
+                await _mark_terminal(
+                    db, execution, forced_status, forced_message,
+                )
+            elif (
+                execution.stop_command_sent_at is None
+                or execution.stop_command_sent_at
+                < now - timedelta(seconds=settings.execution_stop_retry_seconds)
+            ):
+                stop_candidates.append(execution.id)
         elif execution.started_at is not None:
             elapsed = (now - execution.started_at).total_seconds()
             if elapsed > execution.timeout_seconds:
-                await _mark_terminal(db, execution, "error", f"执行超时（>{execution.timeout_seconds}s）")
+                if await executions_repo.request_timeout_stop(db, execution.id, now):
+                    stop_candidates.append(execution.id)
+                    logger.warning(
+                        "execution=%s timeout requested; waiting for Agent stop acknowledgement",
+                        execution.id,
+                    )
+    return stop_candidates
 
 
 async def finalize_unfinished_terminal(db: AsyncSession) -> None:
@@ -1505,13 +1530,22 @@ async def agent_heartbeat_scan(db: AsyncSession) -> None:
             await db.execute(select(Device).where(Device.agent_id == agent.id))
         ).scalars().all()
         for device in devices:
+            execution = None
             if device.locked_by_execution is not None:
                 execution = await db.get(Execution, device.locked_by_execution)
                 if execution is not None and execution.status == "running":
                     await _mark_terminal(db, execution, "error", "Agent 心跳超时失联")
                 elif execution is not None and execution.status == "stopping":
-                    # CR-06：失联的 stopping 同样要终结，避免永久卡住
-                    await _mark_terminal(db, execution, "stopped", "Agent 心跳超时失联（停止中）")
-            device.status = "idle"
-            device.locked_by_execution = None
+                    # 超时 stopping 仍需等待 stop_test 确认/宽限期，不能因心跳扫描
+                    # 提前释放设备并把 pending 子节点汇总掉。
+                    if execution.termination_reason != "timeout":
+                        await _mark_terminal(db, execution, "stopped", "Agent 心跳超时失联（停止中）")
+            if not (
+                execution is not None
+                and execution.status == "stopping"
+                and execution.termination_reason == "timeout"
+                and execution.finalized_at is None
+            ):
+                device.status = "idle"
+                device.locked_by_execution = None
     await db.flush()

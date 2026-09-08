@@ -708,7 +708,7 @@ uv run python main.py --config config.yaml --bind YOUR_USER_KEY
 - 实时 WebSocket 更新。
 - 断线后的 REST 数据重新同步结果。
 
-如果执行仍在运行，可以点击“停止”。状态通常先变为 `stopping`，待 Worker 和 Agent 完成收尾后进入 `stopped` 或其他终态。
+如果执行仍在运行，可以点击“停止”。状态通常先变为 `stopping`，待 Worker 和 Agent 完成收尾后进入 `stopped`。执行超过超时时间时也先进入 `stopping`，由服务端经内部通道向 Agent 发送 `stop_test`；发送失败会按退避周期重试，Agent 确认后以 `error` 结束并显示“执行超时（>Ns）”。若 Agent 无法确认，持久化的停止宽限期到期后由 Worker 兜底汇总并释放设备。宽限期内不会提前把未执行用例标记为 skipped，也不会释放设备锁。
 
 ### 8.6 重试执行
 

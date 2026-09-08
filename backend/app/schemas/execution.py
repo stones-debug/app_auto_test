@@ -208,6 +208,9 @@ class ExecutionOut(BaseModel):
     started_at: datetime | None
     finished_at: datetime | None
     stop_requested_at: datetime | None
+    timeout_requested_at: datetime | None = None
+    termination_reason: str | None = None
+    stop_command_sent_at: datetime | None = None
     finalized_at: datetime | None
     duration: int | None
     created_by: int | None
@@ -264,6 +267,9 @@ class ExecutionListItem(BaseModel):
     started_at: datetime | None
     finished_at: datetime | None
     stop_requested_at: datetime | None
+    timeout_requested_at: datetime | None = None
+    termination_reason: str | None = None
+    stop_command_sent_at: datetime | None = None
     finalized_at: datetime | None
     duration: int | None
     retry_of: int | None
