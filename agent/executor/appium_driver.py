@@ -48,6 +48,16 @@ class AppiumDriver(BaseDriver):
     HTTP_MAX_TIMEOUT = 30.0
     HTTP_IMMEDIATE_TIMEOUT = 2.0
     DEFAULT_HTTP_REQUEST_TIMEOUT = HTTP_MAX_TIMEOUT
+    # Hybrid/reactive inputs can update their backing model shortly after clear.
+    # Keep the recovery bounded: two stable empty reads, at most two clear calls.
+    INPUT_CLEAR_SETTLE_TIMEOUT = 0.6
+    INPUT_CLEAR_POLL_INTERVAL = 0.05
+    INPUT_CLEAR_STABLE_READS = 2
+    INPUT_CLEAR_MAX_ATTEMPTS = 2
+    # Keep observing the post-input value briefly so a reactive model cannot
+    # restore the old value immediately after the first successful read.
+    INPUT_VERIFY_SETTLE_TIMEOUT = 0.2
+    INPUT_VERIFY_POLL_INTERVAL = 0.05
 
     def __init__(
         self,
@@ -500,14 +510,143 @@ class AppiumDriver(BaseDriver):
         self._ensure()
         element.click()
 
+    @staticmethod
+    def _read_input_value(element) -> tuple[str | None, bool]:
+        """Read a normal input value without treating an unreadable property as empty."""
+        from .stale_guard import is_stale_element_error
+
+        readable_values: list[str] = []
+        for getter in (lambda: element.get_attribute("value"), lambda: element.text):
+            try:
+                value = getter()
+            except Exception as exc:
+                if is_stale_element_error(exc):
+                    raise
+                continue
+            if value is not None:
+                readable_values.append(str(value))
+        if not readable_values:
+            return None, False
+        # Some native controls expose an empty ``value`` attribute while their
+        # visible text property carries the actual editable value.
+        return next((value for value in readable_values if value), ""), True
+
+    @staticmethod
+    def _is_password_input(element) -> bool:
+        """Skip equality verification for password/masked controls."""
+        from .stale_guard import is_stale_element_error
+
+        for attribute in ("password", "inputType"):
+            try:
+                value = element.get_attribute(attribute)
+            except Exception as exc:
+                if is_stale_element_error(exc):
+                    raise
+                continue
+            normalized = str(value or "").strip().lower()
+            if normalized in {"1", "true", "yes"} or "password" in normalized:
+                return True
+        return False
+
+    @classmethod
+    def _wait_for_empty_input(cls, element) -> bool | None:
+        """Return True after stable empty reads, False on timeout, None if unreadable."""
+        deadline = time.monotonic() + cls.INPUT_CLEAR_SETTLE_TIMEOUT
+        stable_reads = 0
+        while time.monotonic() < deadline:
+            value, readable = cls._read_input_value(element)
+            if not readable:
+                return None
+            if value == "":
+                stable_reads += 1
+                if stable_reads >= cls.INPUT_CLEAR_STABLE_READS:
+                    return True
+            else:
+                stable_reads = 0
+            time.sleep(cls.INPUT_CLEAR_POLL_INTERVAL)
+        return False
+
+    @classmethod
+    def _clear_and_confirm_input(cls, element) -> bool | None:
+        """Clear, observe, and retry once if a reactive control keeps its old value."""
+        result: bool | None = False
+        for _attempt in range(cls.INPUT_CLEAR_MAX_ATTEMPTS):
+            element.clear()
+            result = cls._wait_for_empty_input(element)
+            if result is not False:
+                return result
+        return result
+
+    @classmethod
+    def _verify_input_value(cls, element, expected: str) -> bool | None:
+        """Confirm the value stays equal through a short bounded settle window."""
+        if "\n" in expected or "\r" in expected or cls._is_password_input(element):
+            return None
+        deadline = time.monotonic() + cls.INPUT_VERIFY_SETTLE_TIMEOUT
+        while True:
+            actual, readable = cls._read_input_value(element)
+            if not readable:
+                return None
+            if actual != expected:
+                return False
+            if time.monotonic() >= deadline:
+                return True
+            time.sleep(cls.INPUT_VERIFY_POLL_INTERVAL)
+
     def input(self, element, value: str, clear_first: bool = True) -> None:
         self._ensure()
         from selenium.common.exceptions import InvalidElementStateException
 
         try:
             if clear_first:
-                element.clear()
+                clear_started = time.monotonic()
+                clear_result = self._clear_and_confirm_input(element)
+                logger.info(
+                    "Appium input stage=clear_settle remote_id=%s clear_first=%s "
+                    "value_length=%d confirmed=%s elapsed_ms=%.1f retry=%s",
+                    getattr(element, "id", None),
+                    clear_first,
+                    len(value),
+                    clear_result,
+                    (time.monotonic() - clear_started) * 1000,
+                    clear_result is False,
+                )
             element.send_keys(value)
+            if clear_first:
+                verify_started = time.monotonic()
+                verification = self._verify_input_value(element, value)
+                logger.info(
+                    "Appium input stage=verify remote_id=%s clear_first=%s "
+                    "value_length=%d result=%s elapsed_ms=%.1f",
+                    getattr(element, "id", None),
+                    clear_first,
+                    len(value),
+                    verification,
+                    (time.monotonic() - verify_started) * 1000,
+                )
+                if verification is False:
+                    replace_started = time.monotonic()
+                    logger.warning(
+                        "Appium input stage=replace remote_id=%s value_length=%d "
+                        "reason=final_value_mismatch retry=1",
+                        getattr(element, "id", None),
+                        len(value),
+                    )
+                    self._clear_and_confirm_input(element)
+                    element.send_keys(value)
+                    verification = self._verify_input_value(element, value)
+                    logger.info(
+                        "Appium input stage=replace_result remote_id=%s "
+                        "value_length=%d result=%s elapsed_ms=%.1f",
+                        getattr(element, "id", None),
+                        len(value),
+                        verification,
+                        (time.monotonic() - replace_started) * 1000,
+                    )
+                    if verification is False:
+                        raise DriverError(
+                            "输入失败：清空并替换后控件值仍与目标不一致"
+                        )
         except InvalidElementStateException as exc:
             raise DriverError(
                 "输入失败：定位到的控件不可编辑。请确认元素定位值直接指向可编辑控件，"

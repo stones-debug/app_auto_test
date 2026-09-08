@@ -1330,6 +1330,178 @@ async def test_appium_input_uses_selected_editable_element_directly():
     assert editable.value == "9337"
 
 
+class _InputStateElement:
+    """无 sleep 的 Appium input 状态机测试替身。"""
+
+    id = "input-1"
+
+    def __init__(self, initial: str = "15", mode: str = "normal") -> None:
+        self.value = initial
+        self.initial = initial
+        self.mode = mode
+        self.clear_calls = 0
+        self.send_calls = 0
+        self.pending_clear_reads = 0
+        self.late_refill_reads = 0
+        self.target_value = ""
+
+    def clear(self):
+        self.clear_calls += 1
+        if self.mode == "delayed" and self.clear_calls == 1:
+            self.pending_clear_reads = 2
+            return
+        self.value = ""
+
+    def send_keys(self, value):
+        self.send_calls += 1
+        self.target_value = value
+        if self.mode == "refill" and self.send_calls == 1:
+            self.value = self.initial + value
+        elif self.mode == "late_refill" and self.send_calls == 1:
+            self.value = value
+            self.late_refill_reads = 3
+        elif self.mode == "mismatch" and self.send_calls == 1:
+            self.value = "wrong"
+        elif self.mode == "persistent_mismatch":
+            self.value = "wrong"
+        else:
+            self.value += value
+
+    def get_attribute(self, name):
+        if name == "value":
+            if self.pending_clear_reads:
+                self.pending_clear_reads -= 1
+                if self.pending_clear_reads == 0:
+                    self.value = ""
+            if self.late_refill_reads:
+                self.late_refill_reads -= 1
+                if self.late_refill_reads == 0:
+                    self.value = self.initial + self.target_value
+            return self.value
+        if name in {"password", "inputType"}:
+            return "true" if self.mode == "password" and name == "password" else ""
+        return ""
+
+    @property
+    def text(self):
+        return self.value
+
+
+class _UnreadableInputStateElement(_InputStateElement):
+    def get_attribute(self, _name):
+        raise RuntimeError("attribute unavailable")
+
+    @property
+    def text(self):
+        raise RuntimeError("text unavailable")
+
+
+def _appium_input_driver():
+    from executor.appium_driver import AppiumDriver
+
+    driver = AppiumDriver(device={"udid": "u-1", "platform": "android"})
+    driver.driver = object()
+    return driver
+
+
+@pytest.fixture
+def fast_appium_input(monkeypatch):
+    from executor.appium_driver import AppiumDriver
+
+    monkeypatch.setattr(AppiumDriver, "INPUT_CLEAR_SETTLE_TIMEOUT", 0.02)
+    monkeypatch.setattr(AppiumDriver, "INPUT_CLEAR_POLL_INTERVAL", 0)
+    monkeypatch.setattr(AppiumDriver, "INPUT_VERIFY_SETTLE_TIMEOUT", 0.02)
+    monkeypatch.setattr(AppiumDriver, "INPUT_VERIFY_POLL_INTERVAL", 0)
+    return _appium_input_driver()
+
+
+async def test_appium_input_clear_confirms_and_sends_once(fast_appium_input, caplog):
+    element = _InputStateElement()
+    sensitive_value = "secret-input-42"
+
+    with caplog.at_level(logging.INFO, logger="agent.appium"):
+        fast_appium_input.input(element, sensitive_value)
+
+    assert (element.clear_calls, element.send_calls, element.value) == (
+        1,
+        1,
+        sensitive_value,
+    )
+    assert all(sensitive_value not in record.getMessage() for record in caplog.records)
+    assert all(sensitive_value not in repr(record.args) for record in caplog.records)
+
+
+async def test_appium_input_replaces_value_after_async_old_value_refill(fast_appium_input):
+    element = _InputStateElement(mode="refill")
+
+    fast_appium_input.input(element, "15")
+
+    assert element.value == "15"
+    assert (element.clear_calls, element.send_calls) == (2, 2)
+
+
+async def test_appium_input_catches_late_refill_after_initial_matching_reads(
+    fast_appium_input,
+):
+    element = _InputStateElement(mode="late_refill")
+
+    fast_appium_input.input(element, "15")
+
+    assert element.value == "15"
+    assert (element.clear_calls, element.send_calls) == (2, 2)
+
+
+async def test_appium_input_waits_for_delayed_clear_without_extra_replace(fast_appium_input):
+    element = _InputStateElement(mode="delayed")
+
+    fast_appium_input.input(element, "15")
+
+    assert element.value == "15"
+    assert (element.clear_calls, element.send_calls) == (1, 1)
+
+
+async def test_appium_input_replaces_once_after_first_final_value_mismatch(fast_appium_input):
+    element = _InputStateElement(mode="mismatch")
+
+    fast_appium_input.input(element, "15")
+
+    assert element.value == "15"
+    assert (element.clear_calls, element.send_calls) == (2, 2)
+
+
+async def test_appium_input_raises_after_persistent_final_value_mismatch(fast_appium_input):
+    from executor.driver import DriverError
+
+    element = _InputStateElement(mode="persistent_mismatch")
+
+    with pytest.raises(DriverError, match="清空并替换后控件值仍与目标不一致"):
+        fast_appium_input.input(element, "15")
+
+    assert (element.clear_calls, element.send_calls) == (2, 2)
+
+
+async def test_appium_input_clear_false_preserves_append_semantics(fast_appium_input):
+    element = _InputStateElement()
+
+    fast_appium_input.input(element, "20", clear_first=False)
+
+    assert element.value == "1520"
+    assert (element.clear_calls, element.send_calls) == (0, 1)
+
+
+async def test_appium_input_skips_unsafe_value_verification(fast_appium_input):
+    unreadable = _UnreadableInputStateElement()
+    fast_appium_input.input(unreadable, "15")
+
+    password = _InputStateElement(initial="secret", mode="password")
+    fast_appium_input.input(password, "15")
+    assert password.send_calls == 1
+
+    multiline = _InputStateElement()
+    fast_appium_input.input(multiline, "line\nvalue")
+    assert multiline.value == "line\nvalue"
+
+
 async def test_appium_input_reports_actionable_error_for_non_editable_element():
     from selenium.common.exceptions import InvalidElementStateException
 
