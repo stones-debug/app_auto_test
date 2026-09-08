@@ -1796,6 +1796,195 @@ async def test_runner_upload_failure_keeps_local_path_out(tmp_path):
     assert "上传失败" in (step_msg["error_message"] or "")
 
 
+async def test_runner_auto_screenshot_on_v2_action_failure(tmp_path):
+    uploader = FakeUploader("execution_100/screenshots/failure.png")
+    sent: list[dict] = []
+
+    async def fake_send(payload: dict):
+        sent.append(payload)
+
+    case = _make_case([{"order": 1, "action": "missing_action", "params": {}}])
+    status = await TestRunner(
+        MockDriver(), fake_send, 100, screenshots_dir=tmp_path, uploader=uploader
+    ).run_case(case)
+
+    assert status == "failed"
+    step_result = next(message for message in sent if message["type"] == "step_result")
+    assert step_result["screenshot_path"] == "execution_100/screenshots/failure.png"
+    assert "missing_action" in step_result["error_message"]
+    assert len(uploader.calls) == 1
+    assert str(tmp_path) in uploader.calls[0][1]
+    assert uploader.calls[0][1] != step_result["screenshot_path"]
+
+
+async def test_runner_auto_screenshot_on_v2_assertion_failure_once_per_step(tmp_path):
+    uploader = FakeUploader("execution_100/screenshots/assertion.png")
+    sent: list[dict] = []
+
+    async def fake_send(payload: dict):
+        sent.append(payload)
+
+    case = _make_case(
+        [{"order": 1, "action": "input", "element_id": 1, "params": {"value": "actual"}}],
+        assertions=[
+            {"order": 1, "type": "text_equals", "element_id": 1, "params": {"expected": "one"}},
+            {"order": 2, "type": "text_equals", "element_id": 1, "params": {"expected": "two"}},
+        ],
+    )
+    status = await TestRunner(
+        MockDriver(), fake_send, 100, screenshots_dir=tmp_path, uploader=uploader
+    ).run_case(case)
+
+    assert status == "failed"
+    step_result = next(message for message in sent if message["type"] == "step_result")
+    assert step_result["screenshot_path"] == "execution_100/screenshots/assertion.png"
+    assert len(uploader.calls) == 1
+
+
+async def test_runner_auto_screenshot_on_v2_missing_assertion_element(tmp_path):
+    uploader = FakeUploader("execution_100/screenshots/missing.png")
+    sent: list[dict] = []
+
+    async def fake_send(payload: dict):
+        sent.append(payload)
+
+    case = _make_case(
+        [{"order": 1, "action": "input", "element_id": 1, "params": {"value": "actual"}}],
+        assertions=[
+            {"order": 1, "type": "text_equals", "element_id": 999, "params": {"expected": "one"}},
+        ],
+    )
+    await TestRunner(
+        MockDriver(), fake_send, 100, screenshots_dir=tmp_path, uploader=uploader
+    ).run_case(case)
+
+    step_result = next(message for message in sent if message["type"] == "step_result")
+    assert step_result["screenshot_path"] == "execution_100/screenshots/missing.png"
+    assert "断言元素未找到" in step_result["error_message"]
+    assert len(uploader.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("kind", "status", "node", "expected_error"),
+    [
+        ("action", "error", {"action": "missing_action"}, "未知动作"),
+        ("assertion", "failed", {"type": "text_equals", "element_id": 1, "params": {"expected": "wrong"}}, "断言数据不一致"),
+        ("assertion", "error", {"type": "missing_assertion", "params": {}}, "未知断言"),
+    ],
+)
+async def test_runner_auto_screenshot_on_v3_failed_or_error_node(
+    tmp_path, kind, status, node, expected_error
+):
+    uploader = FakeUploader(f"execution_100/screenshots/{kind}-{status}.png")
+    sent: list[dict] = []
+
+    async def fake_send(payload: dict):
+        sent.append(payload)
+
+    flow_node = {
+        "execution_node_id": 3001,
+        "kind": kind,
+        "phase": "case_main",
+        "order": 1,
+        **node,
+    }
+    case = {
+        "execution_case_id": 2001,
+        "flow_snapshot": [flow_node],
+        "elements_snapshot": {"1": {"locator_type": "id", "locator_value": "value"}},
+    }
+    if kind == "assertion" and node.get("type") == "text_equals":
+        driver = MockDriver(initial_state={"value": "actual"})
+    else:
+        driver = MockDriver()
+    result = await TestRunner(
+        driver, fake_send, 100, screenshots_dir=tmp_path, uploader=uploader
+    ).run_case(case)
+
+    assert result == status
+    node_result = next(message for message in sent if message["type"] == "node_result")
+    assert node_result["status"] == status
+    assert node_result["screenshot_path"] == f"execution_100/screenshots/{kind}-{status}.png"
+    assert expected_error in (node_result["error_message"] or "")
+    assert len(uploader.calls) == 1
+
+
+async def test_runner_auto_screenshot_failure_preserves_original_error(tmp_path):
+    uploader = FakeUploader(None)
+    sent: list[dict] = []
+
+    async def fake_send(payload: dict):
+        sent.append(payload)
+
+    case = _make_case([{"order": 1, "action": "missing_action", "params": {}}])
+    await TestRunner(
+        MockDriver(), fake_send, 100, screenshots_dir=tmp_path, uploader=uploader
+    ).run_case(case)
+
+    step_result = next(message for message in sent if message["type"] == "step_result")
+    assert step_result["screenshot_path"] is None
+    assert "未知动作" in step_result["error_message"]
+    assert str(tmp_path) not in str(step_result)
+
+
+async def test_runner_auto_screenshot_generation_failure_preserves_result(tmp_path):
+    class FailingScreenshotDriver(MockDriver):
+        def screenshot(self, path: str) -> None:
+            raise OSError(path)
+
+    uploader = FakeUploader("execution_100/screenshots/should-not-exist.png")
+    sent: list[dict] = []
+
+    async def fake_send(payload: dict):
+        sent.append(payload)
+
+    case = _make_case([{"order": 1, "action": "missing_action", "params": {}}])
+    await TestRunner(
+        FailingScreenshotDriver(), fake_send, 100, screenshots_dir=tmp_path, uploader=uploader
+    ).run_case(case)
+
+    step_result = next(message for message in sent if message["type"] == "step_result")
+    assert step_result["screenshot_path"] is None
+    assert "未知动作" in step_result["error_message"]
+    assert uploader.calls == []
+
+
+async def test_runner_does_not_auto_screenshot_when_stopped(tmp_path):
+    uploader = FakeUploader("execution_100/screenshots/should-not-exist.png")
+    sent: list[dict] = []
+
+    async def fake_send(payload: dict):
+        sent.append(payload)
+
+    case = _make_case([{"order": 1, "action": "missing_action", "params": {}}])
+    with pytest.raises(StopRequested):
+        await TestRunner(
+            MockDriver(), fake_send, 100, screenshots_dir=tmp_path, uploader=uploader,
+            should_stop=lambda: True,
+        ).run_case(case)
+    assert uploader.calls == []
+
+
+async def test_runner_does_not_auto_screenshot_when_cancelled(monkeypatch, tmp_path):
+    class CancelAction:
+        async def execute(self, _driver, _context, _params):
+            raise asyncio.CancelledError()
+
+    monkeypatch.setitem(ACTION_REGISTRY, "_cancel_for_screenshot_test", CancelAction)
+    uploader = FakeUploader("execution_100/screenshots/should-not-exist.png")
+    sent: list[dict] = []
+
+    async def fake_send(payload: dict):
+        sent.append(payload)
+
+    case = _make_case([{"order": 1, "action": "_cancel_for_screenshot_test", "params": {}}])
+    with pytest.raises(asyncio.CancelledError):
+        await TestRunner(
+            MockDriver(), fake_send, 100, screenshots_dir=tmp_path, uploader=uploader,
+        ).run_case(case)
+    assert uploader.calls == []
+
+
 def test_save_screenshot_with_none_creates_png_in_nested_directory(tmp_path):
     screenshots_dir = tmp_path / "nested" / "screenshots"
     driver = MockDriver()

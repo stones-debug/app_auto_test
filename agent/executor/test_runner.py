@@ -1,4 +1,6 @@
 import asyncio
+import inspect
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -33,6 +35,8 @@ Message = (
     | NodeResultMessage
 )
 SendFn = Callable[[Message], Awaitable[None]]
+
+logger = logging.getLogger(__name__)
 
 
 # 用例步骤阶段归一化：后端快照五值 → 本地分桶的三段（setup/main/teardown）。
@@ -87,6 +91,14 @@ def _run_assertion_in_thread(
     if deadline is None:
         return asyncio.run(assertion_cls().verify(driver, context, params))
     return asyncio.run(assertion_cls().verify(driver, context, params, deadline=deadline))
+
+
+def _upload_screenshot_in_thread(uploader, execution_id: int, path: str, session_token: str | None):
+    """在专用线程中运行上传调用，避免不可靠的上传实现阻塞 Runner 事件循环。"""
+    outcome = uploader.upload_screenshot(execution_id, path, session_token)
+    if inspect.isawaitable(outcome):
+        return asyncio.run(outcome)
+    return outcome
 
 
 class RunnerReporter:
@@ -301,6 +313,44 @@ class TestRunner:
             result["screenshot_path"] = None
             result["error_message"] = "截图上传失败，Agent 本地路径不回传服务端"
 
+    async def _capture_failure_screenshot(
+        self, result: dict, context: ExecutionContext, *, target: str
+    ) -> None:
+        """为失败结果生成并上传一次截图；失败不影响原结果。"""
+        if self.should_stop() or isinstance(result.get("status"), str) and result.get("status") in {
+            "stopped",
+            "cancelled",
+        }:
+            return
+        result["screenshot_path"] = None
+        if self.screenshots_dir is None or self.uploader is None:
+            logger.warning("失败%s截图未配置截图目录或上传器", target)
+            return
+        try:
+            local_path = await asyncio.to_thread(context.save_screenshot, None)
+            # Stop/cancel may arrive while the synchronous driver call is running.
+            # Do not upload or report a screenshot from a user-stopped execution.
+            if self.should_stop():
+                return
+            uploaded = await asyncio.to_thread(
+                _upload_screenshot_in_thread,
+                self.uploader,
+                self.execution_id,
+                local_path,
+                self.session_token,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("失败%s截图生成或上传失败: %s", target, exc)
+            result["screenshot_path"] = None
+            return
+        if uploaded:
+            result["screenshot_path"] = uploaded
+        else:
+            logger.warning("失败%s截图上传失败", target)
+            result["screenshot_path"] = None
+
     async def _run_steps(
         self,
         steps: list[dict],
@@ -447,7 +497,15 @@ class TestRunner:
                             or f"步骤后断言 {item['assertion_order']} 未通过",
                         }
             duration = int((time.monotonic() - start) * 1000)
-            await self._resolve_screenshot(result)
+            auto_failure = action_failed or result.get("status") in {"failed", "error"}
+            auto_failure = auto_failure or any(
+                item.get("status") in {"failed", "error"} for item in assertion_results
+            )
+            explicit_screenshot_path = bool(result.get("screenshot_path"))
+            if auto_failure and not explicit_screenshot_path:
+                await self._capture_failure_screenshot(result, context, target="步骤")
+            if explicit_screenshot_path:
+                await self._resolve_screenshot(result)
             await reporter.step_result(
                 execution_case_id=execution_case_id,
                 execution_suite_id=execution_suite_id,
@@ -577,7 +635,11 @@ class TestRunner:
             except Exception as exc:
                 result = {"status": "error", "error_message": str(exc), "attempt_count": 1}
             duration = int((time.monotonic() - start) * 1000)
-            await self._resolve_screenshot(result)
+            explicit_screenshot_path = bool(result.get("screenshot_path"))
+            if result.get("status") in {"failed", "error"} and not explicit_screenshot_path:
+                await self._capture_failure_screenshot(result, context, target="节点")
+            if explicit_screenshot_path:
+                await self._resolve_screenshot(result)
             expected = result.get("expected")
             if expected is None:
                 expected = (node.get("params") or node.get("parameters") or {}).get("expected")
