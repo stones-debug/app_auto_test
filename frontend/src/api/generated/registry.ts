@@ -48,6 +48,13 @@ export const ACTIONS: ActionMeta[] = [
   { value: 'click', label: '点击元素', needsElement: true, fields: [
     { key: 'wait_timeout', label: '等待秒数', type: 'number', default: 10, min: 0, max: 300 },
   ] },
+  { value: 'wait_element_stable', label: '等待元素稳定', needsElement: true, fields: [
+    { key: 'wait_timeout', label: '等待秒数', type: 'number', default: 10, min: 0, max: 300 },
+    { key: 'stable_duration_ms', label: '稳定持续时间(ms)', type: 'number', default: 500, min: 0, max: 5000 },
+    { key: 'stable_reads', label: '连续稳定读取次数', type: 'number', default: 2, min: 1, max: 20 },
+    { key: 'require_displayed', label: '要求元素可见', type: 'switch', default: true },
+    { key: 'require_enabled', label: '要求元素可用', type: 'switch', default: true },
+  ] },
   { value: 'input', label: '输入文本', needsElement: true, fields: [
     { key: 'value', label: '文本', type: 'text', required: true, placeholder: "如 ${username}" },
     { key: 'clear_first', label: '先清空', type: 'switch', default: true },

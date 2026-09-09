@@ -15,13 +15,14 @@ import {
 } from '@/api/cases'
 
 describe('CR-09 动作/断言元数据契约', () => {
-  it('覆盖 Agent Registry 全部 19 个动作', () => {
+  it('覆盖 Agent Registry 全部 20 个动作', () => {
     const values = ACTIONS.map((a) => a.value).sort()
     expect(values).toEqual(
       [
         'launch_app',
         'close_app',
         'click',
+        'wait_element_stable',
         'input',
         'clear',
         'set_checked',
@@ -297,6 +298,25 @@ describe('Step 4 步骤顶层 continue_on_failure 与 click 等待契约', () =>
     const params = defaultParams(meta.fields)
     expect(params.wait_timeout).toBe(10)
     expect(typeof params.wait_timeout).toBe('number')
+  })
+
+  it('wait_element_stable 动作的稳定参数由 metadata 生成并校验范围', () => {
+    const meta = actionMeta('wait_element_stable')
+    expect(meta.needsElement).toBe(true)
+    expect(defaultParams(meta.fields)).toEqual({
+      wait_timeout: 10,
+      stable_duration_ms: 500,
+      stable_reads: 2,
+      require_displayed: true,
+      require_enabled: true,
+    })
+    expect(validateActionParams('wait_element_stable', { stable_reads: 0 })).toBe(
+      '“连续稳定读取次数”不能小于 1',
+    )
+    expect(validateActionParams('wait_element_stable', { stable_duration_ms: 5001 })).toBe(
+      '“稳定持续时间(ms)”不能大于 5000',
+    )
+    expect(validateActionParams('wait_element_stable', { wait_timeout: 300 })).toBeNull()
   })
 })
 

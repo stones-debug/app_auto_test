@@ -33,6 +33,16 @@ actions:
     needs_element: true
     params:
       - { name: wait_timeout, type: integer, default: 10, min: 0, max: 300, label: 等待秒数 }
+  - name: wait_element_stable
+    label: 等待元素稳定
+    version: 1
+    needs_element: true
+    params:
+      - { name: wait_timeout, type: integer, default: 10, min: 0, max: 300, label: 等待秒数 }
+      - { name: stable_duration_ms, type: integer, default: 500, min: 0, max: 5000, label: 稳定持续时间(ms) }
+      - { name: stable_reads, type: integer, default: 2, min: 1, max: 20, label: 连续稳定读取次数 }
+      - { name: require_displayed, type: boolean, default: true, label: 要求元素可见 }
+      - { name: require_enabled, type: boolean, default: true, label: 要求元素可用 }
   - name: input
     label: 输入文本
     version: 1

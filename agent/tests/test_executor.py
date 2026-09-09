@@ -70,6 +70,7 @@ def _make_suite(cases, setup_steps=None, teardown_steps=None, suite_id=None, ele
 
 async def test_registries_loaded():
     assert "click" in ACTION_REGISTRY
+    assert "wait_element_stable" in ACTION_REGISTRY
     assert "input" in ACTION_REGISTRY
     assert "set_checked" in ACTION_REGISTRY
     assert "set_slider_value" in ACTION_REGISTRY

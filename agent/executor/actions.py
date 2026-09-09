@@ -22,6 +22,10 @@ class _UnsafeScrollGeometry(DriverError):
     """手势几何不安全；交给一次受控 fallback，不发送原始坐标。"""
 
 
+class _ElementObservationUnavailable(DriverError):
+    """元素状态或几何信息暂时无法读取，允许稳定等待继续轮询。"""
+
+
 def _diagnostic_value(value, *, limit: int = 200):
     """Return a bounded, log-safe representation for action diagnostics."""
     if value is None:
@@ -306,6 +310,230 @@ class ClickAction(BaseAction):
             label="点击",
         )
         return {"status": "passed"}
+
+
+@register_action("wait_element_stable")
+class WaitElementStableAction(BaseAction):
+    """等待元素在页面重绘后重新定位并稳定可操作。
+
+    每一轮都从元素快照重新定位，避免跨页面重绘复用 WebElement。只有
+    displayed/enabled 属性明确、矩形有效，且连续样本的状态和几何位置满足
+    稳定条件时才成功；定位、属性或矩形读取失败会在总 deadline 内重试。
+    """
+
+    _POLL_INTERVAL = 0.1
+    _TRUE_VALUES = frozenset({"1", "true", "yes", "y", "on", "displayed", "enabled"})
+    _FALSE_VALUES = frozenset({"0", "false", "no", "n", "off", "hidden", "disabled"})
+    _MISSING_EXCEPTION_NAMES = frozenset({"NoSuchElementException", "TimeoutException"})
+
+    @classmethod
+    def _read_tristate(cls, value) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return None
+        normalized = str(value).strip().lower()
+        if normalized in cls._TRUE_VALUES:
+            return True
+        if normalized in cls._FALSE_VALUES:
+            return False
+        return None
+
+    @classmethod
+    def _read_element_state(cls, driver, element, attribute: str) -> bool | None:
+        """优先读 Appium 元素方法，兼容没有该方法的驱动再回退属性。"""
+        method = getattr(element, f"is_{attribute}", None)
+        if callable(method):
+            try:
+                state = cls._read_tristate(method())
+            except Exception:
+                state = None
+            if state is not None:
+                return state
+        try:
+            return cls._read_tristate(driver.get_attribute(element, attribute))
+        except Exception as exc:
+            raise _ElementObservationUnavailable(
+                f"元素属性暂时无法读取: attribute={attribute}"
+            ) from exc
+
+    @staticmethod
+    def _valid_rect(rect) -> dict[str, float] | None:
+        if not isinstance(rect, dict):
+            return None
+        values: dict[str, float] = {}
+        for field in ("x", "y", "width", "height"):
+            value = rect.get(field)
+            if isinstance(value, bool):
+                return None
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return None
+            if not math.isfinite(number):
+                return None
+            values[field] = number
+        if values["width"] <= 0 or values["height"] <= 0:
+            return None
+        return values
+
+    @classmethod
+    def _is_retryable(cls, error: BaseException) -> bool:
+        if is_stale_element_error(error) or isinstance(
+            error,
+            (ElementNotFound, ElementStaleRetryExhausted, _ElementObservationUnavailable),
+        ):
+            return True
+        current: BaseException | None = error
+        visited: set[int] = set()
+        while current is not None and id(current) not in visited:
+            visited.add(id(current))
+            if current.__class__.__name__ in cls._MISSING_EXCEPTION_NAMES:
+                return True
+            message = str(current).lower()
+            if "no such element" in message or "timed out" in message:
+                return True
+            current = current.__cause__ or current.__context__
+        return False
+
+    @staticmethod
+    def _same_sample(previous: dict, current: dict) -> bool:
+        if previous["displayed"] != current["displayed"] or previous["enabled"] != current["enabled"]:
+            return False
+        return all(
+            abs(previous["rect"][field] - current["rect"][field]) <= 1
+            for field in ("x", "y", "width", "height")
+        )
+
+    @staticmethod
+    def _stop_requested(context) -> bool:
+        stop = getattr(context, "should_stop", None)
+        return callable(stop) and bool(stop())
+
+    async def _sleep_with_stop(self, context, duration: float) -> None:
+        end = time.monotonic() + max(0.0, duration)
+        while True:
+            if self._stop_requested(context):
+                raise StopRequested("执行被用户停止")
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(0.05, remaining))
+
+    @staticmethod
+    def _timeout_error(
+        element_id,
+        params: dict,
+        attempts: int,
+        last_state: dict | None,
+        last_rect: dict | None,
+        last_reason: str,
+    ) -> ElementNotFound:
+        config = {
+            "wait_timeout": params.get("wait_timeout", 10),
+            "stable_duration_ms": params.get("stable_duration_ms", 500),
+            "stable_reads": params.get("stable_reads", 2),
+            "require_displayed": params.get("require_displayed", True),
+            "require_enabled": params.get("require_enabled", True),
+        }
+        return ElementNotFound(
+            "等待元素稳定超时："
+            f"element_id={element_id}, config={config}, attempts={attempts}, "
+            f"last_state={last_state}, last_rect={last_rect}, reason={last_reason}"
+        )
+
+    async def execute(self, driver, context, params: dict) -> dict:
+        element_id = params.get("element_id")
+        try:
+            wait_timeout = max(0.0, float(params.get("wait_timeout", 10)))
+            stable_duration_ms = max(0.0, float(params.get("stable_duration_ms", 500)))
+            stable_reads = max(1, int(params.get("stable_reads", 2)))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("wait_element_stable 参数必须是有效数字") from exc
+        require_displayed = bool(params.get("require_displayed", True))
+        require_enabled = bool(params.get("require_enabled", True))
+        deadline = time.monotonic() + wait_timeout
+        attempts = 0
+        previous: dict | None = None
+        stable_count = 0
+        stable_started: float | None = None
+        last_state: dict | None = None
+        last_rect: dict | None = None
+        last_reason = "未读取到元素"
+
+        while True:
+            if self._stop_requested(context):
+                raise StopRequested("执行被用户停止")
+            now = time.monotonic()
+            # wait_timeout=0 保留一次立即查询机会；正数 deadline 到期后不再发起驱动请求。
+            if attempts > 0 and now >= deadline:
+                raise self._timeout_error(
+                    element_id, params, attempts, last_state, last_rect, last_reason
+                )
+            attempts += 1
+            try:
+                remaining = max(0.0, deadline - now)
+                element = context.find_element(element_id, wait_timeout=remaining)
+                try:
+                    displayed = self._read_element_state(driver, element, "displayed")
+                    enabled = self._read_element_state(driver, element, "enabled")
+                except Exception as exc:
+                    raise _ElementObservationUnavailable("元素属性暂时无法读取") from exc
+                try:
+                    rect = self._valid_rect(driver.get_element_rect(element))
+                except Exception as exc:
+                    raise _ElementObservationUnavailable("元素 rect 暂时无法读取") from exc
+                last_state = {"displayed": displayed, "enabled": enabled}
+                last_rect = rect
+                if rect is None:
+                    previous = None
+                    stable_count = 0
+                    stable_started = None
+                    last_reason = "rect未知或无效"
+                elif (require_displayed and displayed is not True) or (
+                    require_enabled and enabled is not True
+                ):
+                    previous = None
+                    stable_count = 0
+                    stable_started = None
+                    last_reason = "元素不可见或不可用"
+                else:
+                    current = {"displayed": displayed, "enabled": enabled, "rect": rect}
+                    if previous is not None and self._same_sample(previous, current):
+                        stable_count += 1
+                    else:
+                        stable_count = 1
+                        stable_started = time.monotonic()
+                    previous = current
+                    if (
+                        stable_count >= stable_reads
+                        and stable_started is not None
+                        and (time.monotonic() - stable_started) * 1000 >= stable_duration_ms
+                        and (wait_timeout == 0 or time.monotonic() < deadline)
+                    ):
+                        return {"status": "passed", "attempts": attempts}
+                    last_reason = (
+                        f"稳定样本不足或持续时间不足(count={stable_count}, "
+                        f"required_reads={stable_reads})"
+                    )
+            except Exception as exc:
+                if not self._is_retryable(exc):
+                    raise
+                invalidate = getattr(context, "invalidate_element", None)
+                if callable(invalidate):
+                    invalidate(element_id)
+                previous = None
+                stable_count = 0
+                stable_started = None
+                last_reason = f"{exc.__class__.__name__}: {str(exc)[:120]}"
+
+            # The next iteration may be the final immediate attempt at timeout=0.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise self._timeout_error(
+                    element_id, params, attempts, last_state, last_rect, last_reason
+                )
+            await self._sleep_with_stop(context, min(self._POLL_INTERVAL, remaining))
 
 
 @register_action("input")

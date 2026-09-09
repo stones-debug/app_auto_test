@@ -24,6 +24,14 @@ class ClickParams(ParamsBase):
     wait_timeout: int = Field(default=10, ge=0, le=300)
 
 
+class WaitElementStableParams(ParamsBase):
+    wait_timeout: int = Field(default=10, ge=0, le=300)
+    stable_duration_ms: int = Field(default=500, ge=0, le=5000)
+    stable_reads: int = Field(default=2, ge=1, le=20)
+    require_displayed: bool = True
+    require_enabled: bool = True
+
+
 class InputParams(ParamsBase):
     value: str
     clear_first: bool = True
@@ -195,6 +203,7 @@ STEP_PARAM_MODELS: dict[str, type[ParamsBase]] = {
     'launch_app': LaunchAppParams,  # noqa: F821
     'close_app': CloseAppParams,  # noqa: F821
     'click': ClickParams,  # noqa: F821
+    'wait_element_stable': WaitElementStableParams,  # noqa: F821
     'input': InputParams,  # noqa: F821
     'clear': ClearParams,  # noqa: F821
     'set_checked': SetCheckedParams,  # noqa: F821
@@ -234,6 +243,7 @@ PROTOCOL_VERSION = '3.3.0'
 
 STEP_NEEDS_ELEMENT = frozenset({
     'click',
+    'wait_element_stable',
     'input',
     'clear',
     'set_checked',

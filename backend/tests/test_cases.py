@@ -4,7 +4,11 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
-from app.schemas.generated_case_params import NumberCompareParams, SwipeToFindParams
+from app.schemas.generated_case_params import (
+    NumberCompareParams,
+    SwipeToFindParams,
+    WaitElementStableParams,
+)
 
 OWNER = {"username": "pytest_caseowner", "email": "caseowner@tl-tek.com", "password": "test123"}
 
@@ -54,6 +58,20 @@ def test_number_compare_params_support_operator_and_variable_text():
     assert NumberCompareParams(expected="98").operator == ">"
     with pytest.raises(ValueError):
         NumberCompareParams(operator=cast(Any, "~"), expected="98")
+
+
+def test_wait_element_stable_params_defaults_and_bounds():
+    params = WaitElementStableParams()
+    assert params.wait_timeout == 10
+    assert params.stable_duration_ms == 500
+    assert params.stable_reads == 2
+    assert params.require_displayed is True
+    assert params.require_enabled is True
+    assert WaitElementStableParams(stable_duration_ms=0, stable_reads=20).stable_reads == 20
+    with pytest.raises(ValueError):
+        WaitElementStableParams(stable_reads=0)
+    with pytest.raises(ValueError):
+        WaitElementStableParams(stable_duration_ms=5001)
 
 
 async def test_case_crud(client: AsyncClient):
