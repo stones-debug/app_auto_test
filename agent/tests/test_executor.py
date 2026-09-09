@@ -2878,6 +2878,9 @@ def test_appium_limited_swipes_use_uiautomator2_gesture_payloads():
         def get_window_size(self):
             return {"width": 1080, "height": 2400}
 
+        def execute(self, command, payload):
+            self.calls.append((command, payload))
+
         def swipe(self, *args):
             self.swipes.append(args)
 
@@ -2891,14 +2894,23 @@ def test_appium_limited_swipes_use_uiautomator2_gesture_payloads():
     driver.swipe_in_region(100, 200, 300, 400, "down", 0.5)
     driver.drag_coordinate(10, 20, 300, 20, 300)
 
-    assert fake.calls == [
+    assert fake.calls[:2] == [
         ("mobile: swipeGesture", {"elementId": "native-element-id", "direction": "up", "percent": 0.3}),
         (
             "mobile: swipeGesture",
             {"left": 100, "top": 200, "width": 300, "height": 400, "direction": "down", "percent": 0.5},
         ),
     ]
-    assert fake.swipes == [(10, 20, 300, 20, 300)]
+    assert fake.swipes == []
+    assert fake.calls[2][0] == "actions"
+    actions = fake.calls[2][1]["actions"][0]["actions"]
+    assert [(item["type"], item.get("x"), item.get("y")) for item in actions] == [
+        ("pointerMove", 10, 20),
+        ("pointerDown", None, None),
+        ("pointerMove", 300, 20),
+        ("pointerUp", None, None),
+    ]
+    assert actions[2]["duration"] == 300
 
 
 def test_appium_limited_swipes_reject_ios():

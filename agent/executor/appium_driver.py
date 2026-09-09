@@ -3,6 +3,7 @@ import logging
 import math
 import threading
 import time
+from numbers import Real
 from typing import TYPE_CHECKING
 
 from .driver import BaseDriver, DriverError, _coerce_bool
@@ -791,16 +792,56 @@ class AppiumDriver(BaseDriver):
         self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int
     ) -> None:
         """用 W3C 坐标滑动直接传递毫秒持续时间，不转换为 speed。"""
-        self._ensure_android_gesture()
-        driver = self._ensure()
-        driver.swipe(start_x, start_y, end_x, end_y, duration_ms)
+        self._perform_touch_gesture(start_x, start_y, end_x, end_y, duration_ms)
 
     def drag_coordinate(
         self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int
     ) -> None:
+        self._perform_touch_gesture(start_x, start_y, end_x, end_y, duration_ms)
+
+    @staticmethod
+    def _validate_touch_value(value, name: str, *, positive: bool = False) -> int:
+        """校验 W3C 坐标/时长并归一化为 JSON 可序列化整数。"""
+        if isinstance(value, bool) or not isinstance(value, Real):
+            raise ValueError(f"{name} 必须是有限整数")
+        numeric = float(value)
+        if not math.isfinite(numeric) or not numeric.is_integer():
+            raise ValueError(f"{name} 必须是有限整数")
+        result = int(numeric)
+        if positive and result <= 0:
+            raise ValueError(f"{name} 必须为正数")
+        return result
+
+    def _perform_touch_gesture(
+        self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int
+    ) -> None:
+        """通过单一 touch pointer 发送完整的 viewport W3C 手势序列。
+
+        Appium Python Client 6 的 ``driver.swipe`` 在加入 pointerDown 后会重建
+        ActionBuilder，导致起点和按下动作丢失。这里一次性构造并提交完整序列，
+        让 UiAutomator2 能收到合法的 pointerMove → pointerDown → pointerMove →
+        pointerUp 链，并确保时长只应用于移动段。
+        """
         self._ensure_android_gesture()
         driver = self._ensure()
-        driver.swipe(start_x, start_y, end_x, end_y, duration_ms)
+        start_x = self._validate_touch_value(start_x, "start_x")
+        start_y = self._validate_touch_value(start_y, "start_y")
+        end_x = self._validate_touch_value(end_x, "end_x")
+        end_y = self._validate_touch_value(end_y, "end_y")
+        duration_ms = self._validate_touch_value(duration_ms, "duration_ms", positive=True)
+
+        from selenium.webdriver.common.actions.action_builder import ActionBuilder
+        from selenium.webdriver.common.actions.pointer_input import PointerInput
+
+        touch = PointerInput("touch", "finger")
+        actions = ActionBuilder(driver, mouse=touch)
+        touch.create_pointer_move(duration=0, x=start_x, y=start_y, origin="viewport")
+        touch.create_pointer_down(button=0)
+        touch.create_pointer_move(
+            duration=duration_ms, x=end_x, y=end_y, origin="viewport"
+        )
+        touch.create_pointer_up(button=0)
+        actions.perform()
 
     def screenshot(self, path: str) -> None:
         driver = self._ensure()

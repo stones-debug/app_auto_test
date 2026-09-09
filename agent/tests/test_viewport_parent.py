@@ -293,22 +293,95 @@ def test_two_pixel_region_clamps_to_one_pixel_without_overflow():
     assert points == (15, 20, 15, 21, 1)
 
 
-def test_appium_coordinate_swipe_calls_driver_swipe_with_exact_duration():
+def test_appium_coordinate_swipe_sends_complete_w3c_touch_sequence():
     from executor.appium_driver import AppiumDriver
 
     class Appium:
         def __init__(self):
             self.calls = []
+            self.swipes = []
+
+        def execute(self, command, payload):
+            self.calls.append((command, payload))
 
         def swipe(self, *args):
-            self.calls.append(args)
+            self.swipes.append(args)
 
     appium = Appium()
     driver = AppiumDriver(device={"platform": "android"})
     driver.driver = cast(Any, appium)
     driver.swipe_coordinate(10, 100, 10, 20, 3000)
 
-    assert appium.calls == [(10, 100, 10, 20, 3000)]
+    assert appium.swipes == []
+    assert appium.calls == [
+        (
+            "actions",
+            {
+                "actions": [
+                    {
+                        "type": "pointer",
+                        "parameters": {"pointerType": "touch"},
+                        "id": "finger",
+                        "actions": [
+                            {
+                                "type": "pointerMove",
+                                "duration": 0,
+                                "x": 10,
+                                "y": 100,
+                                "origin": "viewport",
+                            },
+                            {"type": "pointerDown", "duration": 0, "button": 0},
+                            {
+                                "type": "pointerMove",
+                                "duration": 3000,
+                                "x": 10,
+                                "y": 20,
+                                "origin": "viewport",
+                            },
+                            {"type": "pointerUp", "duration": 0, "button": 0},
+                        ],
+                    }
+                ]
+            },
+        )
+    ]
+
+
+def test_appium_coordinate_drag_reuses_w3c_touch_sequence_and_validates_inputs():
+    from executor.appium_driver import AppiumDriver
+
+    class Appium:
+        def __init__(self):
+            self.calls = []
+            self.swipes = []
+
+        def execute(self, command, payload):
+            self.calls.append((command, payload))
+
+        def swipe(self, *args):
+            self.swipes.append(args)
+
+    appium = Appium()
+    driver = AppiumDriver(device={"platform": "android"})
+    driver.driver = cast(Any, appium)
+    driver.drag_coordinate(20, 100, 25, 180, 300)
+
+    assert appium.swipes == []
+    actions = appium.calls[0][1]["actions"][0]["actions"]
+    assert [(item["type"], item.get("x"), item.get("y")) for item in actions] == [
+        ("pointerMove", 20, 100),
+        ("pointerDown", None, None),
+        ("pointerMove", 25, 180),
+        ("pointerUp", None, None),
+    ]
+    assert actions[2]["duration"] == 300
+
+    with pytest.raises(ValueError, match="duration_ms"):
+        driver.swipe_coordinate(10, 100, 10, 20, 0)
+    with pytest.raises(ValueError, match="start_x"):
+        driver.swipe_coordinate(float("nan"), 100, 10, 20, 300)
+    with pytest.raises(ValueError, match="end_y"):
+        driver.drag_coordinate(10, 100, 10, 20.5, 300)
 
 
 def test_mock_coordinate_swipe_infers_direction_from_dominant_axis():
