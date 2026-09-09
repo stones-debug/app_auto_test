@@ -358,25 +358,27 @@ class ClearAction(BaseAction):
 
 @register_action("set_checked")
 class SetCheckedAction(BaseAction):
-    """将原生 checkbox 设置为目标状态；一次动作最多发送两次点击。
+    """将原生 checkbox 设置为目标状态；一次动作最多发送三次点击。
 
     ``click`` 是切换操作，不具备幂等性。页面重绘时，点击请求可能已经在
     设备端生效，但 Appium 在返回响应前抛出 stale/超时异常。第一次点击异常、
     状态未知或未通过稳定观测门禁时只做只读轮询；只有第一次干净返回且连续
-    两次间隔读到明确的非目标状态时，才允许一次最终补点击。
+    两次间隔读到明确的非目标状态时，才允许下一次补点击。最后一次点击后
+    只读确认，不再发送点击。
     """
 
     DEFAULT_WAIT_TIMEOUT = 10.0
     POLL_INTERVAL = 0.1
     READ_RETRIES = 2
     MIN_CLICK_REMAINING = 0.1
+    MAX_CLICKS = 3
     SETTLE_BEFORE_RETRY = 0.5
     RETRY_OBSERVATION_INTERVAL = 0.2
     RETRY_STABLE_READS = 2
-    # Reserve time for the second Appium command plus fresh verification
-    # reads. A click near the deadline is unsafe: it may mutate the device
-    # while leaving no budget to determine the result.
-    MIN_SECOND_CLICK_REMAINING = 0.8
+    # Reserve time for the next Appium command plus fresh verification reads.
+    # A click near the deadline is unsafe: it may mutate the device while
+    # leaving no budget to determine the result.
+    MIN_RETRY_CLICK_REMAINING = 0.8
 
     async def execute(self, driver, context, params: dict) -> dict:
         desired = _coerce_bool(params.get("checked", True))
@@ -389,6 +391,7 @@ class SetCheckedAction(BaseAction):
         initial_state: bool | None = None
         final_state: bool | None = None
         click_error: BaseException | None = None
+        retry_blocked_reason: str | None = None
 
         async def read_state() -> tuple[object, bool]:
             """只读定位/读取；stale 只在这条路径重试。"""
@@ -436,133 +439,204 @@ class SetCheckedAction(BaseAction):
                 _diagnostic_value(center),
             )
 
+        async def sleep_with_stop(duration: float) -> None:
+            """可被 stop_test 打断的短等待。"""
+            end = min(deadline, time.monotonic() + max(0.0, duration))
+            while True:
+                check_stop()
+                remaining = end - time.monotonic()
+                if remaining <= 0:
+                    return
+                await asyncio.sleep(min(0.05, remaining))
+
+        async def observe_after_click() -> tuple[bool, bool | None]:
+            """等待并读取状态，返回(是否通过稳定非目标门禁, 最后状态)。
+
+            任何定位/读取异常都会关闭后续点击资格；调用方仍可在总 deadline
+            内继续只读轮询。达到目标状态则立即返回，不要求读满稳定次数。
+            """
+            nonlocal final_state, retry_blocked_reason
+            await sleep_with_stop(self.SETTLE_BEFORE_RETRY)
+            stable_reads = 0
+            last_state: bool | None = None
+            while stable_reads < self.RETRY_STABLE_READS:
+                check_stop()
+                if time.monotonic() >= deadline:
+                    retry_blocked_reason = "deadline"
+                    return False, last_state
+                try:
+                    _probe_element, probe_state = await read_state()
+                except Exception as exc:
+                    if not _is_set_checked_read_retryable(exc):
+                        raise
+                    retry_blocked_reason = "state_unknown"
+                    logger.warning(
+                        "set_checked 重试资格关闭: element_id=%s reason=state_unknown "
+                        "attempts=%s/%s exception=%s",
+                        element_id,
+                        click_count,
+                        self.MAX_CLICKS,
+                        exc.__class__.__name__,
+                    )
+                    return False, last_state
+                last_state = probe_state
+                final_state = probe_state
+                if not isinstance(probe_state, bool):
+                    retry_blocked_reason = "state_unknown"
+                    logger.warning(
+                        "set_checked 重试资格关闭: element_id=%s reason=state_unknown "
+                        "attempts=%s/%s observed=%s",
+                        element_id,
+                        click_count,
+                        self.MAX_CLICKS,
+                        _diagnostic_value(probe_state),
+                    )
+                    return False, None
+                if probe_state == desired:
+                    return False, probe_state
+                stable_reads += 1
+                if stable_reads < self.RETRY_STABLE_READS:
+                    await sleep_with_stop(self.RETRY_OBSERVATION_INTERVAL)
+            logger.info(
+                "set_checked 重试资格通过: element_id=%s attempts=%s/%s "
+                "stable_non_target_reads=%s required=%s",
+                element_id,
+                click_count,
+                self.MAX_CLICKS,
+                stable_reads,
+                self.RETRY_STABLE_READS,
+            )
+            return True, last_state
+
         try:
             element, initial_state = await read_state()
             final_state = initial_state
-            if initial_state != desired:
-                remaining = deadline - time.monotonic()
-                if remaining < self.MIN_CLICK_REMAINING:
-                    raise DriverError(
-                        "设置勾选状态失败：读取初始状态后剩余等待时间不足，未发送点击"
-                    )
-                # Resolve the exact locator again immediately before the
-                # physical click. A redraw may have invalidated the initial
-                # handle or the control may already have reached its target.
-                element, pre_click_state = await read_state()
-                if pre_click_state == desired:
-                    final_state = pre_click_state
-                    click_count = 0
-                    return {
-                        "status": "passed",
-                        "expected": "checked" if desired else "unchecked",
-                        "changed": False,
-                    }
-                remaining = deadline - time.monotonic()
-                if remaining < self.MIN_CLICK_REMAINING:
-                    raise DriverError(
-                        "设置勾选状态失败：点击前状态仍不一致但剩余等待时间不足，未发送点击"
-                    )
-                log_click_target(element, "点击前目标")
-                logger.info(
-                    "set_checked 点击尝试: element_id=%s desired=%s initial=%s pre_click=%s click_count=1",
-                    element_id,
-                    desired,
-                    initial_state,
-                    pre_click_state,
-                )
+            if not isinstance(initial_state, bool):
+                retry_blocked_reason = "state_unknown"
+            elif initial_state != desired:
+                run_with_timeout = getattr(driver, "run_with_http_timeout", None)
 
-                def send_click(target, attempt: int) -> None:
-                    nonlocal click_count
-                    click_count = attempt
+                def send_click(target) -> None:
                     click_checked = getattr(driver, "click_checkable", None)
                     if callable(click_checked):
                         click_checked(target)
                     else:
                         driver.click(target)
 
-                try:
-                    run_with_timeout = getattr(driver, "run_with_http_timeout", None)
-                    if callable(run_with_timeout):
-                        run_with_timeout(remaining, lambda: send_click(element, 1))
-                    else:
-                        send_click(element, 1)
-                except Exception as exc:
-                    # 点击可能已经到达设备端；记录异常后继续只读确认。
-                    click_error = exc
-                    logger.warning(
-                        "set_checked 点击返回异常，将只读确认最终状态: element_id=%s "
-                        "exception=%s click_count=1",
-                        element_id,
-                        exc.__class__.__name__,
-                    )
-                finally:
-                    # 点击后失效句柄，之后每轮都重新定位，避免用旧句柄读取状态。
-                    context.invalidate_element(element_id)
-
-                # A second click is deliberately narrow: only a clean first
-                # return may qualify, and two fresh, separated non-target
-                # reads must prove that the state did not converge naturally.
-                if click_error is None:
-                    settle_remaining = deadline - time.monotonic()
-                    if settle_remaining >= self.SETTLE_BEFORE_RETRY:
-                        await asyncio.sleep(self.SETTLE_BEFORE_RETRY)
-                        stable_reads = 0
-                        while stable_reads < self.RETRY_STABLE_READS:
-                            check_stop()
-                            if time.monotonic() >= deadline:
-                                break
-                            try:
-                                _probe_element, probe_state = await read_state()
-                            except Exception as exc:
-                                if not _is_set_checked_read_retryable(exc):
-                                    raise
-                                probe_state = None
-                            if probe_state is None or probe_state == desired:
-                                break
-                            stable_reads += 1
-                            if stable_reads < self.RETRY_STABLE_READS:
-                                await asyncio.sleep(
-                                    min(
-                                        self.RETRY_OBSERVATION_INTERVAL,
-                                        max(0.0, deadline - time.monotonic()),
-                                    )
-                                )
+                while click_count < self.MAX_CLICKS and retry_blocked_reason is None:
+                    remaining = deadline - time.monotonic()
+                    reserve = self.MIN_CLICK_REMAINING
+                    if click_count > 0:
+                        reserve = self.MIN_RETRY_CLICK_REMAINING
+                    if remaining < reserve:
+                        retry_blocked_reason = "insufficient_time"
                         logger.info(
-                            "set_checked 二次点击资格: element_id=%s clean_first=%s "
-                            "stable_non_target_reads=%s required=%s",
+                            "set_checked 点击资格关闭: element_id=%s attempt=%s/%s "
+                            "reason=%s remaining=%.3f reserve=%.3f",
                             element_id,
-                            click_error is None,
-                            stable_reads,
-                            self.RETRY_STABLE_READS,
+                            click_count + 1,
+                            self.MAX_CLICKS,
+                            retry_blocked_reason,
+                            remaining,
+                            reserve,
                         )
-                        if stable_reads >= self.RETRY_STABLE_READS:
-                            try:
-                                element, retry_state = await read_state()
-                            except Exception as exc:
-                                retry_state = None
-                                if not _is_set_checked_read_retryable(exc):
-                                    raise
-                            remaining = deadline - time.monotonic()
-                            if (
-                                retry_state is not None
-                                and retry_state != desired
-                                and remaining >= self.MIN_SECOND_CLICK_REMAINING
-                            ):
-                                log_click_target(element, "二次点击前目标")
-                                try:
-                                    if callable(run_with_timeout):
-                                        run_with_timeout(remaining, lambda: send_click(element, 2))
-                                    else:
-                                        send_click(element, 2)
-                                except Exception as exc:
-                                    click_error = exc
-                                    logger.warning(
-                                        "set_checked 二次点击返回异常: element_id=%s exception=%s click_count=2",
-                                        element_id,
-                                        exc.__class__.__name__,
-                                    )
-                                finally:
-                                    context.invalidate_element(element_id)
+                        if click_count == 0:
+                            raise DriverError(
+                                "设置勾选状态失败：读取初始状态后剩余等待时间不足，未发送点击"
+                            )
+                        break
+
+                    # 每次物理点击前重新定位并确认仍为明确非目标状态。
+                    try:
+                        element, pre_click_state = await read_state()
+                    except Exception as exc:
+                        if not _is_set_checked_read_retryable(exc):
+                            raise
+                        retry_blocked_reason = "state_unknown"
+                        break
+                    final_state = pre_click_state
+                    if not isinstance(pre_click_state, bool):
+                        retry_blocked_reason = "state_unknown"
+                        break
+                    if pre_click_state == desired:
+                        break
+                    # 定位/读取本身可能耗时；重新计算预算，避免把已经
+                    # 消耗掉的时间误传给下一次 Appium 点击请求。
+                    remaining = deadline - time.monotonic()
+                    if remaining < reserve:
+                        retry_blocked_reason = "insufficient_time"
+                        logger.info(
+                            "set_checked 点击资格关闭: element_id=%s attempt=%s/%s "
+                            "reason=%s remaining=%.3f reserve=%.3f",
+                            element_id,
+                            click_count + 1,
+                            self.MAX_CLICKS,
+                            retry_blocked_reason,
+                            remaining,
+                            reserve,
+                        )
+                        if click_count == 0:
+                            raise DriverError(
+                                "设置勾选状态失败：点击前状态仍不一致但剩余等待时间不足，未发送点击"
+                            )
+                        break
+                    log_click_target(element, "点击前目标")
+                    attempt = click_count + 1
+                    logger.info(
+                        "set_checked 点击尝试: element_id=%s desired=%s initial=%s "
+                        "pre_click=%s attempt=%s/%s retry_gate=%s",
+                        element_id,
+                        desired,
+                        initial_state,
+                        pre_click_state,
+                        attempt,
+                        self.MAX_CLICKS,
+                        "initial" if attempt == 1 else "stable_non_target",
+                    )
+
+                    click_count = attempt
+                    try:
+                        if callable(run_with_timeout):
+                            run_with_timeout(
+                                remaining,
+                                lambda element=element: send_click(element),
+                            )
+                        else:
+                            send_click(element)
+                    except Exception as exc:
+                        # 点击可能已经到达设备端；记录异常后永久关闭补点击。
+                        click_error = exc
+                        retry_blocked_reason = "click_exception"
+                        logger.warning(
+                            "set_checked 点击返回异常，将只读确认最终状态: element_id=%s "
+                            "exception=%s attempt=%s/%s retry_gate=closed",
+                            element_id,
+                            exc.__class__.__name__,
+                            attempt,
+                            self.MAX_CLICKS,
+                        )
+                    finally:
+                        context.invalidate_element(element_id)
+
+                    if click_error is not None:
+                        break
+
+                    allowed, observed_state = await observe_after_click()
+                    if observed_state == desired or final_state == desired:
+                        break
+                    if not allowed:
+                        if retry_blocked_reason is None:
+                            retry_blocked_reason = "unstable_or_unknown_state"
+                        break
+                    if click_count >= self.MAX_CLICKS:
+                        retry_blocked_reason = "max_clicks"
+                        logger.info(
+                            "set_checked 点击次数达到上限: element_id=%s attempts=%s/%s",
+                            element_id,
+                            click_count,
+                            self.MAX_CLICKS,
+                        )
+                        break
                 while True:
                     check_stop()
                     if time.monotonic() >= deadline:
@@ -589,7 +663,7 @@ class SetCheckedAction(BaseAction):
         elapsed_ms = (time.monotonic() - started) * 1000
         logger.info(
             "set_checked 状态确认: element_id=%s desired=%s initial=%s final=%s "
-            "elapsed_ms=%.1f polls=%s click_count=%s",
+            "elapsed_ms=%.1f polls=%s click_count=%s/%s retry_gate=%s",
             element_id,
             desired,
             initial_state,
@@ -597,6 +671,8 @@ class SetCheckedAction(BaseAction):
             elapsed_ms,
             poll_count,
             click_count,
+            self.MAX_CLICKS,
+            retry_blocked_reason or "not_needed",
         )
         if final_state != desired:
             error_name = click_error.__class__.__name__ if click_error is not None else "none"

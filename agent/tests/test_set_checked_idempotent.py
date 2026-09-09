@@ -168,6 +168,42 @@ class NonConvergingDriver(RecordingDriver):
     # The click is delivered but the control remains unchecked.
 
 
+class ThirdAttemptConvergenceDriver(RecordingDriver):
+    def click(self, element):
+        self.click_count += 1
+        if self.click_count >= 3:
+            MockDriver.click(self, element)
+
+
+@pytest.mark.asyncio
+async def test_non_converging_control_gets_at_most_three_clean_clicks():
+    driver = NonConvergingDriver(checked=False)
+
+    with pytest.raises(DriverError, match="未收敛"):
+        await SetCheckedAction().execute(
+            driver,
+            _context(driver),
+            {"element_id": 1, "checked": True, "wait_timeout": 3.5},
+        )
+
+    assert driver.click_count == 3
+
+
+@pytest.mark.asyncio
+async def test_third_clean_click_can_finish_transition():
+    driver = ThirdAttemptConvergenceDriver(checked=False)
+
+    result = await SetCheckedAction().execute(
+        driver,
+        _context(driver),
+        {"element_id": 1, "checked": True, "wait_timeout": 3.5},
+    )
+
+    assert result["status"] == "passed"
+    assert result["changed"] is True
+    assert driver.click_count == 3
+
+
 class SlowInitialReadDriver(RecordingDriver):
     def __init__(self):
         super().__init__(checked=False)
