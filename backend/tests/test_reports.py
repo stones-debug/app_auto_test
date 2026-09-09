@@ -372,6 +372,11 @@ async def test_report_download_generates_and_caches(client: AsyncClient):
     headers = {"Authorization": f"Bearer {token}"}
     report_id = await _report_id(execution_id)
 
+    # 旧版本缓存必须失效，否则已经下载过的报告不会应用惰性详情优化。
+    html_path = reports_dir() / f"execution_{execution_id}" / "report.html"
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path.write_text("<!-- version: step-assertions-html-v9 -->\n旧报告", encoding="utf-8")
+
     resp1 = await client.get(f"/api/reports/{report_id}/download", headers=headers)
     assert resp1.status_code == 200
     assert "text/html" in resp1.headers.get("content-type", "")
@@ -383,9 +388,10 @@ async def test_report_download_generates_and_caches(client: AsyncClient):
     assert "套件总数" in resp1.text
     assert "步骤总数" in resp1.text
     assert "虚拟套件" in resp1.text
-    assert "version: step-assertions-html-v9" in resp1.text
+    assert "version: lazy-case-details-html-v10" in resp1.text
+    assert "class=\"case-detail-template\"" in resp1.text
+    assert "旧报告" not in resp1.text
 
-    html_path = reports_dir() / f"execution_{execution_id}" / "report.html"
     assert html_path.exists()
 
     async with SessionLocal() as db:
@@ -499,12 +505,22 @@ def test_report_html_screenshot_lightbox_is_single_and_offline():
 
     assert html.count('class="screenshot-trigger"') == 2
     assert html.count('id="screenshot-lightbox"') == 1
+    assert html.count('class="case-detail-template"') == 1
+    assert 'class="suite-detail-template"' not in html
+    assert 'case-body-mount" hidden' in html
+    assert 'loading="lazy" decoding="async"' in html
+    # 初始活动 DOM 只有套件/用例摘要；步骤表格和截图位于惰性 template 中。
+    case_summary = html.split('<details class="case case-item"', 1)[1].split('<template', 1)[0]
+    assert '<table' not in case_summary
+    assert 'mountDetails' in html
+    assert "details.dataset.mounted === 'true'" in html
     assert 'role="dialog"' in html
     assert 'aria-modal="true"' in html
     assert 'lightboxImage.src = source.src' in html
     assert "event.key === 'Escape'" in html
     assert "event.key === 'Enter' || event.key === ' '" in html
     assert "event.target === lightbox" in html
+    assert "document.addEventListener('click'" in html
     assert "<script src=" not in html
     assert "https://" not in html
 

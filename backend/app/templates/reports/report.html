@@ -36,6 +36,8 @@
   .suite .case { margin-bottom: 10px; }
   .suite-phase { color: var(--muted); font-size: 12px; font-weight: 600; margin: 10px 0 4px; }
   .case-body { padding: 12px 16px; }
+  .case-body-mount[hidden] { display: none; }
+  .case-body-mount { contain: layout paint; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
   th { background: var(--bg); color: var(--muted); font-weight: 600; white-space: nowrap; }
@@ -75,7 +77,7 @@
       </td>
       <td>
         {%- if step.screenshot_base64 -%}
-        <button type="button" class="screenshot-trigger" aria-expanded="false" aria-controls="screenshot-lightbox"><img class="step-screenshot" src="data:image/png;base64,{{ step.screenshot_base64 }}" alt="截图"></button>
+        <button type="button" class="screenshot-trigger" aria-expanded="false" aria-controls="screenshot-lightbox"><img class="step-screenshot" loading="lazy" decoding="async" src="data:image/png;base64,{{ step.screenshot_base64 }}" alt="截图"></button>
         {%- elif step.screenshot -%}
         <span style="color:var(--muted)">{{ step.screenshot }}</span>
         {%- endif -%}
@@ -114,7 +116,7 @@
       <td>{{ node.duration if node.duration is not none else '-' }}ms</td>
       <td style="word-break:break-all">{{ node.expected_value or '' }}{% if node.actual_value %} / {{ node.actual_value }}{% endif %}</td>
       <td style="word-break:break-all">{{ node.error_message or '' }}</td>
-      <td>{% if node.screenshot_base64 %}<button type="button" class="screenshot-trigger" aria-expanded="false" aria-controls="screenshot-lightbox"><img class="step-screenshot" src="data:image/png;base64,{{ node.screenshot_base64 }}" alt="截图"></button>{% elif node.screenshot %}{{ node.screenshot }}{% endif %}</td>
+      <td>{% if node.screenshot_base64 %}<button type="button" class="screenshot-trigger" aria-expanded="false" aria-controls="screenshot-lightbox"><img class="step-screenshot" loading="lazy" decoding="async" src="data:image/png;base64,{{ node.screenshot_base64 }}" alt="截图"></button>{% elif node.screenshot %}{{ node.screenshot }}{% endif %}</td>
     </tr>
   {% endfor %}
   </tbody>
@@ -122,20 +124,21 @@
 {%- endmacro %}
 
 {% macro render_case(case) -%}
-<details class="case">
+<details class="case case-item">
   <summary class="case-head">
     <span class="case-name">{{ case.case_name }}{% if case.module_name %}<span style="color:var(--muted);font-weight:400;font-size:12px;margin-left:8px">{{ case.module_name }}</span>{% endif %}</span>
     <span class="badge {{ case.status }}">{{ case.status }}</span>
   </summary>
-  <div class="case-body">
-    {% if case.error_message %}<div class="error-box">{{ case.error_message }}</div>{% endif %}
-    {% if case.nodes %}{{ render_nodes(case.nodes) }}{% elif case.steps %}{{ render_steps(case.steps) }}{% else %}<div class="empty">无步骤</div>{% endif %}
-  </div>
+  <template class="case-detail-template"><div class="case-body">
+      {% if case.error_message %}<div class="error-box">{{ case.error_message }}</div>{% endif %}
+      {% if case.nodes %}{{ render_nodes(case.nodes) }}{% elif case.steps %}{{ render_steps(case.steps) }}{% else %}<div class="empty">无步骤</div>{% endif %}
+  </div></template>
+  <div class="case-body-mount" hidden></div>
 </details>
 {%- endmacro %}
 
 {% macro render_suite(suite) -%}
-<details class="case suite">
+<details class="case suite" data-suite-detail>
   <summary class="case-head">
     <span class="case-name">{{ suite.suite_name }}{% if suite.suite_id %}<span style="color:var(--muted);font-weight:400;font-size:12px;margin-left:8px">#{{ suite.suite_id }}</span>{% endif %}</span>
     <span class="badge {{ suite.status }}">{{ suite.status }}</span>
@@ -241,6 +244,27 @@
 </div>
 <script>
   (() => {
+    const lazyDetails = document.querySelectorAll('details.case');
+    const mountDetails = (details) => {
+      if (!details || details.dataset.mounted === 'true') return;
+      const template = details.querySelector(':scope > template.case-detail-template');
+      const mount = details.querySelector(':scope > .case-body-mount');
+      if (!template || !mount) return;
+      mount.appendChild(template.content.cloneNode(true));
+      mount.hidden = false;
+      template.remove();
+      details.dataset.mounted = 'true';
+      mount.querySelectorAll('details.case').forEach(bindDetail);
+    };
+    const bindDetail = (details) => {
+      if (details.dataset.toggleBound === 'true') return;
+      details.addEventListener('toggle', () => {
+        if (details.open) mountDetails(details);
+      });
+      details.dataset.toggleBound = 'true';
+    };
+    lazyDetails.forEach(bindDetail);
+
     const lightbox = document.getElementById('screenshot-lightbox');
     const lightboxImage = lightbox?.querySelector('img');
     const closeButton = lightbox?.querySelector('.screenshot-lightbox-close');
@@ -266,14 +290,16 @@
       closeButton.focus();
     };
 
-    document.querySelectorAll('.screenshot-trigger').forEach((trigger) => {
-      trigger.addEventListener('click', () => open(trigger));
-      trigger.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          open(trigger);
-        }
-      });
+    document.addEventListener('click', (event) => {
+      const trigger = event.target.closest?.('.screenshot-trigger');
+      if (trigger) open(trigger);
+    });
+    document.addEventListener('keydown', (event) => {
+      const trigger = event.target.closest?.('.screenshot-trigger');
+      if (trigger && (event.key === 'Enter' || event.key === ' ')) {
+        event.preventDefault();
+        open(trigger);
+      }
     });
     closeButton.addEventListener('click', close);
     lightbox.addEventListener('click', (event) => {
