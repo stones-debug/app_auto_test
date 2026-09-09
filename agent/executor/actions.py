@@ -18,6 +18,10 @@ from .stale_guard import is_not_editable_error, is_stale_element_error, with_sta
 logger = logging.getLogger("agent.actions")
 
 
+class _UnsafeScrollGeometry(DriverError):
+    """手势几何不安全；交给一次受控 fallback，不发送原始坐标。"""
+
+
 def _diagnostic_value(value, *, limit: int = 200):
     """Return a bounded, log-safe representation for action diagnostics."""
     if value is None:
@@ -1355,7 +1359,7 @@ class SwipeInElementFindTextClickAction(BaseAction):
         except ElementNotFound as exc:
             raise ElementNotFound(f"ListView 未找到: element_id={element_id}") from exc
 
-        def _do_scroll(container):
+        def _do_scroll(container, *, allow_parent_fallback=False):
             # 每次手势都从本轮新定位的 container 解析第一层父元素，
             # 父元素句柄不能跨页面重绘复用；滑动距离统一按父视口高度计算。
             parent = driver.get_parent_element(container, wait_timeout=container_wait_timeout)
@@ -1372,26 +1376,63 @@ class SwipeInElementFindTextClickAction(BaseAction):
                 parent_height,
                 max(1, round(parent_height * configured_percent)),
             )
-            if direction == "up":
-                # 向上手势必须限制在本轮 ListView 的自身可见区域，不能扩大到父视口。
-                gesture_region = _clip_rect(list_rect, driver.get_window_size())
-                region_type = "list_view_visible"
-            else:
-                gesture_region = region
-                region_type = "parent_visible"
-            start_x, start_y, end_x, end_y, actual_distance_px = _vertical_swipe_points(
-                gesture_region, direction, target_distance_px
-            )
+            try:
+                geometry = self._scroll_geometry(
+                    driver,
+                    list_rect,
+                    region,
+                    direction,
+                    target_distance_px,
+                    allow_parent_fallback=allow_parent_fallback,
+                )
+            except _UnsafeScrollGeometry as exc:
+                list_visible = _clip_rect(list_rect, driver.get_window_size())
+                intersection = _intersect_rect(list_visible, region)
+                try:
+                    rejected_points = _vertical_swipe_points(
+                        list_visible, direction, target_distance_px
+                    )
+                except DriverError:
+                    rejected_points = None
+                logger.warning(
+                    "列表坐标滑动拒绝: gesture=duration_w3c direction=%s "
+                    "list_rect=%s parent_region=%s gesture_region=%s intersection=%s "
+                    "start=%s end=%s endpoints_inside_parent=(%s,%s) reason=%s",
+                    direction,
+                    list_rect,
+                    region,
+                    list_visible,
+                    intersection,
+                    None if rejected_points is None else rejected_points[:2],
+                    None if rejected_points is None else rejected_points[2:4],
+                    False if rejected_points is None else _point_in_rect(
+                        rejected_points[0], rejected_points[1], region
+                    ),
+                    False if rejected_points is None else _point_in_rect(
+                        rejected_points[2], rejected_points[3], region
+                    ),
+                    exc,
+                )
+                raise
+            gesture_region = geometry["gesture_region"]
+            start_x, start_y, end_x, end_y, actual_distance_px = geometry["points"]
             logger.info(
                 "列表坐标滑动: gesture=duration_w3c region_type=%s direction=%s "
-                "start=(%s,%s) end=(%s,%s) target_distance_px=%s "
-                "actual_distance_px=%s duration_ms=%s",
-                region_type,
+                "list_rect=%s parent_region=%s gesture_region=%s intersection=%s "
+                "start=(%s,%s) end=(%s,%s) endpoints_inside_parent=(%s,%s) "
+                "target_distance_px=%s actual_distance_px=%s duration_ms=%s",
+                geometry["region_type"],
                 direction,
+                list_rect,
+                region,
+                gesture_region,
+                geometry["intersection"],
                 start_x,
                 start_y,
                 end_x,
                 end_y,
+                geometry["start_inside_parent"],
+                geometry["end_inside_parent"],
                 target_distance_px,
                 actual_distance_px,
                 duration_ms,
@@ -1400,15 +1441,89 @@ class SwipeInElementFindTextClickAction(BaseAction):
                 start_x, start_y, end_x, end_y, duration_ms
             )
 
-        await with_stale_retry(
-            driver,
-            context,
-            element_id,
-            _do_scroll,
-            wait_timeout=container_wait_timeout,
-            disable_smart_scroll=True,
-            label=f"列表内滚动（{direction}）",
-        )
+        supports_element_fallback = self._supports_element_swipe_fallback(driver)
+        supports_coordinate_fallback = self._supports_coordinate_swipe_fallback(driver)
+
+        def _do_fallback(container):
+            if direction == "up" and supports_element_fallback:
+                try:
+                    logger.info(
+                        "列表滑动 fallback=element_swipe: direction=%s element_id=%s",
+                        direction,
+                        element_id,
+                    )
+                    return driver.swipe_in_element(container, direction, float(percent))
+                except Exception as exc:
+                    if not self._is_element_swipe_fallback_error(exc):
+                        raise
+                    logger.info(
+                        "列表滑动 fallback=element_swipe 不可用，改用安全坐标手势: "
+                        "direction=%s element_id=%s exception=%s",
+                        direction,
+                        element_id,
+                        type(exc).__name__,
+                    )
+            if supports_coordinate_fallback:
+                logger.info(
+                    "列表滑动 fallback=coordinate: direction=%s element_id=%s",
+                    direction,
+                    element_id,
+                )
+                return _do_scroll(container, allow_parent_fallback=True)
+            return None
+
+        async def _run_fallback(previous_signature):
+            if not (supports_element_fallback or supports_coordinate_fallback):
+                return False
+            logger.info(
+                "列表滑动 fallback=once: direction=%s element_id=%s",
+                direction,
+                element_id,
+            )
+            await with_stale_retry(
+                driver,
+                context,
+                element_id,
+                _do_fallback,
+                wait_timeout=container_wait_timeout,
+                disable_smart_scroll=True,
+                label=f"列表内滚动 fallback（{direction}）",
+            )
+            if settle_ms > 0:
+                await asyncio.sleep(settle_ms / 1000.0)
+            try:
+                fallback_signature = await self._observe_list_signature(
+                    driver, context, element_id,
+                    container_wait_timeout,
+                )
+            except ElementNotFound as exc:
+                raise ElementNotFound(f"ListView 未找到: element_id={element_id}") from exc
+            if fallback_signature is None:
+                return True
+            return fallback_signature != previous_signature
+
+        try:
+            await with_stale_retry(
+                driver,
+                context,
+                element_id,
+                _do_scroll,
+                wait_timeout=container_wait_timeout,
+                disable_smart_scroll=True,
+                label=f"列表内滚动（{direction}）",
+            )
+        except _UnsafeScrollGeometry as exc:
+            # Do not send the unsafe primary coordinates. Re-locate once and
+            # let element swipe or a parent-safe coordinate fallback recover.
+            logger.warning(
+                "列表坐标几何不安全，跳过 primary 手势并进入一次 fallback: "
+                "direction=%s element_id=%s reason=%s",
+                direction,
+                element_id,
+                exc,
+            )
+            return await _run_fallback(before_signature)
+
         if settle_ms > 0:
             await asyncio.sleep(settle_ms / 1000.0)
         try:
@@ -1420,7 +1535,148 @@ class SwipeInElementFindTextClickAction(BaseAction):
             raise ElementNotFound(f"ListView 未找到: element_id={element_id}") from exc
         if before_signature is None or after_signature is None:
             return True
-        return before_signature != after_signature
+        if before_signature != after_signature:
+            return True
+
+        # A valid W3C gesture can be accepted while UiAutomator2 ignores it when
+        # the list is partially outside its parent viewport. Give the same
+        # logical swipe one bounded, freshly located fallback attempt.
+        return await _run_fallback(after_signature)
+
+    @staticmethod
+    def _supports_element_swipe_fallback(driver) -> bool:
+        """仅把真实 Appium mobile: swipeGesture 作为元素 fallback 能力。"""
+        swipe_in_element = getattr(driver, "swipe_in_element", None)
+        ensure_android = getattr(driver, "_ensure_android_gesture", None)
+        appium_session = getattr(driver, "driver", None)
+        return (
+            callable(swipe_in_element)
+            and callable(ensure_android)
+            and callable(getattr(appium_session, "execute_script", None))
+        )
+
+    @staticmethod
+    def _supports_coordinate_swipe_fallback(driver) -> bool:
+        """只对可发送 W3C touch actions 的 Appium 驱动启用二次坐标手势。"""
+        return callable(getattr(driver, "_perform_touch_gesture", None))
+
+    @staticmethod
+    def _is_element_swipe_fallback_error(exc: BaseException) -> bool:
+        """仅把 mobile: swipeGesture 能力错误转为坐标 fallback。"""
+        if isinstance(exc, (AttributeError, NotImplementedError)):
+            return True
+        exception_name = type(exc).__name__
+        if exception_name in {
+            "InvalidArgumentException",
+            "InvalidElementStateException",
+            "UnknownMethodException",
+            "UnsupportedCommandException",
+        }:
+            return True
+        try:
+            from selenium.common.exceptions import WebDriverException
+        except ImportError:
+            return False
+        if not isinstance(exc, WebDriverException):
+            return False
+        message = str(exc).lower()
+        return any(
+            marker in message
+            for marker in (
+                "unknown command",
+                "unsupported",
+                "not implemented",
+                "invalid argument",
+                "invalid state",
+                "swipegesture",
+            )
+        )
+
+    @staticmethod
+    def _scroll_geometry(
+        driver,
+        list_rect: dict[str, int],
+        parent_region: dict[str, int],
+        direction: str,
+        target_distance_px: int,
+        *,
+        allow_parent_fallback: bool = False,
+    ) -> dict:
+        """生成手势并保证坐标端点落在父视口内。"""
+        list_visible = _clip_rect(list_rect, driver.get_window_size())
+        intersection = _intersect_rect(list_visible, parent_region)
+        if direction == "up":
+            region_type = "list_view_visible"
+            gesture_region = list_visible
+            try:
+                points = _vertical_swipe_points(
+                    gesture_region, direction, target_distance_px
+                )
+            except DriverError as exc:
+                points = None
+                geometry_error = exc
+            else:
+                geometry_error = None
+            if points is None:
+                start_inside = end_inside = False
+            else:
+                start_inside = _point_in_rect(points[0], points[1], parent_region)
+                end_inside = _point_in_rect(points[2], points[3], parent_region)
+            if (
+                points is None
+                or not (start_inside and end_inside)
+                or points[4] < 8
+            ):
+                if _rect_area(intersection) > 0:
+                    try:
+                        intersection_points = _vertical_swipe_points(
+                            intersection, direction, target_distance_px
+                        )
+                    except DriverError as exc:
+                        intersection_points = None
+                        geometry_error = exc
+                    if intersection_points is not None and intersection_points[4] >= 8:
+                        gesture_region = intersection
+                        region_type = "list_view_parent_intersection"
+                        points = intersection_points
+                        start_inside = _point_in_rect(points[0], points[1], parent_region)
+                        end_inside = _point_in_rect(points[2], points[3], parent_region)
+                    else:
+                        points = None
+                if points is None or not (start_inside and end_inside):
+                    if not allow_parent_fallback:
+                        raise _UnsafeScrollGeometry(
+                            "ListView 与直接父元素视口没有足够交集，无法执行安全坐标滑动"
+                        ) from geometry_error
+                    # If the ListView is outside or its overlap is too small,
+                    # scrolling the parent is the only safe coordinate fallback.
+                    gesture_region = parent_region
+                    region_type = "parent_fallback"
+                    points = _vertical_swipe_points(
+                        gesture_region, direction, target_distance_px
+                    )
+                    start_inside = _point_in_rect(points[0], points[1], parent_region)
+                    end_inside = _point_in_rect(points[2], points[3], parent_region)
+        else:
+            region_type = "parent_visible"
+            gesture_region = parent_region
+            points = _vertical_swipe_points(
+                gesture_region, direction, target_distance_px
+            )
+            start_inside = _point_in_rect(points[0], points[1], parent_region)
+            end_inside = _point_in_rect(points[2], points[3], parent_region)
+        if not (start_inside and end_inside):
+            raise _UnsafeScrollGeometry(
+                "列表坐标手势端点不在直接父元素视口内，已拒绝发送无效手势"
+            )
+        return {
+            "gesture_region": gesture_region,
+            "intersection": intersection,
+            "region_type": region_type,
+            "points": points,
+            "start_inside_parent": start_inside,
+            "end_inside_parent": end_inside,
+        }
 
     async def _observe_list_signature(
         self, driver, context, element_id, wait_timeout
@@ -1660,6 +1916,14 @@ def _rect_area(rect: dict[str, int]) -> int:
 
 def _intersection_area(first: dict[str, int], second: dict[str, int]) -> int:
     return _rect_area(_intersect_rect(first, second))
+
+
+def _point_in_rect(x: int, y: int, rect: dict[str, int]) -> bool:
+    left = int(rect.get("x", 0))
+    top = int(rect.get("y", 0))
+    right = left + int(rect.get("width", 0))
+    bottom = top + int(rect.get("height", 0))
+    return left <= x < right and top <= y < bottom
 
 
 def _is_displayed_and_enabled(driver, element) -> bool:

@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -201,7 +202,8 @@ async def test_up_effective_percent_tracks_dynamic_list_height():
     await _run(large, _params())
 
     assert small.coordinate_swipes == [(500, 950, 500, 650, 300)]
-    assert large.coordinate_swipes == [(500, 1300, 500, 1000, 300)]
+    # ListView 的原始安全轨迹会越过父视口；上滑必须夹紧到两者交集。
+    assert large.coordinate_swipes == [(500, 900, 500, 600, 300)]
 
 
 async def test_duration_defaults_to_300_and_is_passed_to_coordinate_gesture():
@@ -239,6 +241,146 @@ async def test_duration_changes_only_w3c_duration_not_coordinates():
     assert short.coordinate_swipes[0][:4] == long.coordinate_swipes[0][:4]
     assert short.coordinate_swipes[0][4] == 300
     assert long.coordinate_swipes[0][4] == 3000
+
+
+async def test_up_coordinate_gesture_is_clipped_to_parent_and_logs_geometry(caplog):
+    parent = {"x": 0, "y": 1128, "width": 1000, "height": 792}
+    driver = RecordingMockDriver()
+    driver.set_screen(_screen(target_y=500, parent_bounds=parent, list_height=1400))
+    driver.set_scroll_callback(
+        lambda count: _screen(
+            target_y=1400, parent_bounds=parent, list_height=1400
+        ) if count == 1 else None
+    )
+    caplog.set_level("INFO", logger="agent.actions")
+
+    result = await _run(driver, _params())
+
+    assert result["status"] == "passed"
+    start_x, start_y, end_x, end_y, duration = driver.coordinate_swipes[0]
+    assert (start_x, end_x) == (500, 500)
+    assert parent["y"] <= end_y < start_y < parent["y"] + parent["height"]
+    assert duration == 300
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "列表坐标滑动:" in record.getMessage()
+    )
+    assert "list_rect=" in message
+    assert "parent_region=" in message
+    assert "gesture_region=" in message
+    assert "intersection=" in message
+    assert "endpoints_inside_parent=(True,True)" in message
+
+
+class _CoordinateFallbackDriver(RecordingMockDriver):
+    """模拟 AppiumDriver 的 W3C 能力，但保留 Mock 页面重绘。"""
+
+    def _perform_touch_gesture(self, *_args):
+        pass
+
+
+async def test_all_outside_up_skips_unsafe_primary_and_falls_back_once():
+    parent = {"x": 0, "y": 1128, "width": 1000, "height": 792}
+    driver = _CoordinateFallbackDriver()
+    driver.set_screen(_screen(target_y=500, parent_bounds=parent, list_height=500))
+    driver.set_scroll_callback(
+        lambda count: _screen(
+            target_y=1400, parent_bounds=parent, list_height=500
+        ) if count == 1 else None
+    )
+
+    result = await _run(driver, _params())
+
+    assert result["status"] == "passed"
+    assert result["found_after_swipes"] == 1
+    assert len(driver.coordinate_swipes) == 1
+    start_x, start_y, end_x, end_y, duration = driver.coordinate_swipes[0]
+    assert parent["y"] <= end_y < start_y < parent["y"] + parent["height"]
+    assert (start_x, end_x, duration) == (500, 500, 300)
+
+
+async def test_tiny_list_parent_overlap_uses_parent_safe_fallback_distance():
+    parent = {"x": 0, "y": 780, "width": 1000, "height": 1220}
+    driver = _CoordinateFallbackDriver()
+    driver.set_screen(_screen(target_y=500, parent_bounds=parent, list_height=500))
+    driver.set_scroll_callback(
+        lambda count: _screen(
+            target_y=1000, parent_bounds=parent, list_height=500
+        ) if count == 1 else None
+    )
+
+    result = await _run(driver, _params())
+
+    assert result["status"] == "passed"
+    assert len(driver.coordinate_swipes) == 1
+    start_x, start_y, end_x, end_y, duration = driver.coordinate_swipes[0]
+    assert parent["y"] <= end_y < start_y < parent["y"] + parent["height"]
+    assert (start_x, end_x, duration) == (500, 500, 300)
+    assert start_y - end_y > 8
+
+
+async def test_all_outside_up_prefers_element_fallback_and_relocates_after_stale():
+    parent = {"x": 0, "y": 1128, "width": 1000, "height": 792}
+
+    class ElementFallbackDriver(_CoordinateFallbackDriver):
+        def __init__(self):
+            super().__init__()
+            self.parent_calls = 0
+
+        def _ensure_android_gesture(self):
+            pass
+
+        def get_parent_element(self, element, wait_timeout=10):
+            self.parent_calls += 1
+            if self.parent_calls == 3:
+                raise StaleObjectException("parent stale during fallback")
+            return super().get_parent_element(element, wait_timeout)
+
+    driver = ElementFallbackDriver()
+    driver.driver = SimpleNamespace(execute_script=lambda *_args: None)
+    driver.set_screen(_screen(target_y=500, parent_bounds=parent, list_height=500))
+    driver.set_scroll_callback(
+        lambda count: _screen(
+            target_y=1400, parent_bounds=parent, list_height=500
+        ) if count == 1 else None
+    )
+
+    result = await _run(driver, _params())
+
+    assert result["status"] == "passed"
+    assert result["found_after_swipes"] == 1
+    assert driver.coordinate_swipes == []
+    assert driver.element_swipes == [("list", "up", 0.3)]
+    assert driver.parent_calls >= 4
+
+
+async def test_element_fallback_capability_error_uses_coordinate_once():
+    from selenium.common.exceptions import InvalidArgumentException
+
+    parent = {"x": 0, "y": 1128, "width": 1000, "height": 792}
+
+    class UnsupportedElementDriver(_CoordinateFallbackDriver):
+        def _ensure_android_gesture(self):
+            pass
+
+        def swipe_in_element(self, *_args, **_kwargs):
+            raise InvalidArgumentException("mobile: swipeGesture is unsupported")
+
+    driver = UnsupportedElementDriver()
+    driver.driver = SimpleNamespace(execute_script=lambda *_args: None)
+    driver.set_screen(_screen(target_y=500, parent_bounds=parent, list_height=500))
+    driver.set_scroll_callback(
+        lambda count: _screen(
+            target_y=1400, parent_bounds=parent, list_height=500
+        ) if count == 1 else None
+    )
+
+    result = await _run(driver, _params())
+
+    assert result["status"] == "passed"
+    assert len(driver.coordinate_swipes) == 1
+    assert driver.element_swipes == []
 
 
 async def test_swipe_distance_is_clamped_to_small_visible_region_without_overflow():
