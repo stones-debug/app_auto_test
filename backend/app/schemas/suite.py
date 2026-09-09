@@ -112,6 +112,8 @@ class VariableCreate(BaseModel):
     case_id: int | None = None
     name: str = Field(min_length=1, max_length=100)
     value: str = ""
+    kind: str = Field(default="fixed", pattern="^(fixed|random_integer|random_choice)$")
+    spec: dict | None = None
     description: str | None = None
 
     @model_validator(mode="after")
@@ -125,10 +127,24 @@ class VariableCreate(BaseModel):
         # 归属项目的解析与 global 外键清空由 API 层完成（CR-02）
         return self
 
+    @model_validator(mode="after")
+    def _validate_definition(self):
+        from app.services.random_variables import validate_definition
+        validate_definition(self.kind, self.value, self.spec)
+        return self
+
 
 class VariableUpdate(BaseModel):
     value: str | None = None
+    kind: str | None = Field(default=None, pattern="^(fixed|random_integer|random_choice)$")
+    spec: dict | None = None
     description: str | None = None
+
+    @model_validator(mode="after")
+    def _reject_null_kind(self):
+        if "kind" in self.model_fields_set and self.kind is None:
+            raise ValueError("kind 不能为 null")
+        return self
 
 
 class VariableOut(BaseModel):
@@ -139,6 +155,8 @@ class VariableOut(BaseModel):
     case_id: int | None
     name: str
     value: str
+    kind: str
+    spec: dict | None
     description: str | None
     created_at: datetime
     updated_at: datetime

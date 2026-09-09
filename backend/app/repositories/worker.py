@@ -46,6 +46,7 @@ from app.services.execution_summary import (
     rate_percent,
 )
 from app.services.profile_resolver_nodes import runtime_variable_names
+from app.services.random_variables import resolve_rows
 
 logger = logging.getLogger("worker")
 
@@ -160,23 +161,28 @@ def render_value(
     return value
 
 
-async def build_base_variable_map(db: AsyncSession, execution: Execution) -> dict:
+async def build_base_variable_map(
+    db: AsyncSession, execution: Execution, *, excluded_names: set[str] | frozenset[str] = frozenset()
+) -> dict:
     """最低两层变量：全局 → 项目。
 
     用例/套件/执行参数由调用方按 §10.6 的固定顺序叠加，避免各处自行合并时
     出现"后写入者反而优先级更低"的逆序。
     """
+    cache = getattr(execution, "_variable_resolution_cache", None)
+    if cache is None:
+        cache = {}
+        object.__setattr__(execution, "_variable_resolution_cache", cache)
     merged: dict = {}
-    for v in (
-        await db.execute(select(Variable).where(Variable.scope == "global"))
-    ).scalars().all():
-        merged[v.name] = v.value
-    for v in (
-        await db.execute(
-            select(Variable).where(Variable.scope == "project", Variable.project_id == execution.project_id)
-        )
-    ).scalars().all():
-        merged[v.name] = v.value
+    project_rows = (await db.execute(
+        select(Variable).where(Variable.scope == "project", Variable.project_id == execution.project_id)
+    )).scalars().all()
+    global_rows = (await db.execute(select(Variable).where(Variable.scope == "global"))).scalars().all()
+    merged.update(resolve_rows(
+        list(global_rows), cache, ("global",),
+        skip_names=set(excluded_names) | {row.name for row in project_rows},
+    ))
+    merged.update(resolve_rows(list(project_rows), cache, ("project", execution.project_id), skip_names=excluded_names))
     return merged
 
 
@@ -187,6 +193,7 @@ async def build_variable_map(
     *,
     suite_id: int | None = None,
     use_execution_suite: bool = True,
+    case_occurrence: int | None = None,
 ) -> dict:
     """按 §10.6 优先级构造变量表：全局 → 项目 → 用例 → 套件 → 执行参数。
 
@@ -194,20 +201,40 @@ async def build_variable_map(
     use_execution_suite 为真时退回 execution.suite_id（仅单套件执行）。
     需要"明确无套件上下文"时传 use_execution_suite=False。
     """
-    merged = await build_base_variable_map(db, execution)
-    if case is not None and case.variables:
-        merged.update(case.variables)
+    execution_variables = (execution.parameters or {}).get("variables") or {}
     target_suite_id = suite_id
     if target_suite_id is None and use_execution_suite and execution.type == "suite":
         target_suite_id = execution.suite_id
+    case_rows = []
+    if case is not None:
+        case_rows = (await db.execute(
+            select(Variable).where(Variable.scope == "case", Variable.case_id == case.id)
+        )).scalars().all()
+    suite_rows = []
     if target_suite_id is not None:
-        for v in (
-            await db.execute(
-                select(Variable).where(Variable.scope == "suite", Variable.suite_id == target_suite_id)
-            )
-        ).scalars().all():
-            merged[v.name] = v.value
-    merged.update((execution.parameters or {}).get("variables") or {})
+        suite_rows = (await db.execute(
+            select(Variable).where(Variable.scope == "suite", Variable.suite_id == target_suite_id)
+        )).scalars().all()
+    case_values = set(case.variables or {}) if case is not None else set()
+    merged = await build_base_variable_map(
+        db, execution,
+        excluded_names=set(execution_variables) | case_values |
+        {row.name for row in case_rows} | {row.name for row in suite_rows},
+    )
+    cache = getattr(execution, "_variable_resolution_cache", {})
+    if case is not None:
+        merged.update(resolve_rows(
+            list(case_rows), cache,
+            ("case", suite_id, case.id, case_occurrence if case_occurrence is not None else case.id),
+            skip_names=case_values,
+        ))
+        if case.variables:
+            merged.update({key: str(value) for key, value in case.variables.items()})
+    if target_suite_id is not None:
+        merged.update(resolve_rows(
+            list(suite_rows), cache, ("suite", target_suite_id), skip_names=set(execution_variables),
+        ))
+    merged.update(execution_variables)
     return merged
 
 
@@ -369,10 +396,10 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
 
     created: list[ExecutionCase] = []
     # §10.6 固定顺序：global → project → case → suite → 执行参数。
+    execution_variables = parameters.get("variables") or {}
     # 基础两层与执行参数在循环外求一次值；套件变量随套件切换，逐层叠加即可，
     # 避免"先复制完整映射再用低优先级覆盖高优先级"的逆序写法。
-    base_map = await build_base_variable_map(db, execution)
-    execution_variables = parameters.get("variables") or {}
+    base_map = await build_base_variable_map(db, execution, excluded_names=set(execution_variables))
     for suite_order, (suite_id, selected_case_ids) in enumerate(suite_specs, start=1):
         suite = await db.get(TestSuite, suite_id) if suite_id is not None else None
         if suite_id is not None and (suite is None or suite.deleted_at is not None):
@@ -382,14 +409,13 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
             suite_name = "虚拟套件"
         else:
             suite_name = suite.name
-            suite_variables = {
-                item.name: item.value
-                for item in (
-                    await db.execute(
-                        select(Variable).where(Variable.scope == "suite", Variable.suite_id == suite.id)
-                    )
-                ).scalars().all()
-            }
+            suite_rows = (await db.execute(
+                select(Variable).where(Variable.scope == "suite", Variable.suite_id == suite.id)
+            )).scalars().all()
+            suite_variables = resolve_rows(
+                list(suite_rows), getattr(execution, "_variable_resolution_cache", {}),
+                ("suite", suite_order, suite.id), skip_names=set(execution_variables),
+            )
         suite_variable_map = {**base_map, **suite_variables, **execution_variables}
         suite_runtime_variables: set[str] = set()
         setup_snapshot = (
@@ -444,7 +470,18 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
             if case is None or case.deleted_at is not None:
                 continue
             # 用例变量位于项目/全局之上、套件变量之下；执行参数始终最高。
-            variable_map = {**base_map, **(case.variables or {}), **suite_variables, **execution_variables}
+            variable_map = {**base_map}
+            case_rows = (await db.execute(
+                select(Variable).where(Variable.scope == "case", Variable.case_id == case.id)
+            )).scalars().all()
+            variable_map.update(resolve_rows(
+                list(case_rows), getattr(execution, "_variable_resolution_cache", {}),
+                ("case", suite_order, suite_id, case.id, case_order),
+                skip_names=set(case.variables or {}),
+            ))
+            variable_map.update({key: str(value) for key, value in (case.variables or {}).items()})
+            variable_map.update(suite_variables)
+            variable_map.update(execution_variables)
             snapshot = await build_case_snapshot(
                 db, case, variable_map,
                 use_pre_steps=bool(parameters.get("use_pre_steps")),

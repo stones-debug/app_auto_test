@@ -83,7 +83,10 @@ async def update_variable(
         if variable.project_id is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="变量作用域缺少项目")
         await require_project_write(variable.project_id, user, db)
-    return await variable_service.update(db, variable=variable, body=body)
+    try:
+        return await variable_service.update(db, variable=variable, body=body)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
 
 @router.delete("/{variable_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -33,6 +33,8 @@ export interface Variable {
   case_id?: number | null
   name: string
   value: string
+  kind: 'fixed' | 'random_integer' | 'random_choice'
+  spec?: { min?: number; max?: number; items?: string[] } | null
   description?: string | null
   created_at: string
   updated_at: string
@@ -107,7 +109,7 @@ export function createVariable(data: Partial<Variable>) {
   return request.post<Variable>('/variables', data)
 }
 
-export function updateVariable(id: number, data: { value?: string; description?: string }) {
+export function updateVariable(id: number, data: { value?: string; kind?: Variable['kind']; spec?: Variable['spec']; description?: string }) {
   return request.put<Variable>(`/variables/${id}`, data)
 }
 

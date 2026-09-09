@@ -12,6 +12,12 @@ def _validate_run_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
     for key in RUN_OPTION_KEYS:
         if key in parameters and not isinstance(parameters[key], bool):
             raise ValueError(f"{key} 必须是布尔值")
+    variables = parameters.get("variables")
+    if variables is not None:
+        if not isinstance(variables, dict):
+            raise ValueError("parameters.variables 必须是字符串标量字典")
+        if any(isinstance(value, (dict, list, tuple, set)) for value in variables.values()):
+            raise ValueError("执行参数变量只接受最终标量值")
     return parameters
 
 

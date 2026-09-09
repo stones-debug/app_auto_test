@@ -569,7 +569,8 @@ async def _resolve_case(
 ) -> tuple[ResolvedCase | None, list[ExclusionItem], int]:
     """解析单个用例（步骤/断言/元素），返回 ResolvedCase 或整体 N/A。"""
     variables = await _merge_variables(
-        db, request.project_id, suite_id, case, config, request.execution_variables, load_context
+        db, request.project_id, suite_id, case, config, request.execution_variables, load_context,
+        case_occurrence=case_order,
     )
     selected_steps = _select_steps_for_run(case.flow_nodes or case.steps or [], request.run_options)
     step_overrides = _case_scoped(config, suite_id, case.id, "step")

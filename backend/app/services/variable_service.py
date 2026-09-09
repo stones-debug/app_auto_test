@@ -9,6 +9,7 @@ from app.models import User, Variable
 from app.repositories import variables as variables_repo
 from app.schemas.suite import VariableCreate, VariableUpdate
 from app.services import asset_service
+from app.services.random_variables import validate_definition
 
 
 async def resolve_scope_project(
@@ -94,6 +95,8 @@ async def create(
         case_id=target_case_id,
         name=body.name,
         value=body.value,
+        kind=body.kind,
+        spec=body.spec,
         description=body.description,
         user_id=user.id,
     )
@@ -113,10 +116,27 @@ async def create(
 
 
 async def update(db: AsyncSession, *, variable: Variable, body: VariableUpdate) -> Variable:
+    merged_kind = (body.kind if "kind" in body.model_fields_set else variable.kind) or "fixed"
+    merged_value = body.value if "value" in body.model_fields_set and body.value is not None else variable.value
+    merged_spec = body.spec if "spec" in body.model_fields_set else variable.spec
+    # A kind transition can be expressed as a partial update while still
+    # producing one valid definition; the mutually-exclusive field is reset.
+    if "kind" in body.model_fields_set and "value" not in body.model_fields_set and merged_kind != "fixed":
+        merged_value = ""
+    if "kind" in body.model_fields_set and "spec" not in body.model_fields_set and merged_kind == "fixed":
+        merged_spec = None
+    validate_definition(merged_kind, merged_value, merged_spec)
+    fields = set(body.model_fields_set)
+    if "kind" in fields and merged_kind != "fixed" and "value" not in fields:
+        variable.value = ""
+    if "kind" in fields and merged_kind == "fixed" and "spec" not in fields:
+        variable.spec = None
     await variables_repo.update_fields(
         variable,
         fields=body.model_fields_set,
         value=body.value,
+        kind=body.kind,
+        spec=body.spec,
         description=body.description,
     )
     try:

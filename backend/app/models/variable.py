@@ -10,6 +10,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -27,6 +28,7 @@ class Variable(Base, TimestampMixin):
             " OR (scope = 'case' AND project_id IS NOT NULL AND case_id IS NOT NULL AND suite_id IS NULL)",
             name="ck_variables_scope_fk",
         ),
+        CheckConstraint("kind IN ('fixed','random_integer','random_choice')", name="ck_variables_kind"),
         # CR-02：作用域内名称唯一（并发创建冲突兜底）
         Index("uq_variables_global_name", "name", unique=True, postgresql_where=text("scope = 'global'")),
         Index("uq_variables_project_name", "project_id", "name", unique=True, postgresql_where=text("scope = 'project'")),
@@ -41,6 +43,8 @@ class Variable(Base, TimestampMixin):
     case_id: Mapped[int | None] = mapped_column(ForeignKey("test_cases.id"))
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     value: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, default="fixed", server_default=text("'fixed'"))
+    spec: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     description: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
 

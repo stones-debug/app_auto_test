@@ -89,6 +89,12 @@ function applyVariables(items: Variable[], overrides: ProfileOverrides) {
   overriddenVariables.value = new Set(overrides.variables.map((item) => item.name))
 }
 
+function variableSourceSummary(variable: Variable): string {
+  if (variable.kind === 'random_integer') return `随机整数[${variable.spec?.min},${variable.spec?.max}]`
+  if (variable.kind === 'random_choice') return `随机列表${variable.spec?.items?.length ?? 0}项`
+  return variable.value || '固定空字符串'
+}
+
 async function ensureOverrides(profileId: number, force = false, generation = profileGeneration): Promise<ProfileOverrides> {
   if (!force && overridesCache?.profileId === profileId) return overridesCache.value
   if (!force && overridesPromise?.profileId === profileId) return overridesPromise.value
@@ -429,8 +435,11 @@ watch(() => props.revision, (revision) => { currentRevision.value = revision })
               <el-table v-else-if="variables.length" :data="variables" v-loading="variableLoading" size="small" height="100%">
                 <el-table-column prop="name" label="变量" min-width="120" />
                 <el-table-column prop="scope" label="来源" width="80" />
+                <el-table-column label="公共值" min-width="150" show-overflow-tooltip>
+                  <template #default="{ row }">{{ variableSourceSummary(row as Variable) }}</template>
+                </el-table-column>
                 <el-table-column label="覆盖值" min-width="230">
-                  <template #default="{ row }"><el-input v-model="variableDrafts[row.name].value" size="small" /></template>
+                  <template #default="{ row }"><el-input v-model="variableDrafts[row.name].value" size="small" placeholder="可保存为空字符串；恢复则继承公共值" /></template>
                 </el-table-column>
                 <el-table-column label="操作" width="125" align="right">
                   <template #default="{ row }">

@@ -80,6 +80,8 @@ async def create(
     case_id: int | None,
     name: str,
     value: str,
+    kind: str,
+    spec: dict | None,
     description: str | None,
     user_id: int,
 ) -> Variable:
@@ -90,6 +92,8 @@ async def create(
         case_id=case_id,
         name=name,
         value=value,
+        kind=kind,
+        spec=spec,
         description=description,
         created_by=user_id,
     )
@@ -98,10 +102,15 @@ async def create(
 
 
 async def update_fields(
-    variable: Variable, *, fields: set[str], value: str | None, description: str | None
+    variable: Variable, *, fields: set[str], value: str | None, kind: str | None,
+    spec: dict | None, description: str | None
 ) -> Variable:
     if "value" in fields and value is not None:
         variable.value = value
+    if "kind" in fields:
+        variable.kind = kind or "fixed"
+    if "spec" in fields:
+        variable.spec = spec
     if "description" in fields:
         variable.description = description
     return variable

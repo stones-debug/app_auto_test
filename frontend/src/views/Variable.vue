@@ -43,17 +43,21 @@ function onScopeChange() {
 
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
-const form = ref({ name: '', value: '', description: '' })
+const form = ref<{ name: string; kind: Variable['kind']; value: string; min: string; max: string; items: string; description: string }>({ name: '', kind: 'fixed', value: '', min: '', max: '', items: '', description: '' })
 
 function openCreate() {
   editingId.value = null
-  form.value = { name: '', value: '', description: '' }
+  form.value = { name: '', kind: 'fixed', value: '', min: '', max: '', items: '', description: '' }
   dialogVisible.value = true
 }
 
 function openEdit(row: Variable) {
   editingId.value = row.id
-  form.value = { name: row.name, value: row.value, description: row.description ?? '' }
+  form.value = {
+    name: row.name, kind: row.kind ?? 'fixed', value: row.value,
+    min: row.spec?.min == null ? '' : String(row.spec.min), max: row.spec?.max == null ? '' : String(row.spec.max),
+    items: row.spec?.items?.join('\n') ?? '', description: row.description ?? '',
+  }
   dialogVisible.value = true
 }
 
@@ -62,14 +66,26 @@ async function save() {
     ElMessage.warning('请输入变量名')
     return
   }
+  let spec: Variable['spec'] = null
+  let value = form.value.value
+  if (form.value.kind === 'random_integer') {
+    const min = Number(form.value.min); const max = Number(form.value.max)
+    if (!Number.isSafeInteger(min) || !Number.isSafeInteger(max) || min > max) { ElMessage.warning('请输入有效的随机整数范围'); return }
+    value = ''; spec = { min, max }
+  } else if (form.value.kind === 'random_choice') {
+    const items = form.value.items.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
+    const totalBytes = new TextEncoder().encode(items.join('')).byteLength
+    if (!items.length || items.length > 100 || items.some((item) => item.length > 1000) || totalBytes > 100000 || new Set(items).size !== items.length) { ElMessage.warning('候选项需为 1-100 个不重复的非空文本，合计不超过 100000 字节'); return }
+    value = ''; spec = { items }
+  }
   if (editingId.value) {
-    await updateVariable(editingId.value, { value: form.value.value, description: form.value.description })
+    await updateVariable(editingId.value, { kind: form.value.kind, value, spec, description: form.value.description })
   } else {
     // CR-02：全局变量不携带 project_id
     await createVariable(
       scope.value === 'global'
-        ? { scope: 'global', ...form.value }
-        : { scope: scope.value, project_id: projectId, ...form.value },
+        ? { scope: 'global', name: form.value.name, kind: form.value.kind, value, spec, description: form.value.description }
+        : { scope: scope.value, project_id: projectId, name: form.value.name, kind: form.value.kind, value, spec, description: form.value.description },
     )
   }
   dialogVisible.value = false
@@ -84,6 +100,12 @@ async function remove(row: Variable) {
 
 function scopeLabel(v: string) {
   return VARIABLE_SCOPES.find((s) => s.value === v)?.label ?? v
+}
+
+function variableSummary(row: Variable): string {
+  if (row.kind === 'random_integer') return `随机整数 [${row.spec?.min}, ${row.spec?.max}]`
+  if (row.kind === 'random_choice') return `随机列表 ${row.spec?.items?.length ?? 0} 项`
+  return row.value || '（空字符串）'
 }
 
 onMounted(onScopeChange)
@@ -103,7 +125,9 @@ onMounted(onScopeChange)
 
     <el-table :data="items" stripe>
       <el-table-column prop="name" label="变量名" min-width="160" />
-      <el-table-column prop="value" label="值" min-width="200" show-overflow-tooltip />
+      <el-table-column label="值" min-width="200" show-overflow-tooltip>
+        <template #default="{ row }">{{ variableSummary(row as Variable) }}</template>
+      </el-table-column>
       <el-table-column label="作用域" width="100">
         <template #default="{ row }">
           <el-tag :type="row.scope === 'global' ? 'info' : 'success'" size="small">{{ scopeLabel(row.scope) }}</el-tag>
@@ -126,8 +150,13 @@ onMounted(onScopeChange)
           <el-input v-model="form.name" :disabled="!!editingId" placeholder="如 username" />
         </el-form-item>
         <el-form-item label="值">
-          <el-input v-model="form.value" />
+          <el-select v-model="form.kind" style="width: 100%">
+            <el-option label="固定值" value="fixed" /><el-option label="随机整数" value="random_integer" /><el-option label="随机列表" value="random_choice" />
+          </el-select>
         </el-form-item>
+        <el-form-item v-if="form.kind === 'fixed'" label="固定值"><el-input v-model="form.value" /></el-form-item>
+        <template v-else-if="form.kind === 'random_integer'"><el-form-item label="最小值"><el-input v-model="form.min" /></el-form-item><el-form-item label="最大值"><el-input v-model="form.max" /></el-form-item></template>
+        <el-form-item v-else label="候选文本"><el-input v-model="form.items" type="textarea" :rows="5" placeholder="每行一个候选项" /></el-form-item>
         <el-form-item label="描述">
           <el-input v-model="form.description" type="textarea" :rows="2" />
         </el-form-item>

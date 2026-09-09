@@ -1952,6 +1952,8 @@ CREATE TABLE variables (
     case_id BIGINT REFERENCES test_cases(id),
     name VARCHAR(100) NOT NULL,
     value TEXT NOT NULL DEFAULT '',
+    kind VARCHAR(20) NOT NULL DEFAULT 'fixed', -- fixed / random_integer / random_choice
+    spec JSONB,                                  -- 随机整数 {min,max} 或列表 {items:[...]}
     description TEXT,
     created_by BIGINT REFERENCES users(id),
     created_at TIMESTAMP DEFAULT NOW(),
@@ -1968,6 +1970,10 @@ DELETE /api/variables/{id}
 ```
 
 渲染优先级不变：执行参数 > 套件变量 > 用例变量 > 项目变量 > 全局变量。补充规则：`render_variables` 遇到**未定义变量直接抛错**（而非静默保留 `${var}` 文本，防止定位串残留导致用例误判）。
+
+`kind=fixed` 使用 `value`；`kind=random_integer` 使用安全整数闭区间 `spec={min,max}`；`kind=random_choice` 使用 1 至 100 个不重复的非空字符串 `spec={items:[...]}`。随机定义只在执行快照解析阶段解析，采用系统随机源并按执行/套件 occurrence/用例 occurrence 缓存：global/project 在一次执行内共享，suite 覆盖该套件的 setup、cases、teardown，case 按 occurrence 隔离。执行参数只允许最终标量，优先级最高。预检令牌复用解析快照，重试克隆快照，不重新随机；已渲染值随 steps/elements 快照落库。
+
+现有 smart locator 仍遵循 §10.13 的运行时占位符策略：`locator_config` 不由变量系统做后端递归渲染，未知/运行时变量由 Agent 处理；本次随机变量改造不改变该行为。
 
 ### 10.7 截图 / 大文件改 HTTP 上传
 

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import AppProfileElementOverride, TestCase, TestElement, TestSuite, Variable
 from app.repositories.app_profiles import resolution as resolution_repo
 from app.services.profile_resolver_nodes import ProfileRuleError, render_value
+from app.services.random_variables import resolve_rows
 from app.utils.element_refs import collect_element_ids
 
 
@@ -21,6 +22,7 @@ class ResolutionLoadContext:
     suite_variables: dict[int, list[Variable]] = field(default_factory=dict)
     case_variables: dict[int, list[Variable]] = field(default_factory=dict)
     elements: dict[int, TestElement] = field(default_factory=dict)
+    variable_cache: dict[tuple[Any, ...], str] = field(default_factory=dict)
 
 
 async def prepare_load_context(
@@ -88,6 +90,7 @@ async def merge_variables(
     config: dict,
     execution_variables: dict,
     context: ResolutionLoadContext | None = None,
+    case_occurrence: int | None = None,
 ) -> dict:
     """变量优先级：全局 → 项目 → 用例 → 套件 → APP 档案 → 执行参数。"""
     loaded = (
@@ -95,19 +98,42 @@ async def merge_variables(
         if context is not None
         else await resolution_repo.load_resolution_variables(db, project_id=project_id, suite_id=suite_id)
     )
-    merged = {variable.name: variable.value for variable in loaded}
+    cache = context.variable_cache if context is not None else {}
+    case_rows = context.case_variables.get(case.id, []) if context is not None and case is not None else []
+    suite_rows = (
+        context.suite_variables.get(suite_id, [])
+        if context is not None and suite_id is not None else
+        [variable for variable in loaded if variable.scope == "suite"]
+    )
+    higher_names = (
+        set(execution_variables) | set(config["variable_overrides"]) |
+        {variable.name for variable in case_rows} | {variable.name for variable in suite_rows} |
+        set(case.variables if case is not None else {})
+    )
+    project_names = {variable.name for variable in loaded if variable.scope == "project"}
+    merged = resolve_rows(
+        [variable for variable in loaded if variable.scope == "global"], cache, ("global",),
+        skip_names=higher_names | project_names,
+    )
+    merged.update(resolve_rows(
+        [variable for variable in loaded if variable.scope == "project"], cache,
+        ("project", project_id), skip_names=higher_names,
+    ))
     if context is not None and case is not None:
-        merged.update({variable.name: variable.value for variable in context.case_variables.get(case.id, [])})
+        merged.update(resolve_rows(
+            case_rows, cache,
+            ("case", suite_id, case.id, case_occurrence if case_occurrence is not None else case.id),
+            skip_names=set(execution_variables) | set(config["variable_overrides"]) | {variable.name for variable in suite_rows},
+        ))
     if case is not None and case.variables:
         merged.update(case.variables)
-    suite_variables = (
-        context.suite_variables.get(suite_id, [])
-        if context is not None and suite_id is not None
-        else await resolution_repo.load_resolution_variables(db, project_id=project_id, suite_id=suite_id)
-    )
+    suite_variables = suite_rows
     for variable in suite_variables:
         if variable.scope == "suite":
-            merged[variable.name] = variable.value
+            merged.update(resolve_rows(
+                [variable], cache, ("suite", suite_id),
+                skip_names=set(config["variable_overrides"]) | set(execution_variables),
+            ))
     merged.update(config["variable_overrides"])
     merged.update(execution_variables)
     return merged
@@ -131,7 +157,21 @@ async def merge_suite_variables(
         loaded = await resolution_repo.load_resolution_variables(
             db, project_id=project_id, suite_id=suite_id
         )
-    merged = {variable.name: variable.value for variable in loaded}
+    cache = context.variable_cache if context is not None else {}
+    suite_names = {variable.name for variable in loaded if variable.scope == "suite"}
+    higher_names = suite_names | set(config["variable_overrides"]) | set(execution_variables)
+    merged = resolve_rows(
+        [variable for variable in loaded if variable.scope == "global"], cache, ("global",),
+        skip_names=higher_names | {variable.name for variable in loaded if variable.scope == "project"},
+    )
+    merged.update(resolve_rows(
+        [variable for variable in loaded if variable.scope == "project"], cache,
+        ("project", project_id), skip_names=higher_names,
+    ))
+    merged.update(resolve_rows(
+        [variable for variable in loaded if variable.scope == "suite"], cache,
+        ("suite", suite_id), skip_names=set(config["variable_overrides"]) | set(execution_variables),
+    ))
     merged.update(config["variable_overrides"])
     merged.update(execution_variables)
     return merged
