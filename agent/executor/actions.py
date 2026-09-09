@@ -358,31 +358,173 @@ class ClearAction(BaseAction):
 
 @register_action("set_checked")
 class SetCheckedAction(BaseAction):
-    """将 checkbox 设置为目标状态；状态一致时保持不点击。"""
+    """将 checkbox 设置为目标状态；一次动作最多发送一次点击。
+
+    ``click`` 是切换操作，不具备幂等性。页面重绘时，点击请求可能已经在
+    设备端生效，但 Appium 在返回响应前抛出 stale/超时异常。这里仅对
+    ``find_element``/``is_checked`` 做 stale 重试；点击后只做只读轮询，绝不
+    因为点击异常而补发第二次点击。
+    """
+
+    DEFAULT_WAIT_TIMEOUT = 10.0
+    POLL_INTERVAL = 0.1
+    READ_RETRIES = 2
+    MIN_CLICK_REMAINING = 0.1
 
     async def execute(self, driver, context, params: dict) -> dict:
         desired = _coerce_bool(params.get("checked", True))
-        changed = await with_stale_retry(
-            driver,
-            context,
-            params.get("element_id"),
-            lambda element: _set_checked(driver, element, desired),
-            wait_timeout=params.get("wait_timeout"),
-            label="设置勾选状态",
+        element_id = params.get("element_id")
+        timeout = self._wait_timeout(params.get("wait_timeout"))
+        started = time.monotonic()
+        deadline = started + timeout
+        click_count = 0
+        poll_count = 0
+        initial_state: bool | None = None
+        final_state: bool | None = None
+        click_error: BaseException | None = None
+
+        async def read_state() -> tuple[object, bool]:
+            """只读定位/读取；stale 只在这条路径重试。"""
+            remaining = max(0.0, deadline - time.monotonic())
+            return await with_stale_retry(
+                driver,
+                context,
+                element_id,
+                lambda element: (element, driver.is_checked(element)),
+                wait_timeout=remaining,
+                deadline=deadline,
+                retries=self.READ_RETRIES,
+                label="读取勾选状态",
+            )
+
+        def check_stop() -> None:
+            stop = getattr(context, "should_stop", None)
+            if stop is not None and stop():
+                raise StopRequested("执行被用户停止")
+
+        try:
+            check_stop()
+            element, initial_state = await read_state()
+            final_state = initial_state
+            if initial_state != desired:
+                remaining = deadline - time.monotonic()
+                if remaining < self.MIN_CLICK_REMAINING:
+                    raise DriverError(
+                        "设置勾选状态失败：读取初始状态后剩余等待时间不足，未发送点击"
+                    )
+                logger.info(
+                    "set_checked 点击尝试: element_id=%s desired=%s initial=%s click_count=1",
+                    element_id,
+                    desired,
+                    initial_state,
+                )
+
+                def send_click() -> None:
+                    nonlocal click_count
+                    # 只有这里可以发出 click，并且整个动作生命周期内只执行一次。
+                    click_count = 1
+                    driver.click(element)
+
+                try:
+                    run_with_timeout = getattr(driver, "run_with_http_timeout", None)
+                    if callable(run_with_timeout):
+                        run_with_timeout(remaining, send_click)
+                    else:
+                        send_click()
+                except Exception as exc:
+                    # 点击可能已经到达设备端；记录异常后继续只读确认，禁止补点。
+                    click_error = exc
+                    logger.warning(
+                        "set_checked 点击返回异常，将只读确认最终状态: element_id=%s "
+                        "exception=%s click_count=1",
+                        element_id,
+                        exc.__class__.__name__,
+                    )
+                finally:
+                    # 点击后失效句柄，之后每轮都重新定位，避免用旧句柄读取状态。
+                    context.invalidate_element(element_id)
+                while True:
+                    check_stop()
+                    if time.monotonic() >= deadline:
+                        break
+                    poll_count += 1
+                    try:
+                        _element, final_state = await read_state()
+                    except Exception as exc:
+                        if not _is_set_checked_read_retryable(exc):
+                            raise
+                        # 页面重绘或短暂 HTTP 读取超时只影响本轮观察，继续等待；
+                        # read_state 内部已处理 stale 的有限重定位。
+                        final_state = None
+                        if time.monotonic() >= deadline:
+                            break
+                    if final_state == desired:
+                        break
+                    await asyncio.sleep(min(self.POLL_INTERVAL, max(0.0, deadline - time.monotonic())))
+            else:
+                click_count = 0
+        except StopRequested:
+            raise
+
+        elapsed_ms = (time.monotonic() - started) * 1000
+        logger.info(
+            "set_checked 状态确认: element_id=%s desired=%s initial=%s final=%s "
+            "elapsed_ms=%.1f polls=%s click_count=%s",
+            element_id,
+            desired,
+            initial_state,
+            final_state,
+            elapsed_ms,
+            poll_count,
+            click_count,
         )
+        if final_state != desired:
+            error_name = click_error.__class__.__name__ if click_error is not None else "none"
+            detail = (
+                f"点击已发送但勾选状态未收敛（最终状态={final_state!r}，"
+                f"目标状态={desired!r}，点击异常={error_name}，轮询={poll_count}）"
+            )
+            raise DriverError(f"设置勾选状态失败：{detail}") from click_error
         return {
             "status": "passed",
             "expected": "checked" if desired else "unchecked",
-            "changed": changed,
+            "changed": click_count == 1,
         }
 
+    @classmethod
+    def _wait_timeout(cls, value) -> float:
+        if value is None:
+            return cls.DEFAULT_WAIT_TIMEOUT
+        try:
+            timeout = float(value)
+        except (TypeError, ValueError):
+            return cls.DEFAULT_WAIT_TIMEOUT
+        return max(0.0, timeout)
 
-def _set_checked(driver, element, desired: bool) -> bool:
-    current = driver.is_checked(element)
-    if current == desired:
-        return False
-    driver.click(element)
-    return True
+
+def _is_set_checked_read_retryable(error: BaseException) -> bool:
+    """判断点击后的只读确认是否可以继续等待。"""
+    if is_stale_element_error(error) or isinstance(error, (ElementNotFound, ElementStaleRetryExhausted)):
+        return True
+    current: BaseException | None = error
+    visited: set[int] = set()
+    timeout_markers = (
+        "read timed out",
+        "readtimeout",
+        "timeoutexception",
+        "timed out",
+        "请求超时",
+        "读取超时",
+    )
+    timeout_names = {"ReadTimeout", "ReadTimeoutError", "TimeoutException"}
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        if current.__class__.__name__ in timeout_names:
+            return True
+        if any(marker in str(current).lower() for marker in timeout_markers):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 _SLIDER_NUMBER_RE = re.compile(r"[-+]?\d+(?:\.\d+)?")
