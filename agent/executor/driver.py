@@ -99,6 +99,14 @@ class BaseDriver:
     def click(self, element) -> None:
         raise NotImplementedError
 
+    def click_checkable(self, element) -> None:
+        """Click one checkable element exactly once.
+
+        Concrete mobile drivers may use an element-targeted gesture while the
+        mock and legacy drivers retain their existing element click behavior.
+        """
+        self.click(element)
+
     def input(self, element, value: str, clear_first: bool = True) -> None:
         raise NotImplementedError
 

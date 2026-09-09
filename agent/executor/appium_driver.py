@@ -512,6 +512,44 @@ class AppiumDriver(BaseDriver):
         element.click()
 
     @staticmethod
+    def _is_explicit_click_gesture_unsupported(error: BaseException) -> bool:
+        """Return true only for an explicit, pre-dispatch unsupported command."""
+        current: BaseException | None = error
+        visited: set[int] = set()
+        markers = (
+            "unknown mobile command",
+            "unknown command",
+            "unsupported command",
+            "unsupported operation",
+            "not implemented",
+            "does not support",
+            "is not supported",
+        )
+        while current is not None and id(current) not in visited:
+            visited.add(id(current))
+            message = str(current).lower()
+            if any(marker in message for marker in markers):
+                return True
+            current = current.__cause__ or current.__context__
+        return False
+
+    def click_checkable(self, element) -> None:
+        """Use UiAutomator2's element-targeted click gesture when available.
+
+        A fallback to WebElement.click is safe only when Appium explicitly
+        rejects the command as unsupported. Timeouts, stale elements, session
+        failures, and a successful gesture with unchanged state are ambiguous
+        and must never trigger a second physical click.
+        """
+        driver = self._ensure()
+        try:
+            driver.execute_script("mobile: clickGesture", {"elementId": element.id})
+        except Exception as exc:
+            if not self._is_explicit_click_gesture_unsupported(exc):
+                raise
+            element.click()
+
+    @staticmethod
     def _read_input_value(element) -> tuple[str | None, bool]:
         """Read a normal input value without treating an unreadable property as empty."""
         from .stale_guard import is_stale_element_error
