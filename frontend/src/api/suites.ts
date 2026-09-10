@@ -8,6 +8,9 @@ export interface Suite {
   name: string
   description?: string | null
   status: string
+  /** 套件模块树（scope='suite'）的模块；null 表示未分组 */
+  module_id?: number | null
+  module_name?: string | null
   created_by?: number | null
   case_count: number
   // 方案 §2：套件前后置步骤（Action Step，与用例步骤同构）
@@ -54,14 +57,25 @@ export const VARIABLE_SCOPES = [
   { value: 'case', label: '用例' },
 ]
 
-export async function listSuites(projectId: number) {
-  const data = await request.get<SuitePage>(`/projects/${projectId}/suites`)
-  return data.items
+export interface SuiteListParams {
+  page?: number
+  page_size?: number
+  keyword?: string
+  status?: string
+  /** 具体模块：后端会包含其子孙模块 */
+  module_id?: number
+  /** 未分组（`module_id IS NULL`）。**不要**用 `module_id: null` 表达，axios 会丢弃 null 参数 */
+  ungrouped?: boolean
+}
+
+export async function listSuites(projectId: number, params: SuiteListParams = {}) {
+  return request.get<SuitePage>(`/projects/${projectId}/suites`, { params })
 }
 
 export function createSuite(projectId: number, data: {
   name: string
   description?: string
+  module_id?: number | null
   setup_steps?: Step[]
   teardown_steps?: Step[]
 }) {

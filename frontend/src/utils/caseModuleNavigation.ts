@@ -1,22 +1,12 @@
 /** 用例列表与编辑页之间传递的模块筛选上下文。 */
-export type CaseModuleKey = 'all' | 'none' | `${number}`
 
-export function moduleKeyFromId(moduleId: number | null | undefined): CaseModuleKey {
-  return moduleId == null ? 'none' : String(moduleId) as `${number}`
-}
+import { moduleQuery, type ModuleKey } from './moduleFilter'
 
-export function parseModuleKey(raw: unknown): CaseModuleKey {
-  const value = Array.isArray(raw) ? raw[0] : raw
-  if (value === 'none') return 'none'
-  if (value === 'all' || value == null || value === '') return 'all'
+export { moduleFilterParams, moduleKeyFromId, moduleQuery, parseModuleKey } from './moduleFilter'
+export type { ModuleFilterParams, ModuleKey } from './moduleFilter'
 
-  const moduleId = Number(value)
-  return Number.isInteger(moduleId) && moduleId > 0 ? String(moduleId) as `${number}` : 'all'
-}
-
-export function moduleQuery(key: CaseModuleKey): Record<string, string> {
-  return key === 'all' ? {} : { module: key }
-}
+/** @deprecated 使用 `ModuleKey`；保留旧名以免打断既有引用。 */
+export type CaseModuleKey = ModuleKey
 
 export function parseCaseListPage(raw: unknown): number {
   const value = Array.isArray(raw) ? raw[0] : raw
@@ -37,7 +27,7 @@ export function parseCaseListPageSize(raw: unknown): CaseListPageSize {
 }
 
 export function caseListQuery(
-  moduleKey: CaseModuleKey,
+  moduleKey: ModuleKey,
   page: number,
   pageSize: CaseListPageSize = CASE_LIST_PAGE_SIZES[0],
 ): Record<string, string> {

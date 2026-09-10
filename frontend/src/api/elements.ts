@@ -2,15 +2,15 @@ import request from '@/utils/request'
 import type { SmartLocatorConfig } from '@/utils/smartLocator'
 import type { PageData } from './projects'
 
-export interface TestModule {
-  id: number
-  project_id: number
-  parent_id: number | null
-  name: string
-  sort_order: number
-  created_at: string
-  updated_at: string
-}
+export type { ModuleListOptions, ModuleScope, TestModule } from './modules'
+// 模块接口已迁到 api/modules.ts（用例与套件共用），此处保留 re-export 兼容既有引用
+export {
+  createModule,
+  deleteModule,
+  listModules,
+  moveModule,
+  updateModule,
+} from './modules'
 
 export interface TestElement {
   id: number
@@ -85,24 +85,6 @@ export const RESERVED_ELEMENT_PAGE_GROUP_NAMES = ['all', '全部', '未分组'] 
 export function isReservedElementPageGroupName(name: string): boolean {
   const normalized = name.trim()
   return normalized.toLowerCase() === 'all' || normalized === '全部' || normalized === '未分组'
-}
-
-export function listModules(projectId: number, parentId?: number | null) {
-  return request.get<TestModule[]>(`/projects/${projectId}/modules`, {
-    params: parentId === undefined ? {} : { parent_id: parentId ?? 0 },
-  })
-}
-
-export function createModule(projectId: number, data: Partial<TestModule>) {
-  return request.post<TestModule>(`/projects/${projectId}/modules`, data)
-}
-
-export function updateModule(id: number, data: Partial<TestModule>) {
-  return request.put<TestModule>(`/modules/${id}`, data)
-}
-
-export function deleteModule(id: number) {
-  return request.delete<void>(`/modules/${id}`)
 }
 
 export function listElements(

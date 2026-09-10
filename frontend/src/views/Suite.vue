@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch, type ComponentPublicInstance } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref, watch, type ComponentPublicInstance } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { MoreFilled, Plus, Search } from '@element-plus/icons-vue'
 import Draggable from 'vuedraggable'
 
 import { createSuite, createVariable, deleteSuite, updateSuite, type Suite, type SuiteCase } from '@/api/suites'
+import { listModules, type TestModule } from '@/api/modules'
 import EmptyState from '@/components/EmptyState.vue'
+import ModuleTree from '@/components/ModuleTree.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import RunButton from '@/components/RunButton.vue'
 import SuiteCasePicker from '@/components/SuiteCasePicker.vue'
@@ -16,6 +18,7 @@ import { useSuiteList } from '@/composables/useSuiteList'
 import { usePermission } from '@/composables/usePermission'
 import { useProjectContextStore } from '@/stores/projectContext'
 import { formatDateTime } from '@/utils/format'
+import { moduleFilterParams, parseModuleKey, type ModuleKey } from '@/utils/moduleFilter'
 import { parseSuiteId } from '@/utils/suiteNavigation'
 import { digitsOnly } from '@/utils/suiteCaseOrder'
 
@@ -45,12 +48,37 @@ const {
   activeSuite,
   keyword,
   sortBy,
+  truncated,
   filteredSuites,
   suiteStatusMeta,
   selectSuite,
+  setModuleKey,
   loadSuites,
   clearActiveSuite,
 } = suiteList
+
+// 模块树筛选：三态 key 由 ModuleTree 维护，套件列表走服务端过滤
+const selectedModule = ref<ModuleKey>('all')
+let keywordTimer: ReturnType<typeof setTimeout> | null = null
+
+async function onModuleSelect(key: string) {
+  // 切换模块会换掉当前套件；未保存的步骤先确认，避免静默丢失
+  if (!(await confirmDiscardSteps())) return
+  selectedModule.value = parseModuleKey(key)
+  await setModuleKey(selectedModule.value)
+}
+
+function onKeywordInput() {
+  // 关键字在服务端过滤（覆盖全部套件，而不是仅已加载的一页），做 300ms 防抖
+  if (keywordTimer) clearTimeout(keywordTimer)
+  keywordTimer = setTimeout(() => {
+    void loadSuites()
+  }, 300)
+}
+
+onUnmounted(() => {
+  if (keywordTimer) clearTimeout(keywordTimer)
+})
 const {
   loadingDetail,
   suiteDetail,
@@ -160,7 +188,14 @@ watch(() => suiteCases.value.map((item) => item.id).join(','), (signature) => {
 
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
-const form = ref({ name: '', description: '' })
+// module_id: 0 表示未分组（Element Plus 的 el-option 不接受 null 作为 value）
+const form = ref<{ name: string; description: string; module_id: number }>({
+  name: '',
+  description: '',
+  module_id: 0,
+})
+/** 对话框里的模块下拉：每次打开时拉一次，保证与左侧树同步 */
+const moduleOptions = ref<TestModule[]>([])
 const savingSuite = ref(false)
 const variableDialogVisible = ref(false)
 const variableForm = ref({ name: '', value: '', description: '' })
@@ -184,15 +219,51 @@ function openCaseEditor(suiteCase: SuiteCase) {
   })
 }
 
-function openCreate() {
+async function loadModuleOptions() {
+  try {
+    moduleOptions.value = await listModules(projectId, { scope: 'suite' })
+  } catch {
+    // 模块下拉只是便利项，拉取失败不阻塞套件的新建/编辑
+    moduleOptions.value = []
+  }
+}
+
+/** 扁平模块列表 → 「父 / 子」路径标签，避免同名子模块在扁平下拉里无法区分 */
+function moduleOptionLabel(module: TestModule): string {
+  const byId = new Map(moduleOptions.value.map((item) => [item.id, item]))
+  const parts = [module.name]
+  let parentId = module.parent_id
+  const seen = new Set<number>([module.id])
+  while (parentId != null && !seen.has(parentId)) {
+    const parent = byId.get(parentId)
+    if (!parent) break
+    seen.add(parent.id)
+    parts.unshift(parent.name)
+    parentId = parent.parent_id
+  }
+  return parts.join(' / ')
+}
+
+async function openCreate() {
   editingId.value = null
-  form.value = { name: '', description: '' }
+  form.value = {
+    name: '',
+    description: '',
+    // 默认落在当前选中的模块下；「全部/未分组」时保持未分组
+    module_id: moduleFilterParams(selectedModule.value).module_id ?? 0,
+  }
+  await loadModuleOptions()
   dialogVisible.value = true
 }
 
-function openEdit(suite: Suite) {
+async function openEdit(suite: Suite) {
   editingId.value = suite.id
-  form.value = { name: suite.name, description: suite.description ?? '' }
+  form.value = {
+    name: suite.name,
+    description: suite.description ?? '',
+    module_id: suite.module_id ?? 0,
+  }
+  await loadModuleOptions()
   dialogVisible.value = true
 }
 
@@ -237,6 +308,7 @@ async function save() {
       const updated = await updateSuite(editingId.value, {
         name: form.value.name.trim(),
         description: form.value.description || null,
+        module_id: form.value.module_id === 0 ? null : form.value.module_id,
       })
       if (suiteDetail.value) {
         suiteDetail.value = {
@@ -250,6 +322,7 @@ async function save() {
       const suite = await createSuite(projectId, {
         name: form.value.name.trim(),
         description: form.value.description || undefined,
+        module_id: form.value.module_id === 0 ? null : form.value.module_id,
       })
       await selectSuite(suite.id)
     }
@@ -323,8 +396,20 @@ onMounted(() => {
           </div>
           <el-button v-if="canWriteAssets" type="primary" :icon="Plus" @click="openCreate">新建套件</el-button>
         </div>
+        <div class="sidebar-modules">
+          <ModuleTree
+            :project-id="projectId"
+            scope="suite"
+            title="套件模块"
+            :selected-key="selectedModule"
+            :writable="canWriteAssets"
+            @select="onModuleSelect"
+            @mutated="loadSuites"
+          />
+        </div>
         <div class="sidebar-filter">
-          <el-input v-model="keyword" placeholder="按名称或描述搜索" clearable class="sidebar-search">
+          <el-input v-model="keyword" placeholder="按名称或描述搜索" clearable class="sidebar-search"
+            @input="onKeywordInput" @clear="loadSuites">
             <template #prefix><el-icon>
                 <Search />
               </el-icon></template>
@@ -365,10 +450,15 @@ onMounted(() => {
             </div>
           </div>
           <template v-if="filteredSuites.length === 0">
-            <EmptyState v-if="suites.length === 0" title="还没创建套件" description="套件用于批量编排用例，并可配置前后置步骤与变量。"
+            <div v-if="keyword" class="no-match v2-aux">没有找到与「{{ keyword }}」匹配的套件</div>
+            <EmptyState v-else
+              :title="selectedModule === 'all' ? '还没创建套件' : '该模块下暂无套件'"
+              description="套件用于批量编排用例，并可配置前后置步骤与变量。"
               :action-label="canWriteAssets ? '新建套件' : undefined" @action="openCreate" />
-            <div v-else class="no-match v2-aux">没有找到与「{{ keyword }}」匹配的套件</div>
           </template>
+          <div v-if="truncated" class="list-truncated v2-aux">
+            套件较多，仅显示前 {{ suites.length }} 个，请用搜索缩小范围
+          </div>
         </div>
       </aside>
     </el-col>
@@ -490,6 +580,13 @@ onMounted(() => {
     <el-form label-width="80px" @submit.prevent="save">
       <el-form-item label="名称" required><el-input v-model="form.name" placeholder="请输入套件名称" maxlength="255"
           @keyup.enter="save" /></el-form-item>
+      <el-form-item label="模块">
+        <el-select v-model="form.module_id" placeholder="未分组" class="suite-module-select">
+          <el-option :value="0" label="未分组" />
+          <el-option v-for="module in moduleOptions" :key="module.id" :label="moduleOptionLabel(module)"
+            :value="module.id" />
+        </el-select>
+      </el-form-item>
       <el-form-item label="描述"><el-input v-model="form.description" type="textarea" :rows="3"
           placeholder="可选" /></el-form-item>
     </el-form>
@@ -548,6 +645,31 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+/* 模块树内嵌在侧栏里：去掉独立卡片外观，限制高度避免挤掉套件列表 */
+.sidebar-modules {
+  padding: 12px 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-modules :deep(.module-tree) {
+  width: 100%;
+  max-height: 38vh;
+  padding: 8px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+
+.list-truncated {
+  padding: 8px 12px;
+  font-size: 12px;
+  text-align: center;
+}
+
+.suite-module-select {
+  width: 100%;
 }
 
 .sidebar-count {
