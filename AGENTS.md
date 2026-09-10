@@ -41,10 +41,13 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 - WS 封装在 `src/composables/useExecutionSocket.ts`（VueUse useWebSocket + 自动重连 + 心跳）
 
 ## 测试注意
-- 测试直接连真实 dev 库（无独立测试库），数据会落库
+- **测试跑在独立库 `test_platform_test`，不碰开发库 `test_platform`**：`tests/conftest.py` 在导入任何 `app.*` 前把 `DATABASE_URL` 指向测试库，且库名不以 `_test` 结尾时直接 `RuntimeError` 拒绝运行（Step 12：杜绝污染开发库）。可用 `TEST_DATABASE_URL` 覆盖
+- 会话开始时 conftest 只对**测试库**执行 `alembic upgrade head`；**开发库不会被自动升级**，所以 `uv run alembic check` 会在拉取含迁移的提交后失败——先手动跑一次 `uv run alembic upgrade head`
 - `tests/conftest.py`：每个测试前删除 `pytest_%` 用户及其项目/成员/token；每个测试后 `await engine.dispose()`——**asyncpg 连接不能跨 pytest 事件循环**，缺 dispose 会报 "Event loop is closed"
+- `tests/conftest.py` 每个测试前后会 `reset()` 三个 WS 全局单例（`agent_manager` / `execution_manager` / `profile_config_manager`），避免用例异常退出时残留 fake socket 污染后续用例
 - 测试必须自建用户（如 `_register` helper），**不要依赖其他测试的执行顺序**
 - JWT refresh token 必须含 `jti`（`security.py` 已处理）——同秒签发 token 会完全相同，造成 `refresh_tokens` 哈希重复
+- **本机跑测试/构建要关掉沙箱的删除拦截**：报 `SAFE_DELETE_FAIL_CLOSED`（`SHFileOperationW 失败: 0x2`）或 `SAFE_DELETE_BULK_CONFIRM_REQUIRED` 时，加 `CODEBUDDY_SAFE_DELETE_ENABLED=0` 前缀重跑，例如 `CODEBUDDY_SAFE_DELETE_ENABLED=0 uv run pytest tests/ -q`。注意**不是** `CODEBUDDY_SAFE_DELETE_SANDBOX=0`（那只是"是否在沙箱内"的判定，改了没用）
 
 ## 数据库
 - 存在循环外键 `devices.locked_by_execution ↔ executions.device_id`（设计如此）。初始迁移已手工拆分为"先建表后 `op.create_foreign_key`"，改表/新迁移时注意建表顺序，否则 PG 报错
@@ -58,6 +61,9 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 - Action/Assertion Registry 属于 agent 包，不属于 backend；废弃的 `backend/app/executor/` 空目录已删除，禁止恢复后端执行 Registry
 - **变量优先级（§10.6）固定为：执行参数 > 套件变量 > 用例变量 > 项目变量 > 全局变量**。无档案执行在 `app/repositories/worker.py::_materialize_unprofiled_tree` 里按此顺序逐层叠加（`base_map → case → suite → execution parameters`）；禁止"先复制完整映射再用低优先级覆盖高优先级"的写法，否则套件前后置与套件内用例会取到不同值
 - **Agent WS 一条连接只允许注册一次**：`app/ws/routes.py` 注册成功后拒绝后续 `register`（回 PROTOCOL_ERROR，不断连）。`AgentConnectionManager.connect()` 对同一 socket 幂等，且"先替换映射、后关闭旧连接"
+- **步骤/节点级状态同样受"终态不回退"保护**：`ws_handlers.py` 的 `_merge_step_status()` 按 `error > failed > stopped > skipped > passed` 合并（`cancelled` 与 `stopped` 同属中断终态）。禁止写成 `step.status = payload["status"]` 这类无条件赋值——重投/补报会把已落库的 failed 翻成 passed。判定类字段（`duration`/`actual_value`/`error_message`/`screenshot_path`）必须用 `_fill_if_present()`，**重投消息不带截图时不得清空已落库的失败证据**
+- **WS 发送失败只在连接确实不可用时才摘除映射**：`managers._is_socket_gone()` 区分"连接已关闭"（Starlette `RuntimeError` / websockets `ConnectionClosed*` / `OSError`）与其它异常；序列化等瞬时错误把 socket 摘掉会让仍在线的 Agent 被误判 offline
+- **前端列表请求必须有竞态保护**：`useListQuery` 用递增序号丢弃过期响应（旧写法只有"已卸载"布尔标志，快速翻页时旧页响应后到会覆盖新页数据）。改造时保留顺序返回的对照用例
 - WS 网关对 socket 的依赖用 `app/ws/managers.py` 的 `BroadcastSocket` / `AgentSocket` Protocol 表达（只声明 `send_json(data)` 等必需能力），测试替身无需 `cast(WebSocket, ...)` 即可传入
 
 ## 套件级执行（以测试套件为执行与结果汇总单位，实施中）
@@ -75,9 +81,10 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 - **测试只在整个 Step 全部子任务完成后才执行**。一个 Step 内若包含多个子步骤任务（后端接口 / 前端页面 / 迁移 / 文档等），必须等所有子任务都实现完成，才运行该 Step 的完整测试（后端 pytest / Agent pytest / 前端 vitest+build / ruff / alembic check）。
 - 禁止在 Step 中途对半成品跑完整测试集或提交；中途只做轻量语法自检（如 `ruff` 单文件、`vue-tsc` 单文件），不作为通过依据。
 - 每个 Step 完成时的验收命令（按需组合，全部通过才提交）：
-  - 后端：`uv run ruff check app/ tests/ worker.py scripts/` + `uv run pytest tests/ -q` + `uv run alembic check`
+  - 后端：`uv run ruff check app/ tests/ worker.py scripts/` + `uv run pyright` + `uv run pytest tests/ -q` + `uv run alembic check`
   - Agent：`uv run ruff check .` + `uv run pytest tests/ -q`
   - 前端：`npm run test`（vitest）+ `npm run build`（vue-tsc + vite）
+- **拉取含 `.env.example` 改动的提交后，先同步本地 `backend/.env`**：部分用例断言的就是配置上限（如 `tests/test_execution_timeout_limits.py` 断言 24h），`.env` 落后会让门禁以"代码 bug"的样子变红。典型：`MAX_EXECUTION_TIMEOUT` 必须与 `settings.max_execution_timeout` 的默认值一致
 - Step 内子任务实现过程中发现的错误可当场修复，但**测试通过以整个 Step 完成后一次为准**；Step 间不共享半成品状态。
 - 提交时机：Step 门禁全部通过后提交一次，提交信息 `feat(backend|frontend|agent): Step N <内容>`。
 
