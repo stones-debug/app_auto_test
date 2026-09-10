@@ -156,6 +156,17 @@ describe('CR-14 会话刷新闭环', () => {
     expect(errorMessage).toHaveBeenCalledWith('无法连接后端服务，请检查网络连接或服务是否已启动')
   })
 
+  it('标记 suppressGlobalError 时不重复弹出网络提示', async () => {
+    const handler = responseErrorHandler
+    const error = {
+      config: { url: '/reports/673/download?download_ts=1', headers: {}, suppressGlobalError: true },
+      code: 'ERR_NETWORK',
+    }
+
+    await expect(handler(error)).rejects.toBe(error)
+    expect(errorMessage).not.toHaveBeenCalled()
+  })
+
   it('apiErrorMessage 支持 FastAPI 字符串错误详情', () => {
     expect(apiErrorMessage({ response: { data: { detail: '项目不存在' } } })).toBe('项目不存在')
   })

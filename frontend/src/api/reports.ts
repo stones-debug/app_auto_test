@@ -232,7 +232,12 @@ export function getReportDetail(id: number) {
 }
 
 export async function downloadReport(id: number) {
-  const blob = await request.get<Blob>(`/reports/${id}/download`, { responseType: 'blob' })
+  // 每次下载使用新的 URL，避免浏览器恢复旧报告的 Range/If-Range 缓存响应。
+  const cacheBust = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const blob = await request.get<Blob>(`/reports/${id}/download?download_ts=${cacheBust}`, {
+    responseType: 'blob',
+    suppressGlobalError: true,
+  })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -240,7 +245,9 @@ export async function downloadReport(id: number) {
   document.body.appendChild(a)
   a.click()
   a.remove()
-  URL.revokeObjectURL(url)
+  // 浏览器需要在 click 返回后异步接管 Blob URL；立即释放会导致部分 Chromium
+  // 版本的下载请求读不到响应体。延迟释放避免长期泄漏，同时给下载足够的接管时间。
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
 export function reportFileUrl(reportId: number, filename: string): string {

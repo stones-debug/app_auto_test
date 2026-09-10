@@ -1,6 +1,11 @@
 import axios, { type AxiosError, type AxiosRequestConfig, type InternalAxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'
 
+export type ApiRequestConfig = AxiosRequestConfig & {
+  /** 由页面自行展示错误时，禁止请求层重复弹出网络错误。 */
+  suppressGlobalError?: boolean
+}
+
 const TOKEN_KEY = 'access_token'
 const REFRESH_KEY = 'refresh_token'
 
@@ -141,7 +146,10 @@ function isAuthNoSession(url: string): boolean {
 instance.interceptors.response.use(
   (response) => response.data,
   async (error: AxiosError) => {
-    const config = error.config as (InternalAxiosRequestConfig & { _retried?: boolean }) | undefined
+    const config = error.config as (InternalAxiosRequestConfig & {
+      _retried?: boolean
+      suppressGlobalError?: boolean
+    }) | undefined
     const url = config?.url ?? ''
     const noSession = isAuthNoSession(url)
     if (error.response?.status === 401 && config && !noSession && !config._retried) {
@@ -163,7 +171,9 @@ instance.interceptors.response.use(
     }
     // 页面加载请求通常没有单独的 catch，统一在请求层给用户可见反馈。
     // 登录、注册等认证入口由页面展示业务提示，避免出现重复消息。
-    if (!noSession && error.response?.status !== 401) notifyRequestError(error)
+    if (!config?.suppressGlobalError && !noSession && error.response?.status !== 401) {
+      notifyRequestError(error)
+    }
     return Promise.reject(error)
   },
 )
@@ -176,23 +186,23 @@ const _patch = instance.patch.bind(instance)
 const _delete = instance.delete.bind(instance)
 
 export interface RequestInstance {
-  get<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<T>
-  post<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T>
-  put<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T>
-  patch<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T>
-  delete<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<T>
+  get<T = unknown>(url: string, config?: ApiRequestConfig): Promise<T>
+  post<T = unknown>(url: string, data?: unknown, config?: ApiRequestConfig): Promise<T>
+  put<T = unknown>(url: string, data?: unknown, config?: ApiRequestConfig): Promise<T>
+  patch<T = unknown>(url: string, data?: unknown, config?: ApiRequestConfig): Promise<T>
+  delete<T = unknown>(url: string, config?: ApiRequestConfig): Promise<T>
 }
 
 const request: RequestInstance = {
-  get: <T>(url: string, config?: AxiosRequestConfig) =>
+  get: <T>(url: string, config?: ApiRequestConfig) =>
     _get(url, config) as unknown as Promise<T>,
-  post: <T>(url: string, data?: unknown, config?: AxiosRequestConfig) =>
+  post: <T>(url: string, data?: unknown, config?: ApiRequestConfig) =>
     _post(url, data, config) as unknown as Promise<T>,
-  put: <T>(url: string, data?: unknown, config?: AxiosRequestConfig) =>
+  put: <T>(url: string, data?: unknown, config?: ApiRequestConfig) =>
     _put(url, data, config) as unknown as Promise<T>,
-  patch: <T>(url: string, data?: unknown, config?: AxiosRequestConfig) =>
+  patch: <T>(url: string, data?: unknown, config?: ApiRequestConfig) =>
     _patch(url, data, config) as unknown as Promise<T>,
-  delete: <T>(url: string, config?: AxiosRequestConfig) =>
+  delete: <T>(url: string, config?: ApiRequestConfig) =>
     _delete(url, config) as unknown as Promise<T>,
 }
 

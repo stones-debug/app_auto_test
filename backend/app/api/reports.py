@@ -99,7 +99,14 @@ async def get_report_detail(report_id: int, user: User = Depends(get_current_use
 async def download_report(report_id: int, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     report = await _get_report_or_404(report_id, db)
     await _require_report_access(report, user, db)
-    return FileResponse(await report_service.render_report_html(db, report.execution_id), media_type="text/html", filename=f"execution_{report.execution_id}_report.html")
+    # 报告 HTML 可能在首次下载或模板版本变化时重新生成。禁止浏览器复用旧的
+    # Range/If-Range 缓存响应，避免缓存文件与当前文件内容不一致导致 ERR_FAILED 206。
+    return FileResponse(
+        await report_service.render_report_html(db, report.execution_id),
+        media_type="text/html",
+        filename=f"execution_{report.execution_id}_report.html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/reports/{report_id}/files/{filename:path}")

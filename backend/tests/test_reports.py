@@ -380,6 +380,7 @@ async def test_report_download_generates_and_caches(client: AsyncClient):
     resp1 = await client.get(f"/api/reports/{report_id}/download", headers=headers)
     assert resp1.status_code == 200
     assert "text/html" in resp1.headers.get("content-type", "")
+    assert resp1.headers.get("cache-control") == "no-store"
     assert "执行报告" in resp1.text
     assert "执行参数" in resp1.text
     assert "account" in resp1.text
@@ -402,6 +403,7 @@ async def test_report_download_generates_and_caches(client: AsyncClient):
     resp2 = await client.get(f"/api/reports/{report_id}/download", headers=headers)
     assert resp2.status_code == 200
     assert resp2.text == resp1.text
+    assert resp2.headers.get("cache-control") == "no-store"
 
     _cleanup(execution_id)
 
