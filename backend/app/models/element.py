@@ -1,6 +1,6 @@
 from typing import Any
 
-from sqlalchemy import CheckConstraint, ForeignKey, Integer, String, Text
+from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import Mapped, mapped_column
@@ -10,13 +10,33 @@ from app.models.base import SoftDeleteMixin, TimestampMixin
 
 
 class TestModule(Base, TimestampMixin, SoftDeleteMixin):
+    """测试模块（树形）。
+
+    `scope` 区分两棵互相独立的树：`case` 供测试用例使用，`suite` 供测试套件使用。
+    注意与 `TestElement.scope`（元素适用范围，自由文本）同名不同义。
+    """
+
     __tablename__ = "test_modules"
+    __table_args__ = (
+        CheckConstraint("scope IN ('case','suite')", name="ck_test_modules_scope"),
+        Index(
+            "idx_test_modules_scope_parent",
+            "project_id",
+            "scope",
+            "parent_id",
+            "sort_order",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False)
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("test_modules.id"))
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    scope: Mapped[str] = mapped_column(
+        String(20), default="case", server_default="case", nullable=False
+    )
 
 
 class TestElement(Base, TimestampMixin, SoftDeleteMixin):

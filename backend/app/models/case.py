@@ -6,6 +6,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -16,6 +17,15 @@ from app.models.base import SoftDeleteMixin, TimestampMixin
 
 class TestCase(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "test_cases"
+    __table_args__ = (
+        # 用例模块筛选是列表页高频查询；部分索引跳过软删行
+        Index(
+            "idx_test_cases_module",
+            "project_id",
+            "module_id",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False)
@@ -42,10 +52,18 @@ class TestSuite(Base, TimestampMixin, SoftDeleteMixin):
         CheckConstraint(
             "jsonb_typeof(teardown_steps) = 'array'", name="ck_test_suites_teardown_steps"
         ),
+        # 套件模块树：module_id 只能指向 scope='suite' 的模块，跨表约束由服务层保证
+        Index(
+            "idx_test_suites_module",
+            "project_id",
+            "module_id",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    module_id: Mapped[int | None] = mapped_column(ForeignKey("test_modules.id"))
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="active")

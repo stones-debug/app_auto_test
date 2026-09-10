@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import TestCase, TestModule, TestSuite, TestSuiteCase
@@ -34,14 +34,30 @@ async def list_page(
     db: AsyncSession,
     *,
     project_id: int,
+    module_ids: set[int] | None,
+    ungrouped: bool,
     keyword: str,
     status: str,
     offset: int,
     limit: int,
-) -> tuple[int, list[TestSuite], dict[int, int]]:
+) -> tuple[int, list[TestSuite], dict[int, int], dict[int, str]]:
+    """列表查询。
+
+    `ungrouped=True` → 只返回 module_id IS NULL 的套件；否则 `module_ids` 非空时
+    按该集合过滤（调用方已展开子孙模块），为空表示不按模块过滤。
+    """
     conditions = [TestSuite.project_id == project_id, TestSuite.deleted_at.is_(None)]
+    if ungrouped:
+        conditions.append(TestSuite.module_id.is_(None))
+    elif module_ids:
+        conditions.append(TestSuite.module_id.in_(module_ids))
     if keyword:
-        conditions.append(TestSuite.name.ilike(f"%{keyword}%"))
+        # 与前端搜索框的提示一致：名称或描述任一命中即返回。
+        # 侧栏不是分页列表，关键字必须在服务端过滤才能覆盖全部套件。
+        pattern = f"%{keyword}%"
+        conditions.append(
+            or_(TestSuite.name.ilike(pattern), TestSuite.description.ilike(pattern))
+        )
     if status:
         conditions.append(TestSuite.status == status)
     base_query = select(TestSuite).where(*conditions)
@@ -58,7 +74,14 @@ async def list_page(
             .group_by(TestSuiteCase.suite_id)
         )
         counts = dict(count_rows.tuples().all())
-    return total or 0, suites, counts
+    module_ids_in_page = {suite.module_id for suite in suites if suite.module_id is not None}
+    module_names: dict[int, str] = {}
+    if module_ids_in_page:
+        module_rows = await db.execute(
+            select(TestModule.id, TestModule.name).where(TestModule.id.in_(module_ids_in_page))
+        )
+        module_names = dict(module_rows.tuples().all())
+    return total or 0, suites, counts, module_names
 
 
 async def create(
@@ -70,9 +93,11 @@ async def create(
     setup_steps: list[dict],
     teardown_steps: list[dict],
     user_id: int,
+    module_id: int | None = None,
 ) -> TestSuite:
     suite = TestSuite(
         project_id=project_id,
+        module_id=module_id,
         name=name,
         description=description,
         created_by=user_id,

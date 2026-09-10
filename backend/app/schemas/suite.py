@@ -22,6 +22,8 @@ def _normalize_suite_steps(value):
 class SuiteCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: str | None = None
+    # 套件模块树（scope='suite'）的模块；为空表示未分组
+    module_id: int | None = None
     # 方案 §2：套件前后置步骤（仅 Action，无断言）；复用 StepCreate 校验与 UUID 兜底
     setup_steps: list[StepCreate] = Field(default_factory=list)
     teardown_steps: list[StepCreate] = Field(default_factory=list)
@@ -42,6 +44,7 @@ class SuiteUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
     status: str | None = Field(default=None, pattern="^(active|disabled)$")
+    module_id: int | None = None
     setup_steps: list[StepCreate] | None = None
     teardown_steps: list[StepCreate] | None = None
 
@@ -63,6 +66,8 @@ class SuiteOut(BaseModel):
     name: str
     description: str | None
     status: str
+    module_id: int | None = None
+    module_name: str | None = None
     created_by: int | None
     case_count: int = 0
     setup_steps: list[dict] = Field(default_factory=list)

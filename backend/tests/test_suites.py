@@ -292,3 +292,33 @@ async def test_suite_steps_reject_non_empty_assertions(client: AsyncClient):
         headers=headers,
     )
     assert response.status_code == 422
+
+
+async def test_suite_list_keyword_matches_name_or_description(client: AsyncClient):
+    """侧栏搜索在服务端过滤：名称或描述任一命中即返回。"""
+    headers, project_id, _case_ids = await _setup(client)
+    await client.post(
+        f"/api/projects/{project_id}/suites",
+        json={"name": "冒烟套件", "description": "上线前快速验证"},
+        headers=headers,
+    )
+    await client.post(
+        f"/api/projects/{project_id}/suites",
+        json={"name": "回归套件", "description": "每日全量"},
+        headers=headers,
+    )
+
+    by_name = (
+        await client.get(f"/api/projects/{project_id}/suites?keyword=冒烟", headers=headers)
+    ).json()
+    assert [s["name"] for s in by_name["items"]] == ["冒烟套件"]
+
+    by_description = (
+        await client.get(f"/api/projects/{project_id}/suites?keyword=全量", headers=headers)
+    ).json()
+    assert [s["name"] for s in by_description["items"]] == ["回归套件"]
+
+    missing = (
+        await client.get(f"/api/projects/{project_id}/suites?keyword=不存在的词", headers=headers)
+    ).json()
+    assert missing["items"] == []

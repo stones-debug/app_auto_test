@@ -22,10 +22,26 @@ from app.utils.element_refs import collect_element_ids
 
 
 async def list_modules(
-    db: AsyncSession, *, project_id: int, parent_id: int | None
+    db: AsyncSession,
+    *,
+    project_id: int,
+    scope: str,
+    parent_id: int | None = None,
+    roots_only: bool = False,
 ) -> list[TestModule]:
-    conditions = [TestModule.project_id == project_id, TestModule.deleted_at.is_(None)]
-    if parent_id is not None:
+    """列出某项目某个 scope 的模块。
+
+    `parent_id is None` 且 `roots_only=False` 表示不过滤层级（返回该 scope 全部模块，
+    前端在内存里建树）；`roots_only=True` 表示只要根层级（parent_id IS NULL）。
+    """
+    conditions = [
+        TestModule.project_id == project_id,
+        TestModule.scope == scope,
+        TestModule.deleted_at.is_(None),
+    ]
+    if roots_only:
+        conditions.append(TestModule.parent_id.is_(None))
+    elif parent_id is not None:
         conditions.append(TestModule.parent_id == parent_id)
     rows = await db.execute(
         select(TestModule).where(*conditions).order_by(TestModule.sort_order, TestModule.id)
@@ -33,15 +49,67 @@ async def list_modules(
     return list(rows.scalars().all())
 
 
-async def load_modules_for_parent_validation(
-    db: AsyncSession, project_id: int
+async def list_modules_for_update(
+    db: AsyncSession, *, project_id: int, scope: str
 ) -> list[TestModule]:
+    """锁住该 scope 的全部模块行，用于拖拽移动时串行化兄弟排序重排。"""
     rows = await db.execute(
-        select(TestModule).where(
-            TestModule.project_id == project_id, TestModule.deleted_at.is_(None)
+        select(TestModule)
+        .where(
+            TestModule.project_id == project_id,
+            TestModule.scope == scope,
+            TestModule.deleted_at.is_(None),
         )
+        .order_by(TestModule.sort_order, TestModule.id)
+        .with_for_update()
     )
     return list(rows.scalars().all())
+
+
+async def module_subtree_ids(
+    db: AsyncSession, *, project_id: int, scope: str, module_id: int
+) -> set[int]:
+    """返回该模块及其全部子孙模块 id（含自身）。
+
+    模块表规模天然很小，一次拉全量在内存展开比递归 CTE 更简单；
+    已访问集合同时起到防环作用，即使历史数据里出现环也不会死循环。
+    """
+    rows = await db.execute(
+        select(TestModule.id, TestModule.parent_id).where(
+            TestModule.project_id == project_id,
+            TestModule.scope == scope,
+            TestModule.deleted_at.is_(None),
+        )
+    )
+    children: dict[int | None, list[int]] = {}
+    for current_id, parent_id in rows.tuples().all():
+        children.setdefault(parent_id, []).append(current_id)
+    result: set[int] = set()
+    pending = [module_id]
+    while pending:
+        current = pending.pop()
+        if current in result:
+            continue
+        result.add(current)
+        pending.extend(children.get(current, []))
+    return result
+
+
+async def module_belongs_to_project(
+    db: AsyncSession, *, project_id: int, module_id: int | None, scope: str = "case"
+) -> bool:
+    """校验模块存在、未删除、属于该项目且 scope 匹配。"""
+    if module_id is None:
+        return True
+    row = await db.execute(
+        select(TestModule.id).where(
+            TestModule.id == module_id,
+            TestModule.project_id == project_id,
+            TestModule.scope == scope,
+            TestModule.deleted_at.is_(None),
+        )
+    )
+    return row.scalar_one_or_none() is not None
 
 
 async def get_module(db: AsyncSession, module_id: int) -> TestModule | None:
@@ -49,10 +117,16 @@ async def get_module(db: AsyncSession, module_id: int) -> TestModule | None:
 
 
 async def create_module(
-    db: AsyncSession, *, project_id: int, name: str, parent_id: int | None, sort_order: int
+    db: AsyncSession,
+    *,
+    project_id: int,
+    name: str,
+    parent_id: int | None,
+    sort_order: int,
+    scope: str = "case",
 ) -> TestModule:
     module = TestModule(
-        project_id=project_id, name=name, parent_id=parent_id, sort_order=sort_order
+        project_id=project_id, name=name, parent_id=parent_id, sort_order=sort_order, scope=scope
     )
     db.add(module)
     return module
@@ -86,6 +160,14 @@ async def ungroup_module_cases(db: AsyncSession, *, module_id: int) -> None:
     await db.execute(
         update(TestCase)
         .where(TestCase.module_id == module_id, TestCase.deleted_at.is_(None))
+        .values(module_id=None)
+    )
+
+
+async def ungroup_module_suites(db: AsyncSession, *, module_id: int) -> None:
+    await db.execute(
+        update(TestSuite)
+        .where(TestSuite.module_id == module_id, TestSuite.deleted_at.is_(None))
         .values(module_id=None)
     )
 

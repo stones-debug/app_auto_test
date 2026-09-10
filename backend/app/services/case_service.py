@@ -12,7 +12,7 @@ from app.models import TestCase
 from app.repositories import cases as cases_repo
 from app.schemas.case import CaseCreate, CaseUpdate
 from app.schemas.generated_case_params import ASSERTION_NEEDS_ELEMENT
-from app.services import asset_service
+from app.services import asset_service, element_service
 from app.utils.element_refs import collect_element_ids
 
 
@@ -136,12 +136,29 @@ async def get_or_404(db: AsyncSession, case_id: int) -> TestCase:
 
 
 async def list_page(
-    db: AsyncSession, *, project_id: int, module_id: int | None, keyword: str, status_: str, offset: int, limit: int
+    db: AsyncSession,
+    *,
+    project_id: int,
+    module_id: int | None,
+    ungrouped: bool = False,
+    keyword: str,
+    status_: str,
+    offset: int,
+    limit: int,
 ):
+    # 选中父模块时包含其子孙模块；ungrouped 只取未分组用例。
+    module_ids = (
+        await element_service.module_ids_with_descendants(
+            db, project_id=project_id, scope=element_service.MODULE_SCOPE_CASE, module_id=module_id
+        )
+        if module_id is not None and not ungrouped
+        else None
+    )
     return await cases_repo.list_page(
         db,
         project_id=project_id,
-        module_id=module_id,
+        module_ids=module_ids,
+        ungrouped=ungrouped,
         keyword=keyword,
         status=status_,
         offset=offset,

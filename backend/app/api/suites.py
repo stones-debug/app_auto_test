@@ -19,9 +19,10 @@ from app.utils.pagination import get_pagination
 router = APIRouter(tags=["套件管理"])
 
 
-def _suite_out(suite, case_count: int) -> SuiteOut:
+def _suite_out(suite, case_count: int, module_name: str | None = None) -> SuiteOut:
     result = SuiteOut.model_validate(suite)
     result.case_count = case_count
+    result.module_name = module_name
     return result
 
 
@@ -29,14 +30,18 @@ def _suite_out(suite, case_count: int) -> SuiteOut:
 async def list_suites(
     project_id: int,
     pagination=Depends(get_pagination),
+    module_id: int | None = None,
+    ungrouped: bool = False,
     keyword: str = "",
     status_filter: str = Query(default="", alias="status"),
     _perm: tuple[Project, str | None] = Depends(get_project_permission),
     db: AsyncSession = Depends(get_db),
 ):
-    total, suites, counts = await suite_service.list_page(
+    total, suites, counts, module_names = await suite_service.list_page(
         db,
         project_id=project_id,
+        module_id=module_id,
+        ungrouped=ungrouped,
         keyword=keyword,
         status=status_filter,
         offset=pagination.offset,
@@ -46,7 +51,14 @@ async def list_suites(
         "total": total,
         "page": pagination.page,
         "page_size": pagination.page_size,
-        "items": [_suite_out(suite, counts.get(suite.id, 0)) for suite in suites],
+        "items": [
+            _suite_out(
+                suite,
+                counts.get(suite.id, 0),
+                module_names.get(suite.module_id) if suite.module_id else None,
+            )
+            for suite in suites
+        ],
     }
 
 
@@ -69,7 +81,11 @@ async def get_suite(
 ):
     suite = await suite_service.get_or_404(db, suite_id)
     await get_project_permission(suite.project_id, user, db)
-    return _suite_out(suite, await suite_service.count_cases(db, suite.id))
+    return _suite_out(
+        suite,
+        await suite_service.count_cases(db, suite.id),
+        await suite_service.module_name_of(db, suite),
+    )
 
 
 @router.put("/suites/{suite_id}", response_model=SuiteOut)

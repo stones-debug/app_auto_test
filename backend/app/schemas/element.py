@@ -39,6 +39,8 @@ class ModuleCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     parent_id: int | None = None
     sort_order: int = 0
+    # 用例模块树 / 套件模块树；默认 case 保持旧调用方行为不变
+    scope: str = Field(default="case", pattern="^(case|suite)$")
 
 
 class ModuleUpdate(BaseModel):
@@ -47,12 +49,24 @@ class ModuleUpdate(BaseModel):
     sort_order: int | None = None
 
 
+class ModulePositionUpdate(BaseModel):
+    """拖拽移动：把模块挂到 parent_id 下、排在 before_id 之前。
+
+    `parent_id=None` 表示根层级；`before_id=None` 表示追加到目标父级末尾。
+    两个字段都不传等价于“移到根层级末尾”。
+    """
+
+    parent_id: int | None = None
+    before_id: int | None = None
+
+
 class ModuleOut(BaseModel):
     id: int
     project_id: int
     parent_id: int | None
     name: str
     sort_order: int
+    scope: str
     created_at: datetime
     updated_at: datetime
 

@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
@@ -20,6 +20,7 @@ from app.schemas.element import (
     ElementUsage,
     ModuleCreate,
     ModuleOut,
+    ModulePositionUpdate,
     ModuleUpdate,
 )
 from app.services import element_service
@@ -61,13 +62,20 @@ async def _require_creator(element: TestElement, user: User, db: AsyncSession) -
 async def list_modules(
     project_id: int,
     parent_id: int | None = None,
+    root_only: bool = False,
+    scope: Literal["case", "suite"] = "case",
     _perm: tuple[Project, str | None] = Depends(get_project_permission),
     db: AsyncSession = Depends(get_db),
 ):
-    # 不传 parent_id 时返回项目内完整模块树数据；保留 0 作为历史的“未指定父模块”哨兵。
+    # 不传 parent_id 时返回该项目该 scope 的完整模块数据（前端在内存里建树）；
+    # 保留 0 作为历史的“未指定父模块”哨兵。root_only=True 时只返回根层级。
     normalized_parent = None if parent_id == 0 else parent_id
     return await element_service.list_modules(
-        db, project_id=project_id, parent_id=normalized_parent
+        db,
+        project_id=project_id,
+        scope=scope,
+        parent_id=normalized_parent,
+        roots_only=root_only,
     )
 
 
@@ -91,6 +99,24 @@ async def update_module(
     module = await element_service.get_module_or_404(db, module_id)
     await _check_editable(module.project_id, user, db)
     return await element_service.update_module(db, module=module, body=body)
+
+
+@router.put("/modules/{module_id}/position", response_model=list[ModuleOut])
+async def move_module(
+    module_id: int,
+    body: ModulePositionUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """拖拽移动：把模块挂到 parent_id 下、排在 before_id 之前。
+
+    返回该 scope 的完整模块列表，前端直接替换本地树。
+    """
+    module = await element_service.get_module_or_404(db, module_id)
+    await _check_editable(module.project_id, user, db)
+    return await element_service.move_module(
+        db, module=module, parent_id=body.parent_id, before_id=body.before_id
+    )
 
 
 @router.delete("/modules/{module_id}", status_code=status.HTTP_204_NO_CONTENT)

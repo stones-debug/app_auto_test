@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Execution, TestCase, TestElement, TestModule
+from app.repositories import elements as elements_repo
 
 
 async def get_by_id(db: AsyncSession, case_id: int) -> TestCase | None:
@@ -20,16 +21,10 @@ async def list_all(db: AsyncSession) -> list[TestCase]:
 async def module_belongs_to_project(
     db: AsyncSession, project_id: int, module_id: int | None
 ) -> bool:
-    if module_id is None:
-        return True
-    row = await db.execute(
-        select(TestModule.id).where(
-            TestModule.id == module_id,
-            TestModule.project_id == project_id,
-            TestModule.deleted_at.is_(None),
-        )
+    """用例的模块必须来自用例模块树（scope='case'）。"""
+    return await elements_repo.module_belongs_to_project(
+        db, project_id=project_id, module_id=module_id, scope="case"
     )
-    return row.scalar_one_or_none() is not None
 
 
 async def find_elements_by_ids(
@@ -49,15 +44,23 @@ async def list_page(
     db: AsyncSession,
     *,
     project_id: int,
-    module_id: int | None,
+    module_ids: set[int] | None,
+    ungrouped: bool,
     keyword: str,
     status: str,
     offset: int,
     limit: int,
 ) -> tuple[int, list[TestCase], dict[int, str], dict[int, tuple[str, datetime]]]:
+    """列表查询。
+
+    `ungrouped=True` → 只返回 module_id IS NULL 的用例；否则 `module_ids` 非空时
+    按该集合过滤（调用方已展开子孙模块），为空表示不按模块过滤。
+    """
     conditions = [TestCase.project_id == project_id, TestCase.deleted_at.is_(None)]
-    if module_id is not None:
-        conditions.append(TestCase.module_id == module_id)
+    if ungrouped:
+        conditions.append(TestCase.module_id.is_(None))
+    elif module_ids:
+        conditions.append(TestCase.module_id.in_(module_ids))
     if keyword:
         conditions.append(TestCase.name.ilike(f"%{keyword}%"))
     if status:
