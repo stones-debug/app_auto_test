@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from main import (
+    _FINISHED_EXECUTION_MEMORY,
     BANNER,
     AgentApp,
     build_agent_app,
@@ -14,6 +15,13 @@ from main import (
     print_banner,
     should_run_desktop,
 )
+
+# 等待 mock 执行任务完成的预算。断言的是行为而不是速度，取值要留足余量：
+# 冷启动（首次 `uv run` + `__pycache__` 为空）时同一用例实测要 ~2.5s，
+# 原先 timeout=2 会偶发超时；`asyncio.wait_for` 超时会取消任务，而
+# `_run_execution` 捕获 CancelledError 后上报 stopped（不重抛），于是
+# wait_for 不抛 TimeoutError 而是正常返回，表现为"结果变成 stopped"的假失败。
+_TASK_TIMEOUT = 10.0
 
 
 class FakeClient:
@@ -141,7 +149,7 @@ async def test_start_test_runs_in_background_task():
     assert 1 in app.runtimes
     runtime = app.runtimes[1]
     assert runtime.cancel_event is not None
-    await asyncio.wait_for(runtime.task, timeout=2)
+    await asyncio.wait_for(runtime.task, timeout=_TASK_TIMEOUT)
     results = [m for m in app.client.sent if m["type"] == "execution_result"]
     assert results and results[0]["status"] == "passed"
     assert 1 not in app.runtimes  # 完成回调清理
@@ -207,7 +215,7 @@ async def test_start_test_current_screen_mode_attaches_driver(monkeypatch):
         }
     )
 
-    await asyncio.wait_for(app.runtimes[2].task, timeout=2)
+    await asyncio.wait_for(app.runtimes[2].task, timeout=_TASK_TIMEOUT)
 
     assert driver.launched is True
     results = [m for m in app.client.sent if m["type"] == "execution_result"]
@@ -231,7 +239,7 @@ async def test_stop_test_interrupts_blocking_execution():
     await asyncio.sleep(0.05)
     await app.on_message({"type": "stop_test", "execution_id": 7})
 
-    await asyncio.wait_for(app.runtimes[7].task, timeout=2)
+    await asyncio.wait_for(app.runtimes[7].task, timeout=_TASK_TIMEOUT)
     results = [m for m in app.client.sent if m["type"] == "execution_result"]
     assert results and results[0]["status"] == "stopped"
     assert 7 not in app.runtimes
@@ -253,7 +261,78 @@ async def test_duplicate_start_test_ignored():
     task = app.runtimes[9].task
     await app.on_message(msg)  # 重复消息
     assert app.runtimes[9].task is task  # 未创建新任务
-    await asyncio.wait_for(task, timeout=2)
+    await asyncio.wait_for(task, timeout=_TASK_TIMEOUT)
+
+
+def _start_test_msg(execution_id: int) -> dict:
+    return {
+        "type": "start_test",
+        "execution_id": execution_id,
+        "session_token": f"t-{execution_id}",
+        "parameters": {},
+        "device": {"udid": f"u-{execution_id}", "platform": "android"},
+        "suites": _sleep_suite(0.01),
+    }
+
+
+async def test_start_test_for_finished_execution_never_reruns():
+    """已完成的执行收到重投 start_test 时绝不重跑（真机副作用不可回滚）。"""
+    app = AgentApp({"driver": "mock"})
+    app.client = FakeClient()
+    msg = _start_test_msg(42)
+
+    await app.on_message(msg)
+    await asyncio.wait_for(app.runtimes[42].task, timeout=_TASK_TIMEOUT)
+    first_round = [m for m in app.client.sent if m["type"] == "execution_result"]
+    assert len(first_round) == 1 and first_round[0]["status"] == "passed"
+
+    # 服务端已确认 → 再收到 start_test 必须什么都不做
+    await app.on_message(
+        {"type": "execution_result_ack", "execution_id": 42, "session_token": "t-42"}
+    )
+    app.client.sent.clear()
+    await app.on_message(msg)
+
+    assert 42 not in app.runtimes, "不得为已完成执行创建新 runtime"
+    assert app.client.sent == [], "已完成且已确认的执行不得再产生任何上报"
+
+
+async def test_start_test_for_finished_unacked_execution_resends_result():
+    """终态尚未确认时重投：重投终态，而不是重新执行。"""
+    app = AgentApp({"driver": "mock"})
+    app.client = FakeClient()
+    msg = _start_test_msg(43)
+
+    await app.on_message(msg)
+    await asyncio.wait_for(app.runtimes[43].task, timeout=_TASK_TIMEOUT)
+
+    app.client.sent.clear()
+    await app.on_message(msg)  # 未收到 ack
+
+    assert 43 not in app.runtimes, "不得重跑"
+    resent = [m for m in app.client.sent if m["type"] == "execution_result"]
+    assert len(resent) == 1, "应当重投终态，保证服务端能拿到结果"
+    assert resent[0]["status"] == "passed"
+
+
+async def test_finished_execution_memory_is_bounded():
+    """已完成记忆必须有界，避免长时间运行内存无界增长。"""
+    app = AgentApp({"driver": "mock"})
+    for execution_id in range(_FINISHED_EXECUTION_MEMORY + 10):
+        app._remember_finished_execution(execution_id)
+
+    assert len(app._finished_executions) == _FINISHED_EXECUTION_MEMORY
+    assert len(app._finished_execution_ids) == _FINISHED_EXECUTION_MEMORY
+    # 最早的条目被淘汰，最新一条保留（两个结构不能失配）
+    assert 0 not in app._finished_execution_ids
+    assert _FINISHED_EXECUTION_MEMORY + 9 in app._finished_execution_ids
+
+
+async def test_finished_execution_memory_dedupes_repeated_marks():
+    app = AgentApp({"driver": "mock"})
+    app._remember_finished_execution(7)
+    app._remember_finished_execution(7)
+    assert list(app._finished_executions) == [7]
 
 
 @pytest.mark.parametrize(
@@ -561,7 +640,7 @@ async def test_start_test_matching_protocol_version_runs():
         }
     )
     assert 32 in app.runtimes
-    await asyncio.wait_for(app.runtimes[32].task, timeout=2)
+    await asyncio.wait_for(app.runtimes[32].task, timeout=_TASK_TIMEOUT)
 
 
 # ---------- Step 7.1：_run_execution 套件结果一次聚合（与顺序无关） ----------
@@ -621,7 +700,7 @@ async def test_run_execution_aggregates_suite_statuses_order_invariant(monkeypat
             "suites": _multi_suites(),
         }
     )
-    await asyncio.wait_for(app.runtimes[41].task, timeout=2)
+    await asyncio.wait_for(app.runtimes[41].task, timeout=_TASK_TIMEOUT)
     results = [m for m in app.client.sent if m["type"] == "execution_result"]
     assert results and results[0]["status"] == "error"
 
@@ -653,7 +732,7 @@ async def test_run_execution_aggregates_failed_over_stopped(monkeypatch, suite_r
             "suites": _multi_suites(),
         }
     )
-    await asyncio.wait_for(app.runtimes[42].task, timeout=2)
+    await asyncio.wait_for(app.runtimes[42].task, timeout=_TASK_TIMEOUT)
     results = [m for m in app.client.sent if m["type"] == "execution_result"]
     assert results and results[0]["status"] == expected
 
@@ -678,6 +757,6 @@ async def test_run_execution_all_suites_skipped_maps_to_passed(monkeypatch):
             "suites": _multi_suites(),
         }
     )
-    await asyncio.wait_for(app.runtimes[43].task, timeout=2)
+    await asyncio.wait_for(app.runtimes[43].task, timeout=_TASK_TIMEOUT)
     results = [m for m in app.client.sent if m["type"] == "execution_result"]
     assert results and results[0]["status"] == "passed"

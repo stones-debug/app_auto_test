@@ -19,6 +19,9 @@ _SENSITIVE_MARKERS = (
     "credential",
     "jwt",
     "private_key",
+    # 注册负载里的 agent_key 实际是机器 PSK（main.py build_agent_app 的 key_provider
+    # → bindings.machine_psk()），必须与 machine_psk 同等脱敏，否则会以明文落盘。
+    "agent_key",
 )
 _MAX_TEXT_LENGTH = 16 * 1024
 

@@ -6,6 +6,7 @@ import logging.handlers
 import sys
 import tempfile
 import threading
+from collections import deque
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -27,6 +28,10 @@ from version import __version__
 from ws_client import AgentWSClient, AuthError
 
 logger = logging.getLogger("agent.main")
+
+# 已完成执行的记忆条数上限（FIFO 淘汰）。取值只需覆盖"网关重投 start_test"的
+# 时间窗；真机副作用不可回滚，所以宁可多记一些也不能重跑。
+_FINISHED_EXECUTION_MEMORY = 500
 
 
 def load_config(path: str) -> dict:
@@ -132,6 +137,19 @@ class AgentApp:
         # Agent 重连后重放，避免终态恰好落在服务端重启窗口而永久丢失。
         self._pending_execution_results: dict[int, ExecutionResultMessage] = {}
         self._result_replay_task: asyncio.Task | None = None
+        # 已产出终态的执行（含已被服务端确认的）。重投的 start_test 绝不能让
+        # 已完成的执行在真机上再跑一遍——click/input/set_checked 的副作用不可回滚。
+        # 有界保留最近若干条，避免长时间运行内存无界增长。
+        self._finished_executions: deque[int] = deque()
+        self._finished_execution_ids: set[int] = set()
+
+    def _remember_finished_execution(self, execution_id: int) -> None:
+        if execution_id in self._finished_execution_ids:
+            return
+        if len(self._finished_executions) >= _FINISHED_EXECUTION_MEMORY:
+            self._finished_execution_ids.discard(self._finished_executions.popleft())
+        self._finished_executions.append(execution_id)
+        self._finished_execution_ids.add(execution_id)
 
     async def update_server_url(self, server_url: str) -> None:
         """切换桌面端修改的服务器地址，并让现有连接尽快重连。"""
@@ -176,20 +194,24 @@ class AgentApp:
         except Exception as exc:
             logger.warning("Agent 重连状态同步失败，将在下次重连重试: %s", exc)
 
-    async def _replay_pending_execution_results(self) -> None:
+    async def _resend_execution_result(self, payload: ExecutionResultMessage) -> bool:
+        """重投一条待确认终态；返回是否送达。"""
         if self.client is None:
-            return
+            return False
+        try:
+            await self.client.send(payload)
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "execution=%s 待确认终态重投失败: %s", payload["execution_id"], exc
+            )
+            return False
+
+    async def _replay_pending_execution_results(self) -> None:
         for payload in list(self._pending_execution_results.values()):
-            try:
-                await self.client.send(payload)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning(
-                    "execution=%s 待确认终态重放失败: %s",
-                    payload["execution_id"],
-                    exc,
-                )
+            if not await self._resend_execution_result(payload):
                 return
 
     async def stop_device_reporting(self) -> None:
@@ -234,6 +256,8 @@ class AgentApp:
         if error_message:
             payload["error_message"] = error_message
         self._pending_execution_results[execution_id] = payload
+        # 产出终态即登记"已完成"：此后任何 start_test 都不得重跑该执行。
+        self._remember_finished_execution(execution_id)
         if self.client is None:
             logger.warning("WS 未连接，execution=%s 结果已等待重连上报: %s", execution_id, status)
             return
@@ -425,6 +449,14 @@ class AgentApp:
             if execution_id in self.runtimes:
                 # CR-06：重复 start_test 保持原任务，不得覆盖 runtime
                 logger.warning("execution=%s 已在执行中，忽略重复 start_test", execution_id)
+                return
+            if execution_id in self._finished_execution_ids:
+                # 已完成：绝不重跑（真机副作用不可回滚）。若终态尚未被服务端确认，
+                # 顺手重投一次，保证对端也能看到结果——比重新执行安全得多。
+                logger.warning("execution=%s 已完成，忽略重复 start_test", execution_id)
+                pending = self._pending_execution_results.get(execution_id)
+                if pending is not None:
+                    await self._resend_execution_result(pending)
                 return
             runtime = ExecutionRuntime(
                 execution_id=execution_id,

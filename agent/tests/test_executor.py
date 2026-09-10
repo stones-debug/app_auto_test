@@ -4154,3 +4154,30 @@ def test_aggregate_statuses_partial_permutations(statuses, expected):
 
     for perm in itertools.permutations(statuses):
         assert aggregate_statuses(list(perm)) == expected
+
+
+def test_mock_driver_input_without_clear_appends_like_appium():
+    """G-9：MockDriver 必须与 AppiumDriver 的 clear_first 语义一致。
+
+    AppiumDriver 在 clear_first=False 时走 `element.send_keys(value)`，是**追加**；
+    而 mock 此前无条件下标覆盖，会让"清空失败导致旧值残留、文本拼接"这类
+    真实设备问题在本地联调中被掩盖。
+    """
+    driver = MockDriver()
+    element = MockElement("username")
+
+    driver.input(element, "admin", clear_first=True)
+    assert driver.state["username"] == "admin"
+
+    driver.input(element, "-extra", clear_first=False)
+    assert driver.state["username"] == "admin-extra", "clear_first=False 必须是追加"
+
+    driver.input(element, "reset", clear_first=True)
+    assert driver.state["username"] == "reset", "clear_first=True 必须整体替换"
+
+
+def test_mock_driver_input_append_starts_from_empty_state():
+    """首次就是追加输入时，不应当凭空出现元素自带文本。"""
+    driver = MockDriver()
+    driver.input(MockElement("username", {"text": "placeholder"}), "abc", clear_first=False)
+    assert driver.state["username"] == "abc"

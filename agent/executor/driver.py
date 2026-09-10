@@ -356,7 +356,14 @@ class MockDriver(BaseDriver):
 
     def input(self, element, value: str, clear_first: bool = True) -> None:
         self._assert_fresh(element)
-        self.state[element.locator_value] = value
+        if clear_first:
+            self.state[element.locator_value] = value
+        else:
+            # 与 AppiumDriver 对齐：clear_first=False 时 send_keys 是"追加"而不是覆盖。
+            # 这个差异是"输入前清空失败导致旧值残留"类缺陷的复现基础，mock 必须同语义，
+            # 否则本地联调会掩盖真实设备上的拼接问题。
+            current = self.state.get(element.locator_value, "")
+            self.state[element.locator_value] = current + value
 
     def clear(self, element) -> None:
         self._assert_fresh(element)
