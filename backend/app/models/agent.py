@@ -18,6 +18,11 @@ from app.models.base import TimestampMixin
 
 class Agent(Base, TimestampMixin):
     __tablename__ = "agents"
+    __table_args__ = (
+        # agent_heartbeat_scan 过滤 status='online' AND deleted_at IS NULL
+        # AND last_heartbeat < 阈值，缺复合索引会全表扫描（60s 一次）。
+        Index("idx_agents_status_heartbeat", "status", "last_heartbeat"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     agent_key: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)  # PSK

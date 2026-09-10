@@ -114,6 +114,60 @@ def _merge_terminal_status(agent_status: str, stored_status: str | None) -> str:
     return agent_normalized
 
 
+# 步骤/节点状态严重度：与 execution_summary._STATUS_PRIORITY 同口径
+_STEP_STATUS_SEVERITY = ("error", "failed", "stopped", "skipped", "passed")
+
+
+def _merge_step_status(current: str | None, incoming: str | None) -> str:
+    """合并步骤/节点状态：已终态不被晚到或重投的消息回退。
+
+    与 :func:`merge_runtime_status` 的区别：后者面向父节点聚合（``running``
+    优先于 ``passed``，避免兄弟节点未跑完就定稿），而步骤/节点是叶子节点，
+    收到终态就应当生效；这里只保证「终态不回退」。
+
+    此前 step/node 直接 ``payload["status"]`` 赋值，缺少 case/suite 级
+    :func:`_merge_terminal_status` 同款保护 —— 网络重投一条更优状态即可把
+    已落库的 ``failed`` 翻成 ``passed``（V1.1 §10.14.6 晚到消息规则）。
+    """
+    current_norm = str(current or "").strip().lower()
+    incoming_norm = str(incoming or "").strip().lower()
+    if not incoming_norm:
+        return current_norm
+    if incoming_norm not in TERMINAL_STATES:
+        # 非终态：已终态的步骤/节点保持终态，不被 running/pending 回退
+        return current_norm if current_norm in TERMINAL_STATES else incoming_norm
+    if current_norm not in TERMINAL_STATES:
+        return incoming_norm
+    # 双方均终态：取更严重者（cancelled 与 stopped 同属中断终态）
+    left = "stopped" if current_norm == "cancelled" else current_norm
+    right = "stopped" if incoming_norm == "cancelled" else incoming_norm
+    for state in _STEP_STATUS_SEVERITY:
+        if state in (left, right):
+            return state
+    return right
+
+
+def _fill_if_present(target: object, field: str, value: object) -> None:
+    """仅在 payload 明确提供该字段时覆盖。
+
+    重投/补报的 step_result、node_result 通常不带截图与错误信息，直接赋值会把
+    首次上报已固化的失败现场（截图、错误信息、实际值）清成 None，
+    等于抹掉「执行失败自动截图」的证据。
+    """
+    if value is not None:
+        setattr(target, field, value)
+
+
+# Agent 对断言的 pass/fail 与 passed/failed 两种写法都存在，比较严重度时统一
+_ASSERTION_STATUS_ALIASES = {"pass": "passed", "fail": "failed"}
+
+
+def _assertion_status_key(status: object) -> str:
+    """把断言状态归一到 passed/failed 口径，仅用于比较，不改变落库写法。"""
+    raw = str(status or "").strip().lower()
+    return _ASSERTION_STATUS_ALIASES.get(raw, raw)
+
+
 async def _upsert_assertion(
     db: AsyncSession, execution_step_id: int, assertion_order: int, data: dict
 ) -> bool:
@@ -132,7 +186,12 @@ async def _upsert_assertion(
     if actual is not None:
         existing.actual_value = str(actual)
     if data.get("status"):
-        existing.status = str(data["status"])
+        incoming = str(data["status"])
+        # 与步骤/节点同口径：已终态的断言不被晚到/重投消息回退。
+        # 落库仍保留 Agent 的原始写法（pass/fail 与 passed/failed 并存），
+        # 只在比较严重度时归一，避免改动既有状态的取值口径。
+        if _merge_step_status(_assertion_status_key(existing.status), _assertion_status_key(incoming)) == _assertion_status_key(incoming):
+            existing.status = incoming
     if data.get("error_message") is not None:
         existing.error_message = data["error_message"]
     return True
@@ -386,12 +445,15 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
 
     if not step.parameters and snapshot_parameters:
         step.parameters = dict(snapshot_parameters)
-    step.status = payload.get("status") or step.status
-    step.finished_at = now
-    step.duration = payload.get("duration")
-    step.actual_value = payload.get("actual_value")
-    step.error_message = payload.get("error_message")
-    step.screenshot_path = screenshot_path
+    # 终态不回退 + 现场只在明确提供时覆盖（重投不得清空已落库的失败证据）
+    step.status = _merge_step_status(step.status, payload.get("status"))
+    if step.status in TERMINAL_STATES and step.finished_at is None:
+        step.finished_at = now
+    _fill_if_present(step, "duration", payload.get("duration"))
+    _fill_if_present(step, "actual_value", payload.get("actual_value"))
+    _fill_if_present(step, "error_message", payload.get("error_message"))
+    if screenshot_path is not None:
+        step.screenshot_path = screenshot_path
     await db.flush()
 
     if parent_case is not None:
@@ -498,17 +560,20 @@ async def handle_node_result(db: AsyncSession, agent_id: int, payload: dict) -> 
     if node is None:
         return
     now = datetime.now(UTC)
-    node.status = str(payload.get("status") or "error").lower()
-    node.finished_at = now
-    node.duration = payload.get("duration")
-    node.actual_value = payload.get("actual_value")
+    # 无 status 时保持 fail-closed（按 error 处理），但已终态的节点不被回退
+    node.status = _merge_step_status(node.status, payload.get("status") or "error")
+    if node.status in TERMINAL_STATES and node.finished_at is None:
+        node.finished_at = now
+    _fill_if_present(node, "duration", payload.get("duration"))
+    _fill_if_present(node, "actual_value", payload.get("actual_value"))
     node.expected_value = payload.get("expected_value") or node.expected_value
-    node.error_message = payload.get("error_message")
+    _fill_if_present(node, "error_message", payload.get("error_message"))
     attempt_count = payload.get("attempt_count")
     if isinstance(attempt_count, int):
         node.attempt_count = attempt_count
     screenshot_path = payload.get("screenshot_path")
-    node.screenshot_path = screenshot_path if validate_object_key(execution_id, screenshot_path) else None
+    if validate_object_key(execution_id, screenshot_path):
+        node.screenshot_path = screenshot_path
     if case is not None:
         if case.started_at is None:
             case.started_at = node.started_at or now

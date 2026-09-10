@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import pytest
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
@@ -29,8 +29,13 @@ from app.models import (
 from app.repositories.executions import parse_artifact_reference
 from app.services import worker_service, ws_ingest_service
 from app.ws import handlers
-from app.ws.managers import AgentConnectionManager, agent_manager, execution_manager
-from app.ws.routes import agent_ws
+from app.ws.managers import (
+    AgentConnectionManager,
+    agent_manager,
+    execution_manager,
+    profile_config_manager,
+)
+from app.ws.routes import agent_ws, config_ws, execution_ws
 from tests.helpers import create_bound_agent_device
 
 REG = {"username": "pytest_ws_user", "email": "ws@tl-tek.com", "password": "test123"}
@@ -472,6 +477,151 @@ async def test_step_result_rejects_unsafe_screenshot_path(client: AsyncClient):
             select(ExecutionStep).where(ExecutionStep.execution_case_id == ec.id)
         )).scalar_one()
         assert step.screenshot_path is None
+
+
+async def test_step_result_replay_cannot_downgrade_or_wipe_evidence(client: AsyncClient):
+    """重投的 step_result 既不能回退终态，也不能清空已固化的失败现场。
+
+    Agent 的 ACK 丢失后会重连重放，重放消息通常不带截图/错误信息；
+    旧实现用 `step.status = payload["status"]` 无条件赋值，会把已落库的
+    failed 翻成 passed，并把截图、错误信息、实际值一并清成 None ——
+    等于抹掉「执行失败自动截图」的证据（Review C-1）。
+    """
+    token, case_id, execution_id = await _setup_case_execution(client)
+
+    async with SessionLocal() as db:
+        agent_id = await _create_agent()
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        await _bind_execution_to_agent(db, execution_id, agent_id)
+        execution_case, execution_steps, _assertions = await _snapshot_ids(db, execution_id)
+        execution_step = execution_steps[0]
+        execution = await db.get(Execution, execution_id)
+        execution.started_at = datetime.now(UTC)
+        await db.commit()
+
+    screenshot_key = f"execution_{execution_id}/screenshots/failure.png"
+    first_report = {
+        "execution_id": execution_id,
+        "session_token": "sess-token",
+        "execution_case_id": execution_case.id,
+        "execution_step_id": execution_step.id,
+        "step_order": 1,
+        "action": "click",
+        "status": "failed",
+        "duration": 321,
+        "actual_value": "按钮不可见",
+        "error_message": "元素定位超时",
+        "screenshot_path": screenshot_key,
+    }
+
+    async with SessionLocal() as db:
+        await handlers.handle_step_result(db, agent_id, first_report)
+        step = await db.get(ExecutionStep, execution_step.id)
+        assert step.status == "failed"
+        assert step.screenshot_path == screenshot_key
+        finished_at = step.finished_at
+        assert finished_at is not None
+
+        # 重放：状态「更优」且完全不带现场信息
+        await handlers.handle_step_result(
+            db,
+            agent_id,
+            {
+                "execution_id": execution_id,
+                "session_token": "sess-token",
+                "execution_case_id": execution_case.id,
+                "execution_step_id": execution_step.id,
+                "step_order": 1,
+                "action": "click",
+                "status": "passed",
+            },
+        )
+        step = await db.get(ExecutionStep, execution_step.id)
+        assert step.status == "failed", "终态不得被重投消息回退"
+        assert step.screenshot_path == screenshot_key, "失败截图不得被重投消息清空"
+        assert step.error_message == "元素定位超时"
+        assert step.actual_value == "按钮不可见"
+        assert step.duration == 321
+        assert step.finished_at == finished_at, "完成时间不得被重投消息改写"
+
+        # 更严重的状态仍然接受（error 高于 failed）
+        await handlers.handle_step_result(
+            db,
+            agent_id,
+            {**first_report, "status": "error", "screenshot_path": None, "error_message": None},
+        )
+        step = await db.get(ExecutionStep, execution_step.id)
+        assert step.status == "error"
+        assert step.screenshot_path == screenshot_key
+        assert step.error_message == "元素定位超时"
+        await db.rollback()
+
+
+async def test_node_result_replay_cannot_downgrade_or_wipe_evidence(client: AsyncClient):
+    """节点级与步骤级同款保护：终态不回退、现场不被清空。"""
+    token, case_id, execution_id = await _setup_case_execution(client)
+
+    async with SessionLocal() as db:
+        agent_id = await _create_agent()
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        execution_case = (
+            await db.execute(
+                select(ExecutionCase).where(ExecutionCase.execution_id == execution_id)
+            )
+        ).scalar_one()
+        nodes = list(
+            (
+                await db.execute(
+                    select(ExecutionNode)
+                    .where(ExecutionNode.execution_case_id == execution_case.id)
+                    .order_by(ExecutionNode.node_order)
+                )
+            ).scalars()
+        )
+        assert nodes
+        node = nodes[0]
+        await _bind_execution_to_agent(db, execution_id, agent_id)
+
+        base = {
+            "execution_id": execution_id,
+            "session_token": "sess-token",
+            "execution_case_id": execution_case.id,
+            "execution_node_id": node.id,
+        }
+        screenshot_key = f"execution_{execution_id}/screenshots/node-failure.png"
+        await handlers.handle_node_result(
+            db,
+            agent_id,
+            {
+                **base,
+                "status": "failed",
+                "duration": 88,
+                "actual_value": "未勾选",
+                "error_message": "断言失败",
+                "screenshot_path": screenshot_key,
+            },
+        )
+        assert node.status == "failed"
+        assert node.screenshot_path == screenshot_key
+
+        # 重放：不带现场、状态更优
+        await handlers.handle_node_result(db, agent_id, {**base, "status": "passed"})
+        assert node.status == "failed"
+        assert node.screenshot_path == screenshot_key
+        assert node.error_message == "断言失败"
+        assert node.actual_value == "未勾选"
+        assert node.duration == 88
+
+        # 无 status 的畸形上报保持 fail-closed（归为 error，比 failed 更严重），
+        # 但同样不得回退为 passed/skipped 这类"更优"状态
+        await handlers.handle_node_result(db, agent_id, dict(base))
+        assert node.status == "error"
+        assert node.screenshot_path == screenshot_key
+        assert node.error_message == "断言失败"
+        assert node.actual_value == "未勾选"
+        await db.rollback()
 
 
 async def test_cross_agent_cannot_submit_other_execution(client: AsyncClient):
@@ -1284,8 +1434,8 @@ async def test_agent_manager_connect_is_idempotent_for_same_socket():
     """同一 socket 重复 connect 视为幂等：不得把自己关掉再保存已关闭的 socket。"""
     manager = AgentConnectionManager()
     ws = _FakeAgentWS([])
-    await manager.connect(23, cast(WebSocket, ws))
-    await manager.connect(23, cast(WebSocket, ws))
+    await manager.connect(23, ws)
+    await manager.connect(23, ws)
     assert ws.closed is None
     assert manager.is_online(23)
 
@@ -1295,13 +1445,13 @@ async def test_agent_manager_connect_replaces_mapping_before_closing_old():
     manager = AgentConnectionManager()
     old = _FakeAgentWS([])
     new = _FakeAgentWS([])
-    await manager.connect(24, cast(WebSocket, old))
-    await manager.connect(24, cast(WebSocket, new))
+    await manager.connect(24, old)
+    await manager.connect(24, new)
 
     assert old.closed == (4001, "新连接替换旧连接")
     assert new.closed is None
     # 旧连接 finally 触发的 disconnect 因映射已替换而不生效
-    assert await manager.disconnect(24, cast(WebSocket, old)) is False
+    assert await manager.disconnect(24, old) is False
     assert manager.is_online(24)
     assert await manager.send(24, {"type": "start_test", "execution_id": 6}) is True
     assert new.sent == [{"type": "start_test", "execution_id": 6}]
@@ -1328,8 +1478,8 @@ async def test_agent_manager_reconnect_race_does_not_report_removed():
 
     old: _ReconnectingWS = _ReconnectingWS()
     new = _FakeAgentWS([])
-    await manager.connect(26, cast(WebSocket, old))
-    await manager.connect(26, cast(WebSocket, new))
+    await manager.connect(26, old)
+    await manager.connect(26, new)
 
     assert old.closed == (4001, "新连接替换旧连接")
     assert old.removed is False
@@ -1597,3 +1747,281 @@ async def test_suite_status_late_running_does_not_revert_terminal(client: AsyncC
     async with SessionLocal() as db:
         suite = await db.get(ExecutionSuite, suite.id)
         assert suite.status == "stopped"
+
+
+# ---------- 前端 WS 路由（execution / config）----------
+# 这两条路由是前端实时通道的鉴权边界，此前完全没有路由级测试：
+# 一旦 token 类型判断或可见性判定回归，没有任何用例会失败。
+
+
+class FakeFrontendWS:
+    """execution_ws / config_ws 的最小替身。
+
+    与 agent_ws 不同，这两条路由用 `query_params` 取 token；帧走 `receive()`，
+    鉴权失败时先 close 再 return，所以 close 必须可调用。帧耗尽后抛
+    WebSocketDisconnect，用来模拟前端断开。
+
+    frames 里的 dict 会被序列化成 JSON 文本帧；str 原样作为文本帧发出，
+    用于构造畸形帧。因为路由改走 `receive()` 以统一畸形帧兜底，这里也必须
+    提供 `receive()` 而非 `receive_json()`。
+    """
+
+    def __init__(self, frames: list[dict | str] | None = None, token: str | None = None) -> None:
+        self.sent: list[dict] = []
+        self.closed: tuple[int, str] | None = None
+        self.accepted = False
+        self.query_params: dict[str, str] = {} if token is None else {"token": token}
+        self._frames: list[dict] = [
+            {"type": "websocket.receive", "text": frame if isinstance(frame, str) else json.dumps(frame)}
+            for frame in (frames or [])
+        ]
+
+    async def accept(self) -> None:
+        self.accepted = True
+
+    async def close(self, code: int = 1000, reason: str = "") -> None:
+        self.closed = (code, reason)
+
+    async def send_json(self, data: dict) -> None:
+        self.sent.append(data)
+
+    async def receive(self) -> dict:
+        if not self._frames:
+            raise WebSocketDisconnect(1000)
+        return self._frames.pop(0)
+
+
+async def _project_id_of_execution(execution_id: int) -> int:
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution is not None
+        return execution.project_id
+
+
+async def _register_and_login(client: AsyncClient, username: str) -> str:
+    """注册并登录一个额外的 pytest_ 用户，返回 access_token（不建项目）。"""
+    payload = {"username": username, "email": f"{username}@tl-tek.com", "password": "test123"}
+    await client.post("/api/auth/register", json=payload)
+    login = await client.post("/api/auth/login", json={"username": username, "password": "test123"})
+    assert login.status_code == 200, login.text
+    return login.json()["access_token"]
+
+
+async def test_execution_ws_rejects_invalid_token_before_accepting(client: AsyncClient):
+    """鉴权边界：无 token / 空 token / 非法 token 一律 1008，且不得 accept 或进广播组。"""
+    _token, _case_id, execution_id = await _setup_case_execution(client)
+
+    for candidate in (None, "", "not-a-jwt"):
+        ws = FakeFrontendWS(token=candidate)
+        await execution_ws(cast(WebSocket, ws), execution_id)
+        assert ws.accepted is False, f"token={candidate!r} 时不应 accept"
+        assert ws.closed == (1008, "认证失败或无权访问该执行")
+        assert ws.sent == []
+        # 未授权连接绝不能进入广播组
+        await execution_manager.broadcast(execution_id, {"type": "log"})
+        assert ws.sent == []
+
+
+async def test_execution_ws_denies_non_member_then_allows_public_project(client: AsyncClient):
+    """私有项目：非成员被拒；改为 public 后放行（可见性分支必须有覆盖）。"""
+    token_owner, _case_id, execution_id = await _setup_case_execution(client)
+    project_id = await _project_id_of_execution(execution_id)
+    token_other = await _register_and_login(client, "pytest_ws_other")
+
+    denied = FakeFrontendWS(token=token_other)
+    await execution_ws(cast(WebSocket, denied), execution_id)
+    assert denied.accepted is False
+    assert denied.closed == (1008, "认证失败或无权访问该执行")
+
+    updated = await client.put(
+        f"/api/projects/{project_id}",
+        headers={"Authorization": f"Bearer {token_owner}"},
+        json={"visibility": "public"},
+    )
+    assert updated.status_code == 200, updated.text
+
+    allowed = FakeFrontendWS(frames=[{"type": "close"}], token=token_other)
+    await execution_ws(cast(WebSocket, allowed), execution_id)
+    assert allowed.accepted is True
+    assert allowed.closed is None
+    assert allowed.sent[0]["type"] == "status"
+    assert allowed.sent[0]["execution_id"] == execution_id
+
+
+async def test_execution_ws_happy_path_ping_pong_and_unregister(client: AsyncClient):
+    """属主连接：首帧 status、ping→pong、收到 close 后必须注销出广播组。"""
+    token, _case_id, execution_id = await _setup_case_execution(client)
+
+    ws = FakeFrontendWS(frames=[{"type": "ping"}, {"type": "close"}], token=token)
+    await execution_ws(cast(WebSocket, ws), execution_id)
+
+    assert ws.accepted is True
+    assert [frame["type"] for frame in ws.sent] == ["status", "pong"]
+    # 路由返回即已断开：后续广播不得再触达这条连接
+    await execution_manager.broadcast(execution_id, {"type": "log", "message": "after-close"})
+    assert [frame["type"] for frame in ws.sent] == ["status", "pong"]
+
+
+async def test_execution_ws_receives_broadcast_while_connected(client: AsyncClient):
+    """连接存活期间必须真正注册进广播组（只断言 accept 无法发现漏注册）。"""
+    token, _case_id, execution_id = await _setup_case_execution(client)
+    entered = asyncio.Event()
+
+    class GatedWS(FakeFrontendWS):
+        async def receive(self) -> dict:
+            entered.set()
+            await asyncio.sleep(0.05)
+            return await super().receive()
+
+    ws = GatedWS(frames=[{"type": "close"}], token=token)
+    task = asyncio.create_task(execution_ws(cast(WebSocket, ws), execution_id))
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    await execution_manager.broadcast(execution_id, {"type": "log", "message": "live"})
+    await task
+
+    assert {"type": "log", "message": "live"} in ws.sent
+
+
+async def test_execution_ws_tolerates_malformed_frames(client: AsyncClient):
+    """畸形帧回 PROTOCOL_ERROR 后继续服务，不得断连（此前与 agent_ws 不对称）。"""
+    token, _case_id, execution_id = await _setup_case_execution(client)
+
+    ws = FakeFrontendWS(
+        frames=[
+            "{不是合法 JSON",
+            '"JSON 但非对象"',
+            {"type": "unknown-op"},
+            {"type": "ping"},
+            {"type": "close"},
+        ],
+        token=token,
+    )
+    await execution_ws(cast(WebSocket, ws), execution_id)
+
+    assert ws.closed is None
+    assert [frame["type"] for frame in ws.sent] == ["status", "error", "error", "pong"]
+    assert all(f["code"] == "PROTOCOL_ERROR" for f in ws.sent if f["type"] == "error")
+
+
+async def test_execution_ws_closes_1009_on_oversized_frame(client: AsyncClient):
+    """超长帧按 1009 关闭（与 Agent 通道共用同一上限）。"""
+    token, _case_id, execution_id = await _setup_case_execution(client)
+
+    huge = json.dumps({"type": "ping", "padding": "x" * (settings.agent_ws_max_frame_bytes + 1)})
+    ws = FakeFrontendWS(frames=[huge], token=token)
+    await execution_ws(cast(WebSocket, ws), execution_id)
+
+    assert ws.closed == (1009, "消息过大")
+    assert [frame["type"] for frame in ws.sent] == ["status"]
+
+
+async def test_config_ws_auth_boundary_and_ping(client: AsyncClient):
+    """档案配置广播路由：同样按 token + 项目可见性鉴权。"""
+    token_owner, _case_id, execution_id = await _setup_case_execution(client)
+    project_id = await _project_id_of_execution(execution_id)
+    token_other = await _register_and_login(client, "pytest_ws_other")
+
+    for candidate in (None, "not-a-jwt"):
+        ws = FakeFrontendWS(token=candidate)
+        await config_ws(cast(WebSocket, ws), project_id)
+        assert ws.accepted is False
+        assert ws.closed == (1008, "认证失败或无权访问该项目")
+
+    denied = FakeFrontendWS(token=token_other)
+    await config_ws(cast(WebSocket, denied), project_id)
+    assert denied.closed == (1008, "认证失败或无权访问该项目")
+
+    await client.put(
+        f"/api/projects/{project_id}",
+        headers={"Authorization": f"Bearer {token_owner}"},
+        json={"visibility": "public"},
+    )
+    allowed = FakeFrontendWS(frames=[{"type": "ping"}, {"type": "close"}], token=token_other)
+    await config_ws(cast(WebSocket, allowed), project_id)
+    assert allowed.accepted is True
+    assert allowed.sent == [{"type": "pong"}]
+    # 断开后必须注销，否则档案变更会持续向死连接推送
+    await profile_config_manager.broadcast(project_id, {"type": "profile_config"})
+    assert allowed.sent == [{"type": "pong"}]
+
+
+async def test_agent_ws_closes_1008_when_version_gate_rejects(client: AsyncClient):
+    """路由级版本门禁：走真实 register_agent（不 monkeypatch），拒绝时 1008。
+
+    `test_security.py::test_register_rejects_old_agent_version` 覆盖的是仓储层
+    返回值；这里补的是 agent_ws 对 `reply is None` 的处理，避免两层之间失联。
+    """
+    agent_id_str = f"pytest_ws_agent_{uuid.uuid4().hex[:6]}"
+    async with SessionLocal() as db:
+        db.add(Agent(agent_key=hash_psk("sk-ws-version"), agent_id=agent_id_str, status="offline"))
+        await db.commit()
+
+    ws = _FakeAgentWS([
+        _text_frame(json.dumps({
+            "type": "register",
+            "agent_id": agent_id_str,
+            "agent_key": "sk-ws-version",
+            "version": "0.0.1",
+        })),
+    ])
+    await agent_ws(cast(WebSocket, ws))
+
+    assert ws.closed == (1008, "Agent 认证失败或版本不受支持")
+    assert ws.sent == []
+
+
+async def test_assertion_result_replay_cannot_flip_terminal_status(client: AsyncClient):
+    """重投的 assertion_result 不得把已落库的失败断言翻成通过。
+
+    此前 `_upsert_assertion` 对 status 无条件覆盖，网络重投一条 pass 就能把
+    fail 翻掉，导致断言明细与真实执行结果不符。
+    """
+    _token, _case_id, execution_id = await _setup_case_execution(client)
+    async with SessionLocal() as db:
+        agent_id = await _create_agent()
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        await _bind_execution_to_agent(db, execution_id, agent_id)
+        _execution_case, execution_steps, execution_assertions = await _snapshot_ids(
+            db, execution_id
+        )
+        step_id = execution_steps[0].id
+        assertion_id = execution_assertions[0].id
+
+    def payload(status: str) -> dict:
+        return {
+            "execution_id": execution_id,
+            "session_token": "sess-token",
+            "execution_step_id": step_id,
+            "assertions": [
+                {
+                    "execution_assertion_id": assertion_id,
+                    "type": "text_equals",
+                    "expected": "admin",
+                    "actual": "guest",
+                    "status": status,
+                }
+            ],
+        }
+
+    async with SessionLocal() as db:
+        # 断言只有 pass/fail 两态（handle_assertion_result 会先归一化）
+        await handlers.handle_assertion_result(db, agent_id, payload("pass"))
+        stored = await db.get(ExecutionAssertion, assertion_id)
+        assert stored is not None and stored.status == "pass"
+
+        # 后续上报失败：允许升级为 fail
+        await handlers.handle_assertion_result(db, agent_id, payload("fail"))
+        stored = await db.get(ExecutionAssertion, assertion_id)
+        assert stored is not None and stored.status == "fail"
+
+        # 重投"通过"：不得把已落库的失败翻回去
+        await handlers.handle_assertion_result(db, agent_id, payload("pass"))
+        stored = await db.get(ExecutionAssertion, assertion_id)
+        assert stored is not None and stored.status == "fail", "失败断言不得被重投翻转"
+
+        # 兼容写法 passed 同样不能翻转 fail
+        await handlers.handle_assertion_result(db, agent_id, payload("passed"))
+        stored = await db.get(ExecutionAssertion, assertion_id)
+        assert stored is not None and stored.status == "fail"
+        await db.rollback()

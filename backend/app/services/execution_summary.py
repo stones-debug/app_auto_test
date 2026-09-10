@@ -64,8 +64,13 @@ def aggregate_statuses(statuses: Iterable[str]) -> str:
 
     Empty input is ``skipped``.  Any status outside the known set fails closed
     to ``error`` instead of silently becoming a successful result.
+
+    ``cancelled`` 不是分层状态，在聚合边界按 ``stopped`` 参与比较
+    （V1.1 §10.14.2）；此前 ``{"cancelled"}`` 会落到兜底的 ``error``。
     """
-    remaining = set(statuses)
+    remaining = {
+        "stopped" if str(value).lower() == "cancelled" else value for value in statuses
+    }
     for state in _STATUS_PRIORITY[:-1]:
         if state in remaining:
             return state
@@ -122,14 +127,15 @@ def merge_case_status(case: CaseStatusInput, terminal_status: str) -> CaseMergeR
     if case.status not in ("pending", "running"):
         return CaseMergeResult(case.status, case.error_message)
 
-    assertion_statuses = {
-        "fail" if status in ("fail", "failed") else status
-        for status in case.assertion_statuses
-    }
-    if "error" in case.step_statuses or "error" in assertion_statuses:
+    def _normalize(statuses: Iterable[str]) -> set[str]:
+        # Agent 断言上报存在 pass/fail 与 passed/failed 两种写法，统一到 fail 口径
+        return {"fail" if status in ("fail", "failed") else status for status in statuses}
+
+    step_statuses = _normalize(case.step_statuses)
+    assertion_statuses = _normalize(case.assertion_statuses)
+    if "error" in step_statuses or "error" in assertion_statuses:
         return CaseMergeResult("error", case.error_message)
-    failed = "failed" in case.step_statuses or "fail" in assertion_statuses
-    if failed:
+    if "fail" in step_statuses or "fail" in assertion_statuses:
         return CaseMergeResult("failed", case.error_message)
     if terminal_status == "passed":
         return CaseMergeResult("passed", case.error_message)

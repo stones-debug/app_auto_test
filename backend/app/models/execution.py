@@ -144,6 +144,9 @@ class ExecutionCase(Base, TimestampMixin):
 
     __tablename__ = "execution_cases"
     __table_args__ = (
+        # 终态汇总、快照重建、清理都按 execution_id 过滤（worker.py 多处直查），
+        # 缺这条索引会在大执行量下退化为序列扫描。
+        Index("idx_exec_cases_execution", "execution_id"),
         Index("idx_exec_cases_suite", "execution_suite_id"),
         UniqueConstraint("execution_suite_id", "case_order", name="uq_execution_cases_suite_order"),
     )
@@ -382,6 +385,14 @@ class ExecutionQueue(Base, TimestampMixin):
             "status",
             "created_at",
             postgresql_where=text("status = 'pending'"),
+        ),
+        # reclaim_stale_claimed 按 status='claimed' 扫描过期认领；
+        # 只有 pending 的 partial 索引会让这条 60s 扫描走全表。
+        Index(
+            "idx_queue_claimed",
+            "status",
+            "claimed_at",
+            postgresql_where=text("status = 'claimed'"),
         ),
         # §5.2：一个执行至多一个队列项；状态机约束
         UniqueConstraint("execution_id", name="uq_execution_queue_execution_id"),

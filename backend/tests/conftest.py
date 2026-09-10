@@ -139,6 +139,20 @@ async def _prepare_test_database():
     yield
 
 
+def _reset_ws_connection_registries() -> None:
+    """清空 WS 全局连接注册表。
+
+    agent_manager / execution_manager / profile_config_manager 都是模块级单例，
+    内存状态不受数据库清理影响：用例若在 disconnect 之前抛异常或被跳过，
+    残留的 fake socket 会泄漏到后续用例，形成难以定位的顺序依赖。
+    """
+    from app.ws.managers import agent_manager, execution_manager, profile_config_manager
+
+    agent_manager.reset()
+    execution_manager.reset()
+    profile_config_manager.reset()
+
+
 @pytest.fixture(autouse=True)
 async def _cleanup_test_data():
     reset_rate_limits()  # CR-21：每个测试前清空限流计数
@@ -311,7 +325,9 @@ async def _cleanup_test_data():
         await session.execute(delete(Device).where(Device.agent_id.in_(test_agent_ids)))
         await session.execute(delete(Agent).where(Agent.agent_id.like("pytest_%")))
         await session.commit()
+    _reset_ws_connection_registries()
     yield
+    _reset_ws_connection_registries()
     from app.core.database import engine
 
     await engine.dispose()

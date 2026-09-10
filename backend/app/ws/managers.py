@@ -1,4 +1,20 @@
+import logging
 from typing import Any, Protocol
+
+logger = logging.getLogger("app.ws")
+
+
+def _is_socket_gone(exc: BaseException) -> bool:
+    """判断发送失败是否表示连接已关闭/不可写。
+
+    连接关闭后再 send 会抛 Starlette 的 ``RuntimeError``（close 已下发）或
+    websockets 的 ``ConnectionClosed*``；这类才应当视为掉线。序列化错误等
+    其它异常说明 socket 本身还活着，把它摘掉会让 Agent 被误判 offline，
+    必须重连才能恢复。
+    """
+    if isinstance(exc, (ConnectionError, OSError, RuntimeError)):
+        return True
+    return exc.__class__.__name__.startswith("ConnectionClosed")
 
 
 class BroadcastSocket(Protocol):
@@ -61,9 +77,15 @@ class AgentConnectionManager:
         try:
             await ws.send_json(message)
             return True
-        except Exception:
-            self._sockets.pop(agent_id, None)
+        except Exception as exc:
+            if _is_socket_gone(exc):
+                self._sockets.pop(agent_id, None)
+            logger.warning("向 agent_id=%s 下发消息失败：%s", agent_id, exc)
             return False
+
+    def reset(self) -> None:
+        """清空连接注册表（进程关闭与测试隔离用）。"""
+        self._sockets.clear()
 
 
 agent_manager = AgentConnectionManager()
@@ -99,6 +121,10 @@ class ExecutionConnectionManager:
         if not group:
             self._groups.pop(execution_id, None)
 
+    def reset(self) -> None:
+        """清空广播分组（进程关闭与测试隔离用）。"""
+        self._groups.clear()
+
 
 execution_manager = ExecutionConnectionManager()
 
@@ -131,6 +157,10 @@ class ProfileConfigConnectionManager:
                 group.discard(ws)
         if not group:
             self._groups.pop(project_id, None)
+
+    def reset(self) -> None:
+        """清空广播分组（进程关闭与测试隔离用）。"""
+        self._groups.clear()
 
 
 profile_config_manager = ProfileConfigConnectionManager()

@@ -17,6 +17,47 @@ from app.ws.managers import agent_manager, execution_manager, profile_config_man
 router = APIRouter(tags=["WebSocket"])
 
 
+async def _read_frontend_frame(websocket: WebSocket) -> dict | None:
+    """读取前端连接的一帧并解析为 JSON 对象。
+
+    返回 None 表示畸形帧（非 JSON / 非对象），由调用方回错误包后继续循环。
+    前端这两条路由此前直接用 `receive_json()`，畸形帧抛出的非
+    `WebSocketDisconnect` 异常会穿透 `except WebSocketDisconnect` 直接断连，
+    与 agent_ws 的健壮性不对称。
+    """
+    message = await websocket.receive()
+    if message.get("type") == "websocket.disconnect":
+        raise WebSocketDisconnect(1000)
+    text = message.get("text")
+    raw = message.get("bytes")
+    frame_size = len(text.encode("utf-8")) if text is not None else len(raw or b"")
+    if frame_size > settings.agent_ws_max_frame_bytes:
+        # 与 Agent 通道共用同一帧上限：前端只发 ping/close 控制帧，
+        # 这里的作用是防止畸形超长帧无上限占用内存，而非业务校验。
+        await websocket.close(code=1009, reason="消息过大")
+        raise WebSocketDisconnect(1009)
+    try:
+        data = json.loads(text if isinstance(text, str) else (raw or b""))
+    except (TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+async def _pump_frontend_messages(websocket: WebSocket) -> None:
+    """前端连接的消息泵：仅处理 ping/close 控制帧，畸形帧回错误包不中断。"""
+    while True:
+        data = await _read_frontend_frame(websocket)
+        if data is None:
+            await websocket.send_json(
+                {"type": "error", "code": "PROTOCOL_ERROR", "message": "消息必须是 JSON 对象"}
+            )
+            continue
+        if data.get("type") == "ping":
+            await websocket.send_json({"type": "pong"})
+        elif data.get("type") == "close":
+            return
+
+
 @router.websocket("/ws/executions/{execution_id}")
 async def execution_ws(websocket: WebSocket, execution_id: int):
     allowed, current_status = await ws_ingest_service.authorize_execution(websocket.query_params.get("token"), execution_id)
@@ -27,12 +68,7 @@ async def execution_ws(websocket: WebSocket, execution_id: int):
     await execution_manager.connect(execution_id, websocket)
     await websocket.send_json({"type": "status", "execution_id": execution_id, "status": current_status, "timestamp": datetime.now(UTC).isoformat()})
     try:
-        while True:
-            data = await websocket.receive_json()
-            if data.get("type") == "ping":
-                await websocket.send_json({"type": "pong"})
-            elif data.get("type") == "close":
-                break
+        await _pump_frontend_messages(websocket)
     except WebSocketDisconnect:
         pass
     finally:
@@ -47,12 +83,7 @@ async def config_ws(websocket: WebSocket, project_id: int):
     await websocket.accept()
     await profile_config_manager.connect(project_id, websocket)
     try:
-        while True:
-            data = await websocket.receive_json()
-            if data.get("type") == "ping":
-                await websocket.send_json({"type": "pong"})
-            elif data.get("type") == "close":
-                break
+        await _pump_frontend_messages(websocket)
     except WebSocketDisconnect:
         pass
     finally:
