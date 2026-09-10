@@ -21,7 +21,6 @@
   .num.passed { color: var(--success); } .num.failed { color: var(--danger); } .num.error { color: var(--warn); }
   .case { background: #fff; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 14px; overflow: hidden; }
   .case-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
-  /* 层层展开：套件/用例默认收起，点击 summary 再展开一层 */
   details.case > summary { list-style: none; cursor: pointer; }
   details.case > summary::-webkit-details-marker { display: none; }
   details.case > summary::before { content: '▸'; color: var(--muted); font-size: 12px; flex-shrink: 0; transition: transform .2s ease; }
@@ -34,10 +33,9 @@
   .badge.passed { background: #dcfce7; color: var(--success); } .badge.failed { background: #fee2e2; color: var(--danger); }
   .badge.error { background: #fef3c7; color: var(--warn); } .badge.skipped { background: #f3f4f6; color: var(--muted); }
   .suite .case { margin-bottom: 10px; }
-  .suite-phase { color: var(--muted); font-size: 12px; font-weight: 600; margin: 10px 0 4px; }
   .case-body { padding: 12px 16px; }
-  .case-body-mount[hidden] { display: none; }
-  .case-body-mount { contain: layout paint; }
+  .case-body-mount[hidden], .suite-body-mount[hidden], .phase-body-mount[hidden] { display: none; }
+  .case-body-mount, .suite-body-mount, .phase-body-mount { contain: layout paint; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
   th { background: var(--bg); color: var(--muted); font-weight: 600; white-space: nowrap; }
@@ -56,103 +54,15 @@
   .log-truncate-note { color: var(--warn); font-size: 13px; margin-bottom: 8px; }
   .error-box { background: #fef2f2; border: 1px solid #fecaca; color: var(--danger); border-radius: 6px; padding: 8px 12px; font-size: 13px; margin: 8px 0; }
   .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+  .pager { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0 14px; color: var(--muted); font-size: 12px; }
+  .pager select, .pager input, .pager button { font: inherit; border: 1px solid var(--border); border-radius: 5px; background: #fff; padding: 4px 7px; color: var(--text); }
+  .pager button { cursor: pointer; }
+  .pager button:disabled { cursor: default; opacity: .5; }
+  .phase-toggle { border: 1px solid var(--border); border-radius: 6px; margin: 8px 0; background: #fff; }
+  .phase-toggle > summary { cursor: pointer; padding: 7px 10px; color: var(--muted); font-size: 12px; }
 </style>
 </head>
 <body>
-{% set phase_labels = {'case_setup': '用例前置', 'case_main': '主体', 'case_teardown': '用例后置', 'suite_setup': '套件前置', 'suite_teardown': '套件后置'} %}
-{% macro render_steps(steps, margin_top=false) -%}
-<table{% if margin_top %} style="margin-top:8px"{% endif %}>
-  <thead><tr><th>#</th><th>阶段</th><th>动作</th><th>参数</th><th>状态</th><th>结果/错误</th><th>截图</th></tr></thead>
-  <tbody>
-  {% for step in steps %}
-    <tr>
-      <td>{{ step.step_order }}</td>
-      <td>{{ phase_labels.get(step.phase, '主体') }}</td>
-      <td>{{ step.action }}</td>
-      <td style="word-break:break-all">{{ step.parameters }}</td>
-      <td class="{{ 'step-ok' if step.status == 'passed' else 'step-fail' }}">{{ step.status }}</td>
-      <td style="word-break:break-all">
-        {%- if step.status == 'passed' and step.actual_value %}{{ step.actual_value }}{% endif -%}
-        {%- if step.error_message %}{{ step.error_message }}{% endif -%}
-      </td>
-      <td>
-        {%- if step.screenshot_base64 -%}
-        <button type="button" class="screenshot-trigger" aria-expanded="false" aria-controls="screenshot-lightbox"><img class="step-screenshot" loading="lazy" decoding="async" src="data:image/png;base64,{{ step.screenshot_base64 }}" alt="截图"></button>
-        {%- elif step.screenshot -%}
-        <span style="color:var(--muted)">{{ step.screenshot }}</span>
-        {%- endif -%}
-      </td>
-    </tr>
-    {% if step.assertions %}
-    <tr><td colspan="9">
-      <table style="margin:4px 0 8px 36px;width:calc(100% - 36px)">
-        <thead><tr><th>#</th><th>步骤后断言</th><th>期望</th><th>实际</th><th>状态</th></tr></thead>
-        <tbody>{% for a in step.assertions %}<tr>
-          <td>{{ a.assertion_order or a.id }}</td><td>{{ a.assertion_type }}</td>
-          <td>{{ a.expected_value }}</td><td>{{ a.actual_value }}</td>
-          <td class="{{ 'step-ok' if a.status in ['pass', 'passed'] else 'step-fail' }}">{{ a.status }}</td>
-        </tr>{% endfor %}</tbody>
-      </table>
-    </td></tr>
-    {% endif %}
-  {% endfor %}
-  </tbody>
-</table>
-{%- endmacro %}
-
-{% macro render_nodes(nodes, margin_top=false) -%}
-<table{% if margin_top %} style="margin-top:8px"{% endif %}>
-  <thead><tr><th>#</th><th>阶段</th><th>类型</th><th>节点</th><th>参数</th><th>状态</th><th>尝试</th><th>耗时</th><th>期望/实际</th><th>错误</th><th>截图</th></tr></thead>
-  <tbody>
-  {% for node in nodes %}
-    <tr>
-      <td>{{ node.node_order }}</td>
-      <td>{{ phase_labels.get(node.phase, '主体') }}</td>
-      <td>{{ '操作' if node.kind == 'action' else '断言' }}</td>
-      <td>{{ node.action if node.kind == 'action' else node.assertion_type }}</td>
-      <td style="word-break:break-all">{{ node.parameters }}</td>
-      <td class="{{ 'step-ok' if node.status == 'passed' else 'step-fail' }}">{{ node.status }}</td>
-      <td>{{ node.attempt_count or 0 }}</td>
-      <td>{{ node.duration if node.duration is not none else '-' }}ms</td>
-      <td style="word-break:break-all">{{ node.expected_value or '' }}{% if node.actual_value %} / {{ node.actual_value }}{% endif %}</td>
-      <td style="word-break:break-all">{{ node.error_message or '' }}</td>
-      <td>{% if node.screenshot_base64 %}<button type="button" class="screenshot-trigger" aria-expanded="false" aria-controls="screenshot-lightbox"><img class="step-screenshot" loading="lazy" decoding="async" src="data:image/png;base64,{{ node.screenshot_base64 }}" alt="截图"></button>{% elif node.screenshot %}{{ node.screenshot }}{% endif %}</td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
-{%- endmacro %}
-
-{% macro render_case(case) -%}
-<details class="case case-item">
-  <summary class="case-head">
-    <span class="case-name">{{ case.case_name }}{% if case.module_name %}<span style="color:var(--muted);font-weight:400;font-size:12px;margin-left:8px">{{ case.module_name }}</span>{% endif %}</span>
-    <span class="badge {{ case.status }}">{{ case.status }}</span>
-  </summary>
-  <template class="case-detail-template"><div class="case-body">
-      {% if case.error_message %}<div class="error-box">{{ case.error_message }}</div>{% endif %}
-      {% if case.nodes %}{{ render_nodes(case.nodes) }}{% elif case.steps %}{{ render_steps(case.steps) }}{% else %}<div class="empty">无步骤</div>{% endif %}
-  </div></template>
-  <div class="case-body-mount" hidden></div>
-</details>
-{%- endmacro %}
-
-{% macro render_suite(suite) -%}
-<details class="case suite" data-suite-detail>
-  <summary class="case-head">
-    <span class="case-name">{{ suite.suite_name }}{% if suite.suite_id %}<span style="color:var(--muted);font-weight:400;font-size:12px;margin-left:8px">#{{ suite.suite_id }}</span>{% endif %}</span>
-    <span class="badge {{ suite.status }}">{{ suite.status }}</span>
-    {% if suite.duration is not none %}<span style="color:var(--muted);font-size:12px">{{ suite.duration }}ms</span>{% endif %}
-  </summary>
-  <div class="case-body">
-    {% if suite.error_message %}<div class="error-box">{{ suite.error_message }}</div>{% endif %}
-    {% if suite.setup_steps %}<div class="suite-phase">套件前置</div>{{ render_steps(suite.setup_steps, true) }}{% endif %}
-    {% for case in suite.cases %}{{ render_case(case) }}{% endfor %}
-    {% if suite.teardown_steps %}<div class="suite-phase">套件后置</div>{{ render_steps(suite.teardown_steps, true) }}{% endif %}
-  </div>
-</details>
-{%- endmacro %}
-
 <div class="container">
   <h1>执行报告 #{{ execution.id }}</h1>
   <div class="meta">
@@ -162,156 +72,80 @@
     {% if execution.retry_of %} ｜ 重试自 #{{ execution.retry_of }}{% endif %}
     {% if execution.app_profile_name %}<br>APP 档案：{{ execution.app_profile_name }} ｜ 发布版本：{{ execution.app_release_version or '—' }} ｜ 档案修订：{{ execution.profile_revision }} ｜ 资产修订：{{ execution.test_asset_revision }}{% endif %}
   </div>
-
-  <div class="summary-title">用例统计</div>
-  <div class="summary">
-    <div class="stat"><div class="num">{{ report.total }}</div><div class="label">用例总数</div></div>
-    <div class="stat"><div class="num passed">{{ report.passed }}</div><div class="label">通过</div></div>
-    <div class="stat"><div class="num failed">{{ report.failed }}</div><div class="label">失败</div></div>
-    <div class="stat"><div class="num error">{{ report.error_count }}</div><div class="label">异常</div></div>
-    <div class="stat"><div class="num">{{ report.success_rate }}%</div><div class="label">成功率</div></div>
-    <div class="stat"><div class="num">{{ report.not_applicable or 0 }}</div><div class="label">不适用</div></div>
+  <div class="summary-title">用例统计</div><div class="summary">
+    <div class="stat"><div class="num">{{ report.total }}</div><div class="label">用例总数</div></div><div class="stat"><div class="num passed">{{ report.passed }}</div><div class="label">通过</div></div><div class="stat"><div class="num failed">{{ report.failed }}</div><div class="label">失败</div></div><div class="stat"><div class="num error">{{ report.error_count }}</div><div class="label">异常</div></div><div class="stat"><div class="num">{{ report.success_rate }}%</div><div class="label">成功率</div></div><div class="stat"><div class="num">{{ report.not_applicable or 0 }}</div><div class="label">不适用</div></div>
   </div>
-
-  <div class="summary-title">套件统计</div>
-  <div class="summary">
-    <div class="stat"><div class="num">{{ report.suite_total }}</div><div class="label">套件总数</div></div>
-    <div class="stat"><div class="num passed">{{ report.suite_passed }}</div><div class="label">套件通过</div></div>
-    <div class="stat"><div class="num failed">{{ report.suite_failed }}</div><div class="label">套件失败</div></div>
-    <div class="stat"><div class="num error">{{ report.suite_error_count }}</div><div class="label">套件异常</div></div>
-    <div class="stat"><div class="num">{{ report.suite_skipped }}</div><div class="label">套件跳过</div></div>
-    <div class="stat"><div class="num">{{ report.suite_success_rate }}%</div><div class="label">套件成功率</div></div>
-    <div class="stat"><div class="num">{{ report.not_applicable_suites or 0 }}</div><div class="label">不适用套件</div></div>
+  <div class="summary-title">套件统计</div><div class="summary">
+    <div class="stat"><div class="num">{{ report.suite_total }}</div><div class="label">套件总数</div></div><div class="stat"><div class="num passed">{{ report.suite_passed }}</div><div class="label">套件通过</div></div><div class="stat"><div class="num failed">{{ report.suite_failed }}</div><div class="label">套件失败</div></div><div class="stat"><div class="num error">{{ report.suite_error_count }}</div><div class="label">套件异常</div></div><div class="stat"><div class="num">{{ report.suite_skipped }}</div><div class="label">套件跳过</div></div><div class="stat"><div class="num">{{ report.suite_success_rate }}%</div><div class="label">套件成功率</div></div><div class="stat"><div class="num">{{ report.not_applicable_suites or 0 }}</div><div class="label">不适用套件</div></div>
   </div>
-
-  <div class="summary-title">步骤统计</div>
-  <div class="summary">
-    <div class="stat"><div class="num">{{ report.step_total }}</div><div class="label">步骤总数</div></div>
-    <div class="stat"><div class="num passed">{{ report.step_passed }}</div><div class="label">步骤通过</div></div>
-    <div class="stat"><div class="num failed">{{ report.step_failed }}</div><div class="label">步骤失败</div></div>
-    <div class="stat"><div class="num error">{{ report.step_error_count }}</div><div class="label">步骤异常</div></div>
-    <div class="stat"><div class="num">{{ report.step_skipped }}</div><div class="label">步骤跳过</div></div>
-    <div class="stat"><div class="num">{{ report.step_success_rate }}%</div><div class="label">步骤成功率</div></div>
+  <div class="summary-title">步骤统计</div><div class="summary">
+    <div class="stat"><div class="num">{{ report.step_total }}</div><div class="label">步骤总数</div></div><div class="stat"><div class="num passed">{{ report.step_passed }}</div><div class="label">步骤通过</div></div><div class="stat"><div class="num failed">{{ report.step_failed }}</div><div class="label">步骤失败</div></div><div class="stat"><div class="num error">{{ report.step_error_count }}</div><div class="label">步骤异常</div></div><div class="stat"><div class="num">{{ report.step_skipped }}</div><div class="label">步骤跳过</div></div><div class="stat"><div class="num">{{ report.step_success_rate }}%</div><div class="label">步骤成功率</div></div>
   </div>
+  <div class="execution-parameters"><div style="font-weight:600">执行参数</div>{% if execution.parameters %}<pre>{{ execution.parameters }}</pre>{% else %}<div class="empty">无执行参数</div>{% endif %}</div>
 
-  <div class="execution-parameters">
-    <div style="font-weight:600">执行参数</div>
-    {% if execution.parameters %}<pre>{{ execution.parameters }}</pre>{% else %}<div class="empty">无执行参数</div>{% endif %}
-  </div>
-
+  <div id="report-tree">
   {% if suites %}
-    {% for suite in suites %}{{ render_suite(suite) }}{% endfor %}
+    {% for suite in suites %}<details class="case suite" data-suite-index="{{ loop.index0 }}"><summary class="case-head"><span class="case-name">{{ suite.suite_name }}{% if suite.suite_id %}<span style="color:var(--muted);font-weight:400;font-size:12px;margin-left:8px">#{{ suite.suite_id }}</span>{% endif %}</span><span class="badge {{ suite.status }}">{{ suite.status }}</span>{% if suite.duration is not none %}<span style="color:var(--muted);font-size:12px">{{ suite.duration }}ms</span>{% endif %}</summary><div class="suite-body-mount" hidden></div></details>{% endfor %}
   {% else %}
-    {% for case in cases %}{{ render_case(case) }}{% endfor %}
-  {% endif %}
-
-  {% if exclusions %}
-  <div class="case">
-    <div class="case-head"><span class="case-name">不适用内容</span></div>
-    <div class="case-body">
-      <table>
-        <thead><tr><th>类型</th><th>路径</th><th>原因</th><th>来源</th></tr></thead>
-        <tbody>
-        {% for item in exclusions %}
-          <tr>
-            <td>{{ item.target_type }}</td>
-            <td>{{ item.path or '—' }}</td>
-            <td>{{ item.reason_code }}{% if item.reason_note %}：{{ item.reason_note }}{% endif %}</td>
-            <td>{{ item.source_type }}</td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
+    <div class="pager" data-pager="root-cases"></div><div id="root-case-list" class="case-list">
+      {% for case in cases[:20] %}<details class="case case-item" data-suite-index="-1" data-case-index="{{ loop.index0 }}"><summary class="case-head"><span class="case-name">{{ case.case_name }}{% if case.module_name %}<span style="color:var(--muted);font-weight:400;font-size:12px;margin-left:8px">{{ case.module_name }}</span>{% endif %}</span><span class="badge {{ case.status }}">{{ case.status }}</span></summary><div class="case-body-mount" hidden></div></details>{% endfor %}
     </div>
-  </div>
   {% endif %}
-
-  <div class="logs">
-    <div style="font-weight:600;margin-bottom:8px">执行日志{% if logs_truncated and logs_total %}（仅展示最后 {{ logs|length }}/{{ logs_total }} 条）{% endif %}</div>
-    {% if logs %}
-      {% if logs_truncated or logs_total is defined %}
-      <div class="log-truncate-note">{% if logs_total is defined and logs|length < logs_total %}日志总量 {{ logs_total }} 条，当前仅展示最后 {{ logs|length }} 条。{% endif %}</div>
-      {% endif %}
-      {% for log in logs %}
-      <div class="log-line"><span class="log-level">{{ log.level }}</span>{{ log.created_at }}<span style="color:var(--muted)"> [{{ log.source }}]</span> {{ log.message }}</div>
-      {% endfor %}
-    {% else %}<div class="empty">暂无日志</div>{% endif %}
   </div>
+
+  {% if exclusions %}<div class="case"><div class="case-head"><span class="case-name">不适用内容</span></div><div class="case-body"><table><thead><tr><th>类型</th><th>路径</th><th>原因</th><th>来源</th></tr></thead><tbody>{% for item in exclusions %}<tr><td>{{ item.target_type }}</td><td>{{ item.path or '—' }}</td><td>{{ item.reason_code }}{% if item.reason_note %}：{{ item.reason_note }}{% endif %}</td><td>{{ item.source_type }}</td></tr>{% endfor %}</tbody></table></div></div>{% endif %}
+  <details class="logs" id="logs-panel"><summary style="font-weight:600;margin-bottom:8px;cursor:pointer">执行日志</summary><div class="logs-body" hidden><div class="log-truncate-note" id="logs-note"></div><div id="logs-list"></div><div class="pager" data-pager="logs"></div></div></details>
 </div>
-<div id="screenshot-lightbox" class="screenshot-lightbox" role="dialog" aria-modal="true" aria-label="截图预览" hidden>
-  <button type="button" class="screenshot-lightbox-close" aria-label="关闭截图预览">×</button>
-  <img alt="截图预览">
-</div>
+<div id="screenshot-lightbox" class="screenshot-lightbox" role="dialog" aria-modal="true" aria-label="截图预览" hidden><button type="button" class="screenshot-lightbox-close" aria-label="关闭截图预览">×</button></div>
+{% if report_index is defined %}
+<script id="report-index" type="application/json">{{ report_index|tojson }}</script>
+{% else %}
+<script id="report-index" type="application/json">{"suites":[],"cases":[],"logs_key":"logs","logs_total":0,"logs_truncated":false}</script>
+{% endif %}
+{% if report_payloads is defined %}{% for key, payload in report_payloads.items() %}<script type="application/json" data-report-payload="{{ key }}">{{ payload|tojson }}</script>{% endfor %}{% endif %}
 <script>
-  (() => {
-    const lazyDetails = document.querySelectorAll('details.case');
-    const mountDetails = (details) => {
-      if (!details || details.dataset.mounted === 'true') return;
-      const template = details.querySelector(':scope > template.case-detail-template');
-      const mount = details.querySelector(':scope > .case-body-mount');
-      if (!template || !mount) return;
-      mount.appendChild(template.content.cloneNode(true));
-      mount.hidden = false;
-      template.remove();
-      details.dataset.mounted = 'true';
-      mount.querySelectorAll('details.case').forEach(bindDetail);
-    };
-    const bindDetail = (details) => {
-      if (details.dataset.toggleBound === 'true') return;
-      details.addEventListener('toggle', () => {
-        if (details.open) mountDetails(details);
-      });
-      details.dataset.toggleBound = 'true';
-    };
-    lazyDetails.forEach(bindDetail);
-
-    const lightbox = document.getElementById('screenshot-lightbox');
-    const lightboxImage = lightbox?.querySelector('img');
-    const closeButton = lightbox?.querySelector('.screenshot-lightbox-close');
-    if (!lightbox || !lightboxImage || !closeButton) return;
-    let activeTrigger = null;
-
-    const close = () => {
-      lightbox.hidden = true;
-      lightboxImage.removeAttribute('src');
-      if (activeTrigger) {
-        activeTrigger.setAttribute('aria-expanded', 'false');
-        activeTrigger.focus();
-        activeTrigger = null;
-      }
-    };
-    const open = (trigger) => {
-      const source = trigger.querySelector('img');
-      if (!source?.src) return;
-      activeTrigger = trigger;
-      lightboxImage.src = source.src;
-      lightbox.hidden = false;
-      trigger.setAttribute('aria-expanded', 'true');
-      closeButton.focus();
-    };
-
-    document.addEventListener('click', (event) => {
-      const trigger = event.target.closest?.('.screenshot-trigger');
-      if (trigger) open(trigger);
-    });
-    document.addEventListener('keydown', (event) => {
-      const trigger = event.target.closest?.('.screenshot-trigger');
-      if (trigger && (event.key === 'Enter' || event.key === ' ')) {
-        event.preventDefault();
-        open(trigger);
-      }
-    });
-    closeButton.addEventListener('click', close);
-    lightbox.addEventListener('click', (event) => {
-      if (event.target === lightbox) close();
-    });
-    document.addEventListener('keydown', (event) => {
-      if (!lightbox.hidden && event.key === 'Escape') {
-        event.preventDefault();
-        close();
-      }
-    });
-  })();
+(() => {
+  'use strict';
+  const indexNode = document.getElementById('report-index'); let index = {};
+  try { index = JSON.parse(indexNode?.textContent || '{}'); } catch (_) { index = {}; }
+  const tree = document.getElementById('report-tree'); const pageSizes = [20, 50, 100]; let activeCase = null; let activeSuite = null;
+  const parsePayload = (key) => { if (!key) return {}; const node = document.querySelector(`[data-report-payload="${CSS.escape(key)}"]`); let payload = {}; try { payload = JSON.parse(node?.textContent || '{}'); } catch (_) { payload = {}; } return payload; };
+  const phaseLabels = { case_setup: '用例前置', case_main: '主体', case_teardown: '用例后置', suite_setup: '套件前置', suite_teardown: '套件后置' };
+  const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+  const display = (value) => { if (value === null || value === undefined || value === '') return ''; if (typeof value === 'object') { try { return JSON.stringify(value); } catch (_) { return String(value); } } return String(value); };
+  const statusClass = (status) => status === 'passed' || status === 'pass' ? 'step-ok' : 'step-fail';
+  const screenshot = (item) => item?.screenshot_base64 ? `<button type="button" class="screenshot-trigger" aria-expanded="false" aria-controls="screenshot-lightbox"><img class="step-screenshot" loading="lazy" decoding="async" src="data:image/png;base64,${escapeHtml(item.screenshot_base64)}" alt="截图"></button>` : (item?.screenshot ? `<span style="color:var(--muted)">${escapeHtml(item.screenshot)}</span>` : '');
+  const renderSteps = (steps, nodes) => {
+    if (nodes?.length) return `<table><thead><tr><th>#</th><th>阶段</th><th>类型</th><th>节点</th><th>参数</th><th>状态</th><th>尝试</th><th>耗时</th><th>期望/实际</th><th>错误</th><th>截图</th></tr></thead><tbody>${nodes.map((node) => `<tr><td>${escapeHtml(node.node_order)}</td><td>${escapeHtml(phaseLabels[node.phase] || '主体')}</td><td>${node.kind === 'action' ? '操作' : '断言'}</td><td>${escapeHtml(node.action || node.assertion_type)}</td><td style="word-break:break-all">${escapeHtml(display(node.parameters))}</td><td class="${statusClass(node.status)}">${escapeHtml(node.status)}</td><td>${escapeHtml(node.attempt_count || 0)}</td><td>${escapeHtml(node.duration ?? '-')}ms</td><td style="word-break:break-all">${escapeHtml(display(node.expected_value))}${node.actual_value ? ` / ${escapeHtml(display(node.actual_value))}` : ''}</td><td style="word-break:break-all">${escapeHtml(node.error_message)}</td><td>${screenshot(node)}</td></tr>`).join('')}</tbody></table>`;
+    if (!steps?.length) return '<div class="empty">无步骤</div>';
+    return `<table><thead><tr><th>#</th><th>阶段</th><th>动作</th><th>参数</th><th>状态</th><th>结果/错误</th><th>截图</th></tr></thead><tbody>${steps.map((step) => `<tr><td>${escapeHtml(step.step_order)}</td><td>${escapeHtml(phaseLabels[step.phase] || '主体')}</td><td>${escapeHtml(step.action)}</td><td style="word-break:break-all">${escapeHtml(display(step.parameters))}</td><td class="${statusClass(step.status)}">${escapeHtml(step.status)}</td><td style="word-break:break-all">${step.status === 'passed' && step.actual_value ? escapeHtml(display(step.actual_value)) : ''}${step.error_message ? escapeHtml(display(step.error_message)) : ''}</td><td>${screenshot(step)}</td></tr>${step.assertions?.length ? `<tr><td colspan="9"><table style="margin:4px 0 8px 36px;width:calc(100% - 36px)"><thead><tr><th>#</th><th>步骤后断言</th><th>期望</th><th>实际</th><th>状态</th></tr></thead><tbody>${step.assertions.map((a) => `<tr><td>${escapeHtml(a.assertion_order || a.id)}</td><td>${escapeHtml(a.assertion_type)}</td><td>${escapeHtml(display(a.expected_value))}</td><td>${escapeHtml(display(a.actual_value))}</td><td class="${statusClass(a.status)}">${escapeHtml(a.status)}</td></tr>`).join('')}</tbody></table></td></tr>` : ''}`).join('')}</tbody></table>`;
+  };
+  const caseSummary = (item, suiteIndex, caseIndex) => `<details class="case case-item" data-suite-index="${suiteIndex}" data-case-index="${caseIndex}"><summary class="case-head"><span class="case-name">${escapeHtml(item.case_name)}${item.module_name ? `<span style="color:var(--muted);font-weight:400;font-size:12px;margin-left:8px">${escapeHtml(item.module_name)}</span>` : ''}</span><span class="badge ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span></summary><div class="case-body-mount" hidden></div></details>`;
+  const caseBody = (payload) => `<div class="case-body">${payload.error_message ? `<div class="error-box">${escapeHtml(payload.error_message)}</div>` : ''}${renderSteps(payload.steps, payload.nodes)}</div>`;
+  const phasePanel = (label, key, count) => key ? `<details class="phase-toggle" data-phase-key="${escapeHtml(key)}"><summary>${label}（${count} 步）</summary><div class="phase-body-mount" hidden></div></details>` : '';
+  const getCases = (suiteIndex) => suiteIndex >= 0 ? (index.suites?.[suiteIndex]?.cases || []) : (index.cases || []);
+  const renderPager = (mount, total, page, pageSize, kind) => { const pages = Math.max(1, Math.ceil(total / pageSize)); mount.innerHTML = `<span>每页</span><select data-page-size>${pageSizes.map((size) => `<option value="${size}" ${size === pageSize ? 'selected' : ''}>${size}</option>`).join('')}</select><button type="button" data-page-prev ${page <= 1 ? 'disabled' : ''}>上一页</button><button type="button" data-page-next ${page >= pages ? 'disabled' : ''}>下一页</button><span>第 ${page}/${pages} 页，共 ${total} 条</span><input type="number" min="1" max="${pages}" value="${page}" data-page-number aria-label="页码"><button type="button" data-page-go>跳转</button>`; mount.dataset.page = String(page); mount.dataset.pageSize = String(pageSize); mount.dataset.pagerKind = kind; };
+  const bindCases = (root) => root.querySelectorAll(':scope > details.case-item').forEach((detail) => { if (detail.dataset.bound === 'true') return; detail.addEventListener('toggle', () => detail.open ? mountCase(detail) : unmountCase(detail)); detail.dataset.bound = 'true'; });
+  const mountCase = (detail) => { if (activeCase && activeCase !== detail) { activeCase.open = false; unmountCase(activeCase); } const suiteIndex = Number(detail.dataset.suiteIndex); const caseIndex = Number(detail.dataset.caseIndex); const item = getCases(suiteIndex)[caseIndex]; const mount = detail.querySelector(':scope > .case-body-mount'); if (!item || !mount || detail.dataset.mounted === 'true') return; mount.innerHTML = caseBody(parsePayload(item.payload_key)); mount.hidden = false; detail.dataset.mounted = 'true'; activeCase = detail; };
+  const unmountCase = (detail) => { const mount = detail?.querySelector(':scope > .case-body-mount'); if (mount) { mount.replaceChildren(); mount.hidden = true; } if (activeCase === detail) activeCase = null; if (detail) detail.dataset.mounted = 'false'; };
+  const renderCasePage = (root, suiteIndex, page) => { const cases = getCases(suiteIndex); const pagerNode = root.querySelector(':scope > .pager'); const list = root.querySelector(':scope > .case-list'); const pageSize = Number(pagerNode?.dataset.pageSize || 20); const pages = Math.max(1, Math.ceil(cases.length / pageSize)); const safePage = Math.min(Math.max(1, page), pages); if (pagerNode) renderPager(pagerNode, cases.length, safePage, pageSize, suiteIndex >= 0 ? `suite:${suiteIndex}` : 'root'); if (list) { if (activeCase && list.contains(activeCase)) unmountCase(activeCase); list.replaceChildren(); cases.slice((safePage - 1) * pageSize, safePage * pageSize).forEach((item, index) => list.insertAdjacentHTML('beforeend', caseSummary(item, suiteIndex, (safePage - 1) * pageSize + index))); bindCases(list); } };
+  const mountSuite = (detail) => { if (activeSuite && activeSuite !== detail) { activeSuite.open = false; unmountSuite(activeSuite); } if (detail.dataset.mounted === 'true') return; const suiteIndex = Number(detail.dataset.suiteIndex); const suite = index.suites?.[suiteIndex]; const mount = detail.querySelector(':scope > .suite-body-mount'); if (!suite || !mount) return; mount.innerHTML = `<div class="case-body">${suite.error_message ? `<div class="error-box">${escapeHtml(suite.error_message)}</div>` : ''}${phasePanel('套件前置', suite.setup_key, suite.setup_count)}<div class="pager" data-pager="suite-cases"></div><div class="case-list"></div>${phasePanel('套件后置', suite.teardown_key, suite.teardown_count)}</div>`; mount.hidden = false; detail.dataset.mounted = 'true'; activeSuite = detail; const body = mount.querySelector('.case-body'); renderCasePage(body, suiteIndex, 1); mount.querySelectorAll('.phase-toggle').forEach((phase) => phase.addEventListener('toggle', () => { const phaseMount = phase.querySelector('.phase-body-mount'); if (phase.open) { const payload = parsePayload(phase.dataset.phaseKey); phaseMount.innerHTML = renderSteps(payload.steps, []); phaseMount.hidden = false; } else { phaseMount.replaceChildren(); phaseMount.hidden = true; } })); };
+  const unmountSuite = (detail) => { const mount = detail?.querySelector(':scope > .suite-body-mount'); if (mount) { if (activeCase && mount.contains(activeCase)) unmountCase(activeCase); mount.replaceChildren(); mount.hidden = true; } if (activeSuite === detail) activeSuite = null; if (detail) detail.dataset.mounted = 'false'; };
+  const makeRoot = () => { const root = document.getElementById('root-case-list'); if (!root) return; const pagerNode = document.querySelector('[data-pager="root-cases"]'); if (pagerNode) { pagerNode.dataset.pageSize = '20'; renderCasePage(document.getElementById('report-tree'), -1, 1); } };
+  tree?.querySelectorAll(':scope > details.suite').forEach((detail) => detail.addEventListener('toggle', () => detail.open ? mountSuite(detail) : unmountSuite(detail))); makeRoot();
+  const logsPanel = document.getElementById('logs-panel'); let logs = null; const logsPager = document.querySelector('[data-pager="logs"]'); const logsList = document.getElementById('logs-list'); const logsNote = document.getElementById('logs-note');
+  const getLogs = () => { if (!logs) logs = parsePayload(index.logs_key || 'logs').logs || []; return logs; };
+  const renderLogs = (page) => { if (!logsPager || !logsList) return; const rows = getLogs(); const size = Number(logsPager.dataset.pageSize || 100); const pages = Math.max(1, Math.ceil(rows.length / size)); const current = Math.min(Math.max(1, page), pages); renderPager(logsPager, rows.length, current, size, 'logs'); logsList.innerHTML = rows.slice((current - 1) * size, current * size).map((log) => `<div class="log-line"><span class="log-level">${escapeHtml(log.level)}</span>${escapeHtml(log.created_at)}<span style="color:var(--muted)"> [${escapeHtml(log.source)}]</span> ${escapeHtml(log.message)}</div>`).join('') || '<div class="empty">暂无日志</div>'; if (logsNote) logsNote.textContent = index.logs_truncated ? `日志总量 ${index.logs_total || rows.length} 条，当前分批展示。` : ''; };
+  logsPanel?.addEventListener('toggle', () => { if (logsPanel.open) { logsPanel.querySelector('.logs-body').hidden = false; renderLogs(1); } else { logsPanel.querySelector('.logs-body').replaceChildren(); logsPanel.querySelector('.logs-body').hidden = true; logs = null; } });
+  const getPagerTotal = (node) => node.dataset.pagerKind === 'logs' ? getLogs().length : getCases(node.dataset.pagerKind.startsWith('suite:') ? Number(node.dataset.pagerKind.split(':')[1]) : -1).length;
+  document.addEventListener('click', (event) => { const button = event.target.closest?.('[data-page-prev], [data-page-next], [data-page-go]'); if (button) { const node = button.closest('.pager'); const current = Number(node.dataset.page || 1); const max = Math.max(1, Math.ceil(getPagerTotal(node) / Number(node.dataset.pageSize || 20))); const desired = button.hasAttribute('data-page-prev') ? current - 1 : button.hasAttribute('data-page-next') ? current + 1 : Number(node.querySelector('[data-page-number]')?.value || current); const page = Math.min(Math.max(1, desired), max); if (node.dataset.pagerKind === 'logs') renderLogs(page); else { const kind = node.dataset.pagerKind; const suiteIndex = kind.startsWith('suite:') ? Number(kind.split(':')[1]) : -1; renderCasePage(node.parentElement, suiteIndex, page); } return; } const trigger = event.target.closest?.('.screenshot-trigger'); if (trigger) openLightbox(trigger); });
+  document.addEventListener('change', (event) => { const select = event.target.closest?.('[data-page-size]'); if (!select) return; const node = select.closest('.pager'); node.dataset.pageSize = select.value; if (node.dataset.pagerKind === 'logs') renderLogs(1); else { const kind = node.dataset.pagerKind; renderCasePage(node.parentElement, kind.startsWith('suite:') ? Number(kind.split(':')[1]) : -1, 1); } });
+  const lightbox = document.getElementById('screenshot-lightbox'); let lightboxImage = null; const closeButton = lightbox?.querySelector('.screenshot-lightbox-close'); let activeTrigger = null;
+  const closeLightbox = () => { if (!lightbox) return; lightbox.hidden = true; lightboxImage?.remove(); lightboxImage = null; if (activeTrigger) { activeTrigger.setAttribute('aria-expanded', 'false'); activeTrigger.focus(); activeTrigger = null; } };
+  const openLightbox = (trigger) => { const source = trigger.querySelector('img'); if (!source?.src || !lightbox) return; activeTrigger = trigger; lightboxImage?.remove(); lightboxImage = document.createElement('img'); lightboxImage.alt = '截图预览'; lightboxImage.src = source.src; lightbox.appendChild(lightboxImage); lightbox.hidden = false; trigger.setAttribute('aria-expanded', 'true'); closeButton?.focus(); };
+  closeButton?.addEventListener('click', closeLightbox); lightbox?.addEventListener('click', (event) => { if (event.target === lightbox) closeLightbox(); }); document.addEventListener('keydown', (event) => { if (!lightbox?.hidden && event.key === 'Escape') { event.preventDefault(); closeLightbox(); } });
+  document.addEventListener('keydown', (event) => { const trigger = event.target.closest?.('.screenshot-trigger'); if (trigger && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openLightbox(trigger); } });
+})();
 </script>
 </body>
 </html>

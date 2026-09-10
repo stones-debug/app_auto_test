@@ -1,6 +1,8 @@
 import base64
+import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from jinja2 import Environment, FileSystemLoader
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,7 +18,79 @@ from app.services.screenshot_store import resolve_screenshot_path, validate_obje
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates" / "reports"
 # Step 8：HTML 缓存版本标记——修改模板/数据规则后旧缓存不再复用
-_REPORT_HTML_VERSION = "lazy-case-details-html-v10"
+_REPORT_HTML_VERSION = "true-lazy-report-html-v11"
+
+
+def _json_safe(value: object) -> Any:
+    """Convert database numeric values (for example Decimal durations) for JSON payloads."""
+    return json.loads(json.dumps(value, default=str))
+
+
+def _case_payload(case: dict) -> dict:
+    """Build only the detail branch rendered by the offline HTML report.
+
+    New execution rows can expose both the legacy ``steps`` branch and the
+    node-based branch.  The template renders nodes when present, so keeping
+    both branches would duplicate every screenshot in the downloaded file.
+    """
+    payload = {"error_message": case.get("error_message")}
+    if case.get("nodes"):
+        payload["nodes"] = case["nodes"]
+    else:
+        payload["steps"] = case.get("steps") or []
+    return payload
+
+
+def _report_html_payloads(detail: dict) -> tuple[dict, dict[str, dict]]:
+    """Return a lightweight report index and independently parseable details."""
+    payloads: dict[str, dict] = {}
+    index: dict = {
+        "suites": [],
+        "cases": [],
+        "logs_key": "logs",
+        "logs_total": detail["logs_total"],
+        "logs_truncated": detail["logs_truncated"],
+    }
+
+    def case_summary(case: dict, key: str) -> dict:
+        return {
+            "case_name": case["case_name"],
+            "module_name": case["module_name"],
+            "status": case["status"],
+            "payload_key": key,
+        }
+
+    for suite_index, suite in enumerate(detail["suites"]):
+        suite_index_data = {
+            "error_message": suite["error_message"],
+            "cases": [],
+            "setup_key": None,
+            "setup_count": len(suite["setup_steps"]),
+            "teardown_key": None,
+            "teardown_count": len(suite["teardown_steps"]),
+        }
+        if suite["setup_steps"]:
+            key = f"s{suite_index}-setup"
+            suite_index_data["setup_key"] = key
+            payloads[key] = {"steps": suite["setup_steps"]}
+        if suite["teardown_steps"]:
+            key = f"s{suite_index}-teardown"
+            suite_index_data["teardown_key"] = key
+            payloads[key] = {"steps": suite["teardown_steps"]}
+        for case_index, case in enumerate(suite["cases"]):
+            key = f"s{suite_index}-c{case_index}"
+            suite_index_data["cases"].append(case_summary(case, key))
+            payloads[key] = _case_payload(case)
+        index["suites"].append(suite_index_data)
+
+    if not detail["suites"]:
+        for case_index, case in enumerate(detail["cases"]):
+            key = f"c{case_index}"
+            index["cases"].append(case_summary(case, key))
+            payloads[key] = _case_payload(case)
+
+    payloads["logs"] = {"logs": detail["logs"]}
+    return _json_safe(index), _json_safe(payloads)
 
 
 def _execution_dict(execution: Execution) -> dict:
@@ -291,6 +365,7 @@ async def render_report_html(db: AsyncSession, execution_id: int) -> Path:
 
     detail = await get_report_detail(db, execution_id)
     _embed_screenshots(detail)
+    report_index, report_payloads = _report_html_payloads(detail)
     env = Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR)), autoescape=True)
     template = env.get_template("report.html")
     html = template.render(
@@ -302,6 +377,8 @@ async def render_report_html(db: AsyncSession, execution_id: int) -> Path:
         exclusions=detail["exclusions"],
         logs_total=detail["logs_total"],
         logs_truncated=detail["logs_truncated"],
+        report_index=report_index,
+        report_payloads=report_payloads,
         generated_at=datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
     )
     html = f"<!-- version: {_REPORT_HTML_VERSION} -->\n" + html

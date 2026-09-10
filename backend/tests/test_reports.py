@@ -389,8 +389,10 @@ async def test_report_download_generates_and_caches(client: AsyncClient):
     assert "套件总数" in resp1.text
     assert "步骤总数" in resp1.text
     assert "虚拟套件" in resp1.text
-    assert "version: lazy-case-details-html-v10" in resp1.text
-    assert "class=\"case-detail-template\"" in resp1.text
+    assert "version: true-lazy-report-html-v11" in resp1.text
+    assert 'id="report-index"' in resp1.text
+    assert 'id="report-data"' not in resp1.text
+    assert "class=\"case-detail-template\"" not in resp1.text
     assert "旧报告" not in resp1.text
 
     assert html_path.exists()
@@ -419,7 +421,7 @@ def test_report_html_screenshot_lightbox_is_single_and_offline():
     step = {
         "step_order": 1,
         "phase": "case_main",
-        "action": "截图",
+        "action": "</script><img src=x onerror=alert(1)>",
         "parameters": {},
         "status": "passed",
         "actual_value": None,
@@ -432,7 +434,7 @@ def test_report_html_screenshot_lightbox_is_single_and_offline():
         "node_order": 1,
         "phase": "case_main",
         "kind": "action",
-        "action": "截图",
+        "action": "</script><img src=x onerror=alert(2)>",
         "assertion_type": None,
         "parameters": {},
         "status": "passed",
@@ -502,20 +504,57 @@ def test_report_html_screenshot_lightbox_is_single_and_offline():
         logs=[],
         logs_total=0,
         logs_truncated=False,
+        report_index={
+            "suites": [{
+                "error_message": "套件错误",
+                "cases": [{"case_name": "用例", "module_name": None, "status": "passed", "payload_key": "s0-c0"}],
+                "setup_key": "s0-setup",
+                "setup_count": 1,
+                "teardown_key": None,
+                "teardown_count": 0,
+            }],
+            "cases": [],
+            "logs_key": "logs",
+            "logs_total": 0,
+            "logs_truncated": False,
+        },
+        report_payloads={
+            "s0-setup": {"steps": [step]},
+            "s0-c0": {"nodes": [node]},
+            "logs": {"logs": []},
+        },
         generated_at="now",
     )
 
-    assert html.count('class="screenshot-trigger"') == 2
+    assert html.count('class="screenshot-trigger"') == 1
     assert html.count('id="screenshot-lightbox"') == 1
-    assert html.count('class="case-detail-template"') == 1
+    assert 'class="case-detail-template"' not in html
     assert 'class="suite-detail-template"' not in html
     assert 'case-body-mount" hidden' in html
     assert 'loading="lazy" decoding="async"' in html
-    # 初始活动 DOM 只有套件/用例摘要；步骤表格和截图位于惰性 template 中。
-    case_summary = html.split('<details class="case case-item"', 1)[1].split('<template', 1)[0]
-    assert '<table' not in case_summary
-    assert 'mountDetails' in html
-    assert "details.dataset.mounted === 'true'" in html
+    # report-data 之前的活动 DOM 不包含步骤表格和图片；明细只存在于安全 JSON 载荷。
+    initial_dom = html.split('<script id="report-index"', 1)[0]
+    assert '<table' not in initial_dom
+    assert '<img' not in initial_dom
+    assert 'JSON.parse(indexNode?.textContent' in html
+    assert 'JSON.parse(node?.textContent' in html
+    assert 'detail.dataset.mounted === \'true\'' in html
+    assert 'replaceChildren()' in html
+    assert 'data-page-size' in html
+    assert 'data-page-number' in html
+    assert 'data-page-next' in html
+    assert '"error_message"' in html
+    assert 'suite.error_message ?' in html
+    setup_pos = html.index("phasePanel('套件前置'")
+    cases_pos = html.index('case-list', setup_pos)
+    teardown_pos = html.index("phasePanel('套件后置'")
+    assert setup_pos < cases_pos < teardown_pos
+    assert 'logs-list' in html
+    assert 'c3RlcA==' in html
+    payload = html.split('data-report-payload="s0-c0"', 1)[1].split('</script>', 1)[0]
+    assert '</script><img' not in payload
+    assert '\\u003c/script\\u003e' in payload
+    assert '"steps"' not in payload
     assert 'role="dialog"' in html
     assert 'aria-modal="true"' in html
     assert 'lightboxImage.src = source.src' in html
@@ -525,6 +564,38 @@ def test_report_html_screenshot_lightbox_is_single_and_offline():
     assert "document.addEventListener('click'" in html
     assert "<script src=" not in html
     assert "https://" not in html
+
+
+def test_report_html_payload_index_keeps_suite_error_and_uses_one_case_branch():
+    index, payloads = report_service._report_html_payloads(
+        {
+            "suites": [
+                {
+                    "error_message": "套件失败",
+                    "setup_steps": [],
+                    "teardown_steps": [],
+                    "cases": [
+                        {
+                            "case_name": "节点用例",
+                            "module_name": None,
+                            "status": "failed",
+                            "error_message": "失败",
+                            "steps": [{"screenshot_base64": "duplicate"}],
+                            "nodes": [{"screenshot_base64": "only-node"}],
+                        }
+                    ],
+                }
+            ],
+            "cases": [],
+            "logs": [],
+            "logs_total": 0,
+            "logs_truncated": False,
+        }
+    )
+
+    assert index["suites"][0]["error_message"] == "套件失败"
+    assert payloads["s0-c0"]["nodes"][0]["screenshot_base64"] == "only-node"
+    assert "steps" not in payloads["s0-c0"]
 
 
 async def test_report_html_suite_stats_with_setup_steps(client: AsyncClient):
@@ -537,9 +608,10 @@ async def test_report_html_suite_stats_with_setup_steps(client: AsyncClient):
     assert "套件总数" in html
     assert "步骤总数" in html
     assert "登录套件" in html
-    assert "套件前置" in html
-    assert "套件后置" in html
-    assert "套件内用例" in html
+    initial_dom = html.split('<script id="report-index"', 1)[0]
+    assert 'suite-body-mount" hidden' in initial_dom
+    assert "套件内用例" not in initial_dom
+    assert 'data-report-payload="s0-setup"' in html
 
     headers = {"Authorization": f"Bearer {token}"}
     report_id = await _report_id(execution_id)
@@ -548,7 +620,8 @@ async def test_report_html_suite_stats_with_setup_steps(client: AsyncClient):
     assert "套件总数" in download.text
     assert "步骤总数" in download.text
     assert "登录套件" in download.text
-    assert "套件前置" in download.text
+    assert 'suite-body-mount" hidden' in download.text
+    assert 'data-page-next' in download.text
 
     _cleanup(execution_id)
 
