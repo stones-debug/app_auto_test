@@ -17,14 +17,17 @@ export interface ReportDisclosureState {
 const isFailed = (status: string) => ['failed', 'error'].includes(status)
 
 export function prepareReportCase(reportCase: ReportCase): PreparedReportCase {
-  const { beforeAssertions, afterAssertions } = splitExecutionSteps(reportCase.steps)
+  // 类型上 steps 必填、后端也始终下发；但一旦缺字段，splitExecutionSteps 会在
+  // `undefined.filter` 上抛错，而调用方在 ReportDetail.load 的 try 内 —— 结果是
+  // 整份报告渲染失败、页面空白。畸形数据降级为空数组，不要把整页拖垮。
+  const { beforeAssertions, afterAssertions } = splitExecutionSteps(reportCase.steps ?? [])
   return { ...reportCase, beforeAssertionSteps: beforeAssertions, afterAssertionSteps: afterAssertions }
 }
 
 export function prepareReportSuites(suites: ReportSuite[]): PreparedReportSuite[] {
   return suites.map((suite) => ({
     ...suite,
-    cases: suite.cases.map(prepareReportCase),
+    cases: (suite.cases ?? []).map(prepareReportCase),
   }))
 }
 
@@ -42,7 +45,8 @@ export function initialDisclosureState(
 
   if (suites.length) {
     for (const suite of suites) {
-      const failedCases = suite.cases.filter((reportCase) => isFailed(reportCase.status))
+      // 入参可能是未经过 prepareReportSuites 的原始响应，cases 缺失时按空处理
+      const failedCases = (suite.cases ?? []).filter((reportCase) => isFailed(reportCase.status))
       if (!failedCases.length) continue
       expandedSuites.add(suite.id)
       failedCases.forEach((reportCase) => expandedCases.add(reportCase.id))
@@ -62,7 +66,9 @@ export function visibleDisclosureState(
   cases: Array<Pick<ReportCase, 'id' | 'status'>>,
 ): ReportDisclosureState {
   const expandedSuites = new Set(suites.map((suite) => suite.id))
-  const sourceCases = suites.length ? suites.flatMap((suite) => suite.cases) : cases
+  const sourceCases = suites.length
+    ? suites.flatMap((suite) => suite.cases ?? [])
+    : cases
   const expandedCases = new Set(
     sourceCases.filter((reportCase) => isFailed(reportCase.status)).map((reportCase) => reportCase.id),
   )

@@ -30,10 +30,13 @@ const typeFilter = ref('')
 const keyword = ref('')
 const summary = ref<{ active: number; failed: number; error: number; passed: number }>({ active: 0, failed: 0, error: 0, passed: 0 })
 let timer: ReturnType<typeof setInterval> | null = null
+// 竞态保护：轮询与用户翻页可能并发，旧响应后到会覆盖新页数据。
+let loadSeq = 0
 
 const { picker, retry: retryEntry } = useExecutionRetry()
 
 async function load() {
+  const seq = ++loadSeq
   loading.value = true
   try {
     const data = await listExecutions(withProjectScope(projectId.value, {
@@ -43,10 +46,21 @@ async function load() {
       type: typeFilter.value,
       keyword: keyword.value || undefined,
     }))
+    if (seq !== loadSeq) return
     items.value = data.items
     total.value = data.total
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
+  }
+}
+
+/** 轮询后校正越界页：新执行不断插入会把用户停留的页挤出范围，导致整页空白。 */
+async function reloadClamped() {
+  await load()
+  const lastPage = Math.max(1, Math.ceil(total.value / pageSize.value))
+  if (page.value > lastPage) {
+    page.value = lastPage
+    await load()
   }
 }
 
@@ -113,11 +127,11 @@ watch(
 )
 
 onMounted(() => {
-  // 活跃执行每 5 秒轮询当前页
+  // 活跃执行每 5 秒轮询当前页（并校正越界页）
   timer = setInterval(() => {
     if (document.visibilityState === 'visible') {
-      load()
-      loadSummary()
+      void reloadClamped()
+      void loadSummary()
     }
   }, 5000)
 })

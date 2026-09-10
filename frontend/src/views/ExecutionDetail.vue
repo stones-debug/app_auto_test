@@ -61,6 +61,8 @@ const logs = ref<ExecutionLog[]>([])
 const liveLogs = ref<LogEntry[]>([])
 let liveIdCounter = 0
 let logKeys = new Set<string>()
+// WS 增量日志的内存上限；更早的条目由 REST 日志补齐
+const LIVE_LOG_LIMIT = 500
 let completedPulled = false
 let realtimeVersion = 0
 
@@ -171,6 +173,16 @@ function resetLogs() {
   logKeys = new Set()
 }
 
+/** 超长执行必须有上限：liveLogs 只增不减会让内存与 logEntries 重算成本持续攀升。
+ *  丢弃的都是更早的 WS 增量，服务端已持久化，下次拉取 REST 日志会补回。 */
+function trimLiveLogs() {
+  while (liveLogs.value.length > LIVE_LOG_LIMIT) {
+    const dropped = liveLogs.value.shift()
+    if (!dropped) return
+    logKeys.delete(liveLogKey(dropped.level, dropped.message, dropped.created_at))
+  }
+}
+
 // 全量分页拉取执行日志：循环翻页直到累计 ≥ total 或空页；页数上限 50（=10000 条），超过则不再分页（极端场景保护）。
 async function fetchAllLogs(id: number): Promise<ExecutionLog[]> {
   const pageSize = 200
@@ -256,16 +268,21 @@ function subscribe(id: number) {
     if (type === 'status') {
       updateExecutionStatus((msg.status as ExecutionStatus) ?? detail.value?.status ?? 'queued')
     } else if (type === 'log') {
-      const key = liveLogKey(String(msg.level ?? ''), String(msg.message ?? ''), String(msg.timestamp ?? ''))
+      const level = (msg.level as string) ?? 'INFO'
+      const message = (msg.message as string) ?? ''
+      // created_at 与去重键用同一个取值：修剪时才能按键精确回收，不留脏键
+      const createdAt = String(msg.timestamp ?? '') || new Date().toISOString()
+      const key = liveLogKey(level, message, createdAt)
       if (logKeys.has(key)) return
       logKeys.add(key)
       liveLogs.value.push({
         id: --liveIdCounter, // 单调递减临时 id，避免 Date.now 同毫秒碰撞
-        level: (msg.level as string) ?? 'INFO',
-        message: (msg.message as string) ?? '',
+        level,
+        message,
         source: 'live',
-        created_at: (msg.timestamp as string) ?? new Date().toISOString(),
+        created_at: createdAt,
       })
+      trimLiveLogs()
     } else if (type === 'step_result') {
       realtimeVersion += 1
       applyStepResult(timelineSuites.value, msg)
