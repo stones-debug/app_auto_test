@@ -2165,3 +2165,13 @@ Agent WebSocket 连接不持有长生命周期数据库 Session：注册、心�
 2. 添加接口逐项校验用例项目归属和未删除状态，保留 `case_ids` 数组的原始顺序及重复项。排序接口必须提交恰好一次的完整 `membership_ids` 集合；删除接口按 `membership_id` 只删除一个 occurrence。
 3. `execution_cases` 不得按 `(execution_suite_id,case_id)` 唯一；仅以 `(execution_suite_id,case_order)` 保证顺序。每个 occurrence 必须生成独立 `ExecutionCase.id`，其步骤、断言、Agent 更新和报告统计均以该 ID 关联，不得用 `case_id` 去重或回退串写。
 4. APP 档案 skip/override/变量规则仍按 `(suite_id,case_id,node_key)` 共享给同一套件内的所有 occurrence；工作台展示同一资产只保留首次出现，但不影响执行解析。排除记录需保留 `occurrence_order` 以区分重复 occurrence。
+
+### 10.19 模块树 scope 与套件模块（V1.8 增量）
+
+1. `test_modules.scope` 取值 `case` / `suite`，构成**两棵互相独立**的树：`case` 供测试用例（`test_cases.module_id`），`suite` 供测试套件（`test_suites.module_id`）。父级必须与子级同 scope；跨 scope 挂载（含拖拽）一律拒绝。`TestModule.scope` 与 `TestElement.scope`（元素适用范围）同名不同义，改动时注意区分。
+2. 跨表 CHECK 约束在 PostgreSQL 表达不了，**套件的 `module_id` 必须由服务层校验**：模块存在、未删除、属于同一项目、且 `scope='suite'`。缺此项校验即为越权串树。
+3. 模块移动统一走 `PUT /api/modules/{id}/position`（body `{parent_id, before_id}`，`null` 表示根层级 / 追加末尾）。服务端在同一事务内锁住该 scope 的全部模块、校验循环与 scope、把目标父级下的兄弟 `sort_order` 重排为连续 `0..n-1`，并返回该 scope 的完整列表。**前端不得自行计算 `sort_order`**（浮点漂移、并发错位，且一次拖拽同时影响两个父级）。循环判定等价于：新的 `parent_id` 不得落在被移动模块的子树内。
+4. 删除模块的语义按 scope 收窄且互不影响：子模块提升到被删模块的父级；`scope='case'` 的模块解绑其下用例，`scope='suite'` 的模块解绑其下套件（均置 `module_id = NULL`，即“未分组”）。
+5. **“未分组”必须用显式参数 `ungrouped=true` 表达**（用例与套件列表接口均支持），禁止用 `module_id=null`：axios 会丢弃值为 `null` 的查询参数，后端 `None` 表示“不过滤”，两者叠加会把“未分组”静默变成“全部”。
+6. 选中父模块时，列表按**该模块及其全部子孙**过滤（`module_ids IN (子树)`）。子树展开在服务端用一次全量读取 + 内存展开完成，模块表规模小；展开过程自带防环。
+7. 套件模块是**纯组织维度**，不进入执行快照与报告：`ExecutionSuite` / `ExecutionCase` 的快照字段不包含套件模块信息，档案（AppProfile）的 skip/override/变量解析也不读取它。模块写操作仍与其他资产写入一致地推进项目 `test_asset_revision`。

@@ -64,6 +64,11 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 - **步骤/节点级状态同样受"终态不回退"保护**：`ws_handlers.py` 的 `_merge_step_status()` 按 `error > failed > stopped > skipped > passed` 合并（`cancelled` 与 `stopped` 同属中断终态）。禁止写成 `step.status = payload["status"]` 这类无条件赋值——重投/补报会把已落库的 failed 翻成 passed。判定类字段（`duration`/`actual_value`/`error_message`/`screenshot_path`）必须用 `_fill_if_present()`，**重投消息不带截图时不得清空已落库的失败证据**
 - **WS 发送失败只在连接确实不可用时才摘除映射**：`managers._is_socket_gone()` 区分"连接已关闭"（Starlette `RuntimeError` / websockets `ConnectionClosed*` / `OSError`）与其它异常；序列化等瞬时错误把 socket 摘掉会让仍在线的 Agent 被误判 offline
 - **前端列表请求必须有竞态保护**：`useListQuery` 用递增序号丢弃过期响应（旧写法只有"已卸载"布尔标志，快速翻页时旧页响应后到会覆盖新页数据）。改造时保留顺序返回的对照用例
+- **模块树分两棵互相独立的树（§10.19）**：`test_modules.scope` 取 `case` / `suite`，分别服务 `test_cases.module_id` 与 `test_suites.module_id`。模块写操作必须带 scope 校验（跨表 CHECK 在 PG 里表达不了，**套件的 `module_id` 只能由服务层保证 `scope='suite'`**，见 `suite_service._assert_suite_module`）
+- **模块移动只能走 `PUT /api/modules/{id}/position`**：服务端在事务内锁行、校验循环/scope、把目标父级兄弟 `sort_order` 重排为连续值并返回完整列表。前端**禁止**自行计算 `sort_order`（浮点漂移、并发错位，且一次拖拽影响两个父级）
+- **「未分组」只能用显式参数 `ungrouped=true` 表达**（用例与套件列表接口均支持），**禁止 `module_id=null`**：axios 会丢弃值为 `null` 的查询参数，后端 `None` 又表示"不过滤"，叠加后"未分组"会静默变成"全部"（历史上的用例列表就是这样失效的）
+- 选中父模块时列表按**该模块及其全部子孙**过滤；子树展开在服务端完成（`element_service.module_ids_with_descendants`），自带防环
+- 套件模块是**纯组织维度**：不进执行快照与报告（`ExecutionSuite` 无模块字段），档案 skip/override/变量解析也不读它；模块写操作仍照常 `commit_asset_change` 推进 `test_asset_revision`
 - WS 网关对 socket 的依赖用 `app/ws/managers.py` 的 `BroadcastSocket` / `AgentSocket` Protocol 表达（只声明 `send_json(data)` 等必需能力），测试替身无需 `cast(WebSocket, ...)` 即可传入
 
 ## 套件级执行（以测试套件为执行与结果汇总单位，实施中）
