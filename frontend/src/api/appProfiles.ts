@@ -96,10 +96,8 @@ export interface ProfileSuiteCaseVariables {
 }
 
 export interface ProfileVariableUpdate {
-  node_type: 'step' | 'assertion'
-  node_key: string
   name: string
-  /** null 表示删除该节点上的变量覆盖 */
+  /** null 表示删除当前 occurrence 上的变量覆盖 */
   value: string | null
 }
 
@@ -251,12 +249,12 @@ export function restoreVariableOverride(profileId: number, name: string, data: {
   return request.delete<void>(`/app-profiles/${profileId}/variable-overrides/${name}`, { data })
 }
 
-export function upsertNodeOverride(profileId: number, suiteId: number, caseId: number, nodeType: 'step' | 'assertion', nodeKey: string, data: { request_id?: string; expected_revision: number; patch: Record<string, unknown> }) {
-  return request.put<{ revision: number }>(`/app-profiles/${profileId}/node-overrides/${suiteId}/${caseId}/${nodeType}/${nodeKey}`, data)
+export function upsertNodeOverride(profileId: number, suiteCaseId: number, nodeType: 'step' | 'assertion', nodeKey: string, data: { request_id?: string; expected_revision: number; patch: Record<string, unknown> }) {
+  return request.put<{ revision: number }>(`/app-profiles/${profileId}/node-overrides/${suiteCaseId}/${nodeType}/${nodeKey}`, data)
 }
 
-export function restoreNodeOverride(profileId: number, suiteId: number, caseId: number, nodeType: 'step' | 'assertion', nodeKey: string, data: { request_id?: string; expected_revision: number }) {
-  return request.delete<void>(`/app-profiles/${profileId}/node-overrides/${suiteId}/${caseId}/${nodeType}/${nodeKey}`, { data })
+export function restoreNodeOverride(profileId: number, suiteCaseId: number, nodeType: 'step' | 'assertion', nodeKey: string, data: { request_id?: string; expected_revision: number }) {
+  return request.delete<void>(`/app-profiles/${profileId}/node-overrides/${suiteCaseId}/${nodeType}/${nodeKey}`, { data })
 }
 
 // ---------- 套件前后置步骤覆盖 ----------
@@ -285,7 +283,7 @@ export function profileSuiteCaseVariables(profileId: number, suiteCaseId: number
 }
 
 /**
- * 批量写入节点级变量覆盖；服务端在单事务内合并 patch、递增一次 revision。
+ * 批量写入 occurrence 级变量覆盖；服务端在单事务内合并更新、递增一次 revision。
  *
  * 响应体与 GET 同构：新版本号在 `profile_revision`（**没有** `revision` 字段，
  * 响应模型会丢弃服务端多余的 `revision`，取错字段会拿到 undefined 而静默失败）。

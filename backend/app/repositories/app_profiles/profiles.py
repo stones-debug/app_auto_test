@@ -14,6 +14,7 @@ from app.models import (
     AppProfileNodeOverride,
     AppProfileRelease,
     AppProfileSkipRule,
+    AppProfileSuiteCaseVariableOverride,
     AppProfileVariableOverride,
     Execution,
     Project,
@@ -186,6 +187,7 @@ async def profile_counts(db: AsyncSession, profile_ids: list[int]) -> dict[int, 
     for model, key in (
         (AppProfileElementOverride, "element"),
         (AppProfileVariableOverride, "variable"),
+        (AppProfileSuiteCaseVariableOverride, "variable"),
         (AppProfileNodeOverride, "node"),
     ):
         rows = await db.execute(
@@ -194,7 +196,7 @@ async def profile_counts(db: AsyncSession, profile_ids: list[int]) -> dict[int, 
             .group_by(model.profile_id)
         )
         for profile_id, count in rows.all():
-            result[profile_id]["override_counts"][key] = count
+            result[profile_id]["override_counts"][key] += count
     return result
 
 
@@ -225,7 +227,7 @@ AUDIT_ACTIONS = frozenset(
         "release_create", "release_update", "release_disable",
         "skip_batch", "restore_batch", "element_override_upsert", "element_override_restore",
         "variable_override_upsert", "variable_override_restore", "node_override_upsert", "node_override_restore",
-        "node_override_batch",
+        "node_override_batch", "occurrence_variable_override_batch",
     }
 )
 

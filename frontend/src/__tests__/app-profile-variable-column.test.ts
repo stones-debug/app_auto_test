@@ -78,4 +78,21 @@ describe('变量覆盖写入的版本号契约', () => {
     expect(fn).toContain('variableRestoreUpdates(variable)')
     expect(fn).toContain('saveCaseVariableUpdates(row, ')
   })
+
+  it('occurrence API 直接提交每变量一条 name/value 更新', () => {
+    const fn = source.match(/async function saveCaseVariableUpdates[\s\S]*?\n\}/)?.[0] ?? ''
+    expect(fn).toContain('updates: [update]')
+    expect(fn).not.toContain('new Map(')
+    expect(fn).not.toContain('node_type')
+    expect(fn).not.toContain('node_key')
+  })
+
+  it('版本冲突刷新当前工作台但保留编辑态和值', () => {
+    const fn = source.match(/async function saveCaseVariableUpdates[\s\S]*?\n\}/)?.[0] ?? ''
+    const conflict = fn.match(/PROFILE_REVISION_CONFLICT[\s\S]*?ElMessage\.warning[\s\S]*?\n\s*\}/)?.[0] ?? ''
+    expect(conflict).toContain('await store.refreshVisibleWorkspace()')
+    expect(conflict).not.toContain('cancelVariableEdit()')
+    expect(source).toContain('caseVariableEdit.key')
+    expect(source).toContain('caseVariableEdit.value')
+  })
 })

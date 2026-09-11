@@ -23,10 +23,9 @@ from app.core.database import SessionLocal
 from app.main import app
 from app.models import (
     AppProfile,
-    AppProfileNodeOverride,
     AppProfileRelease,
+    AppProfileSuiteCaseVariableOverride,
     Project,
-    TestSuiteCase,
     User,
 )
 from app.services.case_variable_service import (
@@ -266,9 +265,12 @@ async def test_membership_override_isolated_between_occurrences(client: AsyncCli
     assert all(row["variables_preview"][0]["status"] == "overridden" for row in rows)
 
     # 快照：同一用例两个编排项取到不同值，互不影响
-    await _seed_variables(client, headers, ctx["project_id"], ["expected_port", "baud_rate", "shot_name"])
+    await _seed_variables(
+        client, headers, ctx["project_id"], ["port_name", "expected_port", "baud_rate", "shot_name"]
+    )
     async with SessionLocal() as db:
         profile_id, release_id = await _make_profile(db, ctx["project_id"])
+        await db.commit()
         project = await db.get(Project, ctx["project_id"])
         result = await resolve(
             ResolutionRequest(
@@ -373,7 +375,7 @@ async def test_random_variable_preview_shows_rule_without_generating(client: Asy
     assert patched.json()["variables"][0]["display_value"] == "COM7"
 
 
-async def test_assertion_variable_override_applies_to_snapshot(client: AsyncClient):
+async def test_occurrence_variable_override_applies_to_assertion_snapshot(client: AsyncClient):
     headers = await _login(client, OWNER)
     ctx = await _project_with_case(client, headers)
     suite_id, memberships = await _suite_with_memberships(
@@ -382,26 +384,20 @@ async def test_assertion_variable_override_applies_to_snapshot(client: AsyncClie
     await _seed_variables(client, headers, ctx["project_id"], ["port_name", "baud_rate", "shot_name"])
     async with SessionLocal() as db:
         profile_id, release_id = await _make_profile(db, ctx["project_id"])
-        membership = await db.get(TestSuiteCase, memberships[0])
-        assert membership is not None
-        db.add(
-            AppProfileNodeOverride(
-                profile_id=profile_id,
-                target_type="assertion",
-                suite_id=suite_id,
-                case_id=ctx["case_id"],
-                suite_case_id=membership.id,
-                node_key=A1,
-                patch={"variable_overrides": {"expected_port": "ASSERT_VALUE"}},
-            )
-        )
         await db.commit()
+        project = await db.get(Project, ctx["project_id"])
+    patched = await _patch_profile_variables(
+        client, headers, profile_id, memberships[0],
+        [{"name": "expected_port", "value": "ASSERT_VALUE"}],
+    )
+    assert patched.status_code == 200, patched.text
+    async with SessionLocal() as db:
         project = await db.get(Project, ctx["project_id"])
         result = await resolve(
             ResolutionRequest(
                 project_id=ctx["project_id"], profile_id=profile_id, release_id=release_id,
                 target_type="suite", target_ids=[suite_id],
-                expected_profile_revision=1,
+                expected_profile_revision=2,
                 expected_test_asset_revision=project.test_asset_revision if project else 1,
             ),
             db,
@@ -424,6 +420,7 @@ async def test_execution_parameters_win_over_membership_override(client: AsyncCl
     await _seed_variables(client, headers, ctx["project_id"], ["expected_port", "baud_rate", "shot_name"])
     async with SessionLocal() as db:
         profile_id, release_id = await _make_profile(db, ctx["project_id"])
+        await db.commit()
         project = await db.get(Project, ctx["project_id"])
         result = await resolve(
             ResolutionRequest(
@@ -438,7 +435,7 @@ async def test_execution_parameters_win_over_membership_override(client: AsyncCl
     assert result.suites[0].cases[0].flow_snapshot[0]["params"]["value"] == "FROM_EXECUTION"
 
 
-# ---------- APP 档案节点级覆盖 ----------
+# ---------- APP 档案 occurrence 级覆盖 ----------
 
 
 async def _patch_profile_variables(
@@ -467,14 +464,14 @@ async def test_profile_duplicate_occurrences_do_not_pollute_each_other(client: A
     first, second = memberships
     r1 = await _patch_profile_variables(
         client, headers, profile_id, first,
-        [{"node_type": "step", "node_key": K1, "name": "port_name", "value": "P1"}],
+        [{"name": "port_name", "value": "P1"}],
     )
     assert r1.status_code == 200
     assert r1.json()["profile_revision"] == 2
 
     r2 = await _patch_profile_variables(
         client, headers, profile_id, second,
-        [{"node_type": "step", "node_key": K1, "name": "port_name", "value": "P2"}],
+        [{"name": "port_name", "value": "P2"}],
         revision=2,
     )
     assert r2.status_code == 200
@@ -491,9 +488,87 @@ async def test_profile_duplicate_occurrences_do_not_pollute_each_other(client: A
     ).json()
     assert d1["variables"][0]["references"][0]["override_value"] == "P1"
     assert d2["variables"][0]["references"][0]["override_value"] == "P2"
+    root = (await client.get(f"/api/app-profiles/{profile_id}/workspace", headers=headers)).json()
+    suite_row = next(item for item in root["items"] if item["id"] == suite_id)
+    assert suite_row["override_count"] == 2
+    assert suite_row["effective_status"] == "overridden"
+    differences = (await client.get(
+        f"/api/app-profiles/{profile_id}/differences?type=overridden&target_type=variable",
+        headers=headers,
+    )).json()
+    assert differences["total"] == 2
+    assert all("编排项变量" in item["path"] for item in differences["items"])
 
 
-async def test_profile_variable_batch_revision_conflict_and_invalid_rollback(client: AsyncClient):
+async def test_profile_occurrence_override_is_used_in_snapshot_and_execution_wins(client: AsyncClient):
+    headers = await _login(client, OWNER)
+    ctx = await _project_with_case(client, headers)
+    suite_id, memberships = await _suite_with_memberships(
+        client, headers, ctx["project_id"], ctx["case_id"], times=2
+    )
+    await _seed_variables(
+        client, headers, ctx["project_id"], ["port_name", "expected_port", "baud_rate", "shot_name"]
+    )
+    async with SessionLocal() as db:
+        profile_id, release_id = await _make_profile(db, ctx["project_id"])
+        await db.commit()
+        project = await db.get(Project, ctx["project_id"])
+    first, second = memberships
+    assert (await _patch_profile_variables(
+        client, headers, profile_id, first, [{"name": "port_name", "value": "PROFILE_ONE"}],
+    )).status_code == 200
+    # The second occurrence is untouched and therefore must retain the inherited value.
+    async with SessionLocal() as db:
+        result = await resolve(
+            ResolutionRequest(
+                project_id=ctx["project_id"], profile_id=profile_id, release_id=release_id,
+                target_type="suite", target_ids=[suite_id], expected_profile_revision=2,
+                expected_test_asset_revision=project.test_asset_revision if project else 1,
+            ), db,
+        )
+    values = [case.flow_snapshot[0]["params"]["value"] for case in result.suites[0].cases]
+    assert values == ["PROFILE_ONE", "base_port_name"]
+
+
+async def test_new_reference_inherits_saved_occurrence_override(client: AsyncClient):
+    headers = await _login(client, OWNER)
+    ctx = await _project_with_case(client, headers)
+    suite_id, memberships = await _suite_with_memberships(
+        client, headers, ctx["project_id"], ctx["case_id"]
+    )
+    await _seed_variables(
+        client, headers, ctx["project_id"], ["port_name", "expected_port", "baud_rate", "shot_name"]
+    )
+    async with SessionLocal() as db:
+        profile_id, release_id = await _make_profile(db, ctx["project_id"])
+        await db.commit()
+
+    patched = await _patch_profile_variables(
+        client, headers, profile_id, memberships[0],
+        [{"name": "port_name", "value": "OCCURRENCE_VALUE"}],
+    )
+    assert patched.status_code == 200
+
+    detail = (await client.get(f"/api/cases/{ctx['case_id']}", headers=headers)).json()
+    steps = detail["steps"]
+    steps.append({"order": 4, "action": "screenshot", "params": {"filename": "${port_name}"}})
+    updated = await client.put(
+        f"/api/cases/{ctx['case_id']}", json={"steps": steps}, headers=headers
+    )
+    assert updated.status_code == 200, updated.text
+
+    async with SessionLocal() as db:
+        project = await db.get(Project, ctx["project_id"])
+        result = await resolve(
+            ResolutionRequest(
+                project_id=ctx["project_id"], profile_id=profile_id, release_id=release_id,
+                target_type="suite", target_ids=[suite_id], expected_profile_revision=2,
+                expected_test_asset_revision=project.test_asset_revision if project else 1,
+            ), db,
+        )
+    assert result.suites[0].cases[0].flow_snapshot[-1]["params"]["filename"] == "OCCURRENCE_VALUE"
+
+async def test_profile_variable_batch_revision_conflict_and_uniform_updates(client: AsyncClient):
     headers = await _login(client, OWNER)
     ctx = await _project_with_case(client, headers)
     suite_id, memberships = await _suite_with_memberships(
@@ -506,27 +581,27 @@ async def test_profile_variable_batch_revision_conflict_and_invalid_rollback(cli
 
     ok = await _patch_profile_variables(
         client, headers, profile_id, membership,
-        [{"node_type": "step", "node_key": K1, "name": "port_name", "value": "A"}],
+        [{"name": "port_name", "value": "A"}],
     )
     assert ok.status_code == 200
 
     conflict = await _patch_profile_variables(
         client, headers, profile_id, membership,
-        [{"node_type": "step", "node_key": K1, "name": "port_name", "value": "B"}],
+        [{"name": "port_name", "value": "B"}],
         revision=1,
     )
     assert conflict.status_code == 409
 
-    # 第二条更新无效（变量未被该节点引用）→ 整体回滚，第一条不落库
-    invalid = await _patch_profile_variables(
+    # 变量级 API 对当前用例引用的变量统一写入，一次事务推进一次 revision。
+    updated = await _patch_profile_variables(
         client, headers, profile_id, membership,
         [
-            {"node_type": "step", "node_key": K2, "name": "baud_rate", "value": "9600"},
-            {"node_type": "step", "node_key": K2, "name": "shot_name", "value": "x"},
+            {"name": "baud_rate", "value": "9600"},
+            {"name": "shot_name", "value": "x"},
         ],
         revision=2,
     )
-    assert invalid.status_code == 422
+    assert updated.status_code == 200
 
     detail = (
         await client.get(
@@ -534,12 +609,13 @@ async def test_profile_variable_batch_revision_conflict_and_invalid_rollback(cli
         )
     ).json()
     baud = next(item for item in detail["variables"] if item["name"] == "baud_rate")
-    assert baud["references"][0]["override_enabled"] is False
+    assert baud["references"][0]["override_enabled"] is True
+    assert baud["references"][0]["override_value"] == "9600"
     revisions = (await client.get(f"/api/app-profiles/{profile_id}", headers=headers)).json()
-    assert revisions["revision"] == 2
+    assert revisions["revision"] == 3
 
 
-async def test_profile_variable_batch_same_value_and_mixed_status(client: AsyncClient):
+async def test_profile_variable_batch_is_uniform_across_references(client: AsyncClient):
     headers = await _login(client, OWNER)
     ctx = await _project_with_case(client, headers)
     suite_id, memberships = await _suite_with_memberships(
@@ -550,41 +626,35 @@ async def test_profile_variable_batch_same_value_and_mixed_status(client: AsyncC
         await db.commit()
     membership = memberships[0]
 
-    # port_name 被 K1/K2 两个节点引用：先给不同值 → mixed
+    # port_name 被 K1/K2 两个节点引用：occurrence 只有一个统一值
     response = await _patch_profile_variables(
         client, headers, profile_id, membership,
         [
-            {"node_type": "step", "node_key": K1, "name": "port_name", "value": "A"},
-            {"node_type": "step", "node_key": K2, "name": "port_name", "value": "B"},
+            {"name": "port_name", "value": "B"},
         ],
     )
     assert response.status_code == 200
     port = next(item for item in response.json()["variables"] if item["name"] == "port_name")
-    assert port["status"] == "mixed"
+    assert port["status"] == "overridden"
     assert port["reference_count"] == 2
 
-    # 全部设为同一值 → overridden
+    # 更新同一 occurrence 的统一值
     same = await _patch_profile_variables(
         client, headers, profile_id, membership,
-        [
-            {"node_type": "step", "node_key": K1, "name": "port_name", "value": "SAME"},
-            {"node_type": "step", "node_key": K2, "name": "port_name", "value": "SAME"},
-        ],
+        [{"name": "port_name", "value": "SAME"}],
         revision=2,
     )
     port_same = next(item for item in same.json()["variables"] if item["name"] == "port_name")
     assert port_same["status"] == "overridden"
 
-    # null 删除该节点覆盖，另一节点保留
+    # null 删除 occurrence 覆盖，所有引用都恢复继承
     removed = await _patch_profile_variables(
         client, headers, profile_id, membership,
-        [{"node_type": "step", "node_key": K1, "name": "port_name", "value": None}],
+        [{"name": "port_name", "value": None}],
         revision=3,
     )
     refs = next(item for item in removed.json()["variables"] if item["name"] == "port_name")["references"]
-    by_key = {ref["node_key"]: ref for ref in refs}
-    assert by_key[K1]["override_enabled"] is False
-    assert by_key[K2]["override_enabled"] is True
+    assert not any(ref["override_enabled"] for ref in refs)
 
 
 async def test_profile_variable_override_requires_owner_or_admin(client: AsyncClient):
@@ -617,12 +687,12 @@ async def test_profile_variable_override_requires_owner_or_admin(client: AsyncCl
     # 写入维持 Owner/Admin
     forbidden = await _patch_profile_variables(
         client, member_headers, profile_id, memberships[0],
-        [{"node_type": "step", "node_key": K1, "name": "port_name", "value": "X"}],
+        [{"name": "port_name", "value": "X"}],
     )
     assert forbidden.status_code == 403
 
 
-async def test_removing_membership_cascades_node_overrides(client: AsyncClient):
+async def test_removing_membership_cascades_occurrence_variable_overrides(client: AsyncClient):
     headers = await _login(client, OWNER)
     ctx = await _project_with_case(client, headers)
     suite_id, memberships = await _suite_with_memberships(
@@ -634,7 +704,7 @@ async def test_removing_membership_cascades_node_overrides(client: AsyncClient):
     membership = memberships[0]
     saved = await _patch_profile_variables(
         client, headers, profile_id, membership,
-        [{"node_type": "step", "node_key": K1, "name": "port_name", "value": "A"}],
+        [{"name": "port_name", "value": "A"}],
     )
     assert saved.status_code == 200
 
@@ -646,8 +716,8 @@ async def test_removing_membership_cascades_node_overrides(client: AsyncClient):
     async with SessionLocal() as db:
         rows = (
             await db.execute(
-                select(AppProfileNodeOverride).where(
-                    AppProfileNodeOverride.suite_case_id == membership
+                select(AppProfileSuiteCaseVariableOverride).where(
+                    AppProfileSuiteCaseVariableOverride.suite_case_id == membership
                 )
             )
         ).scalars().all()
@@ -707,8 +777,7 @@ async def test_patch_exposes_profile_revision_and_restores_to_inherited(client: 
     saved = await _patch_profile_variables(
         client, headers, profile_id, membership,
         [
-            {"node_type": "step", "node_key": K1, "name": "port_name", "value": "P1"},
-            {"node_type": "step", "node_key": K2, "name": "port_name", "value": "P1"},
+            {"name": "port_name", "value": "P1"},
         ],
     )
     assert saved.status_code == 200, saved.text
@@ -722,8 +791,7 @@ async def test_patch_exposes_profile_revision_and_restores_to_inherited(client: 
     restored = await _patch_profile_variables(
         client, headers, profile_id, membership,
         [
-            {"node_type": "step", "node_key": K1, "name": "port_name", "value": None},
-            {"node_type": "step", "node_key": K2, "name": "port_name", "value": None},
+            {"name": "port_name", "value": None},
         ],
         revision=saved_body["profile_revision"],
     )

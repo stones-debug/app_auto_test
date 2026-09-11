@@ -10,6 +10,7 @@ from app.models import (
     AppProfileElementOverride,
     AppProfileNodeOverride,
     AppProfileSkipRule,
+    AppProfileSuiteCaseVariableOverride,
     AppProfileVariableOverride,
     TestCase,
     TestElement,
@@ -26,12 +27,13 @@ async def load_config(db: AsyncSession, profile_id: int) -> dict:
     for model in (
         AppProfileSkipRule, AppProfileElementOverride,
         AppProfileVariableOverride, AppProfileNodeOverride,
+        AppProfileSuiteCaseVariableOverride,
     ):
         rows = await db.execute(
             select(model).where(model.profile_id == profile_id, model.deleted_at.is_(None))
         )
         loaded.append(list(rows.scalars().all()))
-    skip_rules, element_overrides, variable_overrides, node_overrides = loaded
+    skip_rules, element_overrides, variable_overrides, node_overrides, occurrence_variables = loaded
     skip_suite: dict[int, Any] = {}
     skip_case: dict[tuple[int, int], Any] = {}
     step_rules: dict[tuple[int, int], dict[str, Any]] = {}
@@ -50,6 +52,9 @@ async def load_config(db: AsyncSession, profile_id: int) -> dict:
     step_overrides: dict[int, dict[str, dict[str, Any]]] = {}
     assertion_overrides: dict[int, dict[str, dict[str, Any]]] = {}
     suite_step_overrides: dict[tuple[int, str], dict[str, Any]] = {}
+    occurrence_variable_overrides: dict[int, dict[str, str]] = {}
+    for row in occurrence_variables:
+        occurrence_variable_overrides.setdefault(row.suite_case_id, {})[row.name] = row.value
     for override in node_overrides:
         if override.target_type == "suite_step":
             if override.suite_id is not None:
@@ -63,6 +68,7 @@ async def load_config(db: AsyncSession, profile_id: int) -> dict:
         "assertion_rules": assertion_rules, "skip_suite_step": skip_suite_step,
         "element_overrides": {row.element_id: row for row in element_overrides},
         "variable_overrides": {row.name: row.value for row in variable_overrides},
+        "occurrence_variable_overrides": occurrence_variable_overrides,
         "membership_step_overrides": step_overrides,
         "membership_assertion_overrides": assertion_overrides,
         "suite_step_overrides": suite_step_overrides,
@@ -251,15 +257,25 @@ async def load_skip_index(db: AsyncSession, profile_id: int) -> dict:
 
 async def load_override_index(db: AsyncSession, profile_id: int) -> dict:
     loaded = []
-    for model in (AppProfileElementOverride, AppProfileVariableOverride, AppProfileNodeOverride):
+    for model in (
+        AppProfileElementOverride,
+        AppProfileVariableOverride,
+        AppProfileNodeOverride,
+        AppProfileSuiteCaseVariableOverride,
+    ):
         rows = await db.execute(select(model).where(model.profile_id == profile_id, model.deleted_at.is_(None)))
         loaded.append(list(rows.scalars().all()))
-    element_rows, variable_rows, node_rows = loaded
+    element_rows, variable_rows, node_rows, occurrence_variable_rows = loaded
     node_idx: dict[tuple[int, int], dict[str, str]] = {}
     membership_idx: dict[int, dict[str, str]] = {}
     suite_step_idx: dict[tuple[int, str], dict] = {}
     node_patches: dict[tuple[int, int, str], dict] = {}
     membership_patches: dict[int, dict[str, dict]] = {}
+    occurrence_variables: dict[int, list[dict[str, str]]] = {}
+    for row in occurrence_variable_rows:
+        occurrence_variables.setdefault(row.suite_case_id, []).append(
+            {"name": row.name, "value": row.value}
+        )
     for row in node_rows:
         if row.target_type == "suite_step" and row.suite_id is not None:
             suite_step_idx[(row.suite_id, str(row.node_key))] = row.patch
@@ -277,6 +293,7 @@ async def load_override_index(db: AsyncSession, profile_id: int) -> dict:
         "node_patches": node_patches,
         "membership": membership_idx,
         "membership_patches": membership_patches,
+        "occurrence_variables": occurrence_variables,
         "suite_step": suite_step_idx,
     }
 
@@ -309,9 +326,37 @@ async def override_counts(db: AsyncSession, profile_id: int) -> dict[int, int]:
             AppProfileNodeOverride.suite_id.is_not(None),
         ).group_by(AppProfileNodeOverride.suite_id)
     )
-    return {
+    counts = {
         suite_id: count for suite_id, count in rows.tuples().all() if suite_id is not None
     }
+    occurrence_rows = await db.execute(
+        select(TestSuiteCase.suite_id, func.count(AppProfileSuiteCaseVariableOverride.id))
+        .join(
+            AppProfileSuiteCaseVariableOverride,
+            AppProfileSuiteCaseVariableOverride.suite_case_id == TestSuiteCase.id,
+        )
+        .where(
+            AppProfileSuiteCaseVariableOverride.profile_id == profile_id,
+            AppProfileSuiteCaseVariableOverride.deleted_at.is_(None),
+        )
+        .group_by(TestSuiteCase.suite_id)
+    )
+    for suite_id, count in occurrence_rows.tuples().all():
+        counts[suite_id] = counts.get(suite_id, 0) + count
+    return counts
+
+
+async def difference_occurrence_names(
+    db: AsyncSession, suite_case_ids: set[int]
+) -> dict[int, tuple[int, int]]:
+    if not suite_case_ids:
+        return {}
+    rows = await db.execute(
+        select(TestSuiteCase.id, TestSuiteCase.suite_id, TestSuiteCase.case_id).where(
+            TestSuiteCase.id.in_(suite_case_ids)
+        )
+    )
+    return {membership_id: (suite_id, case_id) for membership_id, suite_id, case_id in rows.all()}
 
 
 async def diff_counts(

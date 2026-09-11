@@ -247,10 +247,10 @@ class ProfileSuiteCaseVariablesOut(BaseModel):
 
 
 class ProfileVariableUpdateItem(BaseModel):
-    node_type: Literal["step", "assertion"]
-    node_key: str
+    model_config = {"extra": "forbid"}
+
     name: str
-    # null 表示删除该节点上的变量覆盖
+    # null 表示删除当前 occurrence 上的变量覆盖
     value: str | None = None
 
 

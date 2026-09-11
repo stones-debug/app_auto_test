@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.core.database import SessionLocal
 from app.main import app
-from app.models import AppProfileAuditLog
+from app.models import AppProfileAuditLog, AppProfileSuiteCaseVariableOverride
 
 OWNER = {"username": "pytest_profiles", "email": "profiles@tl-tek.com", "password": "test123"}
 MEMBER = {"username": "pytest_profiles_member", "email": "profiles_m@tl-tek.com", "password": "test123"}
@@ -195,7 +195,9 @@ async def test_overrides(client: AsyncClient):
     el_id = (await client.post(f"/api/projects/{pid}/elements", json={"name": "按钮", "locator_type": "id", "locator_value": "common"}, headers=h)).json()["id"]
     case_id = (await client.post(f"/api/projects/{pid}/cases", json={"name": "用B", "steps": [{"order": 1, "action": "click", "element_id": el_id, "params": {}}], "assertions": []}, headers=h)).json()["id"]
     suite_id = (await client.post(f"/api/projects/{pid}/suites", json={"name": "覆盖套件"}, headers=h)).json()["id"]
-    await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)
+    membership_id = (await client.post(
+        f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h,
+    )).json()[0]["id"]
     node_key = str(uuid.uuid4())
     # 给用例加一个含该 node_key 的步骤
     await client.put(f"/api/cases/{case_id}", json={"steps": [{"order": 1, "key": node_key, "action": "click", "element_id": el_id, "params": {}}]}, headers=h)
@@ -226,7 +228,7 @@ async def test_overrides(client: AsyncClient):
     assert r.status_code == 200
     assert r.json()["revision"] == 3
     # 节点覆盖
-    r = await client.put(f"/api/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/step/{node_key}", json={"expected_revision": 3, "patch": {"params": {"wait_timeout": 20}}}, headers=h)
+    r = await client.put(f"/api/app-profiles/{profile_id}/node-overrides/{membership_id}/step/{node_key}", json={"expected_revision": 3, "patch": {"params": {"wait_timeout": 20}}}, headers=h)
     assert r.status_code == 200
     assert r.json()["revision"] == 4
     listed = await client.get(f"/api/app-profiles/{profile_id}/overrides", headers=h)
@@ -243,10 +245,10 @@ async def test_overrides(client: AsyncClient):
     assert without_nodes.json()["variables"][0]["name"] == "PKG"
     assert without_nodes.json()["nodes"] == []
     # 非法 patch（改 order）→ 422
-    bad = await client.put(f"/api/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/step/{node_key}", json={"expected_revision": 4, "patch": {"order": 5}}, headers=h)
+    bad = await client.put(f"/api/app-profiles/{profile_id}/node-overrides/{membership_id}/step/{node_key}", json={"expected_revision": 4, "patch": {"order": 5}}, headers=h)
     assert bad.status_code == 422
     missing = await client.put(
-        f"/api/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/step/{uuid.uuid4()}",
+        f"/api/app-profiles/{profile_id}/node-overrides/{membership_id}/step/{uuid.uuid4()}",
         json={"expected_revision": 4, "patch": {"params": {"wait_timeout": 10}}},
         headers=h,
     )
@@ -268,9 +270,17 @@ async def test_overrides(client: AsyncClient):
     got = await client.get(f"/api/app-profiles/{profile_id}", headers=h)
     assert got.json()["revision"] == 5
 
+    async with SessionLocal() as db:
+        db.add(AppProfileSuiteCaseVariableOverride(
+            profile_id=profile_id, suite_case_id=membership_id, name="PKG", value="occurrence"
+        ))
+        await db.commit()
+    counted = await client.get(f"/api/app-profiles/{profile_id}", headers=h)
+    assert counted.json()["override_counts"]["variable"] == 2
 
-async def test_step_variable_override_api_validates_references(client: AsyncClient):
-    """变量覆盖是步骤级补丁，必须匹配源参数中的变量且拒绝断言。"""
+
+async def test_node_override_api_rejects_variable_overrides(client: AsyncClient):
+    """节点覆盖只允许正常节点字段，变量必须走 occurrence API。"""
     token = await _register(client, {"username": f"pytest_var_{uuid.uuid4().hex[:8]}", "email": f"var_{uuid.uuid4().hex[:8]}@tl-tek.com", "password": "test123"})
     h = {"Authorization": f"Bearer {token}"}
     pid = (await client.post("/api/projects", json={"name": "步骤变量项目"}, headers=h)).json()["id"]
@@ -285,17 +295,68 @@ async def test_step_variable_override_api_validates_references(client: AsyncClie
     assert case_resp.status_code == 201, case_resp.text
     case_id = case_resp.json()["id"]
     suite_id = (await client.post(f"/api/projects/{pid}/suites", json={"name": "变量套件"}, headers=h)).json()["id"]
-    await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)
+    membership_id = (await client.post(
+        f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h,
+    )).json()[0]["id"]
     valid = await client.put(
-        f"/api/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/step/{node_key}",
+        f"/api/app-profiles/{profile_id}/node-overrides/{membership_id}/step/{node_key}",
         json={"expected_revision": 1, "patch": {"variable_overrides": {"pkg": ""}}}, headers=h,
     )
-    assert valid.status_code == 200, valid.text
+    assert valid.status_code == 422, valid.text
     unknown = await client.put(
-        f"/api/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/step/{node_key}",
-        json={"expected_revision": 2, "patch": {"variable_overrides": {"other": "x"}}}, headers=h,
+        f"/api/app-profiles/{profile_id}/node-overrides/{membership_id}/step/{node_key}",
+        json={"expected_revision": 1, "patch": {"variable_overrides": {"other": "x"}}}, headers=h,
     )
     assert unknown.status_code == 422
+
+
+async def test_node_override_uses_exact_duplicate_occurrence(client: AsyncClient):
+    token = await _register(client, OWNER)
+    h = {"Authorization": f"Bearer {token}"}
+    pid = (await client.post("/api/projects", json={"name": "精确 occurrence"}, headers=h)).json()["id"]
+    profile_id = (await client.post(
+        f"/api/projects/{pid}/app-profiles",
+        json={"name": "精确", "code": f"exact{uuid.uuid4().hex[:6]}"}, headers=h,
+    )).json()["id"]
+    element_id = (await client.post(
+        f"/api/projects/{pid}/elements",
+        json={"name": "按钮", "locator_type": "id", "locator_value": "button"}, headers=h,
+    )).json()["id"]
+    node_key = str(uuid.uuid4())
+    case_id = (await client.post(
+        f"/api/projects/{pid}/cases",
+        json={"name": "重复用例", "steps": [{"key": node_key, "order": 1, "action": "click", "element_id": element_id, "params": {}}]},
+        headers=h,
+    )).json()["id"]
+    suite_id = (await client.post(
+        f"/api/projects/{pid}/suites", json={"name": "重复套件"}, headers=h,
+    )).json()["id"]
+    first = (await client.post(
+        f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h,
+    )).json()[0]["id"]
+    second = (await client.post(
+        f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h,
+    )).json()[0]["id"]
+    patched = await client.put(
+        f"/api/app-profiles/{profile_id}/node-overrides/{second}/step/{node_key}",
+        json={"expected_revision": 1, "patch": {"params": {"wait_timeout": 20}}}, headers=h,
+    )
+    assert patched.status_code == 200, patched.text
+    first_nodes = await client.get(
+        f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=case&parent_id={case_id}&ancestor_suite_id={suite_id}&suite_case_id={first}",
+        headers=h,
+    )
+    second_nodes = await client.get(
+        f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=case&parent_id={case_id}&ancestor_suite_id={suite_id}&suite_case_id={second}",
+        headers=h,
+    )
+    assert first_nodes.json()["items"][0]["override_template"]["params"].get("wait_timeout") != 20
+    assert second_nodes.json()["items"][0]["override_template"]["params"]["wait_timeout"] == 20
+    restored = await client.request(
+        "DELETE", f"/api/app-profiles/{profile_id}/node-overrides/{second}/step/{node_key}",
+        json={"expected_revision": 2}, headers=h,
+    )
+    assert restored.status_code == 204
 
 
 async def test_element_override_smart(client: AsyncClient):
@@ -782,7 +843,9 @@ async def test_workspace_step_element_name_uses_node_patch_and_missing_fallback(
         }]}, headers=h,
     )).json()["id"]
     suite_id = (await client.post(f"/api/projects/{pid}/suites", json={"name": "元素套件"}, headers=h)).json()["id"]
-    await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)
+    membership_id = (await client.post(
+        f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h,
+    )).json()[0]["id"]
 
     initial = await client.get(
         f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=case&parent_id={case_id}&ancestor_suite_id={suite_id}", headers=h,
@@ -791,7 +854,7 @@ async def test_workspace_step_element_name_uses_node_patch_and_missing_fallback(
     assert (step["element_id"], step["element_name"]) == (first, "初始元素")
 
     patched = await client.put(
-        f"/api/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/step/{node_key}",
+        f"/api/app-profiles/{profile_id}/node-overrides/{membership_id}/step/{node_key}",
         json={"expected_revision": 1, "patch": {"element_id": second}}, headers=h,
     )
     assert patched.status_code == 200, patched.text
@@ -802,7 +865,7 @@ async def test_workspace_step_element_name_uses_node_patch_and_missing_fallback(
     assert (step["element_id"], step["element_name"]) == (second, "覆盖元素")
 
     missing = await client.put(
-        f"/api/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/step/{node_key}",
+        f"/api/app-profiles/{profile_id}/node-overrides/{membership_id}/step/{node_key}",
         json={"expected_revision": 2, "patch": {"element_id": 999999999}}, headers=h,
     )
     assert missing.status_code == 200, missing.text

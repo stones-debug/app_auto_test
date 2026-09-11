@@ -243,6 +243,44 @@ class AppProfileVariableOverride(Base, TimestampMixin, SoftDeleteMixin):
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
 
 
+class AppProfileSuiteCaseVariableOverride(Base, TimestampMixin, SoftDeleteMixin):
+    """APP 档案对单个套件编排项的变量覆盖。
+
+    ``suite_case_id`` 是 occurrence 身份；同一用例在不同套件、或同一套件
+    的重复编排，均拥有互不共享的档案变量值。
+    """
+
+    __tablename__ = "app_profile_suite_case_variable_overrides"
+    __table_args__ = (
+        CheckConstraint("name <> ''", name="ck_profile_suite_case_variable_name"),
+        Index(
+            "uq_profile_suite_case_variable_override_active",
+            "profile_id",
+            "suite_case_id",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "idx_profile_suite_case_variable_override_membership",
+            "suite_case_id",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    profile_id: Mapped[int] = mapped_column(
+        ForeignKey("app_profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    suite_case_id: Mapped[int] = mapped_column(
+        ForeignKey("test_suite_cases.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    value: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+
+
 class AppProfileNodeOverride(Base, TimestampMixin, SoftDeleteMixin):
     """步骤/断言可变字段的白名单补丁，不允许修改节点身份与顺序（方案 §2.4）。
 
@@ -327,7 +365,7 @@ class AppProfileAuditLog(Base):
             " 'skip_batch', 'restore_batch', 'element_override_upsert',"
             " 'element_override_restore', 'variable_override_upsert',"
             " 'variable_override_restore', 'node_override_upsert', 'node_override_restore',"
-            " 'node_override_batch')",
+            " 'node_override_batch', 'occurrence_variable_override_batch')",
             name="ck_profile_audit_action",
         ),
         CheckConstraint("jsonb_typeof(changes) = 'array'", name="ck_profile_audit_changes"),
@@ -343,7 +381,7 @@ class AppProfileAuditLog(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False)
     request_id: Mapped[str] = mapped_column(nullable=False)
     batch_id: Mapped[str | None] = mapped_column(nullable=True)
-    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
     actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     actor_role: Mapped[str | None] = mapped_column(String(16))
     revision_before: Mapped[int] = mapped_column(BigInteger, nullable=False)

@@ -52,7 +52,6 @@ from app.services.profile_resolver_nodes import (
     render_value,
     runtime_variable_names,
     validate_node_patch,
-    validate_variable_override,
     variable_references,
 )
 from app.services.profile_resolver_nodes import (
@@ -590,6 +589,10 @@ async def _resolve_case(
     variables = await _merge_variables(
         db, request.project_id, suite_id, case, config, request.execution_variables, load_context,
         case_occurrence=case_order, membership_overrides=membership_overrides,
+        occurrence_profile_overrides=(
+            config.get("occurrence_variable_overrides", {}).get(membership_id, {})
+            if membership_id is not None else {}
+        ),
     )
     selected_steps = _select_steps_for_run(case.flow_nodes or case.steps or [], request.run_options)
     step_overrides = _membership_scoped(config, membership_id, "step")
@@ -597,6 +600,8 @@ async def _resolve_case(
     override_count = len(
         {str(node.get("key") or "") for node in selected_steps if isinstance(node, dict)} & set(step_overrides)
     )
+    if membership_id is not None:
+        override_count += len(config.get("occurrence_variable_overrides", {}).get(membership_id, {}))
     source_assertions = [node for node in selected_steps if node.get("kind") == "assertion"]
     override_count += len(
         {str(node.get("key") or "") for node in source_assertions} & set(assertion_overrides)
@@ -605,7 +610,6 @@ async def _resolve_case(
     exclusions: list[ExclusionItem] = []
     runtime_variables: set[str] = set()
     for node in selected_steps:
-        source_node = node
         is_assertion = node.get("kind") == "assertion" or "type" in node
         node_type = "assertion" if is_assertion else "step"
         rules = config["assertion_rules" if is_assertion else "step_rules"].get((suite_id, case.id), {})
@@ -619,13 +623,7 @@ async def _resolve_case(
         if not kept:
             continue
         node = kept[0]
-        variable_patch = node.pop("variable_overrides", None)
-        if variable_patch is not None:
-            # 动作与断言节点都支持变量覆盖，边界为该节点参数里真实引用的 ${name}
-            variable_patch = validate_variable_override(source_node, variable_patch)
         render_variables = dict(variables)
-        if variable_patch:
-            render_variables.update(variable_patch)
         render_variables.update(request.execution_variables)
         rendered = _render_node_with_context(node, render_variables, case.name, runtime_variables)
         validated = _registry_validate_assertion(rendered) if is_assertion else _registry_validate_step(rendered)
@@ -704,13 +702,7 @@ async def _parse_suite_steps(
         )
         steps: list[dict] = []
         for node in kept:
-            source_node = node
-            variable_patch = node.pop("variable_overrides", None)
-            if variable_patch is not None:
-                variable_patch = validate_variable_override(source_node, variable_patch)
             render_variables = dict(variables)
-            if variable_patch:
-                render_variables.update(variable_patch)
             render_variables.update(execution_variables)
             rendered = _render_node_with_context(node, render_variables, suite_name, runtime_variables)
             validated = _registry_validate_step(rendered)

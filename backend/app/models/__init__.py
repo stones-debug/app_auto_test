@@ -7,6 +7,7 @@ from app.models.app_profile import (
     AppProfileNodeOverride,
     AppProfileRelease,
     AppProfileSkipRule,
+    AppProfileSuiteCaseVariableOverride,
     AppProfileVariableOverride,
     ExecutionExclusion,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "AppProfileAuditLog",
     "AppProfileElementOverride",
     "AppProfileNodeOverride",
+    "AppProfileSuiteCaseVariableOverride",
     "AppProfileRelease",
     "AppProfileSkipRule",
     "AppProfileVariableOverride",

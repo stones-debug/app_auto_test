@@ -77,26 +77,26 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 - `ExecutionAssertion` 直接关联 `execution_step_id`，`assertion_order` 在同一步骤内排序。用例资产只保存 `steps`，每个步骤以 `assertions` 子数组配置动作成功后立即执行的断言；Agent 上报使用 `execution_step_id` + `execution_assertion_id`，不再存在用例级 `assertions` / `assertions_snapshot`。
 - `ExecutionCase` 必填 `execution_suite_id` + `case_order`；同一 `case_id` 可在不同套件重复出现（取消跨套件去重）。
 - 单用例无套件上下文时建**虚拟套件**（`ExecutionSuite.is_virtual=True, suite_id IS NULL`）；带 `context_suite_id` 时用指定套件规则。
-- 解析器 `profile_resolver.ResolutionResult.suites: list[ResolvedSuite]`（不再扁平 cases，`cases` 仅为兼容属性）。节点覆盖以 `(suite_id, case_id)` 区分，避免共享用例跨套件污染；套件步跳过/覆盖用 `target_type='suite_step'` + `(suite_id, node_key)`。
+- 解析器 `profile_resolver.ResolutionResult.suites: list[ResolvedSuite]`（不再扁平 cases，`cases` 仅为兼容属性）。节点覆盖以 `suite_case_id` 精确区分 occurrence，避免共享用例跨套件/重复编排污染；套件步跳过/覆盖用 `target_type='suite_step'` + `(suite_id, node_key)`。
 - 报告三层统计：用例（`total/passed/...`）+ 套件（`suite_*`）+ 步骤（`step_*`），N/A 不入任何成功率分母；`not_applicable_suites` 单列。
 - 执行详情/报告详情响应由扁平 `cases` 改为嵌套 `suites`（`load_suite_tree`）；报告服务保留 `cases`（`load_case_tree`）供 HTML/列表，`suites` 供分层展示。
 - 执行状态优先级：`error > failed > stopped > skipped > passed`；套件前置失败则套件内用例 `skipped` 但套件后置仍执行。
 
 ## 用例变量快捷展示与覆盖（套件编排项 / APP 档案节点）
 - **编排项身份是 `test_suite_cases.id`（`suite_case_id`）**：同一用例可在同一套件重复编排，变量/节点覆盖都按编排项隔离。APP 档案树、工作台子节点缓存键、前端 row key 全部用 `suite_case_id`（解析器里叫 `membership_*` 索引）。
-- `test_suite_cases.variable_overrides`（JSONB）是编排项级覆盖；`app_profile_node_overrides.suite_case_id` 绑定编排项，唯一键 `(profile_id, suite_case_id, target_type, node_key)`，套件前后置步骤该列恒空。
-- **变量优先级**：执行参数 > APP档案节点覆盖 > APP档案变量覆盖 > **编排项覆盖** > 套件变量 > 用例变量 > 项目变量 > 全局变量。`profile_resolver_load.merge_variables` 与 `repositories/worker.build_variable_map`、`_materialize_unprofiled_tree`（无档案执行同样应用编排项覆盖）三处必须一致。
-- **变量引用统一口径**：只扫动作/断言 `params|parameters` 里真实出现的 `${name}`（`node_variable_references`，会排除 `variable_name` 等运行时输出名），元素智能定位配置不纳入。动作与断言都支持 `variable_overrides`。
+- `test_suite_cases.variable_overrides`（JSONB）是编排项级覆盖；`app_profile_suite_case_variable_overrides` 是 APP 档案 occurrence 变量覆盖；`app_profile_node_overrides.suite_case_id` 仅绑定正常节点参数覆盖，唯一键 `(profile_id, suite_case_id, target_type, node_key)`，套件前后置步骤该列恒空。
+- **变量优先级**：执行参数 > APP 档案 occurrence 变量覆盖 > APP 档案全局变量覆盖 > **编排项覆盖** > 套件变量 > 用例变量 > 项目变量 > 全局变量。`profile_resolver_load.merge_variables` 与档案执行快照必须一致。
+- **变量引用统一口径**：只扫动作/断言 `params|parameters` 里真实出现的 `${name}`（`node_variable_references`，会排除 `variable_name` 等运行时输出名），元素智能定位配置不纳入。变量覆盖只允许 occurrence 级，节点/断言 `variable_overrides` 已取消。
 - 覆盖只改当前编排项 / 当前档案节点，不改公共用例；空字符串是合法覆盖值，`null` 表示删除覆盖恢复继承。
-- **「原值」必须是恢复后的真实取值**：节点覆盖之下还有两层，展示的继承值按 `编排项覆盖 → 档案变量覆盖` 依次叠加（`case_variable_service.apply_fixed_layer`，scope 标签 `occurrence` / `profile`）；否则行内展示的「原值」和点「恢复原值」之后的取值会对不上。
+- **「原值」必须是恢复后的真实取值**：展示的继承值按 `编排项覆盖 → 档案全局变量覆盖` 依次叠加，occurrence 档案变量覆盖再叠加在其上；恢复提交 `null` 后必须回到该继承值。
 - 列表接口口径分开：套件编排项 `GET /api/suites/{sid}/cases` 只带 `variable_count` + 前 2 项 `variables_preview`；**APP 档案工作台用例行带完整 `variables`**（含每个变量的全部引用节点及各自覆盖），因为档案侧要在行内竖排展示全部变量并就地编辑。
-- 完整详情仍走 `GET /api/suites/{sid}/cases/{membership_id}/variables`、`GET /api/app-profiles/{pid}/suite-cases/{suite_case_id}/variables`；写入分别走对应 `PATCH .../variable-overrides`（档案侧是批量事务：保留其它 patch 字段、空 patch 软删、单次 revision + 单条 `node_override_batch` 审计、无效整体回滚、revision 冲突 409）。
+- 完整详情仍走 `GET /api/suites/{sid}/cases/{membership_id}/variables`、`GET /api/app-profiles/{pid}/suite-cases/{suite_case_id}/variables`；档案写入 PATCH 的 `updates` 为 `[{name, value|null}]`，单次 revision + 单条审计，revision 冲突 409。
 - **档案写操作的响应版本号字段是 `profile_revision`**，没有 `revision`。`PATCH .../suite-cases/{id}/variable-overrides` 的 `response_model=ProfileSuiteCaseVariablesOut` 会丢掉服务端多余的 `revision` 键（GET 同构）。前端读成 `result.revision` 会把 `undefined` 写回 store，之后所有「`profileRevision == null` 就 return」的守卫会**静默短路**——第一次保存成功、第二次（含点「恢复」）连请求都不发。契约由 `frontend/src/__tests__/app-profile-variable-column.test.ts` 钉住。
 - **删除编排项必须先物理删除其节点覆盖**（FK 无 ON DELETE），见 `suite_service.remove_case` → `overrides_repo.delete_for_membership`。
 - 前端 `utils/caseVariables.ts` 是唯一口径：套件侧 `variablePreviewChips` / `buildOccurrenceUpdates`；档案侧 `variableOverrideState` / `variableDisplayText`（多值→「多个值」、空值区分「（空）」与「未定义」）/ `variableEditSeed` / `variableQuickUpdates`（值未变化返回 `null`，避免空提交推进 revision）/ `variableRestoreUpdates` / `buildVariableUpdates`。
 - `CaseVariableSummary.vue`、`CaseVariableEditor.vue` **只服务套件编排项**（`CaseVariableEditor` 已无 mode，仅编排项覆盖）。
 - APP 档案工作台的变量入口是**独立的「变量」列**（列序：名称 / 类型 / 阶段 / 生效状态 / **变量** / 原因 / 操作），只对用例行渲染，不再挂在用例名称旁边。单元格内竖排展示 `变量名：变量值`（多值→「多个值」、空值区分「（空）」/「未定义」）；**点右侧编辑图标进入编辑态**，编辑态给「保存 / 取消」按钮（回车=保存、Esc=取消），**不做失焦自动保存**（避免误触）；已覆盖的变量值后面带「恢复」按钮（提交 `null`）。契约由 `tests/app-profile-variable-column.test.ts` 钉住。
-- **档案侧没有逐节点粒度**：没有「应用到全部节点」，也不再有步骤行的「变量覆盖」弹窗（已移除，连同 `openVariableOverride` / `variableOverrideDialog`）。用户视角的语义就是「改这个变量在**当前编排项**里的取值」，写入时对该变量的全部引用节点统一赋同一个值（`buildVariableUpdates` → 批量 PATCH）；同一用例的其它编排项、其它套件与公共用例都不受影响。保存后只就地替换该编排项的变量列表，不重置滚动/排序/展开。
+- **档案侧没有逐节点粒度**：没有「应用到全部节点」，也不再有步骤行的「变量覆盖」弹窗。用户视角的语义就是「改这个变量在**当前编排项**里的取值」，写入 occurrence 表后该变量自动作用于所有引用节点；同一用例的其它编排项、其它套件与公共用例都不受影响。
 
 ## 编码测试规则（Step 门禁）
 - **测试只在整个 Step 全部子任务完成后才执行**。一个 Step 内若包含多个子步骤任务（后端接口 / 前端页面 / 迁移 / 文档等），必须等所有子任务都实现完成，才运行该 Step 的完整测试（后端 pytest / Agent pytest / 前端 vitest+build / ruff / alembic check）。

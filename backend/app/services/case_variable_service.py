@@ -17,7 +17,6 @@ from app.repositories.app_profiles import resolution as resolution_repo
 from app.services.profile_resolver_nodes import (
     ProfileRuleError,
     node_variable_references,
-    validate_node_patch,
 )
 
 # 列表接口只携带前 2 项摘要，避免用例很多时响应过大
@@ -185,14 +184,6 @@ def membership_preview(variables: list[dict[str, Any]]) -> dict[str, Any]:
     return {"variable_count": len(variables), "variables_preview": preview}
 
 
-def node_variable_override_map(patches: dict[str, dict[str, Any]]) -> dict[str, dict[str, str]]:
-    """节点 patch 映射 → ``node_key -> variable_overrides``。"""
-    return {
-        node_key: dict((patch or {}).get("variable_overrides") or {})
-        for node_key, patch in patches.items()
-    }
-
-
 def validate_membership_updates(case: TestCase, updates: Any) -> dict[str, str | None]:
     """编排项覆盖的增量校验：只能改当前用例实际引用的变量。"""
     if not isinstance(updates, dict):
@@ -228,9 +219,10 @@ def apply_membership_updates(
 def build_profile_variables(
     case: TestCase,
     definitions: dict[str, dict[str, Any]],
-    node_overrides: dict[str, dict[str, str]],
+    occurrence_overrides: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    """APP 档案视角：按变量分组，并列出引用它的节点及各自覆盖。"""
+    """APP 档案视角：按变量分组；一个 occurrence 覆盖自动作用于全部引用节点。"""
+    occurrence_overrides = occurrence_overrides or {}
     counts = case_variable_reference_counts(case)
     grouped: dict[str, list[dict[str, Any]]] = {}
     for node in case.flow_nodes or case.steps or []:
@@ -240,7 +232,6 @@ def build_profile_variables(
         if not node_key:
             continue
         is_assertion = is_assertion_node(node)
-        patch_vars = node_overrides.get(node_key, {})
         for name in node_variable_names(node):
             grouped.setdefault(name, []).append(
                 {
@@ -252,8 +243,8 @@ def build_profile_variables(
                     or node.get("type")
                     or "",
                     "inherited_value": definitions[name]["display"] if name in definitions else None,
-                    "override_enabled": name in patch_vars,
-                    "override_value": patch_vars.get(name, ""),
+                    "override_enabled": name in occurrence_overrides,
+                    "override_value": occurrence_overrides.get(name, ""),
                 }
             )
     variables: list[dict[str, Any]] = []
@@ -280,7 +271,7 @@ def build_profile_variables(
     return variables
 
 
-async def apply_profile_variable_updates(
+async def apply_profile_occurrence_variable_updates(
     db: AsyncSession,
     *,
     profile_id: int,
@@ -289,87 +280,43 @@ async def apply_profile_variable_updates(
     updates: Any,
     user_id: int,
 ) -> list[dict[str, Any]]:
-    """批量写入节点级变量覆盖；空 patch 自动软删除，返回审计 changes。"""
+    """批量写入当前 occurrence 的统一变量覆盖。"""
     if not isinstance(updates, list) or not updates:
         raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", "updates 不能为空")
-    nodes = {
-        str(node.get("key") or ""): node
-        for node in (case.flow_nodes or case.steps or [])
-        if isinstance(node, dict) and node.get("key")
-    }
-    rows = await overrides_repo.list_nodes_for_membership(db, profile_id, membership.id)
-    by_key = {str(row.node_key): row for row in rows}
-    touched: dict[str, dict[str, Any]] = {}
+    references = set(case_variable_reference_counts(case))
+    rows = await overrides_repo.list_suite_case_variable_overrides(db, profile_id, membership.id)
+    by_name = {row.name: row for row in rows}
     changes: list[dict[str, Any]] = []
     for update in updates:
         if not isinstance(update, dict):
             raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", "updates 项必须是对象")
-        node_type = update.get("node_type")
-        node_key = str(update.get("node_key") or "")
         name = update.get("name")
         value = update.get("value")
-        if node_type not in ("step", "assertion"):
-            raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", "node_type 只允许 step|assertion")
-        source_node = nodes.get(node_key)
-        if source_node is None:
-            raise ProfileRuleError("PROFILE_TARGET_NOT_FOUND", "节点不存在或 node_key 非法")
-        actual_type = "assertion" if is_assertion_node(source_node) else "step"
-        if actual_type != node_type:
-            raise ProfileRuleError("PROFILE_TARGET_NOT_FOUND", "节点类型与 node_type 不一致")
         if not isinstance(name, str) or not name:
             raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", "变量名不能为空")
-        if name not in node_variable_names(source_node):
-            raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", f"变量未被目标节点引用: {name}")
+        if name not in references:
+            raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", f"变量未被当前用例引用: {name}")
         if value is not None and not isinstance(value, str):
             raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", f"覆盖值必须是字符串或 null: {name}")
-
-        if node_key in touched:
-            base_patch = dict(touched[node_key])
-        else:
-            existing_row = by_key.get(node_key)
-            base_patch = dict(existing_row.patch) if existing_row is not None else {}
-        variable_overrides = dict(base_patch.get("variable_overrides") or {})
-        before = variable_overrides.get(name)
-        if value is None:
-            variable_overrides.pop(name, None)
-        else:
-            variable_overrides[name] = value
-        if variable_overrides:
-            base_patch["variable_overrides"] = variable_overrides
-        else:
-            base_patch.pop("variable_overrides", None)
-        touched[node_key] = base_patch
+        existing = by_name.get(name)
+        before = existing.value if existing is not None else None
         changes.append(
-            {
-                "node_type": node_type,
-                "node_key": node_key,
-                "name": name,
-                "before": before,
-                "after": value,
-            }
+            {"name": name, "before": before, "after": value, "suite_case_id": membership.id}
         )
 
     try:
-        for node_key, patch in touched.items():
-            source_node = nodes[node_key]
-            node_type = "assertion" if is_assertion_node(source_node) else "step"
-            existing = by_key.get(node_key)
-            if not patch:
+        for update in updates:
+            name = update["name"]
+            value = update.get("value")
+            existing = by_name.get(name)
+            if value is None:
                 if existing is not None:
                     await overrides_repo.soft_delete(existing, datetime.now(UTC), user_id)
-                continue
-            validate_node_patch(node_type, source_node, patch)
-            await overrides_repo.upsert_node(
-                db,
-                profile_id=profile_id,
-                suite_id=membership.suite_id,
-                case_id=membership.case_id,
-                suite_case_id=membership.id,
-                target_type=node_type,
-                node_key=node_key,
-                patch=patch,
-                user_id=user_id,
-            )
+            else:
+                await overrides_repo.upsert_suite_case_variable(
+                    db, profile_id=profile_id, suite_case_id=membership.id,
+                    name=name, value=value, user_id=user_id,
+                )
     except ProfileRuleError:
         # 任一更新无效则整体回滚，不留下部分写入
         await db.rollback()

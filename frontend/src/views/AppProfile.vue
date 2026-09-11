@@ -19,6 +19,7 @@ import {
   type ProfileVariableUpdate,
   type SkipTarget,
 } from '@/api/appProfiles'
+import { apiErrorDetail } from '@/utils/request'
 import { usePermission } from '@/composables/usePermission'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { useAppProfileStore } from '@/stores/appProfile'
@@ -267,11 +268,10 @@ function applyCaseVariables(suiteId: number, membershipId: number, variables: Pr
   }
 }
 
-async function saveCaseVariableUpdates(row: DisplayNode, updates: ProfileVariableUpdate[]) {
+async function saveCaseVariableUpdates(row: DisplayNode, update: ProfileVariableUpdate) {
   const membershipId = row._membershipId
   const revision = store.profileRevision
   if (!store.selectedProfileId || membershipId == null) return
-  if (updates.length === 0) return
   if (revision == null) {
     ElMessage.error('档案版本未就绪，请刷新后重试')
     return
@@ -280,7 +280,8 @@ async function saveCaseVariableUpdates(row: DisplayNode, updates: ProfileVariabl
   try {
     const result = await patchProfileSuiteCaseVariables(store.selectedProfileId, membershipId, {
       expected_revision: revision,
-      updates,
+      // 引用节点仅用于展示；occurrence API 每个变量只接收一条更新。
+      updates: [update],
     })
     // 版本号在 profile_revision；写成 result.revision 会拿到 undefined，
     // 之后所有「版本未就绪」守卫都会静默短路（保存/恢复双双失灵）。
@@ -289,8 +290,13 @@ async function saveCaseVariableUpdates(row: DisplayNode, updates: ProfileVariabl
     cancelVariableEdit()
     ElMessage.success('变量已更新')
   } catch (error) {
-    // 失败时保留编辑态，便于直接改完重试
-    ElMessage.error((error as Error).message || '保存失败，请刷新后重试')
+    // 版本冲突只刷新当前可见工作台；编辑值与编辑态均保留，用户可直接重试。
+    if (apiErrorDetail(error)?.code === 'PROFILE_REVISION_CONFLICT') {
+      await store.refreshVisibleWorkspace()
+      ElMessage.warning('档案已被其他操作更新，已刷新当前工作台；请确认后重新保存')
+    } else {
+      ElMessage.error((error as Error).message || '保存失败，请刷新后重试')
+    }
   } finally {
     variableSaving.value = false
   }

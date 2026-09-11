@@ -139,8 +139,11 @@ async def workspace_nodes(
         definitions = await case_variable_service.load_definitions_batch(
             db, project_id=profile.project_id, suite_id=parent_id, cases=cases
         )
-        # 节点覆盖之下的两层覆盖：档案变量覆盖 > 编排项覆盖，用于展示“原值”
+        # 编排项变量与档案 occurrence 覆盖统一展示；节点 patch 不再承载变量。
         profile_variables = await overrides_repo.list_variable_overrides(db, profile_id)
+        occurrence_variables = await overrides_repo.list_suite_case_variable_overrides_batch(
+            db, profile_id, {membership.id for membership in members}
+        )
         suite_rule = skip["suite"].get(parent_id)
         items = []
         for membership in members:
@@ -149,7 +152,10 @@ async def workspace_nodes(
                 continue
             direct_rule = skip["case"].get((parent_id, membership.case_id))
             rule = suite_rule or direct_rule
-            override_count = len(overrides["membership"].get(membership.id, {}))
+            override_count = (
+                len(overrides["membership"].get(membership.id, {}))
+                + len(occurrence_variables.get(membership.id, []))
+            )
             effective = "skipped" if rule else ("overridden" if override_count else "enabled")
             source = "inherited" if suite_rule else ("direct" if direct_rule else ("override" if override_count else "none"))
             reason = None
@@ -165,12 +171,13 @@ async def workspace_nodes(
                 "profile",
                 {row.name: row.value for row in profile_variables},
             )
+            occurrence_overrides = {
+                row.name: row.value for row in occurrence_variables.get(membership.id, [])
+            }
             variables = case_variable_service.build_profile_variables(
                 case,
                 case_definitions,
-                case_variable_service.node_variable_override_map(
-                    overrides["membership_patches"].get(membership.id, {})
-                ),
+                occurrence_overrides,
             )
             items.append(
                 {"node_type": "case", "id": case.id, "suite_case_id": membership.id, "name": case.name, "effective_status": effective, "status_source": source, "reason": reason, "has_children": True, "override_count": override_count, "variable_count": len(variables), "variables": variables}
@@ -221,7 +228,7 @@ async def workspace_nodes(
         for node in nodes:
             node_key = str(node.get("key") or "")
             patch = membership_patches.get(node_key, {})
-            effective_node = {**node, **({"element_id": patch["element_id"]} if "element_id" in patch else {})}
+            effective_node = {**node, **patch}
             effective_nodes[node_key] = effective_node
             try:
                 if effective_node.get("element_id") is not None:
@@ -288,7 +295,7 @@ async def hub_suite_steps(
     for node in nodes:
         node_key = str(node.get("key") or "")
         patch = overrides["suite_step"].get((suite_id, node_key), {})
-        effective_node = {**node, **({"element_id": patch["element_id"]} if "element_id" in patch else {})}
+        effective_node = {**node, **patch}
         effective_nodes[node_key] = effective_node
         try:
             if effective_node.get("element_id") is not None:
@@ -362,6 +369,12 @@ async def differences(
     for sid, _nk in overrides["suite_step"]:
         suite_ids.add(sid)
         step_suite_ids.add(sid)
+    occurrence_names = await resolution_repo.difference_occurrence_names(
+        db, set(overrides["occurrence_variables"])
+    )
+    for sid, cid in occurrence_names.values():
+        suite_ids.add(sid)
+        case_ids.add(cid)
     suite_names, case_names, step_suites = await resolution_repo.difference_names(
         db, suite_ids=suite_ids, case_ids=case_ids
     )
@@ -425,6 +438,23 @@ async def differences(
             rows.append({"target_type": "element", "path": f"元素 {el_id}", "override": True})
         for name in overrides["variable"]:
             rows.append({"target_type": "variable", "path": f"变量 {name}", "override": True})
+        for membership_id, variables in overrides["occurrence_variables"].items():
+            location = occurrence_names.get(membership_id)
+            if location is None:
+                continue
+            sid, cid = location
+            for variable in variables:
+                rows.append(
+                    {
+                        "target_type": "variable",
+                        "path": f"{_n(sid)} / {_c(cid)} / 编排项变量 {variable['name']}",
+                        "override": True,
+                        "suite_id": sid,
+                        "case_id": cid,
+                        "suite_case_id": membership_id,
+                        "variable_name": variable["name"],
+                    }
+                )
 
     if type_ == "skipped":
         rows = [r for r in rows if not r.get("override")]

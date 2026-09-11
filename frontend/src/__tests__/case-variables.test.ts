@@ -170,16 +170,10 @@ describe('APP 档案用例行变量就地覆盖', () => {
     expect(variableDisplayText(undefinedVariable)).toBe('未定义')
   })
 
-  it('一个值写入该变量的全部引用节点；null 表示各节点恢复原值', () => {
+  it('一个变量只提交一条 occurrence 更新；null 表示恢复原值', () => {
     const variable = profileVariable()
-    expect(buildVariableUpdates(variable, 'COM9')).toEqual([
-      { node_type: 'step', node_key: 'k1', name: 'port_name', value: 'COM9' },
-      { node_type: 'assertion', node_key: 'k2', name: 'port_name', value: 'COM9' },
-    ])
-    expect(variableRestoreUpdates(variable)).toEqual([
-      { node_type: 'step', node_key: 'k1', name: 'port_name', value: null },
-      { node_type: 'assertion', node_key: 'k2', name: 'port_name', value: null },
-    ])
+    expect(buildVariableUpdates(variable, 'COM9')).toEqual({ name: 'port_name', value: 'COM9' })
+    expect(variableRestoreUpdates(variable)).toEqual({ name: 'port_name', value: null })
   })
 
   it('就地提交：值未变化时不产生更新，避免空提交推进 revision', () => {
@@ -204,10 +198,7 @@ describe('APP 档案用例行变量就地覆盖', () => {
       ),
     ).toBeNull()
 
-    expect(variableQuickUpdates(profileVariable(), 'COM3')).toEqual([
-      { node_type: 'step', node_key: 'k1', name: 'port_name', value: 'COM3' },
-      { node_type: 'assertion', node_key: 'k2', name: 'port_name', value: 'COM3' },
-    ])
+    expect(variableQuickUpdates(profileVariable(), 'COM3')).toEqual({ name: 'port_name', value: 'COM3' })
   })
 
   it('多值状态：即使统一为空串也要提交（属于真实变更）', () => {
@@ -218,9 +209,6 @@ describe('APP 档案用例行变量就地覆盖', () => {
         { node_key: 'k2', node_type: 'assertion', override_enabled: false, override_value: '' },
       ],
     })
-    expect(variableQuickUpdates(mixed, '')).toEqual([
-      { node_type: 'step', node_key: 'k1', name: 'port_name', value: '' },
-      { node_type: 'assertion', node_key: 'k2', name: 'port_name', value: '' },
-    ])
+    expect(variableQuickUpdates(mixed, '')).toEqual({ name: 'port_name', value: '' })
   })
 })

@@ -47,7 +47,6 @@ async def _build_variables(
     definitions = await case_variable_service.inherited_variable_definitions(
         db, project_id=profile.project_id, suite_id=membership.suite_id, case=case
     )
-    # 节点覆盖之下依次是档案变量覆盖与编排项覆盖，保证“原值”就是恢复后的真实取值
     case_variable_service.apply_fixed_layer(
         definitions, "occurrence", membership.variable_overrides or {}
     )
@@ -55,11 +54,9 @@ async def _build_variables(
     case_variable_service.apply_fixed_layer(
         definitions, "profile", {row.name: row.value for row in profile_variables}
     )
-    rows = await overrides_repo.list_nodes_for_membership(db, profile.id, membership.id)
-    node_overrides = {
-        str(row.node_key): dict((row.patch or {}).get("variable_overrides") or {}) for row in rows
-    }
-    variables = case_variable_service.build_profile_variables(case, definitions, node_overrides)
+    occurrence_rows = await overrides_repo.list_suite_case_variable_overrides(db, profile.id, membership.id)
+    occurrence_overrides = {row.name: row.value for row in occurrence_rows}
+    variables = case_variable_service.build_profile_variables(case, definitions, occurrence_overrides)
     return {
         "profile_id": profile.id,
         "profile_revision": profile.revision,
@@ -100,7 +97,7 @@ async def patch_suite_case_variables(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """批量写入节点级变量覆盖：一个事务内校验、合并 patch、单次 revision 与单条审计。"""
+    """批量写入当前套件编排项的统一变量覆盖。"""
     profile = await _get_profile_or_404(profile_id, db)
     _project, role = modal_perm
     if body.request_id:
@@ -111,7 +108,7 @@ async def patch_suite_case_variables(
             return replay
     membership, case = await _load_membership_context(db, profile, suite_case_id)
     try:
-        changes = await case_variable_service.apply_profile_variable_updates(
+        changes = await case_variable_service.apply_profile_occurrence_variable_updates(
             db,
             profile_id=profile.id,
             membership=membership,
@@ -126,7 +123,7 @@ async def patch_suite_case_variables(
     # 提交后才产生新 revision，先摘掉陈旧值，由审计注入的 revision 补齐
     detail.pop("profile_revision", None)
     new_revision = await _bump_and_audit(
-        db, profile, body, "node_override_batch", user, role, request,
+        db, profile, body, "occurrence_variable_override_batch", user, role, request,
         changes=changes, response_data=detail,
     )
     # 响应模型是 ProfileSuiteCaseVariablesOut（与 GET 同构），新版本号只在 profile_revision；

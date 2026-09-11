@@ -36,7 +36,6 @@ NODE_PATCH_ALLOWED = {
     "max_swipes",
     "duration",
     "max_wait_seconds",
-    "variable_overrides",
 }
 NODE_IDENTITY_FIELDS = {"key", "order", "phase", "action", "type", "assertion_type"}
 
@@ -111,22 +110,6 @@ def node_variable_references(node: dict) -> list[str]:
     )
 
 
-def validate_variable_override(source_node: dict, value: Any) -> dict[str, str]:
-    if not isinstance(value, dict):
-        raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", "variable_overrides 必须是字符串字典")
-    references = set(node_variable_references(source_node))
-    result: dict[str, str] = {}
-    for name, override in value.items():
-        if not isinstance(name, str) or not name:
-            raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", "variable_overrides 的变量名不能为空")
-        if name not in references:
-            raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", f"变量未被目标节点引用: {name}")
-        if not isinstance(override, str):
-            raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", f"变量覆盖值必须是字符串: {name}")
-        result[name] = override
-    return result
-
-
 def _apply_whitelist_patch(node: dict, patch: dict) -> dict:
     for key, value in patch.items():
         if key in NODE_IDENTITY_FIELDS:
@@ -199,13 +182,7 @@ def _registry_validate_assertion(assertion: dict) -> dict:
 
 def validate_node_patch(node_type: str, source_node: dict, patch: dict[str, Any]) -> dict:
     """保存覆盖前，以公共节点合并补丁并执行与解析阶段相同的 Registry 校验。"""
-    variable_patch = patch.get("variable_overrides")
-    if variable_patch is not None:
-        # 动作与断言节点都允许覆盖变量；校验仍以该节点参数中真实引用的 ${name} 为界
-        validate_variable_override(source_node, variable_patch)
-    patched = _apply_whitelist_patch(
-        deepcopy(source_node), {key: value for key, value in patch.items() if key != "variable_overrides"}
-    )
+    patched = _apply_whitelist_patch(deepcopy(source_node), patch)
     try:
         if node_type == "step":
             return _registry_validate_step(patched)

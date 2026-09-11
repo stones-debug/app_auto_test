@@ -13,7 +13,6 @@ from app.models import Project, User
 from app.repositories import elements as elements_repo
 from app.repositories.app_profiles import overrides as overrides_repo
 from app.repositories.app_profiles import resolution as resolution_repo
-from app.repositories.app_profiles import skip_rules as skip_rules_repo
 from app.schemas.app_profile import (
     ElementOverrideDelete,
     ElementOverrideUpsert,
@@ -180,11 +179,10 @@ async def restore_variable_override(
     await overrides_repo.soft_delete(existing, datetime.now(UTC), user.id)
     await _bump_and_audit(db, profile, body, "variable_override_restore", user, role, request)
 
-@router.put("/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/{node_type}/{node_key}", response_model=dict)
+@router.put("/app-profiles/{profile_id}/node-overrides/{suite_case_id}/{node_type}/{node_key}", response_model=dict)
 async def upsert_node_override(
     profile_id: int,
-    suite_id: int,
-    case_id: int,
+    suite_case_id: int,
     node_type: str,
     node_key: str,
     body: NodeOverridePatch,
@@ -202,12 +200,8 @@ async def upsert_node_override(
     if node_type not in ("step", "assertion"):
         raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, "PROFILE_TARGET_INVALID", "node_type 只允许 step|assertion")
 
-    case = await resolution_repo.get_case(db, case_id)
-    if case is None or case.deleted_at is not None or case.project_id != profile.project_id:
-        raise api_error(status.HTTP_404_NOT_FOUND, "CASE_NOT_FOUND", "用例不存在或跨项目")
-    suite, _case, membership = await skip_rules_repo.load_target(
-        db, project_id=profile.project_id, suite_id=suite_id, case_id=case_id
-    )
+    membership = await resolution_repo.get_suite_case(db, suite_case_id)
+    suite = await resolution_repo.get_suite(db, membership.suite_id) if membership else None
     if (
         suite is None
         or suite.deleted_at is not None
@@ -215,6 +209,9 @@ async def upsert_node_override(
         or membership is None
     ):
         raise api_error(status.HTTP_404_NOT_FOUND, "SUITE_CASE_NOT_FOUND", "套件用例关系不存在")
+    case = await resolution_repo.get_case(db, membership.case_id)
+    if case is None or case.deleted_at is not None or case.project_id != profile.project_id:
+        raise api_error(status.HTTP_404_NOT_FOUND, "CASE_NOT_FOUND", "用例不存在或跨项目")
     found = _find_case_node(case, node_type, node_key)
     if found is None:
         raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, "PROFILE_TARGET_NOT_FOUND", "节点不存在或 node_key 非法")
@@ -237,14 +234,14 @@ async def upsert_node_override(
     except ProfileRuleError as exc:
         raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.code, exc.message) from None
     await overrides_repo.upsert_node(
-        db, profile_id=profile_id, suite_id=suite_id, case_id=case_id,
-        suite_case_id=membership,
+        db, profile_id=profile_id, suite_id=membership.suite_id, case_id=membership.case_id,
+        suite_case_id=membership.id,
         target_type=node_type, node_key=normalized_key, patch=body.patch, user_id=user.id,
     )
     response_data = {
-        "suite_id": suite_id,
-        "case_id": case_id,
-        "suite_case_id": membership,
+        "suite_id": membership.suite_id,
+        "case_id": membership.case_id,
+        "suite_case_id": membership.id,
         "node_type": node_type,
         "node_key": normalized_key,
         "patch": body.patch,
@@ -254,11 +251,10 @@ async def upsert_node_override(
     )
     return {"revision": new_revision, **response_data}
 
-@router.delete("/app-profiles/{profile_id}/node-overrides/{suite_id}/{case_id}/{node_type}/{node_key}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/app-profiles/{profile_id}/node-overrides/{suite_case_id}/{node_type}/{node_key}", status_code=status.HTTP_204_NO_CONTENT)
 async def restore_node_override(
     profile_id: int,
-    suite_id: int,
-    case_id: int,
+    suite_case_id: int,
     node_type: str,
     node_key: str,
     body: NodeOverrideDelete,
@@ -277,11 +273,20 @@ async def restore_node_override(
         normalized_key = str(UUID(node_key))
     except ValueError:
         return
-    membership = await resolution_repo.find_membership(db, suite_id, case_id)
+    membership = await resolution_repo.get_suite_case(db, suite_case_id)
+    if membership is None:
+        return
+    suite = await resolution_repo.get_suite(db, membership.suite_id)
+    case = await resolution_repo.get_case(db, membership.case_id)
+    if (
+        suite is None or suite.deleted_at is not None or suite.project_id != profile.project_id
+        or case is None or case.deleted_at is not None or case.project_id != profile.project_id
+    ):
+        return
     existing = await overrides_repo.get_node(
-        db, profile_id, suite_id=suite_id, case_id=case_id,
+        db, profile_id, suite_id=membership.suite_id, case_id=membership.case_id,
         target_type=node_type, node_key=normalized_key,
-        suite_case_id=membership.id if membership is not None else None,
+        suite_case_id=membership.id,
     )
     if existing is None:
         return

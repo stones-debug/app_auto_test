@@ -28,8 +28,6 @@ export interface EditorVariable {
 }
 
 export interface VariableOverrideUpdate {
-  node_type: 'step' | 'assertion'
-  node_key: string
   name: string
   value: string | null
 }
@@ -123,19 +121,14 @@ export function variableEditSeed(variable: ProfileCaseVariableLike): string {
 }
 
 /**
- * 变量覆盖写入载荷：一个变量在该用例内被多个节点引用时，统一写成多个节点级覆盖。
- * ``value=null`` 表示恢复原值（删除各节点的覆盖）。
+ * occurrence 变量覆盖写入载荷：一个变量在该用例内被多少节点引用都只提交一条。
+ * 引用节点仅用于展示/计数；``value=null`` 表示恢复当前 occurrence 的覆盖。
  */
 export function buildVariableUpdates(
   variable: { name: string; references: { node_key: string; node_type: 'step' | 'assertion' }[] },
   value: string | null,
-): VariableOverrideUpdate[] {
-  return variable.references.map((ref) => ({
-    node_type: ref.node_type,
-    node_key: ref.node_key,
-    name: variable.name,
-    value,
-  }))
+): VariableOverrideUpdate {
+  return { name: variable.name, value }
 }
 
 /**
@@ -145,7 +138,7 @@ export function buildVariableUpdates(
 export function variableQuickUpdates(
   variable: ProfileCaseVariableLike,
   value: string,
-): VariableOverrideUpdate[] | null {
+): VariableOverrideUpdate | null {
   const state = variableOverrideState(variable)
   if (state.overridden && !state.uniform) return buildVariableUpdates(variable, value)
   if (value === state.value) return null
@@ -153,7 +146,7 @@ export function variableQuickUpdates(
 }
 
 /** 恢复原值：删除该变量在其全部引用节点上的覆盖，重新继承底层定义。 */
-export function variableRestoreUpdates(variable: ProfileCaseVariableLike): VariableOverrideUpdate[] {
+export function variableRestoreUpdates(variable: ProfileCaseVariableLike): VariableOverrideUpdate {
   return buildVariableUpdates(variable, null)
 }
 

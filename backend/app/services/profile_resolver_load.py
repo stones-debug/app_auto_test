@@ -93,8 +93,9 @@ async def merge_variables(
     context: ResolutionLoadContext | None = None,
     case_occurrence: int | None = None,
     membership_overrides: dict[str, str] | None = None,
+    occurrence_profile_overrides: dict[str, str] | None = None,
 ) -> dict:
-    """变量优先级（§10.6）：全局 → 项目 → 用例 → 套件 → 编排项 → APP 档案 → 执行参数。"""
+    """变量优先级：全局 → 项目 → 用例 → 套件 → 编排项 → 档案 → occurrence 档案 → 执行参数。"""
     loaded = (
         [*context.global_variables, *context.project_variables]
         if context is not None
@@ -107,40 +108,41 @@ async def merge_variables(
         if context is not None and suite_id is not None else
         [variable for variable in loaded if variable.scope == "suite"]
     )
-    # 编排项覆盖高于套件/用例变量，但低于 APP 档案覆盖与执行参数
-    membership_names = set(membership_overrides or {})
-    higher_names = (
-        set(execution_variables) | set(config["variable_overrides"]) | membership_names |
-        {variable.name for variable in case_rows} | {variable.name for variable in suite_rows} |
-        set(case.variables if case is not None else {})
-    )
+    membership_overrides = membership_overrides or {}
+    occurrence_profile_overrides = occurrence_profile_overrides or {}
+    profile_overrides = config["variable_overrides"]
+    execution_variables = {str(key): value for key, value in execution_variables.items()}
+    membership_names = set(membership_overrides)
+    occurrence_names = set(occurrence_profile_overrides)
+    profile_names = set(profile_overrides)
+    case_values = {str(key): value for key, value in (case.variables if case is not None else {}).items()}
+    case_names = {variable.name for variable in case_rows} | set(case_values)
+    suite_names = {variable.name for variable in suite_rows}
     project_names = {variable.name for variable in loaded if variable.scope == "project"}
     merged = resolve_rows(
         [variable for variable in loaded if variable.scope == "global"], cache, ("global",),
-        skip_names=higher_names | project_names,
+        skip_names=project_names | case_names | suite_names | membership_names | profile_names | occurrence_names | set(execution_variables),
     )
     merged.update(resolve_rows(
         [variable for variable in loaded if variable.scope == "project"], cache,
-        ("project", project_id), skip_names=higher_names,
+        ("project", project_id), skip_names=case_names | suite_names | membership_names | profile_names | occurrence_names | set(execution_variables),
     ))
     if context is not None and case is not None:
         merged.update(resolve_rows(
             case_rows, cache,
             ("case", suite_id, case.id, case_occurrence if case_occurrence is not None else case.id),
-            skip_names=set(execution_variables) | set(config["variable_overrides"]) | membership_names
-            | {variable.name for variable in suite_rows},
+            skip_names=suite_names | membership_names | profile_names | occurrence_names | set(execution_variables),
         ))
-    if case is not None and case.variables:
-        merged.update(case.variables)
-    suite_variables = suite_rows
-    for variable in suite_variables:
-        if variable.scope == "suite":
-            merged.update(resolve_rows(
-                [variable], cache, ("suite", suite_id),
-                skip_names=set(config["variable_overrides"]) | set(execution_variables) | membership_names,
-            ))
-    merged.update(membership_overrides or {})
-    merged.update(config["variable_overrides"])
+    for name, value in case_values.items():
+        if name not in suite_names and name not in membership_names and name not in profile_names and name not in occurrence_names and name not in execution_variables:
+            merged[name] = value
+    merged.update(resolve_rows(
+        suite_rows, cache, ("suite", suite_id),
+        skip_names=membership_names | profile_names | occurrence_names | set(execution_variables),
+    ))
+    merged.update(membership_overrides)
+    merged.update(profile_overrides)
+    merged.update(occurrence_profile_overrides)
     merged.update(execution_variables)
     return merged
 
