@@ -8,7 +8,6 @@ import { createSuite, createVariable, deleteSuite, updateSuite, type Suite, type
 import { listModules, type TestModule } from '@/api/modules'
 import EmptyState from '@/components/EmptyState.vue'
 import ModuleTree from '@/components/ModuleTree.vue'
-import PageHeader from '@/components/PageHeader.vue'
 import RunButton from '@/components/RunButton.vue'
 import SuiteCasePicker from '@/components/SuiteCasePicker.vue'
 import SuiteStepSection from '@/components/SuiteStepSection.vue'
@@ -353,13 +352,6 @@ async function remove(suite: Suite) {
   await loadSuites()
 }
 
-function onSuiteMenu(cmd: string | number | object) {
-  if (!suiteDetail.value) return
-  const key = String(cmd)
-  if (key === 'edit') openEdit(suiteDetail.value)
-  else if (key === 'delete') void remove(suiteDetail.value)
-}
-
 function onItemMenu(cmd: string | number | object, suite: Suite) {
   const key = String(cmd)
   if (key === 'edit') openEdit(suite)
@@ -386,8 +378,14 @@ onMounted(() => {
 </script>
 
 <template>
-  <el-row :gutter="16" class="suite-page">
-    <el-col :xs="24" :lg="9" class="suite-col">
+  <div class="suite-layout">
+    <!-- 左区：模块树 + 套件列表，两栏合计不超过页面宽度的 1/3 -->
+    <div class="suite-left">
+      <!-- 模块树 —— 与用例页共用同一组件与外观 -->
+      <ModuleTree class="suite-tree" :project-id="projectId" scope="suite" title="套件模块" :selected-key="selectedModule"
+        :writable="canWriteAssets" @select="onModuleSelect" @mutated="loadSuites" />
+
+      <!-- 套件列表（标题区、搜索排序、卡片列表） -->
       <aside class="suite-sidebar">
         <div class="sidebar-head">
           <div class="sidebar-title-wrap">
@@ -396,20 +394,9 @@ onMounted(() => {
           </div>
           <el-button v-if="canWriteAssets" type="primary" :icon="Plus" @click="openCreate">新建套件</el-button>
         </div>
-        <div class="sidebar-modules">
-          <ModuleTree
-            :project-id="projectId"
-            scope="suite"
-            title="套件模块"
-            :selected-key="selectedModule"
-            :writable="canWriteAssets"
-            @select="onModuleSelect"
-            @mutated="loadSuites"
-          />
-        </div>
         <div class="sidebar-filter">
-          <el-input v-model="keyword" placeholder="按名称或描述搜索" clearable class="sidebar-search"
-            @input="onKeywordInput" @clear="loadSuites">
+          <el-input v-model="keyword" placeholder="搜索套件" clearable class="sidebar-search" @input="onKeywordInput"
+            @clear="loadSuites">
             <template #prefix><el-icon>
                 <Search />
               </el-icon></template>
@@ -451,34 +438,21 @@ onMounted(() => {
           </div>
           <template v-if="filteredSuites.length === 0">
             <div v-if="keyword" class="no-match v2-aux">没有找到与「{{ keyword }}」匹配的套件</div>
-            <EmptyState v-else
-              :title="selectedModule === 'all' ? '还没创建套件' : '该模块下暂无套件'"
-              description="套件用于批量编排用例，并可配置前后置步骤与变量。"
-              :action-label="canWriteAssets ? '新建套件' : undefined" @action="openCreate" />
+            <EmptyState v-else :title="selectedModule === 'all' ? '还没创建套件' : '该模块下暂无套件'"
+              description="套件用于批量编排用例，并可配置前后置步骤与变量。" :action-label="canWriteAssets ? '新建套件' : undefined"
+              @action="openCreate" />
           </template>
           <div v-if="truncated" class="list-truncated v2-aux">
             套件较多，仅显示前 {{ suites.length }} 个，请用搜索缩小范围
           </div>
         </div>
       </aside>
-    </el-col>
+    </div>
 
-    <el-col :xs="24" :lg="15" class="suite-col">
+    <!-- 右：套件详情 -->
+    <div class="suite-main">
       <template v-if="activeSuite && suiteDetail">
         <div v-loading="loadingDetail" class="detail-stack">
-          <PageHeader :title="suiteDetail.name" :description="suiteDetail.description ?? ''">
-            <RunButton :type="'suite'" :id="suiteDetail.id" :name="suiteDetail.name" />
-            <el-dropdown v-if="canWriteAssets" trigger="click" @command="onSuiteMenu">
-              <el-button :icon="MoreFilled">套件操作</el-button>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item command="edit">编辑信息</el-dropdown-item>
-                  <el-dropdown-item command="delete" divided>删除套件</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
-          </PageHeader>
-
           <div class="stat-pills">
             <div class="stat-pill"><span class="stat-value">{{ suiteCases.length }}</span><span
                 class="stat-label">用例</span>
@@ -505,19 +479,24 @@ onMounted(() => {
                   v-if="canWriteAssets" type="primary" :icon="Plus" @click="openAddCase">添加用例</el-button></div>
             </header>
             <div class="section-body">
-              <Draggable v-model="suiteCases" :disabled="!canWriteAssets || ordering" item-key="id" handle=".drag-handle" ghost-class="case-ghost"
-                class="case-list" @end="onReorder">
+              <Draggable v-model="suiteCases" :disabled="!canWriteAssets || ordering" item-key="id"
+                handle=".drag-handle" ghost-class="case-ghost" class="case-list" @end="onReorder">
                 <template #item="{ element, index }">
                   <div class="case-card" @dblclick="openCaseEditor(element)">
                     <div class="case-row"><span class="drag-handle" title="拖拽排序">⠿</span>
-                      <span v-if="editingOrderMembershipId !== element.id" class="case-order" :class="{ editable: canWriteAssets }"
-                        title="点击设置编号" @click.stop="beginOrderEdit(element, $event)" @dblclick.stop="beginOrderEdit(element, $event)">{{ index + 1 }}</span>
-                      <el-input v-else :ref="setOrderInputRef" v-model="editingOrderValue" class="case-order-input" size="small" @click.stop @dblclick.stop
-                        @input="cleanOrderInput" @keydown="onOrderKeydown" @blur="void submitOrderEdit()" />
+                      <span v-if="editingOrderMembershipId !== element.id" class="case-order"
+                        :class="{ editable: canWriteAssets }" title="点击设置编号"
+                        @click.stop="beginOrderEdit(element, $event)"
+                        @dblclick.stop="beginOrderEdit(element, $event)">{{ index + 1 }}</span>
+                      <el-input v-else :ref="setOrderInputRef" v-model="editingOrderValue" class="case-order-input"
+                        size="small" @click.stop @dblclick.stop @input="cleanOrderInput" @keydown="onOrderKeydown"
+                        @blur="void submitOrderEdit()" />
                       <span class="case-name" :title="element.case_name">{{ element.case_name
                         }}</span><el-tag v-if="element.module_name" size="small" type="info" effect="plain"
-                        class="case-module">{{ element.module_name }}</el-tag><el-button v-if="canWriteAssets" class="case-remove"
-                        size="small" text type="danger" @click="removeCase(element)" @dblclick.stop>移除</el-button></div>
+                        class="case-module">{{ element.module_name }}</el-tag><el-button v-if="canWriteAssets"
+                        class="case-remove" size="small" text type="danger" @click="removeCase(element)"
+                        @dblclick.stop>移除</el-button>
+                    </div>
                   </div>
                 </template>
               </Draggable>
@@ -529,8 +508,7 @@ onMounted(() => {
           </section>
 
           <SuiteStepSection :project-id="projectId" :setup-steps="setupSteps" :teardown-steps="teardownSteps"
-            :readonly="!canWriteAssets"
-            :dirty="dirty" :saving="savingSteps" @update:setup-steps="onSetupStepsChange"
+            :readonly="!canWriteAssets" :dirty="dirty" :saving="savingSteps" @update:setup-steps="onSetupStepsChange"
             @update:teardown-steps="onTeardownStepsChange" @save="saveSuiteSteps(activeSuite)"
             @discard="discardSteps" />
 
@@ -561,8 +539,10 @@ onMounted(() => {
                   <span class="var-actions">
                     <el-button v-if="varEditing?.id === variable.id" size="small" type="primary" text
                       :loading="savingVar" @click="saveVarValue(variable, activeSuite)">保存</el-button>
-                    <el-button v-if="canWriteAssets && varEditing?.id !== variable.id" size="small" text @click="startEditVar(variable)">编辑</el-button>
-                    <el-button v-if="canWriteAssets" size="small" type="danger" text @click="removeVar(variable, activeSuite)">删除</el-button>
+                    <el-button v-if="canWriteAssets && varEditing?.id !== variable.id" size="small" text
+                      @click="startEditVar(variable)">编辑</el-button>
+                    <el-button v-if="canWriteAssets" size="small" type="danger" text
+                      @click="removeVar(variable, activeSuite)">删除</el-button>
                   </span>
                 </div>
               </div>
@@ -573,8 +553,8 @@ onMounted(() => {
       <div v-else-if="loadingSuites || loadingDetail" v-loading="true" class="detail-loading" />
       <el-empty v-else class="detail-empty" description="请选择或新建一个套件"><el-button v-if="canWriteAssets" type="primary"
           @click="openCreate">新建套件</el-button></el-empty>
-    </el-col>
-  </el-row>
+    </div>
+  </div>
 
   <el-dialog v-model="dialogVisible" :title="editingId ? '编辑套件' : '新建套件'" width="480px" append-to-body>
     <el-form label-width="80px" @submit.prevent="save">
@@ -620,9 +600,12 @@ onMounted(() => {
 </template>
 
 <style scoped>
+/* 左区内右侧：套件列表，吃掉左区剩余宽度并吸顶 */
 .suite-sidebar {
   position: sticky;
   top: 16px;
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   max-height: calc(100vh - 120px);
@@ -647,20 +630,67 @@ onMounted(() => {
   gap: 2px;
 }
 
-/* 模块树内嵌在侧栏里：去掉独立卡片外观，限制高度避免挤掉套件列表 */
-.sidebar-modules {
-  padding: 12px 12px 0;
-  border-bottom: 1px solid var(--border);
+/*
+ * 页面级三栏：左区（模块树 + 套件列表）│ 套件详情。
+ * 与用例页同构 —— 用例页同样是「ModuleTree + 主区」的并列结构。
+ * 这里刻意不设 align-items：默认 stretch 让 .suite-left 撑满整行高度，
+ * 左区内的两列才能 position: sticky 生效；改成 flex-start 会让吸顶失效。
+ */
+.suite-layout {
+  display: flex;
+  gap: 16px;
 }
 
-.sidebar-modules :deep(.module-tree) {
-  width: 100%;
-  max-height: 38vh;
-  padding: 8px;
-  background: transparent;
-  border: 0;
-  border-radius: 0;
+/*
+ * 左区合计恰好 1/3：33.333% 内含 16px 栏间距，剩下 2/3 全部留给右侧的用例编排。
+ * 宽度够时内部并排两列（视觉上就是三栏），不够时在区内改为上下结构。
+ */
+.suite-left {
+  flex: 0 0 calc(42% - 16px);
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  min-width: 0;
 }
+
+/* 模块树：左区内的窄导航列（复用组件自带的卡片外观，仅补吸顶） */
+.suite-tree {
+  flex: 50%;
+  position: sticky;
+  top: 16px;
+}
+
+/* 详情：吃掉右区全部宽度 */
+.suite-main {
+  flex: 1;
+  min-width: 0;
+}
+
+/*
+ * <1800px 时左区只剩约 500px，并排的树 + 列表会把套件卡片底行
+ * （用例数 + 时间 + 运行按钮）挤到换行。此时左区自身改为上下结构：
+ * 树在上（限高 30vh、自带滚动），列表在下。左区仍只占 1/3，
+ * 详情宽度不受影响，也不会在行尾留出空白。
+ */
+/* @media (max-width: 1799px) {
+  .suite-left {
+    flex-direction: column;
+    gap: 16px;
+    align-items: stretch;
+  } */
+
+/* 竖排时 flex-basis 变成了高度，必须重置回内容高度，宽度改为撑满左区 */
+/* .suite-left .suite-tree {
+    flex: 0 0 auto;
+    width: 100%;
+    max-height: 30vh;
+  }
+
+  .suite-sidebar {
+    flex: 0 0 auto;
+    max-height: 50vh;
+  } */
+/* } */
 
 .list-truncated {
   padding: 8px 12px;
@@ -756,6 +786,8 @@ onMounted(() => {
 
 .meta-time {
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .suite-actions {
@@ -939,9 +971,14 @@ onMounted(() => {
   color: var(--primary);
 }
 
-.case-order.editable { cursor: pointer; }
+.case-order.editable {
+  cursor: pointer;
+}
 
-.case-order-input { width: 68px; flex-shrink: 0; }
+.case-order-input {
+  width: 68px;
+  flex-shrink: 0;
+}
 
 .case-name {
   flex: 1;

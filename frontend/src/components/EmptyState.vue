@@ -21,22 +21,26 @@ defineEmits<{ action: [] }>()
 
 <style scoped>
 .empty-state {
-  padding: 56px 24px;
+  padding: 40px 20px;
   text-align: center;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8px;
 }
+
 .empty-icon {
   font-size: 32px;
 }
+
 .empty-title {
   color: var(--text);
 }
+
 .empty-desc {
   max-width: 360px;
 }
+
 .empty-action {
   margin-top: 8px;
 }
