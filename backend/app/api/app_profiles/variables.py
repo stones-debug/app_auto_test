@@ -129,4 +129,6 @@ async def patch_suite_case_variables(
         db, profile, body, "node_override_batch", user, role, request,
         changes=changes, response_data=detail,
     )
-    return {"revision": new_revision, "profile_revision": new_revision, **detail}
+    # 响应模型是 ProfileSuiteCaseVariablesOut（与 GET 同构），新版本号只在 profile_revision；
+    # 多余键（如 revision）会被响应模型丢弃，客户端必须读 profile_revision。
+    return {"profile_revision": new_revision, **detail}

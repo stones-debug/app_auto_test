@@ -269,15 +269,22 @@ function applyCaseVariables(suiteId: number, membershipId: number, variables: Pr
 
 async function saveCaseVariableUpdates(row: DisplayNode, updates: ProfileVariableUpdate[]) {
   const membershipId = row._membershipId
-  if (!store.selectedProfileId || store.profileRevision == null || membershipId == null) return
+  const revision = store.profileRevision
+  if (!store.selectedProfileId || membershipId == null) return
   if (updates.length === 0) return
+  if (revision == null) {
+    ElMessage.error('档案版本未就绪，请刷新后重试')
+    return
+  }
   variableSaving.value = true
   try {
     const result = await patchProfileSuiteCaseVariables(store.selectedProfileId, membershipId, {
-      expected_revision: store.profileRevision,
+      expected_revision: revision,
       updates,
     })
-    store.markRevision(result.revision, store.testAssetRevision ?? 1)
+    // 版本号在 profile_revision；写成 result.revision 会拿到 undefined，
+    // 之后所有「版本未就绪」守卫都会静默短路（保存/恢复双双失灵）。
+    store.markRevision(result.profile_revision, store.testAssetRevision ?? 1)
     if (row._suiteId != null) applyCaseVariables(row._suiteId, membershipId, result.variables)
     cancelVariableEdit()
     ElMessage.success('变量已更新')

@@ -284,13 +284,18 @@ export function profileSuiteCaseVariables(profileId: number, suiteCaseId: number
   return request.get<ProfileSuiteCaseVariables>(`/app-profiles/${profileId}/suite-cases/${suiteCaseId}/variables`)
 }
 
-/** 批量写入节点级变量覆盖；服务端在单事务内合并 patch、递增一次 revision。 */
+/**
+ * 批量写入节点级变量覆盖；服务端在单事务内合并 patch、递增一次 revision。
+ *
+ * 响应体与 GET 同构：新版本号在 `profile_revision`（**没有** `revision` 字段，
+ * 响应模型会丢弃服务端多余的 `revision`，取错字段会拿到 undefined 而静默失败）。
+ */
 export function patchProfileSuiteCaseVariables(
   profileId: number,
   suiteCaseId: number,
   data: { request_id?: string; expected_revision: number; updates: ProfileVariableUpdate[] },
 ) {
-  return request.patch<ProfileSuiteCaseVariables & { revision: number }>(
+  return request.patch<ProfileSuiteCaseVariables>(
     `/app-profiles/${profileId}/suite-cases/${suiteCaseId}/variable-overrides`,
     data,
   )

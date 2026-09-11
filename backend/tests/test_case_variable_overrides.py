@@ -682,3 +682,66 @@ async def test_workspace_case_rows_expose_suite_case_id(client: AsyncClient):
         )
     ).json()["items"]
     assert any(node["node_key"] == K1 for node in nodes)
+
+
+async def test_patch_exposes_profile_revision_and_restores_to_inherited(client: AsyncClient):
+    """前端「保存 → 恢复」连续两次提交必须都生效。
+
+    回归：PATCH 的响应模型与 GET 同构，新版本号只在 ``profile_revision``（没有 ``revision``）。
+    前端若读了不存在的 ``revision`` 会把 undefined 写回档案版本，之后所有
+    「版本未就绪」守卫都会静默短路——第一次保存成功、点「恢复」却没有任何请求。
+    因此这里同时钉住：响应字段 + 恢复后的继承值（响应体与工作台行）。
+    """
+    headers = await _login(client, OWNER)
+    ctx = await _project_with_case(client, headers)
+    suite_id, memberships = await _suite_with_memberships(
+        client, headers, ctx["project_id"], ctx["case_id"]
+    )
+    await _seed_variables(client, headers, ctx["project_id"], ["port_name"])
+    async with SessionLocal() as db:
+        profile_id, _release_id = await _make_profile(db, ctx["project_id"])
+        await db.commit()
+    membership = memberships[0]
+
+    # 1) 表内编辑：一个值写入全部引用节点（K1/K2 都引用 port_name）
+    saved = await _patch_profile_variables(
+        client, headers, profile_id, membership,
+        [
+            {"node_type": "step", "node_key": K1, "name": "port_name", "value": "P1"},
+            {"node_type": "step", "node_key": K2, "name": "port_name", "value": "P1"},
+        ],
+    )
+    assert saved.status_code == 200, saved.text
+    saved_body = saved.json()
+    assert "revision" not in saved_body, saved_body.keys()
+    assert saved_body["profile_revision"] == 2
+    port = next(item for item in saved_body["variables"] if item["name"] == "port_name")
+    assert port["status"] == "overridden"
+
+    # 2) 点「恢复」：variableRestoreUpdates 对**全部引用节点**（含未覆盖的）发 null
+    restored = await _patch_profile_variables(
+        client, headers, profile_id, membership,
+        [
+            {"node_type": "step", "node_key": K1, "name": "port_name", "value": None},
+            {"node_type": "step", "node_key": K2, "name": "port_name", "value": None},
+        ],
+        revision=saved_body["profile_revision"],
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["profile_revision"] == 3
+    port = next(item for item in restored.json()["variables"] if item["name"] == "port_name")
+    assert port["status"] == "inherited", port
+    assert port["inherited_value"] == "base_port_name", port
+    assert not any(ref["override_enabled"] for ref in port["references"]), port["references"]
+
+    # 3) 工作台用例行（前端表格数据源）也必须回到非覆盖态
+    rows = (
+        await client.get(
+            f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=suite&parent_id={suite_id}",
+            headers=headers,
+        )
+    ).json()["items"]
+    row = next(item for item in rows if item["suite_case_id"] == membership)
+    port_row = next(item for item in row["variables"] if item["name"] == "port_name")
+    assert port_row["status"] == "inherited", port_row
+    assert not any(ref["override_enabled"] for ref in port_row["references"])

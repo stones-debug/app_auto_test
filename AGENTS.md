@@ -91,6 +91,7 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 - **「原值」必须是恢复后的真实取值**：节点覆盖之下还有两层，展示的继承值按 `编排项覆盖 → 档案变量覆盖` 依次叠加（`case_variable_service.apply_fixed_layer`，scope 标签 `occurrence` / `profile`）；否则行内展示的「原值」和点「恢复原值」之后的取值会对不上。
 - 列表接口口径分开：套件编排项 `GET /api/suites/{sid}/cases` 只带 `variable_count` + 前 2 项 `variables_preview`；**APP 档案工作台用例行带完整 `variables`**（含每个变量的全部引用节点及各自覆盖），因为档案侧要在行内竖排展示全部变量并就地编辑。
 - 完整详情仍走 `GET /api/suites/{sid}/cases/{membership_id}/variables`、`GET /api/app-profiles/{pid}/suite-cases/{suite_case_id}/variables`；写入分别走对应 `PATCH .../variable-overrides`（档案侧是批量事务：保留其它 patch 字段、空 patch 软删、单次 revision + 单条 `node_override_batch` 审计、无效整体回滚、revision 冲突 409）。
+- **档案写操作的响应版本号字段是 `profile_revision`**，没有 `revision`。`PATCH .../suite-cases/{id}/variable-overrides` 的 `response_model=ProfileSuiteCaseVariablesOut` 会丢掉服务端多余的 `revision` 键（GET 同构）。前端读成 `result.revision` 会把 `undefined` 写回 store，之后所有「`profileRevision == null` 就 return」的守卫会**静默短路**——第一次保存成功、第二次（含点「恢复」）连请求都不发。契约由 `frontend/src/__tests__/app-profile-variable-column.test.ts` 钉住。
 - **删除编排项必须先物理删除其节点覆盖**（FK 无 ON DELETE），见 `suite_service.remove_case` → `overrides_repo.delete_for_membership`。
 - 前端 `utils/caseVariables.ts` 是唯一口径：套件侧 `variablePreviewChips` / `buildOccurrenceUpdates`；档案侧 `variableOverrideState` / `variableDisplayText`（多值→「多个值」、空值区分「（空）」与「未定义」）/ `variableEditSeed` / `variableQuickUpdates`（值未变化返回 `null`，避免空提交推进 revision）/ `variableRestoreUpdates` / `buildVariableUpdates`。
 - `CaseVariableSummary.vue`、`CaseVariableEditor.vue` **只服务套件编排项**（`CaseVariableEditor` 已无 mode，仅编排项覆盖）。
