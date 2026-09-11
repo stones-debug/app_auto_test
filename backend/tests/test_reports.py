@@ -15,6 +15,7 @@ from app.models import (
     ExecutionAssertion,
     ExecutionCase,
     ExecutionExclusion,
+    ExecutionNode,
     ExecutionStep,
     ExecutionSuite,
     Report,
@@ -367,6 +368,65 @@ async def test_report_list_and_detail(client: AsyncClient):
     _cleanup(execution_id)
 
 
+async def test_sensitive_snapshot_values_are_masked_in_execution_and_report_views(client: AsyncClient):
+    token, execution_id = await _setup(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    report_id = await _report_id(execution_id)
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution is not None
+        execution.parameters = {"variables": {"api_key": "historical-secret", "normal": "visible"}}
+        execution.sensitive_variable_names = ["api_key"]
+        step = (
+            await db.execute(
+                sa_select(ExecutionStep)
+                .join(ExecutionCase, ExecutionStep.execution_case_id == ExecutionCase.id)
+                .where(ExecutionCase.execution_id == execution_id, ExecutionStep.step_order == 1)
+            )
+        ).scalar_one()
+        node = (
+            await db.execute(
+                sa_select(ExecutionNode)
+                .join(ExecutionCase, ExecutionNode.execution_case_id == ExecutionCase.id)
+                .where(ExecutionCase.execution_id == execution_id)
+            )
+        ).scalars().first()
+        assert node is not None
+        node.parameters = {"value": "sensitive-run-value"}
+        node.sensitive_parameter_paths = ["params.value"]
+        node.actual_value = "sensitive-run-value"
+        node.error_message = "node sensitive-run-value error"
+        step.parameters = {"value": "sensitive-run-value"}
+        step.sensitive_parameter_paths = ["params.value"]
+        step.error_message = "step sensitive-run-value error"
+        assertion = (
+            await db.execute(
+                sa_select(ExecutionAssertion).where(ExecutionAssertion.execution_step_id == step.id)
+            )
+        ).scalars().first()
+        assert assertion is not None
+        assertion.expected_value = "sensitive-run-value"
+        assertion.actual_value = "sensitive-run-value"
+        assertion.sensitive_parameter_paths = ["params.expected"]
+        assertion.error_message = "assertion sensitive-run-value error"
+        await db.commit()
+
+    execution_detail = await client.get(f"/api/executions/{execution_id}", headers=headers)
+    assert execution_detail.status_code == 200
+    assert "sensitive-run-value" not in execution_detail.text
+    assert "historical-secret" not in execution_detail.text
+    detail = await client.get(f"/api/reports/{report_id}/detail", headers=headers)
+    assert detail.status_code == 200
+    assert "sensitive-run-value" not in detail.text
+    assert "historical-secret" not in detail.text
+    downloaded = await client.get(f"/api/reports/{report_id}/download", headers=headers)
+    assert downloaded.status_code == 200
+    assert "sensitive-run-value" not in downloaded.text
+    assert "historical-secret" not in downloaded.text
+
+    _cleanup(execution_id)
+
+
 async def test_report_download_generates_and_caches(client: AsyncClient):
     token, execution_id = await _setup(client)
     headers = {"Authorization": f"Bearer {token}"}
@@ -389,7 +449,7 @@ async def test_report_download_generates_and_caches(client: AsyncClient):
     assert "套件总数" in resp1.text
     assert "步骤总数" in resp1.text
     assert "虚拟套件" in resp1.text
-    assert "version: true-lazy-report-html-v11" in resp1.text
+    assert "version: true-lazy-report-html-v12-sensitive-snapshots" in resp1.text
     assert 'id="report-index"' in resp1.text
     assert 'id="report-data"' not in resp1.text
     assert "class=\"case-detail-template\"" not in resp1.text

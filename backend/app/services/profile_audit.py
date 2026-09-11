@@ -11,11 +11,11 @@ from app.repositories.app_profiles import profiles as profiles_repo
 
 
 async def find_idempotent_replay(
-    db: AsyncSession, profile_id: int, request_id: str
+    db: AsyncSession, profile_id: int, request_id: str, *, actor_id: int | None = None
 ) -> dict | None:
     """若同一档案已有相同 request_id，返回其 response_data（幂等重放）。"""
     return await profiles_repo.find_audit_replay(
-        db, profile_id=profile_id, request_id=request_id
+        db, profile_id=profile_id, request_id=request_id, actor_id=actor_id
     )
 
 
@@ -25,10 +25,11 @@ async def find_project_idempotent_replay(
     request_id: str,
     *,
     action: str,
+    actor_id: int | None = None,
 ) -> dict | None:
     """创建档案前尚无 profile_id，按项目、动作和 request_id 查找重放。"""
     return await profiles_repo.find_audit_replay(
-        db, project_id=project_id, request_id=request_id, action=action
+        db, project_id=project_id, request_id=request_id, action=action, actor_id=actor_id
     )
 
 

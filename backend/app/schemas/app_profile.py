@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -258,6 +259,44 @@ class ProfileVariableOverrideBatchRequest(BaseModel):
     request_id: str | None = None
     expected_revision: int = Field(ge=1)
     updates: list[ProfileVariableUpdateItem] = Field(min_length=1)
+
+
+class MyVariableItem(BaseModel):
+    variable_id: int
+    name: str
+    scope: Literal["project", "suite", "case"]
+    project_id: int | None = None
+    suite_id: int | None = None
+    suite_name: str | None = None
+    case_id: int | None = None
+    case_name: str | None = None
+    public_value: str | None = None
+    user_value: str | None = None
+    display_value: str
+    overridden: bool
+    reference_count: int
+    is_sensitive: bool
+
+
+class MyVariablesPage(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[MyVariableItem]
+
+
+class MyVariableUpdateItem(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    variable_id: int
+    value: str | None = None
+
+
+class MyVariableBatchRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    request_id: UUID
+    updates: list[MyVariableUpdateItem] = Field(min_length=1)
 
 
 # ---------- 工作台（方案 §4.4） ----------

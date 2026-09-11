@@ -71,6 +71,9 @@ class Execution(Base, TimestampMixin):
     dispatch_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     parameters: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Historical sensitivity metadata for the request variable names used by
+    # this resolved execution. Never recompute it from current definitions.
+    sensitive_variable_names: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
     session_token: Mapped[str | None] = mapped_column(String(128))
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=1800)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -221,6 +224,10 @@ class ExecutionNode(Base, TimestampMixin):
     description: Mapped[str | None] = mapped_column(Text)
     element_id: Mapped[int | None] = mapped_column(Integer)
     parameters: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Internal snapshot metadata: exact parameter paths rendered from a
+    # sensitive variable.  It is consumed only when building user-facing
+    # details; worker/Agent execution continues to use ``parameters``.
+    sensitive_parameter_paths: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
     max_wait_seconds: Mapped[float | None] = mapped_column(Numeric(6, 2))
     continue_on_failure: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(20), default="pending")
@@ -277,6 +284,7 @@ class ExecutionStep(Base, TimestampMixin):
     source_key: Mapped[str | None] = mapped_column(String(255))
     source_order: Mapped[int | None] = mapped_column(Integer)
     parameters: Mapped[dict] = mapped_column(JSON, default=dict)
+    sensitive_parameter_paths: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
     # 步骤任意阶段失败是否继续（快照固化，防止运行时配置丢失；套件步同口径）
     continue_on_failure: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(20), default="pending")
@@ -307,6 +315,7 @@ class ExecutionAssertion(Base, TimestampMixin):
     assertion_order: Mapped[int] = mapped_column(Integer, nullable=False)
     assertion_type: Mapped[str] = mapped_column(String(50), nullable=False)
     expected_value: Mapped[str | None] = mapped_column(Text)
+    sensitive_parameter_paths: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
     actual_value: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="pending")  # pass / fail
     error_message: Mapped[str | None] = mapped_column(Text)

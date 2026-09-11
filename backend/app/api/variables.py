@@ -33,13 +33,14 @@ async def list_variables(
     await variable_service.require_scope_access(
         db, user=user, scope=scope, project_id=resolved
     )
-    return await variable_service.list_variables(
+    variables = await variable_service.list_variables(
         db,
         scope=scope,
         project_id=resolved,
         suite_id=suite_id,
         case_id=case_id,
     )
+    return [variable_service.to_public_output(variable) for variable in variables]
 
 
 @router.post("", response_model=VariableOut, status_code=status.HTTP_201_CREATED)
@@ -62,9 +63,10 @@ async def create_variable(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="变量作用域缺少项目")
         project, _role = await require_project_write(resolved_project_id, user, db)
         resolved_project_id = project.id
-    return await variable_service.create(
+    variable = await variable_service.create(
         db, body=body, project_id=resolved_project_id, user=user
     )
+    return variable_service.to_public_output(variable)
 
 
 @router.put("/{variable_id}", response_model=VariableOut)
@@ -84,7 +86,8 @@ async def update_variable(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="变量作用域缺少项目")
         await require_project_write(variable.project_id, user, db)
     try:
-        return await variable_service.update(db, variable=variable, body=body)
+        updated = await variable_service.update(db, variable=variable, body=body)
+        return variable_service.to_public_output(updated)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 

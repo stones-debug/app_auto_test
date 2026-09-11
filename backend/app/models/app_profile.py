@@ -365,12 +365,13 @@ class AppProfileAuditLog(Base):
             " 'skip_batch', 'restore_batch', 'element_override_upsert',"
             " 'element_override_restore', 'variable_override_upsert',"
             " 'variable_override_restore', 'node_override_upsert', 'node_override_restore',"
-            " 'node_override_batch', 'occurrence_variable_override_batch')",
+            " 'node_override_batch', 'occurrence_variable_override_batch',"
+            " 'user_variable_override_batch')",
             name="ck_profile_audit_action",
         ),
         CheckConstraint("jsonb_typeof(changes) = 'array'", name="ck_profile_audit_changes"),
         CheckConstraint("revision_after >= revision_before", name="ck_profile_audit_revisions"),
-        UniqueConstraint("profile_id", "request_id", name="uq_profile_audit_request"),
+        UniqueConstraint("profile_id", "actor_id", "request_id", name="uq_profile_audit_request_actor"),
         Index("idx_profile_audit_profile_time", "profile_id", text("created_at DESC")),
         Index("idx_profile_audit_project_time", "project_id", text("created_at DESC")),
         Index("idx_profile_audit_actor_time", "actor_id", text("created_at DESC")),

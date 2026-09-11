@@ -34,7 +34,7 @@ async def list(db: AsyncSession, *, profile_id: int, status_: str, offset: int, 
 
 async def create(db: AsyncSession, *, profile, body, user_id: int, role: str | None, audit: dict) -> dict:
     if body.request_id:
-        replay = await find_idempotent_replay(db, profile.id, body.request_id)
+        replay = await find_idempotent_replay(db, profile.id, body.request_id, actor_id=user_id)
         if replay is not None:
             return replay
     if await releases_repo.find_version_conflict(db, profile_id=profile.id, version=body.version, build_number=body.build_number):
@@ -53,7 +53,7 @@ async def create(db: AsyncSession, *, profile, body, user_id: int, role: str | N
 
 async def update(db: AsyncSession, *, release, profile, body, user_id: int, role: str | None, audit: dict) -> dict:
     if body.request_id:
-        replay = await find_idempotent_replay(db, profile.id, body.request_id)
+        replay = await find_idempotent_replay(db, profile.id, body.request_id, actor_id=user_id)
         if replay is not None:
             return replay
     try:
@@ -72,7 +72,7 @@ async def update(db: AsyncSession, *, release, profile, body, user_id: int, role
 
 async def delete(db: AsyncSession, *, release, profile, body, user_id: int, role: str | None, audit: dict) -> None:
     if body.request_id:
-        replay = await find_idempotent_replay(db, profile.id, body.request_id)
+        replay = await find_idempotent_replay(db, profile.id, body.request_id, actor_id=user_id)
         if replay is not None:
             return
     try:

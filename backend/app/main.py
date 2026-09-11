@@ -33,6 +33,7 @@ from app.core.request_logging import (
     MAX_BODY_LOG_BYTES,
     format_for_log,
     parse_body_for_log,
+    sanitize_request_body_for_log,
 )
 from app.core.security import is_loopback_host
 from app.services.worker_runtime import WorkerRuntime
@@ -164,6 +165,7 @@ class RequestLoggingMiddleware:
 
         request = Request(scope, receive=replay_receive)
         started = time.perf_counter()
+        body_log = sanitize_request_body_for_log(request.url.path, body_log)
         request_logger.info(
             "HTTP 请求 %s %s query=%s body=%s",
             request.method,

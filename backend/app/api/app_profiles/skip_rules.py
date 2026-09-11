@@ -101,7 +101,7 @@ async def skip_rules_batch(
     if len(body.targets) > 500:
         raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, "PROFILE_RULE_INVALID", "单次批量跳过目标上限 500")
     if body.request_id:
-        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        replay = await find_idempotent_replay(db, profile_id, body.request_id, actor_id=user.id)
         if replay is not None:
             return replay
 

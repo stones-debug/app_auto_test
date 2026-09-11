@@ -83,6 +83,7 @@ async def create(
     kind: str,
     spec: dict | None,
     description: str | None,
+    is_sensitive: bool = False,
     user_id: int,
 ) -> Variable:
     variable = Variable(
@@ -95,6 +96,7 @@ async def create(
         kind=kind,
         spec=spec,
         description=description,
+        is_sensitive=is_sensitive,
         created_by=user_id,
     )
     db.add(variable)
@@ -103,7 +105,7 @@ async def create(
 
 async def update_fields(
     variable: Variable, *, fields: set[str], value: str | None, kind: str | None,
-    spec: dict | None, description: str | None
+    spec: dict | None, description: str | None, is_sensitive: bool | None = None
 ) -> Variable:
     if "value" in fields and value is not None:
         variable.value = value
@@ -113,6 +115,8 @@ async def update_fields(
         variable.spec = spec
     if "description" in fields:
         variable.description = description
+    if "is_sensitive" in fields and is_sensitive is not None:
+        variable.is_sensitive = is_sensitive
     return variable
 
 

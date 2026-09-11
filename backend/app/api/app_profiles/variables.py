@@ -14,10 +14,12 @@ from app.models import AppProfile, Project, TestCase, TestSuiteCase, User
 from app.repositories.app_profiles import overrides as overrides_repo
 from app.repositories.app_profiles import resolution as resolution_repo
 from app.schemas.app_profile import (
+    MyVariableBatchRequest,
+    MyVariablesPage,
     ProfileSuiteCaseVariablesOut,
     ProfileVariableOverrideBatchRequest,
 )
-from app.services import case_variable_service
+from app.services import case_variable_service, user_variable_service
 from app.services.profile_audit import find_idempotent_replay
 from app.services.profile_resolver_nodes import ProfileRuleError
 
@@ -101,7 +103,7 @@ async def patch_suite_case_variables(
     profile = await _get_profile_or_404(profile_id, db)
     _project, role = modal_perm
     if body.request_id:
-        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        replay = await find_idempotent_replay(db, profile_id, body.request_id, actor_id=user.id)
         if replay is not None:
             # 重放：审计里存的是提交前的 detail，用审计注入的 revision 补齐 profile_revision
             replay.setdefault("profile_revision", replay.get("revision"))
@@ -129,3 +131,47 @@ async def patch_suite_case_variables(
     # 响应模型是 ProfileSuiteCaseVariablesOut（与 GET 同构），新版本号只在 profile_revision；
     # 多余键（如 revision）会被响应模型丢弃，客户端必须读 profile_revision。
     return {"profile_revision": new_revision, **detail}
+
+
+@router.get("/app-profiles/{profile_id}/my-variables", response_model=MyVariablesPage)
+async def get_my_variables(
+    profile_id: int,
+    keyword: str = "",
+    scope: str | None = None,
+    overridden_only: bool = False,
+    page: int = 1,
+    page_size: int = 20,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    profile = await _get_profile_or_404(profile_id, db)
+    _project, role = await get_project_permission(profile.project_id, user, db)
+    if role not in ("owner", "admin", "member"):
+        raise api_error(status.HTTP_403_FORBIDDEN, "PROJECT_FORBIDDEN", "无权查看当前用户变量")
+    if scope not in (None, "project", "suite", "case"):
+        raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, "VARIABLE_VALUE_INVALID", "变量作用域不合法")
+    if page < 1 or page_size < 1 or page_size > 200:
+        raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, "PAGINATION_INVALID", "分页参数不合法")
+    return await user_variable_service.list_my_variables(
+        db, profile=profile, user=user, keyword=keyword, scope=scope,
+        overridden_only=overridden_only, page=page, page_size=page_size,
+    )
+
+
+@router.patch("/app-profiles/{profile_id}/my-variables", response_model=MyVariablesPage)
+async def patch_my_variables(
+    profile_id: int,
+    body: MyVariableBatchRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    profile = await _get_profile_or_404(profile_id, db)
+    _project, role = await get_project_permission(profile.project_id, user, db)
+    if role not in ("owner", "admin", "member"):
+        raise api_error(status.HTTP_403_FORBIDDEN, "PROJECT_FORBIDDEN", "无权修改当前用户变量")
+    return await user_variable_service.update_my_variables(
+        db, profile=profile, user=user, request_id=body.request_id,
+        updates=[item.model_dump() for item in body.updates], role=role,
+        audit={"client_ip": request.client.host if request.client else None, "user_agent": request.headers.get("user-agent")},
+    )

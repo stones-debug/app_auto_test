@@ -61,6 +61,7 @@ async def materialize_snapshot(db: AsyncSession, execution, result) -> None:
                     action=step.get("action") or "",
                     description=step.get("description"),
                     element_id=step.get("element_id"), parameters=step.get("params") or {},
+                    sensitive_parameter_paths=step.get("sensitive_parameter_paths") or [],
                     continue_on_failure=bool(step.get("continue_on_failure", False)), status="pending",
                 ))
 
@@ -100,6 +101,7 @@ async def materialize_snapshot(db: AsyncSession, execution, result) -> None:
             description=snapshot_node.get("description"),
             element_id=snapshot_node.get("element_id"),
             parameters=snapshot_node.get("params") or snapshot_node.get("parameters") or {},
+            sensitive_parameter_paths=snapshot_node.get("sensitive_parameter_paths") or [],
             max_wait_seconds=snapshot_node.get("max_wait_seconds"),
             continue_on_failure=bool(snapshot_node.get("continue_on_failure", False)), status="pending",
             expected_value=(
@@ -128,6 +130,7 @@ async def materialize_snapshot(db: AsyncSession, execution, result) -> None:
                 step_order=int(step.get("order") or 0), action=step.get("action") or "",
                 source_key=step.get("source_key"), source_order=step.get("source_order"),
                 parameters=deepcopy(step.get("params") or {}),
+                sensitive_parameter_paths=step.get("sensitive_parameter_paths") or [],
                 continue_on_failure=bool(step.get("continue_on_failure", False)), status="pending",
             )
             execution_steps.append(execution_step)
@@ -147,6 +150,7 @@ async def materialize_snapshot(db: AsyncSession, execution, result) -> None:
             execution_step_id=execution_step.id, assertion_order=int(assertion.get("order") or 0),
             assertion_type=assertion.get("type") or assertion.get("assertion_type") or "",
             expected_value=str(expected) if expected is not None else None, status="pending",
+            sensitive_parameter_paths=assertion.get("sensitive_parameter_paths") or [],
         ))
     db.add_all(assertions)
     logger.info(

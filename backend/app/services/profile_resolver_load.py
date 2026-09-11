@@ -24,6 +24,19 @@ class ResolutionLoadContext:
     elements: dict[int, TestElement] = field(default_factory=dict)
     variable_cache: dict[tuple[Any, ...], str] = field(default_factory=dict)
 
+    @property
+    def sensitive_variable_names(self) -> set[str]:
+        return {
+            variable.name
+            for variable in [
+                *self.global_variables,
+                *self.project_variables,
+                *[row for rows in self.suite_variables.values() for row in rows],
+                *[row for rows in self.case_variables.values() for row in rows],
+            ]
+            if variable.is_sensitive
+        }
+
 
 async def prepare_load_context(
     db: AsyncSession,
@@ -70,6 +83,14 @@ async def load_config(db: AsyncSession, profile_id: int) -> dict:
     return await resolution_repo.load_config(db, profile_id)
 
 
+async def load_user_variable_overrides(
+    db: AsyncSession, *, profile_id: int, user_id: int
+) -> dict[int, str]:
+    return await resolution_repo.load_user_variable_overrides(
+        db, profile_id=profile_id, user_id=user_id
+    )
+
+
 async def collect_suite_cases(
     db: AsyncSession, suite_ids: list[int]
 ) -> tuple[dict[int, list[tuple[int, int, dict[str, str]]]], dict[int, TestCase]]:
@@ -95,7 +116,7 @@ async def merge_variables(
     membership_overrides: dict[str, str] | None = None,
     occurrence_profile_overrides: dict[str, str] | None = None,
 ) -> dict:
-    """变量优先级：全局 → 项目 → 用例 → 套件 → 编排项 → 档案 → occurrence 档案 → 执行参数。"""
+    """变量优先级：公共层级 → 编排项 → 执行参数 → occurrence 档案。"""
     loaded = (
         [*context.global_variables, *context.project_variables]
         if context is not None
@@ -111,6 +132,7 @@ async def merge_variables(
     membership_overrides = membership_overrides or {}
     occurrence_profile_overrides = occurrence_profile_overrides or {}
     profile_overrides = config["variable_overrides"]
+    user_overrides = config.get("user_variable_overrides", {})
     execution_variables = {str(key): value for key, value in execution_variables.items()}
     membership_names = set(membership_overrides)
     occurrence_names = set(occurrence_profile_overrides)
@@ -122,16 +144,19 @@ async def merge_variables(
     merged = resolve_rows(
         [variable for variable in loaded if variable.scope == "global"], cache, ("global",),
         skip_names=project_names | case_names | suite_names | membership_names | profile_names | occurrence_names | set(execution_variables),
+        value_overrides=user_overrides,
     )
     merged.update(resolve_rows(
         [variable for variable in loaded if variable.scope == "project"], cache,
         ("project", project_id), skip_names=case_names | suite_names | membership_names | profile_names | occurrence_names | set(execution_variables),
+        value_overrides=user_overrides,
     ))
     if context is not None and case is not None:
         merged.update(resolve_rows(
             case_rows, cache,
             ("case", suite_id, case.id, case_occurrence if case_occurrence is not None else case.id),
             skip_names=suite_names | membership_names | profile_names | occurrence_names | set(execution_variables),
+            value_overrides=user_overrides,
         ))
     for name, value in case_values.items():
         if name not in suite_names and name not in membership_names and name not in profile_names and name not in occurrence_names and name not in execution_variables:
@@ -139,11 +164,13 @@ async def merge_variables(
     merged.update(resolve_rows(
         suite_rows, cache, ("suite", suite_id),
         skip_names=membership_names | profile_names | occurrence_names | set(execution_variables),
+        value_overrides=user_overrides,
     ))
     merged.update(membership_overrides)
     merged.update(profile_overrides)
-    merged.update(occurrence_profile_overrides)
     merged.update(execution_variables)
+    # APP occurrence 能力变量是最高优先级，不能被执行参数突破。
+    merged.update(occurrence_profile_overrides)
     return merged
 
 
@@ -166,19 +193,23 @@ async def merge_suite_variables(
             db, project_id=project_id, suite_id=suite_id
         )
     cache = context.variable_cache if context is not None else {}
+    user_overrides = config.get("user_variable_overrides", {})
     suite_names = {variable.name for variable in loaded if variable.scope == "suite"}
     higher_names = suite_names | set(config["variable_overrides"]) | set(execution_variables)
     merged = resolve_rows(
         [variable for variable in loaded if variable.scope == "global"], cache, ("global",),
         skip_names=higher_names | {variable.name for variable in loaded if variable.scope == "project"},
+        value_overrides=user_overrides,
     )
     merged.update(resolve_rows(
         [variable for variable in loaded if variable.scope == "project"], cache,
         ("project", project_id), skip_names=higher_names,
+        value_overrides=user_overrides,
     ))
     merged.update(resolve_rows(
         [variable for variable in loaded if variable.scope == "suite"], cache,
         ("suite", suite_id), skip_names=set(config["variable_overrides"]) | set(execution_variables),
+        value_overrides=user_overrides,
     ))
     merged.update(config["variable_overrides"])
     merged.update(execution_variables)

@@ -11,6 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ExecutionCase, ExecutionStep
 from app.repositories import execution_tree
+from app.services.sensitive_snapshot import (
+    REDACTED,
+    mask_sensitive_parameters,
+    sensitive_result,
+)
 
 
 async def load_case_tree(db: AsyncSession, execution_id: int) -> list[dict]:
@@ -23,16 +28,20 @@ async def load_case_tree(db: AsyncSession, execution_id: int) -> list[dict]:
     for node in node_rows:
         if node.execution_case_id is None:
             continue
+        sensitive_paths = node.sensitive_parameter_paths or []
+        result_sensitive = bool(sensitive_paths)
         nodes_by_case.setdefault(node.execution_case_id, []).append({
             "id": node.id, "kind": node.kind, "node_order": node.node_order, "phase": node.phase,
             "node_key": node.node_key, "action": node.action, "assertion_type": node.assertion_type,
             "description": node.description,
-            "element_id": node.element_id, "parameters": node.parameters or {},
+            "element_id": node.element_id, "parameters": mask_sensitive_parameters(node.parameters or {}, sensitive_paths),
             "max_wait_seconds": node.max_wait_seconds, "continue_on_failure": node.continue_on_failure,
             "status": node.status, "started_at": node.started_at, "finished_at": node.finished_at,
             "duration": node.duration, "attempt_count": node.attempt_count,
-            "actual_value": node.actual_value, "expected_value": node.expected_value,
-            "error_message": node.error_message, "screenshot_path": node.screenshot_path,
+            "actual_value": REDACTED if result_sensitive else node.actual_value,
+            "expected_value": REDACTED if result_sensitive else node.expected_value,
+            "error_message": REDACTED if result_sensitive else node.error_message,
+            "screenshot_path": node.screenshot_path,
             "artifact_id": f"node:{node.id}" if node.screenshot_path else None,
         })
 
@@ -41,6 +50,7 @@ async def load_case_tree(db: AsyncSession, execution_id: int) -> list[dict]:
     # 但类型系统无法感知，故键类型放宽为 int | None（纯标注，运行时行为不变）。
     step_by_case: dict[int | None, list[dict]] = {}
     snapshot_parameters: dict[tuple[int | None, int], dict] = {}
+    snapshot_sensitive_paths: dict[tuple[int | None, int], list] = {}
     snapshot_phases: dict[tuple[int | None, int], str] = {}
     # 断言快照：按 (case_id, order) 携带 params / description（断言行本身不落库这些字段）
     snapshot_assertion_info: dict[tuple[int | None, int, int], dict] = {}
@@ -52,6 +62,8 @@ async def load_case_tree(db: AsyncSession, execution_id: int) -> list[dict]:
             params = item.get("params")
             if isinstance(order, int) and isinstance(params, dict):
                 snapshot_parameters[(case.id, order)] = params
+            if isinstance(order, int) and isinstance(item.get("sensitive_parameter_paths"), list):
+                snapshot_sensitive_paths[(case.id, order)] = item["sensitive_parameter_paths"]
             if isinstance(order, int):
                 snapshot_phases[(case.id, order)] = str(item.get("phase") or "main")
             if not isinstance(order, int):
@@ -68,6 +80,10 @@ async def load_case_tree(db: AsyncSession, execution_id: int) -> list[dict]:
                     info["description"] = description.strip()
                 snapshot_assertion_info[(case.id, order, assertion_order)] = info
     for s in steps:
+        step_paths = s.sensitive_parameter_paths or snapshot_sensitive_paths.get(
+            (s.execution_case_id, s.step_order), []
+        )
+        step_sensitive = bool(step_paths)
         case_steps = step_by_case.setdefault(s.execution_case_id, [])
         case_steps.append(
             {
@@ -75,14 +91,16 @@ async def load_case_tree(db: AsyncSession, execution_id: int) -> list[dict]:
                 "step_order": s.step_order,
                 "action": s.action,
                 "phase": snapshot_phases.get((s.execution_case_id, s.step_order), "main"),
-                "parameters": s.parameters
-                or snapshot_parameters.get((s.execution_case_id, s.step_order), {}),
+                "parameters": mask_sensitive_parameters(
+                    s.parameters or snapshot_parameters.get((s.execution_case_id, s.step_order), {}),
+                    step_paths,
+                ),
                 "status": s.status,
                 "started_at": s.started_at,
                 "finished_at": s.finished_at,
                 "duration": s.duration,
-                "actual_value": s.actual_value,
-                "error_message": s.error_message,
+                "actual_value": REDACTED if step_sensitive else s.actual_value,
+                "error_message": REDACTED if step_sensitive else s.error_message,
                 "screenshot_path": s.screenshot_path,
             }
         )
@@ -90,16 +108,24 @@ async def load_case_tree(db: AsyncSession, execution_id: int) -> list[dict]:
     step_case_order = {s.id: (s.execution_case_id, s.step_order) for s in steps}
     for a in assertion_rows:
         case_id, step_order = step_case_order[a.execution_step_id]
+        assertion_paths = a.sensitive_parameter_paths or []
+        assertion_sensitive = sensitive_result(assertion_paths)
+        snapshot_info = snapshot_assertion_info.get((case_id, step_order, a.assertion_order), {})
+        if isinstance(snapshot_info.get("params"), dict):
+            snapshot_info = {
+                **snapshot_info,
+                "params": mask_sensitive_parameters(snapshot_info["params"], assertion_paths),
+            }
         assertion_by_step.setdefault(a.execution_step_id, []).append(
             {
                 "id": a.id,
                 "assertion_order": a.assertion_order,
                 "assertion_type": a.assertion_type,
-                "expected_value": a.expected_value,
-                "actual_value": a.actual_value,
+                "expected_value": REDACTED if assertion_sensitive else a.expected_value,
+                "actual_value": REDACTED if assertion_sensitive else a.actual_value,
                 "status": a.status,
-                "error_message": a.error_message,
-                **snapshot_assertion_info.get((case_id, step_order, a.assertion_order), {}),
+                "error_message": REDACTED if assertion_paths else a.error_message,
+                **snapshot_info,
             }
         )
 
@@ -158,16 +184,20 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
     nodes_by_case: dict[int, list[dict]] = {}
     nodes_by_suite: dict[int, list[dict]] = {}
     for node in node_rows:
+        sensitive_paths = node.sensitive_parameter_paths or []
+        result_sensitive = bool(sensitive_paths)
         item = {
             "id": node.id, "kind": node.kind, "node_order": node.node_order, "phase": node.phase,
             "node_key": node.node_key, "action": node.action, "assertion_type": node.assertion_type,
             "description": node.description,
-            "element_id": node.element_id, "parameters": node.parameters or {},
+            "element_id": node.element_id, "parameters": mask_sensitive_parameters(node.parameters or {}, sensitive_paths),
             "max_wait_seconds": node.max_wait_seconds, "continue_on_failure": node.continue_on_failure,
             "status": node.status, "started_at": node.started_at, "finished_at": node.finished_at,
             "duration": node.duration, "attempt_count": node.attempt_count,
-            "actual_value": node.actual_value, "expected_value": node.expected_value,
-            "error_message": node.error_message, "screenshot_path": node.screenshot_path,
+            "actual_value": REDACTED if result_sensitive else node.actual_value,
+            "expected_value": REDACTED if result_sensitive else node.expected_value,
+            "error_message": REDACTED if result_sensitive else node.error_message,
+            "screenshot_path": node.screenshot_path,
             "artifact_id": f"node:{node.id}" if node.screenshot_path else None,
         }
         if node.execution_case_id is not None:
@@ -177,6 +207,7 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
 
     # 同 load_case_tree：键中的 case_id 来自可空列，运行时已过滤但类型系统无法感知
     snapshot_parameters: dict[tuple[int | None, int], dict] = {}
+    snapshot_sensitive_paths: dict[tuple[int | None, int], list] = {}
     snapshot_phases: dict[tuple[int | None, int], str] = {}
     # 断言快照：按 (case_id, order) 携带 params / description
     snapshot_assertion_info: dict[tuple[int | None, int, int], dict] = {}
@@ -188,6 +219,8 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
             params = item.get("params")
             if isinstance(order, int) and isinstance(params, dict):
                 snapshot_parameters[(c.id, order)] = params
+            if isinstance(order, int) and isinstance(item.get("sensitive_parameter_paths"), list):
+                snapshot_sensitive_paths[(c.id, order)] = item["sensitive_parameter_paths"]
             if isinstance(order, int):
                 snapshot_phases[(c.id, order)] = str(item.get("phase") or "main")
             if not isinstance(order, int):
@@ -204,6 +237,7 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
                     info["description"] = description.strip()
                 snapshot_assertion_info[(c.id, order, assertion_order)] = info
     suite_snapshot_parameters: dict[tuple[int | None, str, int], dict] = {}
+    suite_snapshot_sensitive_paths: dict[tuple[int | None, str, int], list] = {}
     for s in suite_rows:
         for src, default_phase in (
             (s.setup_steps_snapshot or [], "suite_setup"),
@@ -217,6 +251,8 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
                 phase = str(item.get("phase") or default_phase)
                 if isinstance(order, int) and isinstance(params, dict):
                     suite_snapshot_parameters[(s.id, phase, order)] = params
+                if isinstance(order, int) and isinstance(item.get("sensitive_parameter_paths"), list):
+                    suite_snapshot_sensitive_paths[(s.id, phase, order)] = item["sensitive_parameter_paths"]
 
     steps_by_case: dict[int | None, list] = {}
     for s in case_step_rows:
@@ -234,30 +270,46 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
     def _mk_case(c: ExecutionCase) -> dict:
         steps_out = []
         for s in steps_by_case.get(c.id, []):
+            step_paths = s.sensitive_parameter_paths or snapshot_sensitive_paths.get(
+                (c.id, s.step_order), []
+            )
+            step_sensitive = bool(step_paths)
             steps_out.append(
                 {
                     "id": s.id,
                     "step_order": s.step_order,
                     "action": s.action,
                     "phase": snapshot_phases.get((c.id, s.step_order), s.phase),
-                    "parameters": s.parameters or snapshot_parameters.get((c.id, s.step_order), {}),
+                    "parameters": mask_sensitive_parameters(
+                        s.parameters or snapshot_parameters.get((c.id, s.step_order), {}), step_paths
+                    ),
                     "status": s.status,
                     "started_at": s.started_at,
                     "finished_at": s.finished_at,
                     "duration": s.duration,
-                    "actual_value": s.actual_value,
-                    "error_message": s.error_message,
+                    "actual_value": REDACTED if step_sensitive else s.actual_value,
+                    "error_message": REDACTED if step_sensitive else s.error_message,
                     "screenshot_path": s.screenshot_path,
                     "assertions": [
                         {
                             "id": a.id,
                             "assertion_order": a.assertion_order,
                             "assertion_type": a.assertion_type,
-                            "expected_value": a.expected_value,
-                            "actual_value": a.actual_value,
+                            "expected_value": REDACTED if sensitive_result(a.sensitive_parameter_paths or []) else a.expected_value,
+                            "actual_value": REDACTED if sensitive_result(a.sensitive_parameter_paths or []) else a.actual_value,
                             "status": a.status,
-                            "error_message": a.error_message,
-                            **snapshot_assertion_info.get((c.id, s.step_order, a.assertion_order), {}),
+                            "error_message": REDACTED if a.sensitive_parameter_paths else a.error_message,
+                            **{
+                                key: value
+                                for key, value in snapshot_assertion_info.get((c.id, s.step_order, a.assertion_order), {}).items()
+                                if key != "sensitive_parameter_paths" and key != "params"
+                            },
+                            "params": mask_sensitive_parameters(
+                                snapshot_assertion_info.get((c.id, s.step_order, a.assertion_order), {}).get("params"),
+                                a.sensitive_parameter_paths or [],
+                            )
+                            if isinstance(snapshot_assertion_info.get((c.id, s.step_order, a.assertion_order), {}).get("params"), dict)
+                            else None,
                         }
                         for a in assertions_by_step.get(s.id, [])
                     ],
@@ -280,18 +332,24 @@ async def load_suite_tree(db: AsyncSession, execution_id: int) -> list[dict]:
 
     def _mk_suite_step(s: ExecutionStep) -> dict:
         phase = s.phase
+        paths = s.sensitive_parameter_paths or suite_snapshot_sensitive_paths.get(
+            (s.execution_suite_id, phase, s.step_order), []
+        )
+        result_sensitive = bool(paths)
         return {
             "id": s.id,
             "step_order": s.step_order,
             "action": s.action,
             "phase": phase,
-            "parameters": s.parameters or suite_snapshot_parameters.get((s.execution_suite_id, phase, s.step_order), {}),
+            "parameters": mask_sensitive_parameters(
+                s.parameters or suite_snapshot_parameters.get((s.execution_suite_id, phase, s.step_order), {}), paths
+            ),
             "status": s.status,
             "started_at": s.started_at,
             "finished_at": s.finished_at,
             "duration": s.duration,
-            "actual_value": s.actual_value,
-            "error_message": s.error_message,
+            "actual_value": REDACTED if result_sensitive else s.actual_value,
+            "error_message": REDACTED if result_sensitive else s.error_message,
             "screenshot_path": s.screenshot_path,
             "artifact_id": f"step:{s.id}" if s.screenshot_path else None,
         }

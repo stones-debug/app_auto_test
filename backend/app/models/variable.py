@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -46,7 +47,24 @@ class Variable(Base, TimestampMixin):
     kind: Mapped[str] = mapped_column(String(20), nullable=False, default="fixed", server_default=text("'fixed'"))
     spec: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     description: Mapped[str | None] = mapped_column(Text)
+    is_sensitive: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+
+
+class UserAppProfileVariableOverride(Base, TimestampMixin):
+    """当前用户在 APP 档案下对公共变量定义的私有覆盖。"""
+
+    __tablename__ = "user_app_profile_variable_overrides"
+    __table_args__ = (
+        UniqueConstraint("user_id", "profile_id", "variable_id", name="uq_user_profile_variable_override"),
+        Index("idx_user_profile_variable_overrides_profile_user", "profile_id", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    profile_id: Mapped[int] = mapped_column(ForeignKey("app_profiles.id", ondelete="CASCADE"), nullable=False)
+    variable_id: Mapped[int] = mapped_column(ForeignKey("variables.id", ondelete="CASCADE"), nullable=False)
+    value_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class RefreshToken(Base, TimestampMixin):

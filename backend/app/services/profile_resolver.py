@@ -31,6 +31,9 @@ from app.services.profile_resolver_load import (
 from app.services.profile_resolver_load import (
     load_config as _load_config,
 )
+from app.services.profile_resolver_load import (
+    load_user_variable_overrides as _load_user_variable_overrides,
+)
 from app.services.profile_resolver_load import merge_suite_variables as _merge_suite_variables
 from app.services.profile_resolver_load import merge_variables as _merge_variables
 from app.services.profile_resolver_load import (
@@ -51,6 +54,7 @@ from app.services.profile_resolver_nodes import (
     render_text,
     render_value,
     runtime_variable_names,
+    sensitive_parameter_paths,
     validate_node_patch,
     variable_references,
 )
@@ -118,6 +122,7 @@ class ResolutionRequest:
     target_scope: Literal["explicit", "profile_all"] = "explicit"
     # profile_all 的“默认全选”补集。显式目标禁止携带该字段。
     excluded_suite_ids: list[int] = field(default_factory=list)
+    user_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -194,6 +199,7 @@ class ResolutionResult:
     # 经过存在性/软删除/直接套件跳过过滤后的取消集合，供预检 canonical
     # target 与正式执行 parameters 使用；请求原始集合不应把被忽略 ID 带入审计。
     normalized_excluded_suite_ids: list[int] = field(default_factory=list)
+    sensitive_variable_names: list[str] = field(default_factory=list)
 
     @property
     def cases(self) -> list[ResolvedCase]:
@@ -309,11 +315,18 @@ async def resolve(
         raise ProfileRuleError("EXECUTION_TARGET_INVALID", "excluded_suite_ids 仅支持 profile_all")
 
     cache_key = (request.project_id, project.test_asset_revision, request.profile_id, profile.revision)
-    config = cache.get(cache_key)
-    config_cache_hit = config is not None
-    if config is None:
-        config = await _load_config(db, request.profile_id)
-        cache.set(cache_key, config)
+    shared_config = cache.get(cache_key)
+    config_cache_hit = shared_config is not None
+    if shared_config is None:
+        shared_config = await _load_config(db, request.profile_id)
+        cache.set(cache_key, shared_config)
+    # User overrides are deliberately read outside the shared config cache:
+    # they do not advance profile.revision and must be visible immediately.
+    config = {**shared_config, "user_variable_overrides": {}}
+    if request.user_id is not None:
+        config["user_variable_overrides"] = await _load_user_variable_overrides(
+            db, profile_id=request.profile_id, user_id=request.user_id
+        )
 
     suite_rows = []
     suite_ids: list[int] = []
@@ -480,6 +493,7 @@ async def resolve(
         summary=summary,
         warnings=[],
         normalized_excluded_suite_ids=normalized_excluded,
+        sensitive_variable_names=sorted(load_context.sensitive_variable_names),
     )
     logger.info(
         "profile_resolution stage=resolve project_id=%s profile_id=%s target_scope=%s "
@@ -658,8 +672,10 @@ async def _resolve_case(
             continue
         node = kept[0]
         render_variables = dict(variables)
-        render_variables.update(request.execution_variables)
         rendered = _render_node_with_context(node, render_variables, case.name, runtime_variables)
+        rendered["sensitive_parameter_paths"] = sensitive_parameter_paths(
+            node, load_context.sensitive_variable_names
+        )
         validated = _registry_validate_assertion(rendered) if is_assertion else _registry_validate_step(rendered)
         kept_nodes.append(validated)
         runtime_variables.update(runtime_variable_names(validated))
@@ -737,8 +753,10 @@ async def _parse_suite_steps(
         steps: list[dict] = []
         for node in kept:
             render_variables = dict(variables)
-            render_variables.update(execution_variables)
             rendered = _render_node_with_context(node, render_variables, suite_name, runtime_variables)
+            rendered["sensitive_parameter_paths"] = sensitive_parameter_paths(
+                node, load_context.sensitive_variable_names
+            )
             validated = _registry_validate_step(rendered)
             steps.append(validated)
             runtime_variables.update(runtime_variable_names(validated))

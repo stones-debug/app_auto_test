@@ -87,7 +87,7 @@ async def upsert_element_override(
     profile = await _get_profile_or_404(profile_id, db)
     _project, role = modal_perm
     if body.request_id:
-        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        replay = await find_idempotent_replay(db, profile_id, body.request_id, actor_id=user.id)
         if replay is not None:
             return replay
     el = await elements_repo.get_by_id(db, element_id)
@@ -122,7 +122,7 @@ async def restore_element_override(
     profile = await _get_profile_or_404(profile_id, db)
     _project, role = modal_perm
     if body.request_id:
-        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        replay = await find_idempotent_replay(db, profile_id, body.request_id, actor_id=user.id)
         if replay is not None:
             return
     existing = await overrides_repo.get_element(db, profile_id, element_id)
@@ -144,7 +144,7 @@ async def upsert_variable_override(
     profile = await _get_profile_or_404(profile_id, db)
     _project, role = modal_perm
     if body.request_id:
-        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        replay = await find_idempotent_replay(db, profile_id, body.request_id, actor_id=user.id)
         if replay is not None:
             return replay
     await overrides_repo.upsert_variable(
@@ -170,7 +170,7 @@ async def restore_variable_override(
     profile = await _get_profile_or_404(profile_id, db)
     _project, role = modal_perm
     if body.request_id:
-        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        replay = await find_idempotent_replay(db, profile_id, body.request_id, actor_id=user.id)
         if replay is not None:
             return
     existing = await overrides_repo.get_variable(db, profile_id, name)
@@ -194,7 +194,7 @@ async def upsert_node_override(
     profile = await _get_profile_or_404(profile_id, db)
     _project, role = modal_perm
     if body.request_id:
-        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        replay = await find_idempotent_replay(db, profile_id, body.request_id, actor_id=user.id)
         if replay is not None:
             return replay
     if node_type not in ("step", "assertion"):
@@ -266,7 +266,7 @@ async def restore_node_override(
     profile = await _get_profile_or_404(profile_id, db)
     _project, role = modal_perm
     if body.request_id:
-        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        replay = await find_idempotent_replay(db, profile_id, body.request_id, actor_id=user.id)
         if replay is not None:
             return
     try:
@@ -308,7 +308,7 @@ async def upsert_suite_step_override(
     profile = await _get_profile_or_404(profile_id, db)
     _project, role = modal_perm
     if body.request_id:
-        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        replay = await find_idempotent_replay(db, profile_id, body.request_id, actor_id=user.id)
         if replay is not None:
             return replay
     suite = await resolution_repo.get_suite(db, suite_id)
@@ -364,7 +364,7 @@ async def restore_suite_step_override(
     profile = await _get_profile_or_404(profile_id, db)
     _project, role = modal_perm
     if body.request_id:
-        replay = await find_idempotent_replay(db, profile_id, body.request_id)
+        replay = await find_idempotent_replay(db, profile_id, body.request_id, actor_id=user.id)
         if replay is not None:
             return
     try:

@@ -67,6 +67,24 @@ def user_key_fernet() -> Fernet:
     return Fernet(base64.urlsafe_b64encode(digest))
 
 
+def user_variable_fernet() -> Fernet:
+    """用户变量专用 Fernet；与 Agent 用户 Key 使用独立配置和派生密钥。"""
+    raw = settings.user_variable_encryption_key or "dev-user-variable-encryption-key"
+    digest = hashlib.sha256(raw.encode("utf-8")).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def encrypt_user_variable(value: str) -> str:
+    return user_variable_fernet().encrypt(value.encode("utf-8")).decode("ascii")
+
+
+def decrypt_user_variable(token: str) -> str:
+    try:
+        return user_variable_fernet().decrypt(token.encode("ascii")).decode("utf-8")
+    except InvalidToken as exc:
+        raise ValueError("用户变量密文无法解密（加密密钥可能已变更）") from exc
+
+
 def encrypt_user_key(secret: str) -> str:
     """加密 Key 的 secret 部分（数据库不裸存明文）。"""
     return user_key_fernet().encrypt(secret.encode("utf-8")).decode("ascii")

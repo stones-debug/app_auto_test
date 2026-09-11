@@ -207,6 +207,7 @@ async def find_audit_replay(
     project_id: int | None = None,
     request_id: str,
     action: str | None = None,
+    actor_id: int | None = None,
 ) -> dict | None:
     if not request_id:
         return None
@@ -217,6 +218,8 @@ async def find_audit_replay(
         conditions.append(AppProfileAuditLog.project_id == project_id)
     if action is not None:
         conditions.append(AppProfileAuditLog.action == action)
+    if actor_id is not None:
+        conditions.append(AppProfileAuditLog.actor_id == actor_id)
     row = (await db.execute(select(AppProfileAuditLog).where(*conditions))).scalar_one_or_none()
     return row.response_data if row is not None else None
 
@@ -228,6 +231,7 @@ AUDIT_ACTIONS = frozenset(
         "skip_batch", "restore_batch", "element_override_upsert", "element_override_restore",
         "variable_override_upsert", "variable_override_restore", "node_override_upsert", "node_override_restore",
         "node_override_batch", "occurrence_variable_override_batch",
+        "user_variable_override_batch",
     }
 )
 

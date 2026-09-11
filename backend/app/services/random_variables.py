@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 from secrets import SystemRandom
-from typing import Any
+from typing import Any, cast
 
 MAX_SAFE_INTEGER = 2**53 - 1
 MAX_CHOICE_ITEMS = 100
@@ -63,20 +63,38 @@ def resolve_definition(kind: str, value: str | None = "", spec: Mapping[str, Any
     return str(source.choice(list(spec["items"])))
 
 
-def resolve_variable(variable: Any, cache: dict[tuple[Any, ...], str], context: tuple[Any, ...], *, rng: Any | None = None) -> str:
+def resolve_variable(
+    variable: Any,
+    cache: dict[tuple[Any, ...], str],
+    context: tuple[Any, ...],
+    *,
+    value_override: str | None = None,
+    rng: Any | None = None,
+) -> str:
     """Resolve once per execution/context; fixed definitions are also normalized to strings."""
     key = (*context, variable.name)
     if key not in cache:
-        cache[key] = resolve_definition(variable.kind or "fixed", variable.value, variable.spec, rng=rng)
+        if value_override is None:
+            cache[key] = resolve_definition(variable.kind or "fixed", variable.value, variable.spec, rng=rng)
+        else:
+            # A user override is an explicit fixed value, including for random definitions.
+            cache[key] = resolve_definition("fixed", value_override, None, rng=rng)
     return cache[key]
 
 
 def resolve_rows(
     rows: list[Any], cache: dict[tuple[Any, ...], str], context: tuple[Any, ...], *,
-    skip_names: set[str] | frozenset[str] = frozenset(), rng: Any | None = None,
+    skip_names: set[str] | frozenset[str] = frozenset(),
+    value_overrides: Mapping[int, str] | None = None,
+    rng: Any | None = None,
 ) -> dict[str, str]:
     """Resolve definitions not shadowed by a higher-priority layer."""
     return {
-        row.name: resolve_variable(row, cache, context, rng=rng)
+        row.name: resolve_variable(
+            row, cache, context,
+            value_override=(value_overrides or {}).get(
+                cast(int, getattr(row, "id", None) or 0)
+            ), rng=rng,
+        )
         for row in rows if row.name not in skip_names
     }

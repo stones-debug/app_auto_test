@@ -15,10 +15,11 @@ from app.repositories import executions as executions_repo
 from app.repositories import reports as reports_repo
 from app.services.execution_detail_service import load_case_tree, load_suite_tree
 from app.services.screenshot_store import resolve_screenshot_path, validate_object_key
+from app.services.sensitive_snapshot import mask_execution_parameters
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates" / "reports"
 # Step 8：HTML 缓存版本标记——修改模板/数据规则后旧缓存不再复用
-_REPORT_HTML_VERSION = "true-lazy-report-html-v11"
+_REPORT_HTML_VERSION = "true-lazy-report-html-v12-sensitive-snapshots"
 
 
 def _json_safe(value: object) -> Any:
@@ -102,7 +103,9 @@ def _execution_dict(execution: Execution) -> dict:
         "case_id": execution.case_id,
         "device_id": execution.device_id,
         "status": execution.status,
-        "parameters": execution.parameters or {},
+        "parameters": mask_execution_parameters(
+            execution.parameters or {}, execution.sensitive_variable_names or []
+        ),
         "timeout_seconds": execution.timeout_seconds,
         "started_at": execution.started_at.isoformat() if execution.started_at else None,
         "finished_at": execution.finished_at.isoformat() if execution.finished_at else None,

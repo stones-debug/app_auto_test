@@ -78,6 +78,8 @@ class Settings(BaseSettings):
     backend_base_url: str = "http://127.0.0.1:8001"
     # Windows 方案 §3.2：用户 Agent Key 可逆加密主密钥（生产必填）
     agent_user_key_encryption_key: str = ""
+    # 当前用户变量独立 Fernet 主密钥（生产必填）
+    user_variable_encryption_key: str = ""
 
     # Worker
     worker_mode: Literal["embedded", "external", "disabled"] = "embedded"
@@ -174,6 +176,8 @@ def weak_secret_names() -> list[str]:
         weak.append("internal_token")
     if len(settings.agent_user_key_encryption_key) < 32:
         weak.append("agent_user_key_encryption_key")
+    if len(settings.user_variable_encryption_key) < 32:
+        weak.append("user_variable_encryption_key")
     if "dev123" in settings.database_url:
         weak.append("database_url(默认密码 dev123)")
     return weak
@@ -216,6 +220,8 @@ def validate_security_baseline() -> None:
         problems.append("internal_token 必须为非默认随机长令牌（>=32 字符）")
     if len(settings.agent_user_key_encryption_key) < 32:
         problems.append("agent_user_key_encryption_key 必须为随机长密钥（>=32 字符）")
+    if len(settings.user_variable_encryption_key) < 32:
+        problems.append("user_variable_encryption_key 必须为随机长密钥（>=32 字符）")
     if "dev123" in settings.database_url:
         problems.append("数据库密码不能使用默认值 dev123")
     # Step 5：凭据模式下通配源等于对任意站点开放（allow_credentials=True）

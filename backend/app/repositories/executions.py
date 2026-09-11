@@ -340,6 +340,7 @@ async def clone_snapshot(
             "device_id": device_id,
             "status": "queued",
             "parameters": deepcopy(source.parameters or {}),
+            "sensitive_variable_names": deepcopy(source.sensitive_variable_names or []),
             "timeout_seconds": timeout_seconds,
             "created_by": user_id,
             "retry_of": source.id,
@@ -406,6 +407,7 @@ async def clone_snapshot(
             source_key=source_step.source_key,
             source_order=source_step.source_order,
             parameters=deepcopy(source_step.parameters or {}),
+            sensitive_parameter_paths=deepcopy(source_step.sensitive_parameter_paths or []),
             continue_on_failure=source_step.continue_on_failure,
             status="pending",
         )
@@ -420,6 +422,7 @@ async def clone_snapshot(
                 assertion_order=source_assertion.assertion_order,
                 assertion_type=source_assertion.assertion_type,
                 expected_value=source_assertion.expected_value,
+                sensitive_parameter_paths=deepcopy(source_assertion.sensitive_parameter_paths or []),
                 status="pending",
             )
         )
@@ -447,6 +450,7 @@ async def clone_snapshot(
             description=source_node.description,
             element_id=source_node.element_id,
             parameters=deepcopy(source_node.parameters or {}),
+            sensitive_parameter_paths=deepcopy(source_node.sensitive_parameter_paths or []),
             max_wait_seconds=source_node.max_wait_seconds,
             continue_on_failure=source_node.continue_on_failure,
             status="pending",

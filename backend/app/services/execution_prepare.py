@@ -118,6 +118,7 @@ def serialize_result(result: ResolutionResult) -> dict[str, Any]:
         ],
         "summary": _jsonable(deepcopy(result.summary)),
         "warnings": _jsonable(deepcopy(result.warnings)),
+        "sensitive_variable_names": list(result.sensitive_variable_names),
     }
 
 
@@ -179,6 +180,7 @@ def deserialize_result(payload: dict[str, Any]) -> ResolutionResult:
         exclusions=exclusions,
         summary={str(key): int(value) for key, value in (payload.get("summary") or {}).items()},
         warnings=deepcopy(payload.get("warnings") or []),
+        sensitive_variable_names=[str(name) for name in payload.get("sensitive_variable_names") or []],
     )
 
 

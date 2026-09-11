@@ -6,11 +6,11 @@ from app.core.request_logging import MAX_BODY_LOG_BYTES
 from app.main import RequestLoggingMiddleware
 
 
-def _scope(content_type: str, content_length: int | None = None) -> dict:
+def _scope(content_type: str, content_length: int | None = None, *, path: str = "/test", method: str = "POST") -> dict:
     headers = [(b"content-type", content_type.encode())]
     if content_length is not None:
         headers.append((b"content-length", str(content_length).encode()))
-    return {"type": "http", "method": "POST", "path": "/test", "headers": headers, "query_string": b""}
+    return {"type": "http", "method": method, "path": path, "headers": headers, "query_string": b""}
 
 
 async def _run_middleware(scope: dict, messages: list[dict]) -> tuple[list[dict], list[int]]:
@@ -96,3 +96,39 @@ async def test_unknown_length_json_only_prefetches_bounded_preview():
     # 中间件只预读到超过日志上限的边界，剩余消息由下游继续读取。
     assert receive_calls == [3]
     assert b"".join(message["body"] for message in body_messages) == b"a" * MAX_BODY_LOG_BYTES + b"b" + b"tail"
+
+
+@pytest.mark.asyncio
+async def test_profile_variable_values_are_redacted_in_request_log(caplog):
+    body = json.dumps({
+        "request_id": "request-visible",
+        "updates": [{"variable_id": 42, "value": "private-value"}],
+    }).encode()
+    caplog.set_level("INFO", logger="app.request")
+
+    await _run_middleware(
+        _scope("application/json", path="/api/app-profiles/7/my-variables", method="PATCH"),
+        [{"type": "http.request", "body": body, "more_body": False}],
+    )
+
+    assert "private-value" not in caplog.records[0].message
+    assert '"request_id":"request-visible"' in caplog.records[0].message
+    assert '"variable_id":42' in caplog.records[0].message
+    assert '"value":"<redacted>"' in caplog.records[0].message
+
+
+@pytest.mark.asyncio
+async def test_truncated_profile_variable_preview_is_redacted(caplog):
+    body = json.dumps({
+        "request_id": "request-visible",
+        "updates": [{"variable_id": 42, "value": "private-preview-value"}],
+        "padding": "x" * MAX_BODY_LOG_BYTES,
+    }).encode()
+    caplog.set_level("INFO", logger="app.request")
+
+    await _run_middleware(
+        _scope("application/json", path="/api/app-profiles/7/my-variables", method="PATCH"),
+        [{"type": "http.request", "body": body, "more_body": False}],
+    )
+
+    assert "private-preview-value" not in caplog.records[0].message

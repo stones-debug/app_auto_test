@@ -53,6 +53,41 @@ def format_for_log(value: Any) -> str:
         return repr(sanitized)
 
 
+def sanitize_request_body_for_log(path: str, value: Any) -> Any:
+    """Apply endpoint-specific redaction before generic request logging.
+
+    The private profile-variable endpoint intentionally calls its payload field
+    ``value`` (rather than ``password``/``token``), so generic key-based
+    redaction cannot identify it.  Keep request ids and variable ids visible,
+    but never put update values into the request log.
+    """
+    if not path.rstrip("/").endswith("/my-variables") or not isinstance(value, Mapping):
+        return value
+    def sanitize_payload(payload: Any) -> Any:
+        if not isinstance(payload, Mapping):
+            # A truncated JSON preview is often no longer parseable.  Do not
+            # emit the raw fragment when the endpoint is known to carry
+            # private values.
+            return "<redacted>" if isinstance(payload, str) else payload
+        sanitized_payload = dict(payload)
+        updates = sanitized_payload.get("updates")
+        if isinstance(updates, list):
+            sanitized_payload["updates"] = [
+                {**item, "value": "<redacted>"}
+                if isinstance(item, Mapping) and "value" in item
+                else item
+                for item in updates
+            ]
+        return sanitized_payload
+
+    sanitized = dict(value)
+    if "preview" in sanitized and sanitized.get("truncated"):
+        sanitized["preview"] = sanitize_payload(sanitized["preview"])
+    else:
+        sanitized = sanitize_payload(sanitized)
+    return sanitized
+
+
 def parse_body_for_log(raw_body: bytes, content_type: str) -> Any:
     if not raw_body:
         return None

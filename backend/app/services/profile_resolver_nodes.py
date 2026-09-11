@@ -94,6 +94,37 @@ def variable_references(value: Any) -> list[str]:
     return found
 
 
+def sensitive_parameter_paths(node: dict, sensitive_names: set[str] | frozenset[str]) -> list[str]:
+    """Return exact rendered parameter leaves that reference sensitive vars.
+
+    Paths are kept in the source-node shape (``params.foo`` etc.) so the
+    execution snapshot can later mask only those leaves.  This deliberately
+    does not infer sensitivity from the rendered value or variable name.
+    """
+    if not sensitive_names:
+        return []
+    paths: list[str] = []
+
+    def visit(value: Any, path: tuple[str, ...]) -> None:
+        if isinstance(value, str):
+            if any(match.group(1) in sensitive_names for match in _VAR_RE.finditer(value)):
+                paths.append(".".join(path))
+        elif isinstance(value, dict):
+            for key, child in value.items():
+                visit(child, (*path, str(key)))
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                visit(child, (*path, str(index)))
+
+    for key in ("params", "parameters"):
+        if key in node:
+            visit(node[key], (key,))
+    for key in ("expected", "expected_value"):
+        if key in node:
+            visit(node[key], (key,))
+    return paths
+
+
 # 运行时输出变量名（如 get_text/get_attribute 的 variable_name），不是输入变量
 _OUTPUT_PARAM_KEYS = frozenset({"variable_name"})
 

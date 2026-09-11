@@ -161,6 +161,7 @@ class VariableCreate(BaseModel):
     kind: str = Field(default="fixed", pattern="^(fixed|random_integer|random_choice)$")
     spec: dict | None = None
     description: str | None = None
+    is_sensitive: bool = False
 
     @model_validator(mode="after")
     def _validate_scope_fk(self):
@@ -185,6 +186,7 @@ class VariableUpdate(BaseModel):
     kind: str | None = Field(default=None, pattern="^(fixed|random_integer|random_choice)$")
     spec: dict | None = None
     description: str | None = None
+    is_sensitive: bool | None = None
 
     @model_validator(mode="after")
     def _reject_null_kind(self):
@@ -204,6 +206,7 @@ class VariableOut(BaseModel):
     kind: str
     spec: dict | None
     description: str | None
+    is_sensitive: bool
     created_at: datetime
     updated_at: datetime
 

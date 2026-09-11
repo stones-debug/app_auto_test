@@ -12,6 +12,25 @@ from app.services import asset_service
 from app.services.random_variables import validate_definition
 
 
+def to_public_output(variable: Variable) -> dict:
+    """Serialize a variable without echoing sensitive definition values."""
+    return {
+        "id": variable.id,
+        "scope": variable.scope,
+        "project_id": variable.project_id,
+        "suite_id": variable.suite_id,
+        "case_id": variable.case_id,
+        "name": variable.name,
+        "value": "********" if variable.is_sensitive else variable.value,
+        "kind": variable.kind,
+        "spec": None if variable.is_sensitive else variable.spec,
+        "description": variable.description,
+        "is_sensitive": variable.is_sensitive,
+        "created_at": variable.created_at,
+        "updated_at": variable.updated_at,
+    }
+
+
 async def resolve_scope_project(
     db: AsyncSession,
     *,
@@ -98,6 +117,7 @@ async def create(
         kind=body.kind,
         spec=body.spec,
         description=body.description,
+        is_sensitive=body.is_sensitive,
         user_id=user.id,
     )
     try:
@@ -138,6 +158,7 @@ async def update(db: AsyncSession, *, variable: Variable, body: VariableUpdate) 
         kind=body.kind,
         spec=body.spec,
         description=body.description,
+        is_sensitive=body.is_sensitive,
     )
     try:
         if variable.project_id is None:

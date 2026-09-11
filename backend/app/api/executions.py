@@ -58,6 +58,7 @@ from app.services.profile_resolver import (
     get_resolver,
 )
 from app.services.screenshot_store import resolve_screenshot_path
+from app.services.sensitive_snapshot import mask_execution_parameters
 from app.utils.pagination import get_pagination
 
 router = APIRouter(tags=["执行管理"])
@@ -149,6 +150,7 @@ async def preview_execution(
         context_suite_id=body.context_suite_id,
         target_scope=body.target.target_scope,
         excluded_suite_ids=body.target.excluded_suite_ids,
+        user_id=user.id,
     )
     try:
         result = await get_resolver().preview(request, db)
@@ -329,6 +331,14 @@ def _reject_current_screen_for_non_case(parameters: dict) -> None:
         raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_TARGET_INVALID", "复用当前设备界面仅支持执行单个用例")
 
 
+def _safe_execution_output(execution: Execution) -> ExecutionOut:
+    output = ExecutionOut.model_validate(execution)
+    output.parameters = mask_execution_parameters(
+        output.parameters, execution.sensitive_variable_names or []
+    )
+    return output
+
+
 @router.post(
     "/executions/cases/{case_id}",
     response_model=ExecutionOut,
@@ -360,13 +370,13 @@ async def create_case_execution(
         )
     await _validate_device_for_execution(body.device_id, user, db)
     profile_body = body if body.prepare_token else await execution_service.apply_app_profile_feature_mode(db, project_id, body)
-    return await execution_service.create_case_execution(
+    return _safe_execution_output(await execution_service.create_case_execution(
         db, case, user, body.device_id, body.parameters, body.timeout_seconds,
         body=profile_body,
         context_suite_id=body.context_suite_id,
         project_id=project_id,
         asset_case_id=case_id,
-    )
+    ))
 
 
 @router.post(
@@ -407,10 +417,10 @@ async def create_batch_execution(
     await require_project_write(project_id, user, db)
     await _validate_device_for_execution(body.device_id, user, db)
     profile_body = body if body.prepare_token else await execution_service.apply_app_profile_feature_mode(db, project_id, body)
-    return await execution_service.create_batch_execution(
+    return _safe_execution_output(await execution_service.create_batch_execution(
         db, suites, user, body.device_id, body.parameters, body.timeout_seconds,
         body=profile_body,
-    )
+    ))
 
 
 @router.post(
@@ -437,12 +447,12 @@ async def create_suite_execution(
     await require_project_write(project_id, user, db)
     await _validate_device_for_execution(body.device_id, user, db)
     profile_body = body if body.prepare_token else await execution_service.apply_app_profile_feature_mode(db, project_id, body)
-    return await execution_service.create_suite_execution(
+    return _safe_execution_output(await execution_service.create_suite_execution(
         db, suite, user, body.device_id, body.parameters, body.timeout_seconds,
         body=profile_body,
         project_id=project_id,
         asset_suite_id=suite_id,
-    )
+    ))
 
 
 @router.get("/executions", response_model=ExecutionPage)
@@ -507,6 +517,9 @@ async def get_execution(
         suite_outs.append(suite_out)
 
     detail = ExecutionDetail.model_validate(execution)
+    detail.parameters = mask_execution_parameters(
+        detail.parameters, execution.sensitive_variable_names or []
+    )
     detail.suites = suite_outs
     detail.summary = _execution_summary(suite_outs)
     project = await projects_repo.get_by_id(db, execution.project_id)
@@ -584,6 +597,6 @@ async def retry_execution(
             message="重试必须指定执行设备 device_id",
         )
     await _validate_device_for_execution(body.device_id, user, db)
-    return await execution_service.retry_execution(
+    return _safe_execution_output(await execution_service.retry_execution(
         db, execution, user, body.device_id, body.timeout_seconds
-    )
+    ))

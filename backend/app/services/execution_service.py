@@ -132,6 +132,7 @@ async def _build_resolution_request(
     case_id: int | None,
     body,
     context_suite_id: int | None = None,
+    user_id: int | None = None,
 ) -> ResolutionRequest:
     """从创建请求构造解析请求；缺档案/版本时抛 APP_PROFILE_REQUIRED。"""
     if body.app_profile_id is None:
@@ -159,6 +160,7 @@ async def _build_resolution_request(
         context_suite_id=context_suite_id if type_ == "case" else None,
         target_scope=target_scope,
         excluded_suite_ids=excluded_suite_ids,
+        user_id=user_id,
     )
 
 
@@ -269,6 +271,7 @@ async def _create_execution_with_profile(
             context_suite_id=prepared.target.get("context_suite_id"),
             target_scope=prepared.target.get("target_scope", "explicit"),
             excluded_suite_ids=prepared_excluded_ids,
+            user_id=user.id,
         )
         try:
             result = execution_prepare.deserialize_result(prepared.resolution_payload)
@@ -277,7 +280,7 @@ async def _create_execution_with_profile(
     else:
         request = await _build_resolution_request(
             db, project_id=project_id, type_=type_, suite_id=suite_id, case_id=case_id, body=body,
-            context_suite_id=context_suite_id,
+            context_suite_id=context_suite_id, user_id=user.id,
         )
         try:
             result = await get_resolver().preview(request, db)
@@ -361,6 +364,7 @@ async def _create_execution_with_profile(
             "project_id": project_id, "type": type_, "suite_id": execution_suite_id,
             "case_id": execution_case_id, "device_id": device_id, "status": "queued",
             "parameters": execution_parameters, "timeout_seconds": timeout_seconds or settings.default_execution_timeout,
+            "sensitive_variable_names": result.sensitive_variable_names,
             "created_by": user.id, "retry_of": retry_of,
             "app_profile_id": prepared.app_profile_id if prepared else body.app_profile_id,
             "app_profile_name_snapshot": result.profile_name,

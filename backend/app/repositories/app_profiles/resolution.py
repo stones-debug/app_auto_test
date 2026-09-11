@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.security import decrypt_user_variable
 from app.models import (
     AppProfileElementOverride,
     AppProfileNodeOverride,
@@ -17,6 +18,7 @@ from app.models import (
     TestModule,
     TestSuite,
     TestSuiteCase,
+    UserAppProfileVariableOverride,
     Variable,
 )
 
@@ -72,6 +74,19 @@ async def load_config(db: AsyncSession, profile_id: int) -> dict:
         "membership_step_overrides": step_overrides,
         "membership_assertion_overrides": assertion_overrides,
         "suite_step_overrides": suite_step_overrides,
+    }
+
+
+async def load_user_variable_overrides(
+    db: AsyncSession, *, profile_id: int, user_id: int
+) -> dict[int, str]:
+    rows = await db.execute(select(UserAppProfileVariableOverride).where(
+        UserAppProfileVariableOverride.profile_id == profile_id,
+        UserAppProfileVariableOverride.user_id == user_id,
+    ))
+    return {
+        row.variable_id: decrypt_user_variable(row.value_ciphertext)
+        for row in rows.scalars().all()
     }
 
 

@@ -27,7 +27,7 @@ from app.models.execution import (
 from app.models.execution_prepare import ExecutionPrepare
 from app.models.project import Project, ProjectMember
 from app.models.user import User
-from app.models.variable import RefreshToken, Variable
+from app.models.variable import RefreshToken, UserAppProfileVariableOverride, Variable
 
 __all__ = [
     "Base",
@@ -66,4 +66,5 @@ __all__ = [
     "User",
     "RefreshToken",
     "Variable",
+    "UserAppProfileVariableOverride",
 ]

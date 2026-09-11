@@ -55,7 +55,7 @@ async def get_with_counts(db: AsyncSession, profile_id: int) -> dict:
 
 async def create(db: AsyncSession, *, project_id: int, body, user_id: int, role: str | None, audit: dict) -> dict:
     if body.request_id:
-        replay = await find_project_idempotent_replay(db, project_id, body.request_id, action="profile_create")
+        replay = await find_project_idempotent_replay(db, project_id, body.request_id, action="profile_create", actor_id=user_id)
         if replay is not None:
             return replay
     name_conflict, code_conflict = await profiles_repo.find_name_or_code_conflict(
@@ -86,7 +86,7 @@ async def create(db: AsyncSession, *, project_id: int, body, user_id: int, role:
 
 async def update(db: AsyncSession, *, profile: AppProfile, body, user_id: int, role: str | None, audit: dict) -> dict:
     if body.request_id:
-        replay = await find_idempotent_replay(db, profile.id, body.request_id)
+        replay = await find_idempotent_replay(db, profile.id, body.request_id, actor_id=user_id)
         if replay is not None:
             return replay
     before = profile.revision
@@ -112,7 +112,7 @@ async def update(db: AsyncSession, *, profile: AppProfile, body, user_id: int, r
 
 async def delete(db: AsyncSession, *, profile: AppProfile, body, user_id: int, role: str | None, audit: dict) -> None:
     if body.request_id:
-        replay = await find_idempotent_replay(db, profile.id, body.request_id)
+        replay = await find_idempotent_replay(db, profile.id, body.request_id, actor_id=user_id)
         if replay is not None:
             return
     if await profiles_repo.has_active_execution(db, profile.id):
