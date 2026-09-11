@@ -210,7 +210,8 @@ onBeforeUnmount(() => {
             <el-button type="primary" size="small" :loading="downloading" @click="downloadRelease">
               下载 v{{ releaseInfo.version }}
             </el-button>
-            <span class="muted"> {{ fmtSize(releaseInfo.size) }} · SHA-256: {{ releaseInfo.sha256.slice(0, 16) }}…</span>
+            <span class="muted"> {{ fmtSize(releaseInfo.size) }} · SHA-256: {{ releaseInfo.sha256.slice(0, 16)
+              }}…</span>
           </template>
           <span v-else class="muted">暂无发布版本（管理员发布后显示）</span>
         </el-descriptions-item>
@@ -293,13 +294,8 @@ onBeforeUnmount(() => {
         </el-table-column>
         <el-table-column label="操作" width="140" fixed="right">
           <template #default="{ row }">
-            <el-button
-              size="small"
-              type="primary"
-              text
-              :disabled="defaultDevice.device_id === (row as Device).id"
-              @click="setDefault(row as Device)"
-            >
+            <el-button size="small" type="primary" text :disabled="defaultDevice.device_id === (row as Device).id"
+              @click="setDefault(row as Device)">
               设为默认
             </el-button>
             <el-button v-if="isAdmin" size="small" type="warning" text @click="release(row as Device)">释放锁</el-button>
@@ -336,27 +332,32 @@ onBeforeUnmount(() => {
 .section {
   margin-bottom: 16px;
 }
+
 .card-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
+
 .muted {
   color: #999;
   font-size: 12px;
   margin-left: 8px;
 }
+
 .key-text {
   background: #f5f7fa;
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 12px;
 }
+
 .hint {
   color: #909399;
   font-size: 12px;
   margin-top: 8px;
 }
+
 .empty-tip {
   text-align: center;
   padding: 24px 0;

@@ -143,15 +143,8 @@ onMounted(() => {
 <template>
   <div class="cases-layout">
     <!-- 左：模块树（与套件页共用的同一组件） -->
-    <ModuleTree
-      :project-id="projectId"
-      scope="case"
-      title="用例模块"
-      :selected-key="selectedModule"
-      :writable="canWriteAssets"
-      @select="selectModule"
-      @mutated="load"
-    />
+    <ModuleTree :project-id="projectId" scope="case" title="用例模块" :selected-key="selectedModule"
+      :writable="canWriteAssets" @select="selectModule" @mutated="load" />
 
     <!-- 右：列表 -->
     <div class="cases-main">
@@ -162,7 +155,8 @@ onMounted(() => {
         </el-select>
         <el-button type="primary" @click="page = 1; load()">搜索</el-button>
         <span class="spacer"></span>
-        <el-button v-if="canWriteAssets" type="danger" plain :disabled="!selectedRows.length || deleting" :loading="deleting" @click="removeSelected">批量删除</el-button>
+        <el-button v-if="canWriteAssets" type="danger" plain :disabled="!selectedRows.length || deleting"
+          :loading="deleting" @click="removeSelected">批量删除</el-button>
         <el-button v-if="canWriteAssets" type="primary" @click="openCreate">新建用例</el-button>
       </div>
 
@@ -174,13 +168,15 @@ onMounted(() => {
         <el-table-column v-if="canWriteAssets" type="selection" width="42" />
         <el-table-column prop="name" label="名称" min-width="200" show-overflow-tooltip>
           <template #default="{ row }">
-            <span class="case-name" :class="{ clickable: canWriteAssets }" @click="canWriteAssets && openEdit(row as TestCase)">{{ row.name }}</span>
+            <span class="case-name" :class="{ clickable: canWriteAssets }"
+              @click="canWriteAssets && openEdit(row as TestCase)">{{ row.name }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="module_name" label="模块" width="120" />
         <el-table-column label="状态" width="90">
           <template #default="{ row }">
-            <el-tag :type="row.status === 'active' ? 'success' : row.status === 'disabled' ? 'danger' : 'warning'" size="small">
+            <el-tag :type="row.status === 'active' ? 'success' : row.status === 'disabled' ? 'danger' : 'warning'"
+              size="small">
               {{ statusTag(row.status) }}
             </el-tag>
           </template>
@@ -201,7 +197,8 @@ onMounted(() => {
         </el-table-column>
         <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
-            <RunButton v-if="(row as TestCase).status !== 'disabled'" :type="'case'" :id="(row as TestCase).id" :name="(row as TestCase).name" />
+            <RunButton v-if="(row as TestCase).status !== 'disabled'" :type="'case'" :id="(row as TestCase).id"
+              :name="(row as TestCase).name" />
             <template v-if="canWriteAssets">
               <el-button size="small" type="primary" text @click="openEdit(row as TestCase)">编辑</el-button>
               <el-button size="small" text @click="clone(row as TestCase)">克隆</el-button>
@@ -211,16 +208,9 @@ onMounted(() => {
         </el-table-column>
       </el-table>
 
-      <el-pagination
-        :current-page="page"
-        :page-size="pageSize"
-        :total="total"
-        :page-sizes="[...CASE_LIST_PAGE_SIZES]"
-        layout="total, sizes, prev, pager, next, jumper"
-        class="pager"
-        @current-change="onPageChange"
-        @size-change="onPageSizeChange"
-      />
+      <el-pagination :current-page="page" :page-size="pageSize" :total="total" :page-sizes="[...CASE_LIST_PAGE_SIZES]"
+        layout="total, sizes, prev, pager, next, jumper" class="pager" @current-change="onPageChange"
+        @size-change="onPageSizeChange" />
     </div>
   </div>
 </template>
@@ -230,6 +220,7 @@ onMounted(() => {
   display: flex;
   gap: 16px;
 }
+
 .batch-bar {
   display: flex;
   align-items: center;
@@ -247,12 +238,15 @@ onMounted(() => {
   flex: 1;
   min-width: 0;
 }
+
 .search {
   width: 200px;
 }
+
 .status {
   width: 110px;
 }
+
 .case-name {
   color: var(--primary);
   cursor: pointer;

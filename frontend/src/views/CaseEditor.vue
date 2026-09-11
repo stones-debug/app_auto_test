@@ -254,17 +254,9 @@ onMounted(async () => {
 <template>
   <div v-loading="loading">
     <!-- 收起/展开摘要条：折叠后仅显示一行用例简略信息 -->
-    <div
-      class="editor-summary"
-      :class="{ collapsed }"
-      role="button"
-      tabindex="0"
-      :aria-expanded="!collapsed"
-      aria-controls="case-editor-body"
-      @click="toggleCollapsed"
-      @keydown.enter.prevent="toggleCollapsed"
-      @keydown.space.prevent="toggleCollapsed"
-    >
+    <div class="editor-summary" :class="{ collapsed }" role="button" tabindex="0" :aria-expanded="!collapsed"
+      aria-controls="case-editor-body" @click="toggleCollapsed" @keydown.enter.prevent="toggleCollapsed"
+      @keydown.space.prevent="toggleCollapsed">
       <span class="sum-icon">{{ collapsed ? '▸' : '▾' }}</span>
       <span class="sum-name">{{ form.name || '未命名用例' }}</span>
       <el-tag :type="statusType(form.status)" size="small">{{ statusLabel(form.status) }}</el-tag>
@@ -295,55 +287,34 @@ onMounted(async () => {
         </el-form>
       </div>
 
-    <CaseFlowEditor
-      v-model="setupNodes"
-      :project-id="projectId"
-      phase="setup"
-      title="前置操作"
-      description="运行时勾选后，在每个用例主体步骤之前执行"
-      tone="warning"
-      :element-names="elementNames"
-    />
+      <CaseFlowEditor v-model="setupNodes" :project-id="projectId" phase="setup" title="前置操作"
+        description="运行时勾选后，在每个用例主体步骤之前执行" tone="warning" :element-names="elementNames" />
 
-    <CaseFlowEditor
-      v-model="mainNodes"
-      :project-id="projectId"
-      phase="main"
-      title="执行步骤"
-      description="用例的主体操作，始终执行"
-      tone="primary"
-      :element-names="elementNames"
-    />
+      <CaseFlowEditor v-model="mainNodes" :project-id="projectId" phase="main" title="执行步骤" description="用例的主体操作，始终执行"
+        tone="primary" :element-names="elementNames" />
 
-    <CaseFlowEditor
-      v-model="teardownNodes"
-      :project-id="projectId"
-      phase="teardown"
-      title="后置操作"
-      description="运行时勾选后，在主体步骤之后执行；主体失败时仍会尝试清理"
-      tone="success"
-      :element-names="elementNames"
-    />
+      <CaseFlowEditor v-model="teardownNodes" :project-id="projectId" phase="teardown" title="后置操作"
+        description="运行时勾选后，在主体步骤之后执行；主体失败时仍会尝试清理" tone="success" :element-names="elementNames" />
 
-    <div class="content-card mb16">
-      <div class="section-title-row">
-        <span class="section-title">用例变量</span>
-        <el-button type="primary" size="small" @click="addVariable">添加变量</el-button>
+      <div class="content-card mb16">
+        <div class="section-title-row">
+          <span class="section-title">用例变量</span>
+          <el-button type="primary" size="small" @click="addVariable">添加变量</el-button>
+        </div>
+        <div v-for="(entry, idx) in variableEntries" :key="idx" class="variable-row">
+          <el-input v-model="entry.key" placeholder="变量名" class="var-name" />
+          <el-input v-model="entry.value" placeholder="变量值" class="var-value" />
+          <el-button type="danger" text @click="removeVariable(idx)">删除</el-button>
+        </div>
+        <div class="add-more">
+          <el-button type="primary" plain class="w-full" @click="addVariable">+ 添加变量</el-button>
+        </div>
       </div>
-      <div v-for="(entry, idx) in variableEntries" :key="idx" class="variable-row">
-        <el-input v-model="entry.key" placeholder="变量名" class="var-name" />
-        <el-input v-model="entry.value" placeholder="变量值" class="var-value" />
-        <el-button type="danger" text @click="removeVariable(idx)">删除</el-button>
-      </div>
-      <div class="add-more">
-        <el-button type="primary" plain class="w-full" @click="addVariable">+ 添加变量</el-button>
-      </div>
-    </div>
 
-    <div class="footer">
-      <el-button @click="goBack">返回</el-button>
-      <el-button type="primary" @click="save">保存</el-button>
-    </div>
+      <div class="footer">
+        <el-button @click="goBack">返回</el-button>
+        <el-button type="primary" @click="save">保存</el-button>
+      </div>
     </div>
   </div>
 </template>
@@ -352,6 +323,7 @@ onMounted(async () => {
 .mb16 {
   margin-bottom: 16px;
 }
+
 .editor-summary {
   display: flex;
   align-items: center;
@@ -364,22 +336,27 @@ onMounted(async () => {
   cursor: pointer;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
+
 .editor-summary:hover {
   border-color: var(--primary);
   box-shadow: 0 2px 8px rgba(79, 70, 229, 0.1);
 }
+
 .editor-summary:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
 }
+
 .editor-summary.collapsed {
   margin-bottom: 0;
 }
+
 .sum-icon {
   color: var(--primary);
   font-size: 14px;
   flex-shrink: 0;
 }
+
 .sum-name {
   font-size: 15px;
   font-weight: 600;
@@ -390,6 +367,7 @@ onMounted(async () => {
   white-space: nowrap;
   flex-shrink: 0;
 }
+
 .sum-meta {
   color: var(--text-2);
   font-size: 13px;
@@ -399,82 +377,101 @@ onMounted(async () => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
 .sum-hint {
   margin-left: auto;
   color: var(--primary);
   font-size: 12px;
   flex-shrink: 0;
 }
+
 .editor-body {
   display: flex;
   flex-direction: column;
 }
+
 @media (max-width: 768px) {
   .editor-summary {
     gap: 8px;
     padding: 10px 12px;
   }
+
   .sum-name {
     max-width: 34%;
   }
+
   .sum-hint {
     display: none;
   }
 }
+
 .content-card {
   background: #fff;
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 20px;
 }
+
 .section-title {
   font-size: 15px;
   font-weight: 600;
   color: var(--text);
   margin-bottom: 14px;
 }
+
 .section-title-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 14px;
 }
+
 .section-title-row .section-title {
   margin-bottom: 0;
 }
+
 .basic-form {
   max-width: 720px;
 }
+
 .w-200 {
   width: 200px;
 }
+
 .step-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
+
 .step-card {
   margin-bottom: 0;
   border-radius: 8px;
 }
+
 .step-card.step {
   border-left: 3px solid var(--primary);
 }
+
 .step-card.assertion {
   border-left: 3px solid var(--success);
 }
+
 .step-head {
   display: flex;
   align-items: center;
   gap: 12px;
 }
+
 .drag-handle {
   cursor: move;
   color: #999;
 }
+
 .drag-handle:hover {
   color: var(--primary);
 }
+
 .step-badge {
   width: 22px;
   height: 22px;
@@ -486,56 +483,69 @@ onMounted(async () => {
   font-weight: 600;
   flex-shrink: 0;
 }
+
 .step-badge.step {
   background: var(--primary-light);
   color: var(--primary);
 }
+
 .step-badge.assertion {
   background: rgba(16, 185, 129, 0.12);
   color: var(--success);
 }
+
 .action-select {
   flex: 1;
   max-width: 220px;
 }
+
 .continue-label {
   color: #888;
   font-size: 13px;
   flex-shrink: 0;
 }
+
 .step-body {
   margin-top: 8px;
 }
+
 .step-row {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-bottom: 6px;
 }
+
 .field-label {
   width: 80px;
   color: #888;
   flex-shrink: 0;
 }
+
 .variable-row {
   display: flex;
   gap: 8px;
   margin-bottom: 8px;
   max-width: 560px;
 }
+
 .var-name {
   width: 180px;
 }
+
 .var-value {
   flex: 1;
 }
+
 .add-more {
   margin-top: 10px;
 }
+
 .add-more .w-full {
   width: 100%;
   border-style: dashed;
 }
+
 .footer {
   position: sticky;
   bottom: 0;

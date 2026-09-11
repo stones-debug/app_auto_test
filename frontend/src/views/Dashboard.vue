@@ -155,14 +155,8 @@ onBeforeUnmount(() => {
 
     <template v-if="data">
       <div class="kpi-row">
-        <StatCard
-          v-for="f in FOCUS"
-          :key="f.key"
-          :label="f.label"
-          :value="kpiValue(f.key, f.suffix)"
-          :tone="f.tone"
-          @click="router.push(f.path)"
-        />
+        <StatCard v-for="f in FOCUS" :key="f.key" :label="f.label" :value="kpiValue(f.key, f.suffix)" :tone="f.tone"
+          @click="router.push(f.path)" />
       </div>
 
       <div class="charts-row">
@@ -189,7 +183,8 @@ onBeforeUnmount(() => {
               <el-button size="small" text>查看</el-button>
             </div>
           </div>
-          <el-button v-if="data.recent_executions.length" size="small" text type="primary" class="view-all" @click="router.push('/executions')">
+          <el-button v-if="data.recent_executions.length" size="small" text type="primary" class="view-all"
+            @click="router.push('/executions')">
             查看全部
           </el-button>
         </div>
@@ -214,41 +209,49 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   margin-bottom: 20px;
 }
+
 .range-tabs {
   display: flex;
   gap: 8px;
   align-items: center;
 }
+
 .kpi-row {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 16px;
   margin-bottom: 16px;
 }
+
 .charts-row {
   display: grid;
   grid-template-columns: 2fr 1fr;
   gap: 16px;
   margin-bottom: 16px;
 }
+
 .chart-card {
   background: var(--card-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   padding: 16px;
 }
+
 .chart {
   height: 260px;
   margin-top: 8px;
 }
+
 .grid-row {
   display: grid;
   grid-template-columns: 2fr 1fr;
   gap: 16px;
 }
+
 .recent-list {
   margin-top: 8px;
 }
+
 .recent-item {
   display: flex;
   align-items: center;
@@ -257,19 +260,24 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid var(--border);
   cursor: pointer;
 }
+
 .recent-item:hover {
   background: var(--primary-light);
 }
+
 .recent-id {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   color: var(--text-2);
 }
+
 .spacer {
   flex: 1;
 }
+
 .view-all {
   margin-top: 8px;
 }
+
 .quick-actions {
   display: flex;
   gap: 8px;

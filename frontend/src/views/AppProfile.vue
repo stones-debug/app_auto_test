@@ -403,7 +403,9 @@ onMounted(load)
 
 <template>
   <div class="profile-workspace">
-    <aside class="tree-panel"><AppProfileTree :project-id="projectId" /></aside>
+    <aside class="tree-panel">
+      <AppProfileTree :project-id="projectId" />
+    </aside>
     <section class="workspace-panel">
       <div class="workspace-head">
         <div class="head-left">
@@ -412,14 +414,20 @@ onMounted(load)
           <el-button size="small" text @click="refreshProfile">刷新</el-button>
         </div>
         <div class="head-right">
-          <el-button v-if="canExecute" size="small" type="primary" :loading="runAllLoading" :disabled="!store.selectedProfileId || store.selectedSuiteCount === 0" @click="runAllSuites">运行已选套件</el-button>
-          <span v-if="canExecute" class="selection-summary">已选 {{ store.selectedSuiteCount }} / {{ store.executionSelectableTotal }} 个套件</span>
-          <el-button v-if="canExecute && store.excludedSuiteIds.size" size="small" text @click="store.restoreAllSuiteSelection">恢复全部选择</el-button>
+          <el-button v-if="canExecute" size="small" type="primary" :loading="runAllLoading"
+            :disabled="!store.selectedProfileId || store.selectedSuiteCount === 0"
+            @click="runAllSuites">运行已选套件</el-button>
+          <span v-if="canExecute" class="selection-summary">已选 {{ store.selectedSuiteCount }} / {{
+            store.executionSelectableTotal }} 个套件</span>
+          <el-button v-if="canExecute && store.excludedSuiteIds.size" size="small" text
+            @click="store.restoreAllSuiteSelection">恢复全部选择</el-button>
           <el-button v-if="canEditProject" size="small" @click="releaseMgr = true">发布版本</el-button>
           <el-button size="small" @click="diffView = true">差异清单</el-button>
           <el-button v-if="canEditProject" size="small" @click="overrideDrawer = true">覆盖配置</el-button>
-          <el-input v-model="store.filters.keyword" size="small" placeholder="搜索套件" clearable style="width: 180px" @change="() => store.loadWorkspace()" />
-          <el-select v-model="store.filters.effective_status" size="small" style="width: 130px" @change="() => store.loadWorkspace()">
+          <el-input v-model="store.filters.keyword" size="small" placeholder="搜索套件" clearable style="width: 180px"
+            @change="() => store.loadWorkspace()" />
+          <el-select v-model="store.filters.effective_status" size="small" style="width: 130px"
+            @change="() => store.loadWorkspace()">
             <el-option label="全部状态" value="all" />
             <el-option label="正常" value="enabled" />
             <el-option label="已跳过" value="skipped" />
@@ -431,85 +439,56 @@ onMounted(load)
       <el-table v-loading="store.loading || saving" :data="displayRows" row-key="_key" size="small">
         <el-table-column v-if="canExecute" label="选择" width="58" align="center">
           <template #default="{ row }">
-            <el-checkbox
-              v-if="row.node_type === 'suite' && row.id != null"
+            <el-checkbox v-if="row.node_type === 'suite' && row.id != null"
               :model-value="store.isSuiteSelected(row.id, row.effective_status)"
-              :disabled="row.effective_status === 'skipped'"
-              :aria-label="`选择套件 ${row.name}`"
-              @change="onSuiteSelectionChanged(displayNode(row), $event)"
-            />
+              :disabled="row.effective_status === 'skipped'" :aria-label="`选择套件 ${row.name}`"
+              @change="onSuiteSelectionChanged(displayNode(row), $event)" />
           </template>
         </el-table-column>
         <el-table-column label="名称" min-width="260">
           <template #default="{ row }">
             <span class="node-name" :style="{ paddingLeft: `${row._depth * 22}px` }">
-              <button v-if="row.has_children" type="button" class="expand-button" @click="toggleNode(displayNode(row))">{{ store.expandedKeys.has(row._key) ? '▾' : '▸' }}</button>
+              <button v-if="row.has_children" type="button" class="expand-button"
+                @click="toggleNode(displayNode(row))">{{ store.expandedKeys.has(row._key) ? '▾' : '▸' }}</button>
               <span v-else class="node-dot">·</span>
-              <span class="node-label"><span>{{ row.name }}</span><small v-if="elementDisplayName(displayNode(row))" class="element-label">元素：{{ elementDisplayName(displayNode(row)) }}</small></span>
+              <span class="node-label"><span>{{ row.name }}</span><small v-if="elementDisplayName(displayNode(row))"
+                  class="element-label">元素：{{ elementDisplayName(displayNode(row)) }}</small></span>
             </span>
           </template>
         </el-table-column>
         <el-table-column label="类型" width="90" prop="node_type" />
-        <el-table-column label="阶段" width="90"><template #default="{ row }">{{ row.phase ?? '-' }}</template></el-table-column>
+        <el-table-column label="阶段" width="90"><template #default="{ row }">{{ row.phase ?? '-'
+            }}</template></el-table-column>
         <el-table-column label="生效状态" width="120">
-          <template #default="{ row }"><ProfileStatusTag :effective-status="row.effective_status" :status-source="row.status_source" /></template>
+          <template #default="{ row }">
+            <ProfileStatusTag :effective-status="row.effective_status" :status-source="row.status_source" />
+          </template>
         </el-table-column>
         <el-table-column label="变量" min-width="260">
           <template #default="{ row }">
-            <div
-              v-if="row.node_type === 'case'"
-              class="case-variable-list"
-              @click.stop
-              @dblclick.stop
-              @mousedown.stop
-            >
-              <div
-                v-for="variable in caseVariables(displayNode(row))"
-                :key="variable.name"
-                class="case-variable-item"
-                :class="`tone-${variableStatusMeta(variable.status).tone}`"
-              >
-                <code class="variable-name" :title="`引用 ${variable.reference_count} 处`">{{ variableToken(variable.name) }}</code>
+            <div v-if="row.node_type === 'case'" class="case-variable-list" @click.stop @dblclick.stop @mousedown.stop>
+              <div v-for="variable in caseVariables(displayNode(row))" :key="variable.name" class="case-variable-item"
+                :class="`tone-${variableStatusMeta(variable.status).tone}`">
+                <code class="variable-name"
+                  :title="`引用 ${variable.reference_count} 处`">{{ variableToken(variable.name) }}</code>
                 <span class="variable-colon">：</span>
                 <template v-if="isEditingVariable(displayNode(row), variable)">
-                  <el-input
-                    v-model="caseVariableEdit.value"
-                    class="variable-input"
-                    size="small"
-                    autofocus
-                    :disabled="variableSaving"
-                    placeholder="输入新值"
-                    :aria-label="`${variable.name} 的新值`"
-                    @click.stop
-                    @keyup.enter="commitVariableEdit(displayNode(row), variable)"
-                    @keyup.esc="cancelVariableEdit"
-                  />
-                  <el-button size="small" type="primary" :loading="variableSaving" @click.stop="commitVariableEdit(displayNode(row), variable)">保存</el-button>
+                  <el-input v-model="caseVariableEdit.value" class="variable-input" size="small" autofocus
+                    :disabled="variableSaving" placeholder="输入新值" :aria-label="`${variable.name} 的新值`" @click.stop
+                    @keyup.enter="commitVariableEdit(displayNode(row), variable)" @keyup.esc="cancelVariableEdit" />
+                  <el-button size="small" type="primary" :loading="variableSaving"
+                    @click.stop="commitVariableEdit(displayNode(row), variable)">保存</el-button>
                   <el-button size="small" :disabled="variableSaving" @click.stop="cancelVariableEdit">取消</el-button>
                 </template>
                 <template v-else>
-                  <span class="variable-value" :title="`引用 ${variable.reference_count} 处`">{{ variableDisplayText(variable) }}</span>
-                  <el-button
-                    v-if="canEditProject"
-                    class="variable-icon-button"
-                    size="small"
-                    text
-                    :icon="Edit"
-                    :aria-label="`编辑 ${variable.name}`"
-                    title="编辑该用例中的取值"
-                    :disabled="variableSaving"
-                    @click.stop="beginVariableEdit(displayNode(row), variable)"
-                  />
-                  <el-button
-                    v-if="variableOverrideState(variable).overridden"
-                    class="variable-restore"
-                    size="small"
-                    text
-                    type="danger"
-                    :disabled="variableSaving"
-                    title="恢复原值"
-                    @click.stop="restoreCaseVariable(displayNode(row), variable)"
-                  >恢复</el-button>
+                  <span class="variable-value" :title="`引用 ${variable.reference_count} 处`">{{
+                    variableDisplayText(variable) }}</span>
+                  <el-button v-if="canEditProject" class="variable-icon-button" size="small" text :icon="Edit"
+                    :aria-label="`编辑 ${variable.name}`" title="编辑该用例中的取值" :disabled="variableSaving"
+                    @click.stop="beginVariableEdit(displayNode(row), variable)" />
+                  <el-button v-if="variableOverrideState(variable).overridden" class="variable-restore" size="small"
+                    text type="danger" :disabled="variableSaving" title="恢复原值"
+                    @click.stop="restoreCaseVariable(displayNode(row), variable)">恢复</el-button>
                 </template>
               </div>
               <span v-if="caseVariables(displayNode(row)).length === 0" class="case-variable-empty">无参数变量</span>
@@ -517,28 +496,26 @@ onMounted(load)
             <span v-else class="case-variable-empty">-</span>
           </template>
         </el-table-column>
-        <el-table-column label="原因" min-width="150"><template #default="{ row }">{{ row.reason?.note || row.reason?.code || '-' }}</template></el-table-column>
+        <el-table-column label="原因" min-width="150"><template #default="{ row }">{{ row.reason?.note || row.reason?.code
+          || '-' }}</template></el-table-column>
         <el-table-column label="操作" width="210" align="right">
           <template #default="{ row }">
-            <el-button v-if="canExecute && (row.node_type === 'suite' || row.node_type === 'case')" size="small" text type="primary" :disabled="row.effective_status === 'skipped'" @click="runNode(displayNode(row))">运行</el-button>
+            <el-button v-if="canExecute && (row.node_type === 'suite' || row.node_type === 'case')" size="small" text
+              type="primary" :disabled="row.effective_status === 'skipped'"
+              @click="runNode(displayNode(row))">运行</el-button>
             <template v-if="canEditProject && !displayNode(row)._isPhaseGroup">
-              <el-button v-if="row.status_source === 'direct'" size="small" text @click="restoreRow(displayNode(row))">恢复</el-button>
-              <el-button v-else-if="row.status_source !== 'inherited'" size="small" text type="danger" @click="openSkip([displayNode(row)])">跳过</el-button>
+              <el-button v-if="row.status_source === 'direct'" size="small" text
+                @click="restoreRow(displayNode(row))">恢复</el-button>
+              <el-button v-else-if="row.status_source !== 'inherited'" size="small" text type="danger"
+                @click="openSkip([displayNode(row)])">跳过</el-button>
             </template>
           </template>
         </el-table-column>
       </el-table>
 
-      <el-pagination
-        v-if="store.suitePage && store.suitePage.total > store.suitePage.page_size"
-        class="suite-pagination"
-        background
-        layout="prev, pager, next"
-        :current-page="store.suitePage.page"
-        :page-size="store.suitePage.page_size"
-        :total="store.suitePage.total"
-        @current-change="onSuitePageChanged"
-      />
+      <el-pagination v-if="store.suitePage && store.suitePage.total > store.suitePage.page_size"
+        class="suite-pagination" background layout="prev, pager, next" :current-page="store.suitePage.page"
+        :page-size="store.suitePage.page_size" :total="store.suitePage.total" @current-change="onSuitePageChanged" />
 
       <el-empty v-if="!store.loading && displayRows.length === 0" description="暂无套件" />
 
@@ -552,15 +529,19 @@ onMounted(load)
               <el-option label="其他" value="other" />
             </el-select>
           </el-form-item>
-          <el-form-item label="备注"><el-input v-model="skipDialog.note" type="textarea" :rows="2" placeholder="可选，“其他”必填" /></el-form-item>
+          <el-form-item label="备注"><el-input v-model="skipDialog.note" type="textarea" :rows="2"
+              placeholder="可选，“其他”必填" /></el-form-item>
         </el-form>
-        <template #footer><el-button @click="skipDialog.visible = false">取消</el-button><el-button type="primary" :loading="saving" @click="confirmSkip">确认跳过</el-button></template>
+        <template #footer><el-button @click="skipDialog.visible = false">取消</el-button><el-button type="primary"
+            :loading="saving" @click="confirmSkip">确认跳过</el-button></template>
       </el-dialog>
 
       <template v-if="store.selectedProfileId">
-        <ProfileReleaseManager v-if="releaseMgr" v-model="releaseMgr" :profile-id="store.selectedProfileId" :revision="store.profileRevision ?? 1" />
+        <ProfileReleaseManager v-if="releaseMgr" v-model="releaseMgr" :profile-id="store.selectedProfileId"
+          :revision="store.profileRevision ?? 1" />
         <ProfileDifferenceView v-model="diffView" :profile-id="store.selectedProfileId" />
-        <ProfileOverrideDrawer v-model="overrideDrawer" :profile-id="store.selectedProfileId" :project-id="projectId" :revision="store.profileRevision ?? 1" @revision-change="updateRevision" />
+        <ProfileOverrideDrawer v-model="overrideDrawer" :profile-id="store.selectedProfileId" :project-id="projectId"
+          :revision="store.profileRevision ?? 1" @revision-change="updateRevision" />
       </template>
       <DevicePicker ref="devicePicker" :project-id="projectId" />
     </section>
@@ -568,21 +549,91 @@ onMounted(load)
 </template>
 
 <style scoped>
-.profile-workspace { display: flex; gap: 16px; height: calc(100vh - 120px); }
-.tree-panel { width: 240px; flex-shrink: 0; border-right: 1px solid var(--el-border-color-light); overflow: auto; }
-.workspace-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
-.workspace-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.head-left, .head-right { display: flex; align-items: center; gap: 8px; }
-.head-right { flex-wrap: wrap; justify-content: flex-end; }
-.selection-summary { color: var(--el-text-color-secondary); font-size: 12px; white-space: nowrap; }
-.suite-pagination { justify-content: flex-end; margin-top: 2px; }
-.profile-name { font-weight: 600; font-size: 16px; }
-.rev { color: var(--el-text-color-secondary); font-size: 12px; }
-.node-name { display: inline-flex; align-items: center; }
-.node-label { display: inline-flex; flex-direction: column; gap: 2px; }
+.profile-workspace {
+  display: flex;
+  gap: 16px;
+  height: calc(100vh - 120px);
+}
+
+.tree-panel {
+  width: 240px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--el-border-color-light);
+  overflow: auto;
+}
+
+.workspace-panel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.workspace-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.head-left,
+.head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.head-right {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.selection-summary {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.suite-pagination {
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+
+.profile-name {
+  font-weight: 600;
+  font-size: 16px;
+}
+
+.rev {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.node-name {
+  display: inline-flex;
+  align-items: center;
+}
+
+.node-label {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 /* 变量列：竖排展示「变量名：变量值」；编辑图标进入编辑态，编辑态给「保存 / 取消」 */
-.case-variable-list { display: flex; flex-direction: column; gap: 4px; padding: 2px 0; }
-.case-variable-empty { color: var(--el-text-color-secondary); font-size: 12px; }
+.case-variable-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 2px 0;
+}
+
+.case-variable-empty {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
 .case-variable-item {
   display: flex;
   align-items: center;
@@ -594,8 +645,15 @@ onMounted(load)
   font-size: 12px;
   line-height: 20px;
 }
-.case-variable-item .variable-name { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-.case-variable-item .variable-colon { opacity: 0.7; }
+
+.case-variable-item .variable-name {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.case-variable-item .variable-colon {
+  opacity: 0.7;
+}
+
 .case-variable-item .variable-value {
   min-width: 40px;
   max-width: 320px;
@@ -603,17 +661,72 @@ onMounted(load)
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.case-variable-item .variable-input { width: 180px; }
+
+.case-variable-item .variable-input {
+  width: 180px;
+}
+
 .case-variable-item .variable-icon-button,
-.case-variable-item .variable-restore { padding: 0 4px; }
-.case-variable-item .variable-icon-button { color: var(--el-text-color-secondary); }
-.case-variable-item .variable-icon-button:hover { color: var(--el-color-primary); }
-.case-variable-item.tone-overridden { color: #1d4ed8; background: rgba(37, 99, 235, 0.12); border-color: rgba(37, 99, 235, 0.35); }
-.case-variable-item.tone-inherited { color: var(--el-text-color-regular); background: rgba(100, 116, 139, 0.08); border-color: rgba(100, 116, 139, 0.24); }
-.case-variable-item.tone-undefined { color: #c2410c; background: rgba(249, 115, 22, 0.12); border-color: rgba(249, 115, 22, 0.35); }
-.case-variable-item.tone-random { color: #7c3aed; background: rgba(139, 92, 246, 0.14); border-color: rgba(139, 92, 246, 0.38); }
-.case-variable-item.tone-mixed { color: #b45309; background: rgba(245, 158, 11, 0.14); border-color: rgba(245, 158, 11, 0.4); }
-.element-label, .element-context { color: var(--el-text-color-secondary); font-size: 12px; }
-.expand-button { width: 22px; padding: 0; border: 0; background: transparent; cursor: pointer; color: inherit; }
-.node-dot { display: inline-block; width: 22px; text-align: center; }
+.case-variable-item .variable-restore {
+  padding: 0 4px;
+}
+
+.case-variable-item .variable-icon-button {
+  color: var(--el-text-color-secondary);
+}
+
+.case-variable-item .variable-icon-button:hover {
+  color: var(--el-color-primary);
+}
+
+.case-variable-item.tone-overridden {
+  color: #1d4ed8;
+  background: rgba(37, 99, 235, 0.12);
+  border-color: rgba(37, 99, 235, 0.35);
+}
+
+.case-variable-item.tone-inherited {
+  color: var(--el-text-color-regular);
+  background: rgba(100, 116, 139, 0.08);
+  border-color: rgba(100, 116, 139, 0.24);
+}
+
+.case-variable-item.tone-undefined {
+  color: #c2410c;
+  background: rgba(249, 115, 22, 0.12);
+  border-color: rgba(249, 115, 22, 0.35);
+}
+
+.case-variable-item.tone-random {
+  color: #7c3aed;
+  background: rgba(139, 92, 246, 0.14);
+  border-color: rgba(139, 92, 246, 0.38);
+}
+
+.case-variable-item.tone-mixed {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
+.element-label,
+.element-context {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.expand-button {
+  width: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+}
+
+.node-dot {
+  display: inline-block;
+  width: 22px;
+  text-align: center;
+}
 </style>
