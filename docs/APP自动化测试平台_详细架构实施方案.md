@@ -811,7 +811,7 @@ CREATE INDEX idx_queue_pending ON execution_queue(status, created_at) WHERE stat
 
 **变量渲染规则**：
 - 支持 `${var_name}` 语法
-- 变量优先级（高到低）：执行参数 > 套件变量 > 用例变量 > 项目变量 > 全局变量
+- 公共基础优先级（高到低）：执行参数 > 套件变量 > 用例变量 > 项目变量 > 全局变量；APP 档案 occurrence 能力变量、编排项和当前用户变量以 §10.20 为最终口径
 - Worker 执行前，统一渲染 steps 和 assertions 中的变量占位符
 
 
@@ -1964,6 +1964,7 @@ CREATE TABLE variables (
     value TEXT NOT NULL DEFAULT '',
     kind VARCHAR(20) NOT NULL DEFAULT 'fixed', -- fixed / random_integer / random_choice
     spec JSONB,                                  -- 随机整数 {min,max} 或列表 {items:[...]}
+    is_sensitive BOOLEAN NOT NULL DEFAULT FALSE, -- 用户覆盖的展示/脱敏元数据
     description TEXT,
     created_by BIGINT REFERENCES users(id),
     created_at TIMESTAMP DEFAULT NOW(),
@@ -1979,9 +1980,9 @@ PUT    /api/variables/{id}
 DELETE /api/variables/{id}
 ```
 
-渲染优先级不变：执行参数 > 套件变量 > 用例变量 > 项目变量 > 全局变量。补充规则：`render_variables` 遇到**未定义变量直接抛错**（而非静默保留 `${var}` 文本，防止定位串残留导致用例误判）。
+公共变量渲染优先级为：执行参数 > 套件变量 > 用例变量 > 项目变量 > 全局变量；套件编排项及 APP 档案能力变量的最终优先级以 §10.20 为准。补充规则：`render_variables` 遇到**未定义变量直接抛错**（而非静默保留 `${var}` 文本，防止定位串残留导致用例误判）。
 
-`kind=fixed` 使用 `value`；`kind=random_integer` 使用安全整数闭区间 `spec={min,max}`；`kind=random_choice` 使用 1 至 100 个不重复的非空字符串 `spec={items:[...]}`。随机定义只在执行快照解析阶段解析，采用系统随机源并按执行/套件 occurrence/用例 occurrence 缓存：global/project 在一次执行内共享，suite 覆盖该套件的 setup、cases、teardown，case 按 occurrence 隔离。执行参数只允许最终标量，优先级最高。预检令牌复用解析快照，重试克隆快照，不重新随机；已渲染值随 steps/elements 快照落库。
+`kind=fixed` 使用 `value`；`kind=random_integer` 使用安全整数闭区间 `spec={min,max}`；`kind=random_choice` 使用 1 至 100 个不重复的非空字符串 `spec={items:[...]}`。随机定义只在执行快照解析阶段解析，采用系统随机源并按执行/套件 occurrence/用例 occurrence 缓存：global/project 在一次执行内共享，suite 覆盖该套件的 setup、cases、teardown，case 按 occurrence 隔离。执行参数只允许最终标量，优先于公共、用户和编排项变量，但低于 §10.20 的 APP 档案 occurrence 能力变量。预检令牌复用解析快照，重试克隆快照，不重新随机；已渲染值随 steps/elements 快照落库。
 
 现有 smart locator 仍遵循 §10.13 的运行时占位符策略：`locator_config` 不由变量系统做后端递归渲染，未知/运行时变量由 Agent 处理；本次随机变量改造不改变该行为。
 
@@ -2072,26 +2073,26 @@ RUNNING ←── Worker 认领后经内部接口通知 FastAPI 更新
 
 1. **测试资产口径**：测试套件、用例、步骤、断言、元素和变量仍只有一份公共资产；`app_profiles` 只保存差异规则，不复制套件。步骤和断言的 JSON `key` 必须是稳定且唯一的 UUID，排序和改名不得改变 key。
 2. **档案与版本**：每个项目可建多个 `app_profiles`，发布版本由 `app_profile_releases` 管理。迁移为活动项目幂等创建“通用配置（待调整）/未标注历史版本”。`profile.revision` 只在有效规则变化时递增；公共测试资产变化递增 `projects.test_asset_revision`。
-3. **差异规则**：`app_profile_skip_rules` 支持 suite/case/step/assertion 四级跳过，父级规则优先；`app_profile_element_overrides`、`app_profile_variable_overrides`、`app_profile_suite_case_variable_overrides`、`app_profile_node_overrides` 分别覆盖定位、档案全局变量、occurrence 变量和 Registry 允许的节点参数。节点覆盖使用 `suite_case_id` 精确寻址，且不再承载 `variable_overrides`。所有写命令携带 `expected_revision` 与 `request_id`，Owner/Admin 可写，项目成员只读。
+3. **差异规则**：本条原 V1.3 覆盖口径已由 §10.20 取代。`app_profile_skip_rules` 保存套件、编排项及节点跳过；`app_profile_suite_case_variable_overrides` 保存按 `suite_case_id` 隔离的设备能力变量。两者均由 Owner/Admin 管理，写命令携带 `expected_revision` 与 `request_id` 并推进共享档案 revision。档案元素覆盖、档案全局变量覆盖和节点参数覆盖停用并删除；当前用户的项目／套件／用例变量使用 §10.20 的独立私有数据与接口。
 4. **执行快照**：公共库运行必须选择档案和活动发布版本并调用 `POST /api/executions/preview`。正式提交携带 `app_profile_id`、`app_release_id`、`expected_profile_revision`、`expected_test_asset_revision`；服务端在同一事务内二次锁定双 revisions、生成完整执行快照、固化 `execution_exclusions` 并入队。Agent 只接收最终快照，不解析档案规则。若预检指定了设备，服务端会把解析结果写入短期 `execution_prepares` 行并返回一次性不透明 `prepare_token`；创建请求可携带该 token 复用同一解析结果，服务端以 SHA-256 哈希、用户/项目/设备/目标/参数/版本和 60 秒 TTL 校验，成功创建与消费在同一事务内完成。token 过期、重复消费或任一上下文不匹配均返回 `EXECUTION_PREPARE_INVALID`，不接受客户端提交解析快照。
 5. **报告口径**：执行记录永久保存档案名、版本、双 revisions 和解析摘要快照；N/A 来自 `execution_exclusions`，不计入成功率分母，运行期 skipped 与 N/A 分开展示。历史 `app_profile_id IS NULL` 的执行显示“历史兼容执行”，不得查询当前配置回填历史结果；重试同样只使用原执行快照。
 6. **资产删除与重试**：用例删除为软删除，不因任何历史 `Execution` 或套件引用而阻止；历史执行详情/报告继续读取其快照。已终态执行的重试不依赖当前用例、套件或档案是否仍存在。
-   元素删除同样是软删除，但后端会拒绝仍被未删除用例（含嵌套断言和元素参数）、套件前后置步骤或未删除 APP 档案元素/节点覆盖引用的元素，返回 `ELEMENT_IN_USE`；历史 `Execution` 快照、报告以及已删除资产不构成阻止条件。
+   元素删除同样是软删除，但后端会拒绝仍被未删除用例（含节点参数）、套件前后置节点引用的元素，返回 `ELEMENT_IN_USE`；APP 档案不再保存元素或节点参数覆盖，历史 `Execution` 快照、报告以及已删除资产不构成阻止条件。
 7. **灰度与回滚**：`APP_PROFILE_FEATURE_MODE=off|compat|required`；`compat` 仅对 `APP_PROFILE_ENABLED_PROJECT_IDS` 中的项目将旧请求注入通用档案，`required` 要求所有新请求显式选择档案/版本，`off` 保持旧执行协议。关闭灰度不删除档案、审计或历史快照。
-8. **核心接口**：档案 `/api/projects/{id}/app-profiles`，版本 `/api/app-profiles/{id}/releases`，规则 `/api/app-profiles/{id}/skip-rules/batch`，覆盖 `/api/app-profiles/{id}/*-overrides`，工作台 `/api/app-profiles/{id}/workspace`，差异清单 `/api/app-profiles/{id}/differences`，预检 `/api/executions/preview`；报告列表支持 `app_profile_id/app_release_id` 筛选。
-9. **节点覆盖编辑口径**：工作台步骤、断言及套件步骤节点返回 `registry_key` 与 `override_template`；模板仅包含公共节点当前值中 Registry 允许覆盖的字段，不返回 `action/type/key/order/phase` 等身份字段。前端打开覆盖时以模板合并已有补丁并预填完整有效参数，保存时仅提交相对公共模板变化的顶层字段；无差异时不创建空覆盖，已有覆盖恢复为公共配置。
+8. **核心接口**：档案 `/api/projects/{id}/app-profiles`，版本 `/api/app-profiles/{id}/releases`，规则 `/api/app-profiles/{id}/skip-rules/batch`，档案 occurrence 变量 `/api/app-profiles/{id}/suite-cases/{suite_case_id}/*`，当前用户变量 `/api/app-profiles/{id}/my-variables`，工作台 `/api/app-profiles/{id}/workspace`，差异清单 `/api/app-profiles/{id}/differences`，预检 `/api/executions/preview`；报告列表支持 `app_profile_id/app_release_id` 筛选。
+9. **节点编辑口径**：APP 档案不再提供节点参数覆盖，工作台节点不返回 `override_template`，只允许配置跳过规则。用例行保留按 `suite_case_id` 编辑的档案能力变量；步骤和断言仅展示变量引用位置，不提供变量编辑入口。
 
 ---
 
 ### 10.13 Android 动态元素智能定位（V1.4 增量）
 
 > 本节为智能定位（smart locator）最终口径；与前文 §3.6 元素定位、§10.3 元素快照冲突时以本节为准。
-> 涉及：`test_elements.locator_config`、`app_profile_element_overrides.locator_config`、执行快照 `elements_snapshot`、Agent `ElementResolver`、前端智能定位编辑器。
+> 涉及：`test_elements.locator_config`、执行快照 `elements_snapshot`、Agent `ElementResolver`、前端智能定位编辑器；原 `app_profile_element_overrides` 口径已由 §10.20 废止。
 > 范围：仅 Android/Appium UiAutomator2；不实现 iOS、OCR、图像识别与实时设备“测试定位”接口。保留既有 id/resource_id/xpath/accessibility_id 等普通定位能力。
 
-1. **元素模型**：`test_elements` 与 `app_profile_element_overrides` 各新增 `locator_config JSONB`（可空）；`locator_value` 改为可空。DB CHECK 约束固化判别关系（`ck_test_elements_locator_mode` / `ck_profile_element_locator_mode`）：
+1. **元素模型**：`test_elements` 使用 `locator_config JSONB`（可空），`locator_value` 可空。DB CHECK 约束 `ck_test_elements_locator_mode` 固化判别关系：
    `(locator_type='smart' AND locator_config IS NOT NULL AND locator_value IS NULL) OR (locator_type<>'smart' AND locator_config IS NULL AND locator_value IS NOT NULL)`。
-   覆盖语义为**整体替换** locator_type/locator_value/locator_config 三字段。
+   普通定位与智能定位模式切换时，`locator_type/locator_value/locator_config` 三字段必须整体更新并继续满足该约束。
 2. **配置协议**：`locator_config` 为强类型 JSON（后端 Pydantic + Agent 自校验双保险）：
    - `version: 1`
    - `alternatives: 1..10`，按顺序执行；每项含 可选 `anchor`（锚点条件，1..20 条）、可选 `path`（相对路径，1..3 段）、必填 `target`（匹配条件，1..20 条，同为 AND）
@@ -2100,7 +2101,7 @@ RUNNING ←── Worker 认领后经内部接口通知 FastAPI 更新
    - `search`：`scroll: true`、`direction: up|down`、`max_swipes: 1..20`（全部候选共享预算）、`duration_ms: 100..2000`、`settle_ms: 0..2000`；滚动为**全屏滑动**（`driver.swipe`），不支持指定滚动容器
    - `selection`：默认 `policy='unique'`（匹配>1 立即失败，禁止自动退化为第一个）；`policy='index'` 必须显式 `index ≥ 1`（1 基：index=1 即第 1 个匹配；越界即失败）
    - 安全：协议结构不接受任何原始 XPath / UiAutomator 表达式；组合/相对定位由 Agent 经安全转义后生成。正则仅校验可编译与长度上限，**不设复杂度/ReDoS 防护**，生产使用需注意
-3. **变量与快照**：`locator_config` 内 `${variable}` **保留原样写入快照**（后端 profile_resolver/worker_service 不渲染），由 Agent 执行时用执行参数 `variables` 渲染；渲染后 Agent 重新校验长度/正则。普通元素 `locator_value` 仍由后端渲染。快照元素条目统一结构：`{name, platform, locator_type, locator_value, locator_config}`，`platform` 供 Agent 平台守卫使用。
+3. **变量与快照**：`locator_config` 内 `${variable}` **保留原样写入快照**（后端 profile_resolver/worker_service 不渲染），由 Agent 执行时用最终执行变量 `variables` 渲染；渲染后 Agent 重新校验长度/正则。普通元素 `locator_value` 仍由后端渲染。快照元素条目统一结构：`{name, platform, locator_type, locator_value, locator_config}`，`platform` 供 Agent 平台守卫使用。APP 档案不再替换元素定位配置，所有档案共用公共元素定义。
 4. **Agent 解析语义**：
    - 自校验 → 渲染变量 → 逐候选：0 匹配→滚动循环后仍 0→下一候选；1 匹配→按 selection 返回；>1 且 unique→立即 `ElementNotUnique`（不试后续候选）；index 显式取第 N 个，匹配数不足→失败
    - 选择器双策略：无 anchor/path 的普通候选用 UiAutomator `UiSelector` 链（可含 regex）；含相对定位/ends_with/displayed 等无法用 UiSelector 表达的用 XPath（字面量安全转义）；regex 出现在 anchor/path 场景→`InvalidSmartLocator`，regex 亦不得与 ends_with/displayed 等需 XPath 表达的条件组合
@@ -2108,7 +2109,7 @@ RUNNING ←── Worker 认领后经内部接口通知 FastAPI 更新
    - 平台守卫：非 Android（ios 等）`platform` 直接拒绝（`InvalidSmartLocator`，消息明确“仅支持 Android”）
 5. **统一操作接线**：click/input/clear/get_text/get_attribute 与全部元素断言统一经 `with_stale_retry`：遇 Stale 异常→丢弃旧元素→按原智能规则重新定位→重试，最多 2 次，耗尽→`ElementStaleRetryExhausted`；不新增 find_and_click 等孤立动作。
 6. **错误类型**：Agent 异常类 `InvalidSmartLocator / ElementNotFound / ElementNotUnique / ScrollLimitReached / ElementStaleRetryExhausted`（无机器错误码，经 `step_result.error_message` 中文文本上报落库）；日志含候选规则序号、匹配数量、滚动次数、失败原因，不记录完整页面源码。
-7. **前端**：元素库「智能定位（Android）」可视化编辑器（候选规则/锚点/相对路径/滚动/匹配策略，实时校验，索引策略带风险提示）；APP 档案覆盖抽屉复用同一编辑器组件；列表展示规则摘要（如「文字等于 ${device_name} + 类名等于TextView + 向上滑动8次」）。前端校验覆盖面为结构与数值上限；组合语义限制（regex 与 anchor/path 及需 XPath 表达的条件互斥、path 须带 anchor）由 Agent 运行时校验。
+7. **前端**：元素库提供「智能定位（Android）」可视化编辑器（候选规则/锚点/相对路径/滚动/匹配策略，实时校验，索引策略带风险提示）并展示规则摘要（如「文字等于 ${device_name} + 类名等于 TextView + 向上滑动 8 次」）。APP 档案不提供元素覆盖抽屉。前端校验覆盖面为结构与数值上限；组合语义限制（regex 与 anchor/path 及需 XPath 表达的条件互斥、path 须带 anchor）由 Agent 运行时校验。
 8. **协议版本**：elements_snapshot 经 start_test 载荷下发（非 WS 入站消息），无新增 action/assertion Registry 项，`protocol_version` 不提升，协议产物无需重新生成（`generate_protocol.py --check` 通过）。
 9. **元素 Excel 批处理**：`GET /api/elements/export` 按当前筛选导出全部匹配元素；项目内 `GET /api/projects/{project_id}/elements/import-template` 下载模板，`POST /api/projects/{project_id}/elements/import` 批量导入。Excel 使用固定中英文表头，支持普通定位与智能定位 JSON；元素 ID 为空创建、存在时仅允许创建者更新当前项目元素。导入先完成整批校验，任一行失败则全部回滚，单文件限制 5 MB/2,000 行。
 
@@ -2157,10 +2158,6 @@ RUNNING ←── Worker 认领后经内部接口通知 FastAPI 更新
 Agent WebSocket 连接不持有长生命周期数据库 Session：注册、心跳、设备同步和每条
 结果消息均使用短 Session，只有写入成功提交后才广播或发送 ACK。Seed、回填和清理
 脚本只创建 Session 并调用 Service；数据库访问边界由 AST 门禁持续校验。
----
-
-> **文档结束**。本方案基于原始设计进行了系统性修订，重点解决了执行引擎耦合、Agent 落地性、执行可靠性、报告可追溯性等核心问题，并经由 V1.1 评审补齐执行职责划分、Worker↔Agent 通信中转、元素快照、停止机制、设备原子锁、变量系统等缺口，可直接作为项目启动的技术基线。
-
 ### 10.17 统一执行节点 V3（改造最终口径）
 
 1. 用例资产使用 `flow_nodes` 平铺数组；每个节点必须携带 `kind=action|assertion`、稳定 `key`、阶段 `phase` 和同一序列中的 `order`。断言不再嵌套在动作下。
@@ -2174,7 +2171,7 @@ Agent WebSocket 连接不持有长生命周期数据库 Session：注册、心�
 1. `test_suite_cases.id` 是套件编排项的 `membership_id`；`case_id` 仅引用公共用例资产。同一套件允许同一 `case_id` 出现多次，列表按 `sort_order,id` 稳定排序，`case_count` 按关系行计数。
 2. 添加接口逐项校验用例项目归属和未删除状态，保留 `case_ids` 数组的原始顺序及重复项。排序接口必须提交恰好一次的完整 `membership_ids` 集合；删除接口按 `membership_id` 只删除一个 occurrence。
 3. `execution_cases` 不得按 `(execution_suite_id,case_id)` 唯一；仅以 `(execution_suite_id,case_order)` 保证顺序。每个 occurrence 必须生成独立 `ExecutionCase.id`，其步骤、断言、Agent 更新和报告统计均以该 ID 关联，不得用 `case_id` 去重或回退串写。
-4. APP 档案 skip 规则仍按 `(suite_id,case_id,node_key)` 继承；节点覆盖与 occurrence 变量覆盖按 `suite_case_id` 精确隔离。工作台展示同一资产只保留首次出现，但不影响执行解析。排除记录需保留 `occurrence_order` 以区分重复 occurrence。
+4. APP 档案 skip 规则按 occurrence 精确寻址：套件使用 `suite_id`，用例使用 `suite_case_id`，用例节点使用 `(suite_case_id,node_key)`，套件前后置节点使用 `(suite_id,node_key)`。档案 occurrence 变量覆盖同样按 `suite_case_id` 隔离；APP 档案不再保存节点参数覆盖。工作台和执行解析都不得按 `case_id` 去重，排除记录保留 `suite_case_id` 与 `occurrence_order` 以区分重复 occurrence。
 
 ### 10.19 模块树 scope 与套件模块（V1.8 增量）
 
@@ -2185,3 +2182,23 @@ Agent WebSocket 连接不持有长生命周期数据库 Session：注册、心�
 5. **“未分组”必须用显式参数 `ungrouped=true` 表达**（用例与套件列表接口均支持），禁止用 `module_id=null`：axios 会丢弃值为 `null` 的查询参数，后端 `None` 表示“不过滤”，两者叠加会把“未分组”静默变成“全部”。
 6. 选中父模块时，列表按**该模块及其全部子孙**过滤（`module_ids IN (子树)`）。子树展开在服务端用一次全量读取 + 内存展开完成，模块表规模小；展开过程自带防环。
 7. 套件模块是**纯组织维度**，不进入执行快照与报告：`ExecutionSuite` / `ExecutionCase` 的快照字段不包含套件模块信息，档案（AppProfile）的 skip/override/变量解析也不读取它。模块写操作仍与其他资产写入一致地推进项目 `test_asset_revision`。
+
+### 10.20 APP 档案能力约束与当前用户变量（V1.9 增量）
+
+> 本节依据《APP档案跳过与用户变量配置设计方案.md》固化，是 APP 档案覆盖、跳过寻址和用户变量的最终口径；与 §10.12、§10.13、§10.18 及前文冲突时以本节为准。
+
+1. **档案职责**：`AppProfile` 表示设备能力约束，只保存跳过规则和用例 occurrence 能力变量。档案不与物理 `device_id` 强制绑定；运行时仍通过现有流程选择真实设备。所有档案共用公共套件、用例、节点和元素，不再允许档案元素定位覆盖、档案全局变量覆盖或节点参数覆盖。
+2. **保留与删除**：保留 `AppProfileSkipRule`、`AppProfileSuiteCaseVariableOverride`、工作台、差异清单、发布版本和执行快照；删除 `AppProfileElementOverride`、`AppProfileVariableOverride`、`AppProfileNodeOverride` 及相关表、API、解析分支和前端入口。当前仅为开发环境，不保留旧覆盖数据兼容分支。
+3. **跳过身份**：未配置即启用。套件规则使用 `suite_id`；用例规则使用 `suite_case_id`；用例步骤／断言规则使用 `(suite_case_id,node_key)`；套件前后置节点规则使用 `(suite_id,node_key)`。父级优先级为 `suite > suite_case > node`，恢复父级后重新计算下级直接规则。同一用例重复编排时禁止退回 `(suite_id,case_id)` 寻址或按 `case_id` 去重。
+4. **模块边界**：模块是纯组织维度，不是持久化跳过目标。若 UI 提供“跳过分组”快捷操作，只把提交时模块子树中的套件展开为具体 `suite_id` 规则后批量提交；以后加入该模块的套件默认启用。
+5. **档案 occurrence 能力变量**：现有 APP 档案用例行变量编辑继续使用 `app_profile_suite_case_variable_overrides`，唯一身份为 `(profile_id,suite_case_id,name)`。该配置由 Owner/Admin 管理、所有用户共享、推进 `profile.revision`，适用于固定端口等不可由用户突破的设备能力值，并拥有整个变量系统的最高优先级。
+6. **当前用户变量身份**：新增 `user_app_profile_variable_overrides`，唯一身份为 `(user_id,profile_id,variable_id)`，其中 `variable_id` 外键指向稳定的 `variables.id`。用户变量按公共定义身份分别保存，不按变量名在整个档案中合并；只有项目、套件和用例变量可配置，全局及编排项变量不进入用户编辑。服务层校验变量目标与档案属于同一项目；接口从认证上下文确定用户，不接受 `user_id`。所有可配置用例变量必须先规范化为具有稳定 ID 的 `variables` 行，禁止用“作用域 + 名称”猜测身份。步骤和断言只作为 `${name}` 引用位置展示，不允许用户步骤级或单节点覆盖。
+7. **用户变量解析**：用户值只替换相同身份的公共变量定义，然后参与既有公共作用域合并；用户修改项目变量不能越过同名套件变量，修改套件 A 的变量不能影响套件 B。公共解析顺序为 `全局 → 项目 → 用例 → 套件 → 编排项`，随后叠加本次执行参数，最后叠加 APP 档案 occurrence 能力变量。等价优先级为 `档案 occurrence > 执行参数 > 编排项 > 套件（用户值替换公共值） > 用例（用户值替换公共值） > 项目（用户值替换公共值） > 全局`。
+8. **用户变量接口与并发**：查询和批量写入使用 `GET/PATCH /api/app-profiles/{profile_id}/my-variables`。更新项只携带 `variable_id` 和 `value`；字符串（含空字符串）表示保存，`null` 表示物理删除用户覆盖并恢复公共值。`request_id` 用于幂等重放；第一版不增加用户可见 revision，同一项的合法新请求采用最后写入生效，不定义 `VARIABLE_UPDATE_CONFLICT`。用户变量不推进或广播共享档案 revision。
+9. **发现与展示**：服务端批量收集项目、套件、用例变量，以及套件节点和用例节点参数中的真实 `${name}` 引用；排除运行时输出名和智能定位占位符。发现范围包含被跳过资产。列表以 `variable_id` 为身份并展示作用域、目标和名称，不同套件中的同名变量分别展示；同一定义的多个节点引用合并计数。APP 档案 occurrence 能力变量在工作台单独展示，不混入“我的变量配置”。
+10. **安全与审计**：公共 `variables` 定义增加 `is_sensitive boolean NOT NULL DEFAULT false`，敏感属性不允许用户在保存时降级。所有用户覆盖值均使用独立密钥加密存入 `value_ciphertext`，查询时仅对非敏感项返回可编辑值，敏感项只返回掩码和已配置状态；应用日志、HTTP 日志、执行详情、报告和审计均不得记录敏感明文，Agent 只接收执行所需最终值且不得打印完整变量表。审计记录用户、档案、`variable_id`、作用域与目标快照、变量名、操作、时间、IP、User-Agent 和 `request_id`，敏感变量只记录发生变化。
+11. **快照与重试**：执行创建从认证上下文加载当前用户变量，完成作用域替换、公共合并、执行参数和最高优先级档案 occurrence 覆盖后，固化最终执行树、变量、元素及排除原因。运行中修改只影响以后创建的新执行；历史执行重试完整复制原快照，不重新读取当前用户、档案或公共资产。
+
+---
+
+> **文档结束**。本方案基于原始设计进行了系统性修订，重点解决了执行引擎耦合、Agent 落地性、执行可靠性、报告可追溯性等核心问题，并经由 V1.1 及后续增量评审补齐执行职责划分、Worker↔Agent 通信中转、元素快照、停止机制、设备原子锁、变量系统和 APP 档案能力约束等口径，可直接作为项目技术基线。
