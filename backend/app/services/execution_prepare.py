@@ -36,12 +36,15 @@ def canonical_target(
     target_scope: str,
     context_suite_id: int | None,
     resolved_ids: list[int] | None = None,
+    excluded_suite_ids: list[int] | None = None,
 ) -> dict[str, Any]:
+    normalized_excluded = sorted({int(value) for value in (excluded_suite_ids or [])})
     return {
         "type": target_type,
-        "ids": [int(value) for value in (resolved_ids if resolved_ids is not None else target_ids)],
+        "ids": list(dict.fromkeys(int(value) for value in (resolved_ids if resolved_ids is not None else target_ids))),
         "target_scope": target_scope,
         "context_suite_id": context_suite_id,
+        "excluded_suite_ids": normalized_excluded,
     }
 
 

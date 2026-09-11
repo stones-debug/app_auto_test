@@ -49,6 +49,7 @@ let previewSequence = 0
 
 let targetIdsTracker: number[] = []
 let targetScope: 'explicit' | 'profile_all' = 'explicit'
+let excludedSuiteIdsTracker: number[] = []
 
 /** 弹窗路径的 open() 挂起解析器（成功/取消时唤醒父级 await）。 */
 let openResolve: ((exec: Execution | null) => void) | null = null
@@ -153,6 +154,7 @@ async function doPreview() {
         type: targetKind.value === 'batch' ? 'batch' : (targetKind.value === 'suite' ? 'suite' : 'case'),
         ids: targetIdsTracker,
         ...(targetScope === 'profile_all' ? { target_scope: targetScope } : {}),
+        ...(targetScope === 'profile_all' ? { excluded_suite_ids: excludedSuiteIdsTracker } : {}),
       },
       app_profile_id: profileId.value,
       app_release_id: releaseId.value,
@@ -238,10 +240,14 @@ defineExpose({
       ].join('；')
     }
     targetScope = target.kind === 'batch' ? (target.targetScope ?? 'explicit') : 'explicit'
-    if (target.kind === 'batch') targetIdsTracker = target.suiteIds
+    if (target.kind === 'batch') {
+      targetIdsTracker = target.suiteIds
+      excludedSuiteIdsTracker = [...new Set(target.excludedSuiteIds ?? [])].sort((a, b) => a - b)
+    }
     else if (options.targetId) targetIdsTracker = [options.targetId]
     else if (target.kind === 'case' || target.kind === 'suite') targetIdsTracker = [target.id]
     else targetIdsTracker = []
+    if (target.kind !== 'batch') excludedSuiteIdsTracker = []
     store.projectId = props.projectId ?? store.projectId
     if (!options.profile && target.kind !== 'retry' && props.projectId != null) {
       await store.loadProfiles()

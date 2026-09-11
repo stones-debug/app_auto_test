@@ -49,6 +49,10 @@ async def workspace(
 
     suites = await resolution_repo.list_suites(db, profile.project_id)
     skip = await resolution_repo.load_skip_index(db, profile_id)
+    # 这是全档案执行选择的基数，必须在 keyword/status 分页过滤前计算。
+    # 只有套件级直接跳过会自动变为不可选；套件内的 case/step 规则仍
+    # 保留给解析器形成低层 exclusion/empty_after_filter。
+    execution_selectable_total = sum(1 for suite in suites if suite.id not in skip["suite"])
     case_counts = await resolution_repo.case_counts(db, profile.project_id)
     diff_counts = await resolution_repo.diff_counts(db, profile_id, skip_index=skip)
     override_counts = await resolution_repo.override_counts(db, profile_id)
@@ -96,6 +100,7 @@ async def workspace(
         "profile_revision": profile.revision,
         "test_asset_revision": project.test_asset_revision,
         "total": total,
+        "execution_selectable_total": execution_selectable_total,
         "page": page,
         "page_size": page_size,
         "items": items[start : start + page_size],

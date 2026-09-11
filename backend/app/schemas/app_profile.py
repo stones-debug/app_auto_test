@@ -290,6 +290,9 @@ class WorkspacePage(BaseModel):
     profile_revision: int
     test_asset_revision: int
     total: int
+    # 不受 keyword/status 筛选影响的可执行套件总数。前端用它维护跨分页的
+    # “默认全选 + 补集取消”状态，不能用当前页 total 代替。
+    execution_selectable_total: int = 0
     page: int
     page_size: int
     items: list[WorkspaceNode]

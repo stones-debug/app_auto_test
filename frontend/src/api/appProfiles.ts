@@ -107,6 +107,7 @@ export interface WorkspacePage {
   profile_revision: number
   test_asset_revision: number
   total: number
+  execution_selectable_total: number
   page: number
   page_size: number
   items: ProfileNode[]
@@ -313,7 +314,7 @@ export function differences(profileId: number, params?: { type?: 'all' | 'skippe
 
 export function previewExecution(data: {
   project_id: number
-  target: { type: 'case' | 'suite' | 'batch'; ids: number[]; target_scope?: 'explicit' | 'profile_all' }
+  target: { type: 'case' | 'suite' | 'batch'; ids: number[]; target_scope?: 'explicit' | 'profile_all'; excluded_suite_ids?: number[] }
   app_profile_id: number
   app_release_id: number
   device_id?: number | null

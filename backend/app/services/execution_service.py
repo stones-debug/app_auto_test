@@ -19,6 +19,7 @@ from app.models import (
 from app.repositories import executions as executions_repo
 from app.repositories.app_profiles import profiles as profiles_repo
 from app.repositories.app_profiles import releases as releases_repo
+from app.repositories.app_profiles import resolution as resolution_repo
 from app.services import execution_prepare
 from app.services.profile_resolver import (
     ProfileEmpty,
@@ -138,8 +139,13 @@ async def _build_resolution_request(
     target_type = "case" if type_ == "case" else ("suite" if type_ == "suite" else "batch")
     target_ids = [case_id] if case_id is not None else ([suite_id] if suite_id is not None else [])
     if type_ == "batch":
-        target_ids = list((body.parameters or {}).get("suite_ids") or [])
+        # profile_all 的 suite_ids 必须由解析器从项目当前资产确定；显式
+        # 批量才从请求参数读取客户端给出的目标套件。
+        target_ids = [] if getattr(body, "target_scope", "explicit") == "profile_all" else list(
+            getattr(body, "suite_ids", None) or (body.parameters or {}).get("suite_ids") or []
+        )
     target_scope = cast(Literal["explicit", "profile_all"], getattr(body, "target_scope", "explicit"))
+    excluded_suite_ids = list(getattr(body, "excluded_suite_ids", None) or [])
     return ResolutionRequest(
         project_id=project_id,
         profile_id=body.app_profile_id,
@@ -152,6 +158,7 @@ async def _build_resolution_request(
         execution_variables=(body.parameters or {}).get("variables") or {},
         context_suite_id=context_suite_id if type_ == "case" else None,
         target_scope=target_scope,
+        excluded_suite_ids=excluded_suite_ids,
     )
 
 
@@ -177,6 +184,7 @@ async def _create_execution_with_profile(
     """
     create_started = time.monotonic()
     prepared = None
+    prepared_excluded_ids: list[int] = []
     if getattr(body, "prepare_token", None):
         prepared = await execution_prepare.lock_for_create(db, body.prepare_token)
         now = datetime.now(UTC)
@@ -203,17 +211,48 @@ async def _create_execution_with_profile(
             )
         )
         target_scope = cast(Literal["explicit", "profile_all"], getattr(body, "target_scope", "explicit"))
+        submitted_excluded_ids = sorted({
+            int(value) for value in (getattr(body, "excluded_suite_ids", None) or [])
+        })
+        if target_scope == "profile_all":
+            try:
+                submitted_excluded_ids = await resolution_repo.normalize_profile_all_excluded_suite_ids(
+                    db,
+                    project_id=project_id,
+                    profile_id=prepared.app_profile_id,
+                    suite_ids=submitted_excluded_ids,
+                )
+            except ValueError:
+                raise api_error(
+                    status.HTTP_409_CONFLICT,
+                    ErrorCode.EXECUTION_PREPARE_INVALID,
+                    "预检取消套件集合已变化，请重新预检",
+                ) from None
         prepared_ids = list((prepared.target or {}).get("ids") or [])
-        if target_scope == "profile_all" and not target_ids:
-            target_ids = prepared_ids
+        prepared_excluded_ids = sorted({
+            int(value) for value in ((prepared.target or {}).get("excluded_suite_ids") or [])
+        })
+        # profile_all 的客户端目标永远是空 suite_ids；不能用预检解析出的
+        # resolved ids 覆盖客户端篡改，从而把篡改吞掉。
+        if target_scope == "profile_all" and target_ids:
+            raise api_error(status.HTTP_409_CONFLICT, ErrorCode.EXECUTION_PREPARE_INVALID, "预检目标已变化，请重新预检")
         target = execution_prepare.canonical_target(
             target_type=target_type,
             target_ids=target_ids,
             target_scope=target_scope,
             context_suite_id=context_suite_id if type_ == "case" else None,
             resolved_ids=prepared_ids if target_scope == "profile_all" else None,
+            excluded_suite_ids=submitted_excluded_ids,
         )
-        if target != prepared.target or execution_prepare.request_hash(
+        prepared_target = execution_prepare.canonical_target(
+            target_type=str((prepared.target or {}).get("type") or target_type),
+            target_ids=list((prepared.target or {}).get("ids") or []),
+            target_scope=str((prepared.target or {}).get("target_scope") or "explicit"),
+            context_suite_id=(prepared.target or {}).get("context_suite_id"),
+            resolved_ids=list((prepared.target or {}).get("ids") or []),
+            excluded_suite_ids=prepared_excluded_ids,
+        )
+        if target != prepared_target or target_scope != prepared_target["target_scope"] or execution_prepare.request_hash(
             target=prepared.target, parameters=body.parameters or {}
         ) != prepared.request_hash:
             raise api_error(status.HTTP_409_CONFLICT, ErrorCode.EXECUTION_PREPARE_INVALID, "预检目标或参数已变化，请重新预检")
@@ -229,6 +268,7 @@ async def _create_execution_with_profile(
             execution_variables=(prepared.parameters or {}).get("variables") or {},
             context_suite_id=prepared.target.get("context_suite_id"),
             target_scope=prepared.target.get("target_scope", "explicit"),
+            excluded_suite_ids=prepared_excluded_ids,
         )
         try:
             result = execution_prepare.deserialize_result(prepared.resolution_payload)
@@ -294,13 +334,24 @@ async def _create_execution_with_profile(
     execution_parameters = dict(parameters or {})
     execution_suite_id = suite_id
     execution_case_id = case_id
-    if prepared is not None:
+    if type_ == "batch":
+        # 执行参数记录最终实际 source，而不是工作台筛选页/请求中的
+        # 候选集合。取消项单独保留，便于历史审计与重试完整复制。
+        execution_parameters["suite_ids"] = [
+            suite.suite_id for suite in result.suites
+            if suite.suite_id is not None and not suite.is_virtual
+        ]
+        execution_parameters["target_scope"] = request.target_scope
+        execution_parameters["excluded_suite_ids"] = sorted({
+            int(value) for value in (
+                prepared_excluded_ids
+                if prepared is not None
+                else result.normalized_excluded_suite_ids
+            )
+        })
+    elif prepared is not None:
         prepared_ids = list((prepared.target or {}).get("ids") or [])
-        if type_ == "batch":
-            execution_parameters["suite_ids"] = prepared_ids
-            if prepared.target.get("target_scope") == "profile_all":
-                execution_parameters["target_scope"] = "profile_all"
-        elif type_ == "case" and execution_case_id is None and prepared_ids:
+        if type_ == "case" and execution_case_id is None and prepared_ids:
             execution_case_id = prepared_ids[0]
         elif type_ == "suite" and execution_suite_id is None and prepared_ids:
             execution_suite_id = prepared_ids[0]
@@ -442,10 +493,15 @@ async def create_batch_execution(
             parameters=parameters, timeout_seconds=timeout_seconds, body=body,
         )
     suite_ids = parameters.get("suite_ids") or []
-    suite_ids = list(dict.fromkeys([*suite_ids, *[s.id for s in suites]]))
-    parameters["suite_ids"] = suite_ids
     if getattr(body, "target_scope", "explicit") == "profile_all":
+        # profile_all 的请求协议要求 suite_ids 为空；解析器负责从当前
+        # 项目套件集合中生成 source，不能把分页/路由加载到的候选 ID
+        # 写回 body.parameters 后再当成客户端目标。
+        parameters["suite_ids"] = []
         parameters["target_scope"] = "profile_all"
+    else:
+        suite_ids = list(dict.fromkeys([*suite_ids, *[s.id for s in suites]]))
+        parameters["suite_ids"] = suite_ids
     if body is None:
         return await _create_and_enqueue(
             db, project_id=project_id, type_="batch", user=user, device_id=device_id,

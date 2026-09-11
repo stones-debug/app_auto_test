@@ -111,9 +111,30 @@ describe('useDeviceSelect（Windows 方案 §4.2 自动选机）', () => {
     expect(mCreateBatch).toHaveBeenCalledWith({
       suite_ids: [],
       target_scope: 'profile_all',
+      excluded_suite_ids: [],
       timeout_seconds: 1200,
       device_id: 11,
     })
+  })
+
+  it('profile_all batch：取消补集按数值排序去重并贯通创建请求', async () => {
+    mGetDefault.mockResolvedValue({ device_id: 11, device: IDLE, available: true, reason: '' } as never)
+    const select = useDeviceSelect()
+    await select.open({
+      kind: 'batch',
+      suiteIds: [],
+      targetScope: 'profile_all',
+      excludedSuiteIds: [19, 4, 19, 7],
+      name: '部分套件',
+    })
+
+    await select.confirmRun({ timeout_seconds: 1200 })
+
+    expect(mCreateBatch).toHaveBeenCalledWith(expect.objectContaining({
+      suite_ids: [],
+      target_scope: 'profile_all',
+      excluded_suite_ids: [4, 7, 19],
+    }))
   })
 
   it('retry：弹窗预选默认设备；确认运行调用 {device_id, timeout_seconds?}，不伪装成 case/suite', async () => {
