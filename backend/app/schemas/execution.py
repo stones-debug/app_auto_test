@@ -46,6 +46,7 @@ class ExecutionCreate(_ExecutionTimeoutModel):
     expected_test_asset_revision: int | None = Field(default=None, ge=1)
     # 方案 §2：单用例执行可指定套件上下文（引用该套件规则，而非虚拟套件）
     context_suite_id: int | None = None
+    context_suite_case_id: int | None = None
     prepare_token: str | None = Field(default=None, min_length=20, max_length=128)
 
     _run_parameters = field_validator("parameters")(_validate_run_parameters)
@@ -77,6 +78,7 @@ class BatchExecutionCreate(_ExecutionTimeoutModel):
     app_release_id: int | None = None
     expected_profile_revision: int | None = Field(default=None, ge=1)
     expected_test_asset_revision: int | None = Field(default=None, ge=1)
+    context_suite_case_id: int | None = None
     prepare_token: str | None = Field(default=None, min_length=20, max_length=128)
 
     _run_parameters = field_validator("parameters")(_validate_run_parameters)
@@ -88,6 +90,8 @@ class BatchExecutionCreate(_ExecutionTimeoutModel):
 
     @model_validator(mode="after")
     def _complete_profile_context(self):
+        if self.context_suite_case_id is not None:
+            raise ValueError("context_suite_case_id 仅支持单用例执行")
         parameter_suite_ids = self.parameters.get("suite_ids") or []
         if self.target_scope == "explicit" and not self.suite_ids and self.prepare_token is None:
             raise ValueError("显式批量执行至少需要一个套件")
@@ -153,8 +157,17 @@ class ExecutionPreviewRequest(_ExecutionTimeoutModel):
     parameters: dict[str, Any] = Field(default_factory=dict)
     # 方案 §2：预检可携带单用例套件上下文
     context_suite_id: int | None = None
+    context_suite_case_id: int | None = None
 
     _run_parameters = field_validator("parameters")(_validate_run_parameters)
+
+    @model_validator(mode="after")
+    def _validate_context_scope(self):
+        if (self.context_suite_id is not None or self.context_suite_case_id is not None) and self.target.type != "case":
+            raise ValueError("套件上下文仅支持单用例预检")
+        if self.target.type == "case" and len(self.target.ids) != 1 and self.context_suite_case_id is not None:
+            raise ValueError("context_suite_case_id 仅支持单个用例")
+        return self
 
 
 class ExecutionPreviewResponse(BaseModel):
@@ -172,6 +185,7 @@ class ExecutionPreviewResponse(BaseModel):
 class ExecutionCaseOut(BaseModel):
     id: int
     case_id: int
+    suite_case_id_snapshot: int | None = None
     case_name: str
     module_name: str | None
     status: str

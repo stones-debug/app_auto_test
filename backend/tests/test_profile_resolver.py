@@ -185,7 +185,8 @@ async def test_case_skip_excluded(client):
         suite_id = await _attach_case_to_suite(
             db, base["project_id"], case_id, "被跳套件"
         )
-        db.add(AppProfileSkipRule(profile_id=profile_id, target_type="case", suite_id=suite_id, case_id=case_id, reason_code="unsupported"))
+        suite_case_id = await _membership_id(db, suite_id, case_id)
+        db.add(AppProfileSkipRule(profile_id=profile_id, target_type="case", suite_case_id=suite_case_id, reason_code="unsupported"))
         await db.commit()
         request = ResolutionRequest(
             project_id=base["project_id"], profile_id=profile_id, release_id=await _release_id(db, profile_id),
@@ -208,7 +209,8 @@ async def test_step_skip_and_override(client):
         other_suite_id = await _attach_case_to_suite(
             db, base["project_id"], case_id, "共享用例的另一套件"
         )
-        db.add(AppProfileSkipRule(profile_id=profile_id, target_type="step", suite_id=suite_id, case_id=case_id, node_key=K2, reason_code="unsupported", reason_note="n"))
+        suite_case_id = await _membership_id(db, suite_id, case_id)
+        db.add(AppProfileSkipRule(profile_id=profile_id, target_type="step", suite_case_id=suite_case_id, node_key=K2, reason_code="unsupported", reason_note="n"))
         # 覆盖 K1(setup launch_app) 的 params.package
         db.add(AppProfileNodeOverride(profile_id=profile_id, target_type="step", suite_id=suite_id, case_id=case_id, suite_case_id=await _membership_id(db, suite_id, case_id), node_key=K1, patch={"params": {"package": "patched_pkg"}}))
         await db.commit()
@@ -446,7 +448,7 @@ async def test_suite_variable_overrides_case_and_suite_order_is_preserved(client
 
 
 async def test_duplicate_suite_memberships_resolve_and_materialize_independently(client):
-    """同一套件中的重复 occurrence 共享规则，但快照执行用例彼此独立。"""
+    """同一套件中的重复 occurrence 按 suite_case_id 隔离规则。"""
     base = await _base(client)
     case_id = await _setup_case_with_steps(client, base, "重复资产用例")
     async with SessionLocal() as db:
@@ -457,11 +459,19 @@ async def test_duplicate_suite_memberships_resolve_and_materialize_independently
         db.add_all([
             SuiteCaseModel(suite_id=suite.id, case_id=case_id, sort_order=1),
             SuiteCaseModel(suite_id=suite.id, case_id=case_id, sort_order=2),
-            AppProfileSkipRule(
-                profile_id=profile_id, target_type="step", suite_id=suite.id,
-                case_id=case_id, node_key=uuid.UUID(K1), reason_code="unsupported",
-            ),
         ])
+        await db.flush()
+        membership_ids = [
+            row.id for row in (await db.execute(
+                select(SuiteCaseModel).where(SuiteCaseModel.suite_id == suite.id).order_by(SuiteCaseModel.sort_order)
+            )).scalars().all()
+        ]
+        db.add(
+            AppProfileSkipRule(
+                profile_id=profile_id, target_type="step", suite_case_id=membership_ids[0],
+                node_key=uuid.UUID(K1), reason_code="unsupported",
+            ),
+        )
         await db.commit()
         result = await resolve_compat(
             ResolutionRequest(
@@ -475,7 +485,8 @@ async def test_duplicate_suite_memberships_resolve_and_materialize_independently
         )
         assert [item.case_id for item in result.suites[0].cases] == [case_id, case_id]
         assert [item.case_order for item in result.suites[0].cases] == [1, 2]
-        assert all(item.steps_snapshot[0]["source_key"] == K2 for item in result.suites[0].cases)
+        assert [step["source_key"] for step in result.suites[0].cases[0].steps_snapshot] == [K2]
+        assert [step["source_key"] for step in result.suites[0].cases[1].steps_snapshot] == [K1, K2]
 
         execution = Execution(
             project_id=base["project_id"], type="suite", suite_id=suite.id,

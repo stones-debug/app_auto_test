@@ -68,6 +68,19 @@ from app.services.profile_resolver_nodes import (
 
 logger = logging.getLogger("app.profile_resolver")
 
+
+def _unique_context_membership(
+    case_id: int,
+    candidates: list[tuple[int, int, dict[str, str]]],
+    suite_id: int,
+) -> tuple[int | None, int, dict[str, str]]:
+    if len(candidates) > 1:
+        raise ProfileRuleError(
+            "OCCURRENCE_REQUIRED",
+            f"用例 {case_id} 在套件 {suite_id} 存在多个编排项，必须指定 suite_case_id",
+        )
+    return candidates[0] if candidates else (None, case_id, {})
+
 __all__ = [
     "ExclusionItem",
     "NODE_IDENTITY_FIELDS",
@@ -119,6 +132,7 @@ class ResolutionRequest:
     run_options: dict[str, bool] = field(default_factory=dict)
     execution_variables: dict[str, Any] = field(default_factory=dict)
     context_suite_id: int | None = None
+    context_suite_case_id: int | None = None
     target_scope: Literal["explicit", "profile_all"] = "explicit"
     # profile_all 的“默认全选”补集。显式目标禁止携带该字段。
     excluded_suite_ids: list[int] = field(default_factory=list)
@@ -128,6 +142,7 @@ class ResolutionRequest:
 @dataclass(frozen=True)
 class ResolvedCase:
     suite_id: int | None
+    suite_case_id: int | None
     suite_name: str | None
     case_id: int
     case_name: str
@@ -184,6 +199,7 @@ class ExclusionItem:
     display_snapshot: dict[str, Any]
     phase: str | None = None
     occurrence_order: int | None = None
+    suite_case_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -328,14 +344,39 @@ async def resolve(
             db, profile_id=request.profile_id, user_id=request.user_id
         )
 
+    effective_context_suite_id = request.context_suite_id
+    if request.context_suite_case_id is not None:
+        if request.target_type != "case" or len(request.target_ids) != 1:
+            raise ProfileRuleError(
+                "EXECUTION_CONTEXT_INVALID",
+                "context_suite_case_id 仅支持单个用例目标",
+            )
+        context_membership = await resolution_repo.get_suite_case(
+            db, request.context_suite_case_id
+        )
+        if context_membership is None or context_membership.case_id != request.target_ids[0]:
+            raise ProfileRuleError(
+                "EXECUTION_CONTEXT_INVALID",
+                "context_suite_case_id 与执行用例不匹配",
+            )
+        if (
+            effective_context_suite_id is not None
+            and effective_context_suite_id != context_membership.suite_id
+        ):
+            raise ProfileRuleError(
+                "EXECUTION_CONTEXT_INVALID",
+                "context_suite_id 与 context_suite_case_id 不匹配",
+            )
+        effective_context_suite_id = context_membership.suite_id
+
     suite_rows = []
     suite_ids: list[int] = []
     suite_specs: list[dict] = []
     load_started = time.monotonic()
     if request.target_type == "case":
         case_ids = list(dict.fromkeys(request.target_ids))
-        if request.context_suite_id is not None:
-            if request.context_suite_id in config["skip_suite"]:
+        if effective_context_suite_id is not None:
+            if effective_context_suite_id in config["skip_suite"]:
                 # 单用例携带已直接跳过的套件上下文时与工作台继承状态
                 # 一致：目标不可执行，不留下整套 N/A 排除记录。
                 suite_specs = []
@@ -346,19 +387,35 @@ async def resolve(
                 context_skipped = True
             else:
                 context_skipped = False
-            # 单用例带套件上下文：取每个用例在该套件中排序最前的编排项作为覆盖身份
+            # 单用例带套件上下文必须有唯一编排项；重复编排不能靠排序猜测身份。
             if not context_skipped:
                 members_map = await resolution_repo.list_suite_memberships(
-                    db, [request.context_suite_id]
+                    db, [effective_context_suite_id]
                 )
-                first_by_case: dict[int, tuple[int, int, dict[str, str]]] = {}
-                for member in members_map.get(request.context_suite_id, []):
-                    first_by_case.setdefault(member[1], member)
-                members: list[tuple[int | None, int, dict[str, str]]] = [
-                    first_by_case.get(case_id, (None, case_id, {})) for case_id in case_ids
-                ]
+                members_by_case: dict[int, list[tuple[int, int, dict[str, str]]]] = {}
+                for member in members_map.get(effective_context_suite_id, []):
+                    members_by_case.setdefault(member[1], []).append(member)
+                if request.context_suite_case_id is not None:
+                    selected = [
+                        member
+                        for member in members_map.get(effective_context_suite_id, [])
+                        if member[0] == request.context_suite_case_id
+                    ]
+                    if not selected:
+                        raise ProfileRuleError(
+                            "EXECUTION_CONTEXT_INVALID",
+                            "context_suite_case_id 不属于指定套件",
+                        )
+                    members = selected
+                else:
+                    members = [
+                        _unique_context_membership(
+                            case_id, members_by_case.get(case_id, []), effective_context_suite_id
+                        )
+                        for case_id in case_ids
+                    ]
                 suite_specs = [
-                    {"suite_id": request.context_suite_id, "virtual": False, "members": members}
+                    {"suite_id": effective_context_suite_id, "virtual": False, "members": members}
                 ]
         else:
             suite_specs = [
@@ -407,9 +464,9 @@ async def resolve(
 
     if request.target_type == "case":
         suite_rows = []
-        if request.context_suite_id is not None:
+        if effective_context_suite_id is not None:
             suite = await resolution_repo.load_suites_by_ids(
-                db, project_id=request.project_id, suite_ids=[request.context_suite_id]
+                db, project_id=request.project_id, suite_ids=[effective_context_suite_id]
             )
             suite_rows = list(suite.values())
     else:
@@ -565,11 +622,12 @@ async def _build_suite(
         if case is None:
             continue
         if not virtual:
-            case_rule = config["skip_case"].get((suite_id, case_id))
+            case_rule = config["skip_case"].get(membership_id)
             if case_rule is not None:
                 exclusions.append(
                     ExclusionItem(
-                        target_type="case", suite_id=suite_id, case_id=case.id, node_key=None,
+                        target_type="case", suite_id=suite_id, suite_case_id=membership_id,
+                        case_id=case.id, node_key=None,
                         source_type="direct", reason_code=case_rule.reason_code,
                         reason_note=case_rule.reason_note,
                         display_snapshot={
@@ -660,11 +718,12 @@ async def _resolve_case(
     for node in selected_steps:
         is_assertion = node.get("kind") == "assertion" or "type" in node
         node_type = "assertion" if is_assertion else "step"
-        rules = config["assertion_rules" if is_assertion else "step_rules"].get((suite_id, case.id), {})
+        rules = config["assertion_rules" if is_assertion else "step_rules"].get(membership_id, {})
         overrides = assertion_overrides if is_assertion else step_overrides
         kept, node_exclusions = _filter_and_patch(
             [node], rules, overrides, node_type, case.id,
             case_name=case.name, suite_id=suite_id, suite_name=suite_name,
+            suite_case_id=membership_id,
             occurrence_order=case_order,
         )
         exclusions.extend(node_exclusions)
@@ -683,7 +742,8 @@ async def _resolve_case(
     if not nodes:
         exclusions.append(
             ExclusionItem(
-                target_type="case", suite_id=suite_id, case_id=case.id, node_key=None,
+                target_type="case", suite_id=suite_id, suite_case_id=membership_id,
+                case_id=case.id, node_key=None,
                 source_type="empty_after_filter", reason_code="other", reason_note="过滤后无可执行内容",
                 display_snapshot={
                     "name": case.name, "key": str(case.id),
@@ -701,6 +761,7 @@ async def _resolve_case(
     return (
         ResolvedCase(
             suite_id=suite_id,
+            suite_case_id=membership_id,
             suite_name=suite_name,
             case_id=case.id,
             case_name=case.name,

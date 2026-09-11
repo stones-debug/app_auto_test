@@ -37,20 +37,20 @@ async def load_config(db: AsyncSession, profile_id: int) -> dict:
         loaded.append(list(rows.scalars().all()))
     skip_rules, element_overrides, variable_overrides, node_overrides, occurrence_variables = loaded
     skip_suite: dict[int, Any] = {}
-    skip_case: dict[tuple[int, int], Any] = {}
-    step_rules: dict[tuple[int, int], dict[str, Any]] = {}
-    assertion_rules: dict[tuple[int, int], dict[str, Any]] = {}
+    skip_case: dict[int, Any] = {}
+    step_rules: dict[int, dict[str, Any]] = {}
+    assertion_rules: dict[int, dict[str, Any]] = {}
     skip_suite_step: dict[tuple[int, str], Any] = {}
     for rule in skip_rules:
         if rule.target_type == "suite" and rule.suite_id is not None:
             skip_suite[rule.suite_id] = rule
-        elif rule.target_type == "case" and rule.suite_id is not None and rule.case_id is not None:
-            skip_case[(rule.suite_id, rule.case_id)] = rule
+        elif rule.target_type == "case" and rule.suite_case_id is not None:
+            skip_case[rule.suite_case_id] = rule
         elif rule.target_type == "suite_step" and rule.suite_id is not None and rule.node_key is not None:
             skip_suite_step[(rule.suite_id, str(rule.node_key))] = rule
-        elif rule.target_type in ("step", "assertion") and rule.suite_id is not None and rule.case_id is not None and rule.node_key is not None:
+        elif rule.target_type in ("step", "assertion") and rule.suite_case_id is not None and rule.node_key is not None:
             bucket = step_rules if rule.target_type == "step" else assertion_rules
-            bucket.setdefault((rule.suite_id, rule.case_id), {})[str(rule.node_key)] = rule
+            bucket.setdefault(rule.suite_case_id, {})[str(rule.node_key)] = rule
     step_overrides: dict[int, dict[str, dict[str, Any]]] = {}
     assertion_overrides: dict[int, dict[str, dict[str, Any]]] = {}
     suite_step_overrides: dict[tuple[int, str], dict[str, Any]] = {}
@@ -234,20 +234,6 @@ async def get_suite_case(db: AsyncSession, membership_id: int) -> TestSuiteCase 
     return await db.get(TestSuiteCase, membership_id)
 
 
-async def find_membership(
-    db: AsyncSession, suite_id: int, case_id: int
-) -> TestSuiteCase | None:
-    """取套件中该用例排序最前的编排项（兼容仅按 suite/case 寻址的旧调用）。"""
-    return (
-        await db.execute(
-            select(TestSuiteCase)
-            .where(TestSuiteCase.suite_id == suite_id, TestSuiteCase.case_id == case_id)
-            .order_by(TestSuiteCase.sort_order, TestSuiteCase.id)
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-
-
 async def get_project_modules(db: AsyncSession, module_ids: set[int]) -> dict[int, str]:
     if not module_ids:
         return {}
@@ -299,12 +285,12 @@ async def load_skip_index(db: AsyncSession, profile_id: int) -> dict:
     for rule in rows.scalars().all():
         if rule.target_type == "suite" and rule.suite_id is not None:
             idx["suite"][rule.suite_id] = rule
-        elif rule.target_type == "case" and rule.suite_id is not None and rule.case_id is not None:
-            idx["case"][(rule.suite_id, rule.case_id)] = rule
+        elif rule.target_type == "case" and rule.suite_case_id is not None:
+            idx["case"][rule.suite_case_id] = rule
         elif rule.target_type == "suite_step" and rule.suite_id is not None and rule.node_key is not None:
             idx["suite_step"][(rule.suite_id, str(rule.node_key))] = rule
-        elif rule.target_type in ("step", "assertion") and rule.suite_id is not None and rule.case_id is not None and rule.node_key is not None:
-            idx[rule.target_type].setdefault((rule.suite_id, rule.case_id), {})[str(rule.node_key)] = rule
+        elif rule.target_type in ("step", "assertion") and rule.suite_case_id is not None and rule.node_key is not None:
+            idx[rule.target_type].setdefault(rule.suite_case_id, {})[str(rule.node_key)] = rule
     return idx
 
 
@@ -417,11 +403,20 @@ async def diff_counts(
 ) -> dict[int, int]:
     skip = skip_index if skip_index is not None else await load_skip_index(db, profile_id)
     counts: dict[int, int] = {}
-    for suite_id, _case_id in skip["case"]:
-        counts[suite_id] = counts.get(suite_id, 0) + 1
+    membership_ids = set(skip["case"]) | set(skip["step"]) | set(skip["assertion"])
+    membership_rows = (
+        await db.execute(select(TestSuiteCase.id, TestSuiteCase.suite_id).where(TestSuiteCase.id.in_(membership_ids)))
+    ).all() if membership_ids else []
+    membership_suites = {membership_id: suite_id for membership_id, suite_id in membership_rows}
+    for membership_id in skip["case"]:
+        suite_id = membership_suites.get(membership_id)
+        if suite_id is not None:
+            counts[suite_id] = counts.get(suite_id, 0) + 1
     for bucket_name in ("step", "assertion"):
-        for (suite_id, _case_id), rules in skip[bucket_name].items():
-            counts[suite_id] = counts.get(suite_id, 0) + len(rules)
+        for membership_id, rules in skip[bucket_name].items():
+            suite_id = membership_suites.get(membership_id)
+            if suite_id is not None:
+                counts[suite_id] = counts.get(suite_id, 0) + len(rules)
     for suite_id, _node_key in skip["suite_step"]:
         counts[suite_id] = counts.get(suite_id, 0) + 1
     return counts

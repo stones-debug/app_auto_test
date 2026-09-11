@@ -82,7 +82,7 @@ async def create_profiled(
         display = exclusion.display_snapshot or {}
         if exclusion.phase is not None:
             display = {**display, "phase": exclusion.phase}
-        db.add(ExecutionExclusion(execution_id=execution.id, app_profile_id=app_profile_id, target_type=exclusion.target_type, suite_id_snapshot=exclusion.suite_id, suite_name_snapshot=display.get("suite_name"), case_id_snapshot=exclusion.case_id, case_name_snapshot=display.get("case_name"), occurrence_order=exclusion.occurrence_order, node_key=exclusion.node_key, node_name_snapshot=display.get("node_name"), source_type=exclusion.source_type, reason_code=exclusion.reason_code, reason_note=exclusion.reason_note, details=display))
+        db.add(ExecutionExclusion(execution_id=execution.id, app_profile_id=app_profile_id, target_type=exclusion.target_type, suite_id_snapshot=exclusion.suite_id, suite_case_id_snapshot=exclusion.suite_case_id, suite_name_snapshot=display.get("suite_name"), case_id_snapshot=exclusion.case_id, case_name_snapshot=display.get("case_name"), occurrence_order=exclusion.occurrence_order, node_key=exclusion.node_key, node_name_snapshot=display.get("node_name"), source_type=exclusion.source_type, reason_code=exclusion.reason_code, reason_note=exclusion.reason_note, details=display))
     await enqueue(db, execution.id)
     return execution
 
@@ -376,6 +376,7 @@ async def clone_snapshot(
             execution_id=retry.id,
             execution_suite_id=suite_map[source_case.execution_suite_id].id,
             case_id=source_case.case_id,
+            suite_case_id_snapshot=source_case.suite_case_id_snapshot,
             case_name=source_case.case_name,
             module_name=source_case.module_name,
             case_order=source_case.case_order,
@@ -483,6 +484,7 @@ async def clone_snapshot(
                 app_profile_id=source_exclusion.app_profile_id,
                 target_type=source_exclusion.target_type,
                 suite_id_snapshot=source_exclusion.suite_id_snapshot,
+                suite_case_id_snapshot=source_exclusion.suite_case_id_snapshot,
                 suite_name_snapshot=source_exclusion.suite_name_snapshot,
                 case_id_snapshot=source_exclusion.case_id_snapshot,
                 case_name_snapshot=source_exclusion.case_name_snapshot,

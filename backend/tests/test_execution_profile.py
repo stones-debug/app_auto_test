@@ -81,6 +81,122 @@ async def _asset_revision(project_id: int) -> int:
         return int(revision)
 
 
+async def test_context_suite_case_id_selects_duplicate_occurrence(client: AsyncClient):
+    """重复编排执行必须按显式 suite_case_id 选择对应档案规则。"""
+    base = await _base(client)
+    profile_id, release_id = await _make_profile(client, base)
+    case_id = await _make_case(client, base)
+    suite_id = (await client.post(
+        f"/api/projects/{base['project_id']}/suites",
+        headers=base["headers"],
+        json={"name": "重复上下文套件"},
+    )).json()["id"]
+    memberships = (await client.post(
+        f"/api/suites/{suite_id}/cases",
+        headers=base["headers"],
+        json={"case_id": case_id},
+    )).json()
+    first = memberships[0]["id"]
+    second = (await client.post(
+        f"/api/suites/{suite_id}/cases",
+        headers=base["headers"],
+        json={"case_id": case_id},
+    )).json()[0]["id"]
+    skipped = await client.post(
+        f"/api/app-profiles/{profile_id}/skip-rules/batch",
+        headers=base["headers"],
+        json={
+            "expected_revision": 1,
+            "operation": "skip",
+            "reason": {"code": "unsupported"},
+            "targets": [{"type": "case", "suite_case_id": second}],
+        },
+    )
+    assert skipped.status_code == 200, skipped.text
+    preview = await client.post(
+        "/api/executions/preview",
+        headers=base["headers"],
+        json={
+            "project_id": base["project_id"],
+            "target": {"type": "case", "ids": [case_id]},
+            "app_profile_id": profile_id,
+            "app_release_id": release_id,
+            "context_suite_case_id": first,
+        },
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["counts"]["executable_cases"] == 1
+    empty = await client.post(
+        "/api/executions/preview",
+        headers=base["headers"],
+        json={
+            "project_id": base["project_id"],
+            "target": {"type": "case", "ids": [case_id]},
+            "app_profile_id": profile_id,
+            "app_release_id": release_id,
+            "context_suite_case_id": second,
+        },
+    )
+    assert empty.status_code == 400
+    assert empty.json()["detail"]["code"] == "PROFILE_EMPTY"
+    created = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers=base["headers"],
+        json={
+            "app_profile_id": profile_id,
+            "app_release_id": release_id,
+            "expected_profile_revision": 2,
+            "expected_test_asset_revision": await _asset_revision(base["project_id"]),
+            "device_id": base["device_id"],
+            "context_suite_case_id": first,
+        },
+    )
+    assert created.status_code == 201, created.text
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, created.json()["id"])
+        rows = (await db.execute(
+            select(ExecutionCase).where(ExecutionCase.execution_id == execution.id)
+        )).scalars().all()
+    assert execution.parameters["context_suite_case_id"] == first
+    assert rows[0].suite_case_id_snapshot == first
+    ambiguous = await client.post(
+        "/api/executions/preview",
+        headers=base["headers"],
+        json={
+            "project_id": base["project_id"],
+            "target": {"type": "case", "ids": [case_id]},
+            "app_profile_id": profile_id,
+            "app_release_id": release_id,
+            "context_suite_id": suite_id,
+        },
+    )
+    assert ambiguous.status_code == 400
+    assert ambiguous.json()["detail"]["code"] == "EXECUTION_CONTEXT_INVALID"
+    token_preview = await client.post(
+        "/api/executions/preview",
+        headers=base["headers"],
+        json={
+            "project_id": base["project_id"],
+            "target": {"type": "case", "ids": [case_id]},
+            "app_profile_id": profile_id,
+            "app_release_id": release_id,
+            "device_id": base["device_id"],
+            "context_suite_case_id": first,
+        },
+    )
+    assert token_preview.status_code == 200, token_preview.text
+    swapped = await client.post(
+        f"/api/executions/cases/{case_id}",
+        headers=base["headers"],
+        json={
+            "prepare_token": token_preview.json()["prepare_token"],
+            "device_id": base["device_id"],
+            "context_suite_case_id": second,
+        },
+    )
+    assert swapped.status_code == 409
+
+
 async def test_case_execution_materializes_snapshot(client: AsyncClient):
     """带档案创建用例执行 → 同事务固化 ExecutionCase/ExecutionStep/ExecutionQueue。"""
     base = await _base(client)
@@ -661,15 +777,15 @@ async def test_empty_target_not_created(client: AsyncClient):
             json={"name": "全部跳过套件"},
         )
     ).json()["id"]
-    await client.post(
+    membership_id = (await client.post(
         f"/api/suites/{suite_id}/cases",
         headers=base["headers"],
         json={"case_id": case_id},
-    )
+    )).json()[0]["id"]
     await client.post(
         f"/api/app-profiles/{profile_id}/skip-rules/batch",
         headers=base["headers"],
-        json={"expected_revision": 1, "operation": "skip", "reason": {"code": "unsupported"}, "targets": [{"type": "case", "suite_id": suite_id, "case_id": case_id}]},
+        json={"expected_revision": 1, "operation": "skip", "reason": {"code": "unsupported"}, "targets": [{"type": "case", "suite_case_id": membership_id}]},
     )
     resp = await client.post(
         f"/api/executions/suites/{suite_id}",
@@ -722,11 +838,11 @@ async def test_execution_exclusion_persists_display_names(client: AsyncClient):
         json={"name": "排除项套件"},
     )
     suite_id = suite.json()["id"]
-    await client.post(
+    membership_id = (await client.post(
         f"/api/suites/{suite_id}/cases",
         headers=base["headers"],
         json={"case_id": case_id},
-    )
+    )).json()[0]["id"]
     skipped = await client.post(
         f"/api/app-profiles/{profile_id}/skip-rules/batch",
         headers=base["headers"],
@@ -737,8 +853,7 @@ async def test_execution_exclusion_persists_display_names(client: AsyncClient):
             "targets": [
                 {
                     "type": "step",
-                    "suite_id": suite_id,
-                    "case_id": case_id,
+                    "suite_case_id": membership_id,
                     "node_key": skipped_key,
                 }
             ],
@@ -778,6 +893,7 @@ async def test_batch_profile_execution_omits_direct_skipped_suite(
     profile_id, release_id = await _make_profile(client, base)
     case_ids = [await _make_case(client, base), await _make_case(client, base)]
     suite_ids: list[int] = []
+    membership_ids: list[int] = []
     for index, case_id in enumerate(case_ids, start=1):
         suite_id = (
             await client.post(
@@ -786,11 +902,11 @@ async def test_batch_profile_execution_omits_direct_skipped_suite(
                 json={"name": f"批量套件{index}"},
             )
         ).json()["id"]
-        await client.post(
+        membership_ids.append((await client.post(
             f"/api/suites/{suite_id}/cases",
             headers=base["headers"],
             json={"case_id": case_id},
-        )
+        )).json()[0]["id"])
         suite_ids.append(suite_id)
     skipped = await client.post(
         f"/api/app-profiles/{profile_id}/skip-rules/batch",
@@ -1012,6 +1128,7 @@ async def test_batch_shared_case_executes_from_unskipped_suite(client: AsyncClie
     profile_id, release_id = await _make_profile(client, base)
     case_id = await _make_case(client, base)
     suite_ids: list[int] = []
+    membership_ids: list[int] = []
     for index in (1, 2):
         suite_id = (
             await client.post(
@@ -1020,11 +1137,11 @@ async def test_batch_shared_case_executes_from_unskipped_suite(client: AsyncClie
                 json={"name": f"共享套件{index}"},
             )
         ).json()["id"]
-        await client.post(
+        membership_ids.append((await client.post(
             f"/api/suites/{suite_id}/cases",
             headers=base["headers"],
             json={"case_id": case_id},
-        )
+        )).json()[0]["id"])
         suite_ids.append(suite_id)
 
     skipped = await client.post(
@@ -1035,7 +1152,7 @@ async def test_batch_shared_case_executes_from_unskipped_suite(client: AsyncClie
             "operation": "skip",
             "reason": {"code": "unsupported"},
             "targets": [
-                {"type": "case", "suite_id": suite_ids[0], "case_id": case_id}
+                {"type": "case", "suite_case_id": membership_ids[0]}
             ],
         },
     )

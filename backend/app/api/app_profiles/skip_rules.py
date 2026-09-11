@@ -30,31 +30,34 @@ async def _validate_skip_target(db: AsyncSession, project_id: int, target, reaso
     if target.type == "suite":
         if target.suite_id is None:
             return {}, "套件目标必须提供 suite_id"
-        s, _c, _membership = await skip_rules_repo.load_target(db, project_id=project_id, suite_id=target.suite_id, case_id=None)
+        s, _c, _membership = await skip_rules_repo.load_target(
+            db, project_id=project_id, suite_id=target.suite_id, suite_case_id=None
+        )
         if s is None or s.deleted_at is not None or s.project_id != project_id:
             return {}, "套件不存在或跨项目"
         return {"target_type": "suite", "suite_id": target.suite_id}, None
     if target.type == "case":
-        if target.suite_id is None or target.case_id is None:
-            return {}, "用例目标必须提供 suite_id 与 case_id"
-        suite, c, membership = await skip_rules_repo.load_target(db, project_id=project_id, suite_id=target.suite_id, case_id=target.case_id)
-        if suite is None or suite.deleted_at is not None or suite.project_id != project_id:
-            return {}, "套件不存在或跨项目"
+        if target.suite_case_id is None:
+            return {}, "用例目标必须提供 suite_case_id"
+        suite, c, membership = await skip_rules_repo.load_target(
+            db, project_id=project_id, suite_id=None, suite_case_id=target.suite_case_id
+        )
+        if suite is None or suite.deleted_at is not None:
+            return {}, "编排项所属套件不存在或跨项目"
         if c is None or c.deleted_at is not None or c.project_id != project_id:
             return {}, "用例不存在或跨项目"
         if membership is None:
             return {}, "套件用例关系不存在"
         return {
             "target_type": "case",
-            "suite_id": target.suite_id,
-            "case_id": target.case_id,
+            "suite_case_id": target.suite_case_id,
         }, None
     if target.type == "suite_step":
         if target.suite_id is None or not target.node_key:
             return {}, "套件步骤目标必须提供 suite_id 与 node_key"
-        if target.case_id is not None:
-            return {}, "套件步骤目标不允许提供 case_id"
-        suite, _c, _membership = await skip_rules_repo.load_target(db, project_id=project_id, suite_id=target.suite_id, case_id=None)
+        suite, _c, _membership = await skip_rules_repo.load_target(
+            db, project_id=project_id, suite_id=target.suite_id, suite_case_id=None
+        )
         if suite is None or suite.deleted_at is not None or suite.project_id != project_id:
             return {}, "套件不存在或跨项目"
         found = _find_suite_step(suite, target.node_key)
@@ -67,11 +70,13 @@ async def _validate_skip_target(db: AsyncSession, project_id: int, target, reaso
             "node_key": normalized_key,
         }, None
     # step / assertion
-    if target.suite_id is None or target.case_id is None or not target.node_key:
-        return {}, "节点目标必须提供 suite_id、case_id 与 node_key"
-    suite, c, membership = await skip_rules_repo.load_target(db, project_id=project_id, suite_id=target.suite_id, case_id=target.case_id)
-    if suite is None or suite.deleted_at is not None or suite.project_id != project_id:
-        return {}, "套件不存在或跨项目"
+    if target.suite_case_id is None or not target.node_key:
+        return {}, "节点目标必须提供 suite_case_id 与 node_key"
+    suite, c, membership = await skip_rules_repo.load_target(
+        db, project_id=project_id, suite_id=None, suite_case_id=target.suite_case_id
+    )
+    if suite is None or suite.deleted_at is not None:
+        return {}, "编排项所属套件不存在或跨项目"
     if c is None or c.deleted_at is not None or c.project_id != project_id:
         return {}, "用例不存在或跨项目"
     if membership is None:
@@ -82,8 +87,7 @@ async def _validate_skip_target(db: AsyncSession, project_id: int, target, reaso
     normalized_key, _node = found
     return {
         "target_type": target.type,
-        "suite_id": target.suite_id,
-        "case_id": target.case_id,
+        "suite_case_id": target.suite_case_id,
         "node_key": normalized_key,
     }, None
 
@@ -116,7 +120,7 @@ async def skip_rules_batch(
         dedup_key = (
             fields["target_type"],
             fields.get("suite_id"),
-            fields.get("case_id"),
+            fields.get("suite_case_id"),
             fields.get("node_key"),
         )
         if dedup_key in seen:

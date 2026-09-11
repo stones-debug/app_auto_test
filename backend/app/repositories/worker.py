@@ -496,6 +496,7 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
             )
             exec_case = ExecutionCase(
                 execution_id=execution.id, execution_suite_id=exec_suite.id, case_id=case.id,
+                suite_case_id_snapshot=_membership_id,
                 case_name=case.name, module_name=None, case_order=case_order, status="pending",
                 steps_snapshot=snapshot["steps"], flow_snapshot=snapshot["flow_nodes"], elements_snapshot=snapshot["elements"],
             )

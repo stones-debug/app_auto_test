@@ -35,6 +35,7 @@ def canonical_target(
     target_ids: list[int],
     target_scope: str,
     context_suite_id: int | None,
+    context_suite_case_id: int | None = None,
     resolved_ids: list[int] | None = None,
     excluded_suite_ids: list[int] | None = None,
 ) -> dict[str, Any]:
@@ -44,6 +45,7 @@ def canonical_target(
         "ids": list(dict.fromkeys(int(value) for value in (resolved_ids if resolved_ids is not None else target_ids))),
         "target_scope": target_scope,
         "context_suite_id": context_suite_id,
+        "context_suite_case_id": context_suite_case_id,
         "excluded_suite_ids": normalized_excluded,
     }
 
@@ -72,6 +74,7 @@ def serialize_result(result: ResolutionResult) -> dict[str, Any]:
     def case_payload(case: ResolvedCase) -> dict[str, Any]:
         return {
             "suite_id": case.suite_id,
+            "suite_case_id": case.suite_case_id,
             "suite_name": case.suite_name,
             "case_id": case.case_id,
             "case_name": case.case_name,
@@ -105,6 +108,7 @@ def serialize_result(result: ResolutionResult) -> dict[str, Any]:
             {
                 "target_type": exclusion.target_type,
                 "suite_id": exclusion.suite_id,
+                "suite_case_id": exclusion.suite_case_id,
                 "case_id": exclusion.case_id,
                 "node_key": str(exclusion.node_key) if exclusion.node_key else None,
                 "source_type": exclusion.source_type,
@@ -129,6 +133,7 @@ def deserialize_result(payload: dict[str, Any]) -> ResolutionResult:
     def build_case(value: dict[str, Any]) -> ResolvedCase:
         return ResolvedCase(
             suite_id=value.get("suite_id"),
+            suite_case_id=value.get("suite_case_id"),
             suite_name=value.get("suite_name"),
             case_id=int(value["case_id"]),
             case_name=str(value["case_name"]),
@@ -161,6 +166,7 @@ def deserialize_result(payload: dict[str, Any]) -> ResolutionResult:
             ExclusionItem(
                 target_type=value["target_type"],
                 suite_id=value.get("suite_id"),
+                suite_case_id=value.get("suite_case_id"),
                 case_id=value.get("case_id"),
                 node_key=UUID(node_key) if node_key else None,
                 source_type=value["source_type"],

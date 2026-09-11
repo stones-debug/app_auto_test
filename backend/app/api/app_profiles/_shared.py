@@ -46,10 +46,20 @@ def _find_suite_step(suite: TestSuite, node_key: str):
     return None
 
 
-def _skip_row(target_type: str, path: str, rule, source_type: str, suite_id: int | None = None, case_id: int | None = None) -> dict:
+def _skip_row(
+    target_type: str,
+    path: str,
+    rule,
+    source_type: str,
+    suite_id: int | None = None,
+    suite_case_id: int | None = None,
+    case_id: int | None = None,
+) -> dict:
     row = {"target_type": target_type, "path": path, "reason_code": rule.reason_code, "reason_note": rule.reason_note, "source_type": source_type, "override": False}
     if suite_id is not None:
         row["suite_id"] = suite_id
+    if suite_case_id is not None:
+        row["suite_case_id"] = suite_case_id
     if case_id is not None:
         row["case_id"] = case_id
     return row
@@ -76,13 +86,14 @@ def _element_info(node: dict, element_names: dict[int, str] | None = None) -> tu
 def _node_item(
     node_type: str, case_id: int, node_key: str, node: dict, rule, inherited_rule=None,
     overridden: bool = False, element_names: dict[int, str] | None = None,
+    suite_case_id: int | None = None,
 ) -> dict:
     effective_rule = inherited_rule or rule
     effective = "skipped" if effective_rule else ("overridden" if overridden else "enabled")
     source = "inherited" if inherited_rule else ("direct" if rule else ("override" if overridden else "none"))
     reason = {"code": effective_rule.reason_code, "note": effective_rule.reason_note or ""} if effective_rule else None
     element_id, element_name = _element_info(node, element_names)
-    return {"node_type": node_type, "id": None, "node_key": node_key, "element_id": element_id, "element_name": element_name, "name": node.get("description") or node.get("action") or node.get("type") or "", "registry_key": node.get("action") if node_type == "step" else node.get("type") or node.get("assertion_type"), "phase": node.get("phase"), "order": node.get("order"), "effective_status": effective, "status_source": source, "reason": reason, "override_count": 1 if overridden else 0, "override_template": _node_override_template(node), "has_children": False, "updated_at": None}
+    return {"node_type": node_type, "id": None, "suite_case_id": suite_case_id, "node_key": node_key, "element_id": element_id, "element_name": element_name, "name": node.get("description") or node.get("action") or node.get("type") or "", "registry_key": node.get("action") if node_type == "step" else node.get("type") or node.get("assertion_type"), "phase": node.get("phase"), "order": node.get("order"), "effective_status": effective, "status_source": source, "reason": reason, "override_count": 1 if overridden else 0, "override_template": _node_override_template(node), "has_children": False, "updated_at": None}
 
 
 async def _broadcast_config(profile: AppProfile, user_id: int | None = None) -> None:

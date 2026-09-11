@@ -9,18 +9,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import AppProfileSkipRule, TestCase, TestSuite, TestSuiteCase
 
 
-async def load_target(db: AsyncSession, *, project_id: int, suite_id: int | None, case_id: int | None):
+async def load_target(
+    db: AsyncSession, *, project_id: int, suite_id: int | None, suite_case_id: int | None
+):
     suite = await db.get(TestSuite, suite_id) if suite_id is not None else None
-    case = await db.get(TestCase, case_id) if case_id is not None else None
-    membership = None
-    if suite_id is not None and case_id is not None:
-        # 重复编排时取排序最前的编排项，保证（仅按 suite/case 寻址的）旧调用稳定
-        membership = await db.scalar(
-            select(TestSuiteCase.id)
-            .where(TestSuiteCase.suite_id == suite_id, TestSuiteCase.case_id == case_id)
-            .order_by(TestSuiteCase.sort_order, TestSuiteCase.id)
-            .limit(1)
-        )
+    membership = await db.get(TestSuiteCase, suite_case_id) if suite_case_id is not None else None
+    if suite is None and membership is not None:
+        suite = await db.get(TestSuite, membership.suite_id)
+    case = await db.get(TestCase, membership.case_id) if membership is not None else None
+    if suite is not None and suite.project_id != project_id:
+        suite = None
+    if case is not None and case.project_id != project_id:
+        case = None
+    if membership is not None and suite is not None and membership.suite_id != suite.id:
+        membership = None
+        case = None
     return suite, case, membership
 
 
@@ -30,7 +33,7 @@ async def load_existing(db: AsyncSession, profile_id: int, fields: dict[str, Any
         AppProfileSkipRule.target_type == fields["target_type"],
         AppProfileSkipRule.deleted_at.is_(None),
     ]
-    for field in ("suite_id", "case_id", "node_key"):
+    for field in ("suite_id", "suite_case_id", "node_key"):
         value = fields.get(field)
         column = getattr(AppProfileSkipRule, field)
         conditions.append(column.is_(None) if value is None else column == value)
@@ -51,7 +54,7 @@ async def upsert_many(
             continue
         row = AppProfileSkipRule(
             profile_id=profile_id, target_type=fields["target_type"],
-            suite_id=fields.get("suite_id"), case_id=fields.get("case_id"),
+            suite_id=fields.get("suite_id"), suite_case_id=fields.get("suite_case_id"),
             node_key=fields.get("node_key"), reason_code=reason.code,
             reason_note=reason.note, created_by=user_id, updated_by=user_id,
         )

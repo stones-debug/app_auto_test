@@ -21,13 +21,13 @@ async def list_for_project(db: AsyncSession, project_id: int) -> list[TestSuite]
     return list(rows.scalars().all())
 
 
-async def get_case_relation(db: AsyncSession, suite_id: int, case_id: int) -> TestSuiteCase | None:
-    return (await db.execute(
+async def list_case_relations(db: AsyncSession, suite_id: int, case_id: int) -> list[TestSuiteCase]:
+    rows = await db.execute(
         select(TestSuiteCase)
         .where(TestSuiteCase.suite_id == suite_id, TestSuiteCase.case_id == case_id)
         .order_by(TestSuiteCase.sort_order, TestSuiteCase.id)
-        .limit(1)
-    )).scalar_one_or_none()
+    )
+    return list(rows.scalars().all())
 
 
 async def list_page(

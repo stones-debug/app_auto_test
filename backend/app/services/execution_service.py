@@ -132,6 +132,7 @@ async def _build_resolution_request(
     case_id: int | None,
     body,
     context_suite_id: int | None = None,
+    context_suite_case_id: int | None = None,
     user_id: int | None = None,
 ) -> ResolutionRequest:
     """从创建请求构造解析请求；缺档案/版本时抛 APP_PROFILE_REQUIRED。"""
@@ -158,6 +159,7 @@ async def _build_resolution_request(
         run_options=body.parameters or {},
         execution_variables=(body.parameters or {}).get("variables") or {},
         context_suite_id=context_suite_id if type_ == "case" else None,
+        context_suite_case_id=context_suite_case_id if type_ == "case" else None,
         target_scope=target_scope,
         excluded_suite_ids=excluded_suite_ids,
         user_id=user_id,
@@ -178,6 +180,7 @@ async def _create_execution_with_profile(
     case_id: int | None = None,
     retry_of: int | None = None,
     context_suite_id: int | None = None,
+    context_suite_case_id: int | None = None,
 ) -> Execution:
     """方案 §6.1：创建执行并在同一事务固化快照/排除项/队列。
 
@@ -243,6 +246,7 @@ async def _create_execution_with_profile(
             target_ids=target_ids,
             target_scope=target_scope,
             context_suite_id=context_suite_id if type_ == "case" else None,
+            context_suite_case_id=context_suite_case_id if type_ == "case" else None,
             resolved_ids=prepared_ids if target_scope == "profile_all" else None,
             excluded_suite_ids=submitted_excluded_ids,
         )
@@ -251,6 +255,7 @@ async def _create_execution_with_profile(
             target_ids=list((prepared.target or {}).get("ids") or []),
             target_scope=str((prepared.target or {}).get("target_scope") or "explicit"),
             context_suite_id=(prepared.target or {}).get("context_suite_id"),
+            context_suite_case_id=(prepared.target or {}).get("context_suite_case_id"),
             resolved_ids=list((prepared.target or {}).get("ids") or []),
             excluded_suite_ids=prepared_excluded_ids,
         )
@@ -269,6 +274,7 @@ async def _create_execution_with_profile(
             run_options=deepcopy(prepared.parameters or {}),
             execution_variables=(prepared.parameters or {}).get("variables") or {},
             context_suite_id=prepared.target.get("context_suite_id"),
+            context_suite_case_id=prepared.target.get("context_suite_case_id"),
             target_scope=prepared.target.get("target_scope", "explicit"),
             excluded_suite_ids=prepared_excluded_ids,
             user_id=user.id,
@@ -280,7 +286,7 @@ async def _create_execution_with_profile(
     else:
         request = await _build_resolution_request(
             db, project_id=project_id, type_=type_, suite_id=suite_id, case_id=case_id, body=body,
-            context_suite_id=context_suite_id, user_id=user.id,
+            context_suite_id=context_suite_id, context_suite_case_id=context_suite_case_id, user_id=user.id,
         )
         try:
             result = await get_resolver().preview(request, db)
@@ -358,6 +364,9 @@ async def _create_execution_with_profile(
             execution_case_id = prepared_ids[0]
         elif type_ == "suite" and execution_suite_id is None and prepared_ids:
             execution_suite_id = prepared_ids[0]
+    if type_ == "case" and request.context_suite_case_id is not None:
+        execution_parameters["context_suite_id"] = request.context_suite_id
+        execution_parameters["context_suite_case_id"] = request.context_suite_case_id
     execution = await executions_repo.create_profiled(
         db,
         fields={
@@ -429,6 +438,7 @@ async def create_case_execution(
     timeout_seconds: int | None,
     body=None,
     context_suite_id: int | None = None,
+    context_suite_case_id: int | None = None,
     project_id: int | None = None,
     asset_case_id: int | None = None,
 ) -> Execution:
@@ -444,6 +454,7 @@ async def create_case_execution(
         parameters=parameters, timeout_seconds=timeout_seconds, body=body,
         case_id=asset_case_id if asset_case_id is not None else case.id if case is not None else None,
         context_suite_id=context_suite_id,
+        context_suite_case_id=context_suite_case_id,
     )
 
 

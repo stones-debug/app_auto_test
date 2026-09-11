@@ -76,6 +76,7 @@ async def materialize_snapshot(db: AsyncSession, execution, result) -> None:
         flow_snapshot = deepcopy(case.flow_snapshot)
         execution_case = ExecutionCase(
             execution_id=execution.id, execution_suite_id=execution_suite.id, case_id=case.case_id,
+            suite_case_id_snapshot=getattr(case, "suite_case_id", None),
             case_name=case.case_name, module_name=case.module_name, case_order=case.case_order,
             status="pending", steps_snapshot=deepcopy(case.steps_snapshot),
             elements_snapshot=deepcopy(case.elements_snapshot), flow_snapshot=flow_snapshot,

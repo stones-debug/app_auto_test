@@ -115,13 +115,13 @@ class AppProfileSkipRule(Base, TimestampMixin, SoftDeleteMixin):
             name="ck_profile_skip_reason_note",
         ),
         CheckConstraint(
-            "(target_type = 'suite' AND suite_id IS NOT NULL AND case_id IS NULL AND node_key IS NULL)"
-            " OR (target_type = 'case' AND suite_id IS NOT NULL"
-            " AND case_id IS NOT NULL AND node_key IS NULL)"
+            "(target_type = 'suite' AND suite_id IS NOT NULL AND suite_case_id IS NULL AND node_key IS NULL)"
+            " OR (target_type = 'case' AND suite_id IS NULL"
+            " AND suite_case_id IS NOT NULL AND node_key IS NULL)"
             " OR (target_type = 'suite_step' AND suite_id IS NOT NULL"
-            " AND case_id IS NULL AND node_key IS NOT NULL)"
-            " OR (target_type IN ('step', 'assertion') AND suite_id IS NOT NULL"
-            " AND case_id IS NOT NULL AND node_key IS NOT NULL)",
+            " AND suite_case_id IS NULL AND node_key IS NOT NULL)"
+            " OR (target_type IN ('step', 'assertion') AND suite_id IS NULL"
+            " AND suite_case_id IS NOT NULL AND node_key IS NOT NULL)",
             name="ck_profile_skip_target_shape",
         ),
         Index(
@@ -134,17 +134,15 @@ class AppProfileSkipRule(Base, TimestampMixin, SoftDeleteMixin):
         Index(
             "uq_profile_skip_case_active",
             "profile_id",
-            "suite_id",
-            "case_id",
+            "suite_case_id",
             unique=True,
             postgresql_where=text("target_type = 'case' AND deleted_at IS NULL"),
         ),
         Index(
             "uq_profile_skip_node_active",
             "profile_id",
-            "suite_id",
+            "suite_case_id",
             "target_type",
-            "case_id",
             "node_key",
             unique=True,
             postgresql_where=text(
@@ -165,14 +163,16 @@ class AppProfileSkipRule(Base, TimestampMixin, SoftDeleteMixin):
             "target_type",
             postgresql_where=text("deleted_at IS NULL"),
         ),
-        Index("idx_profile_skip_case", "case_id", postgresql_where=text("deleted_at IS NULL")),
+        Index("idx_profile_skip_suite_case", "suite_case_id", postgresql_where=text("deleted_at IS NULL")),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     profile_id: Mapped[int] = mapped_column(ForeignKey("app_profiles.id"), nullable=False)
     target_type: Mapped[str] = mapped_column(String(16), nullable=False)
     suite_id: Mapped[int | None] = mapped_column(ForeignKey("test_suites.id"))
-    case_id: Mapped[int | None] = mapped_column(ForeignKey("test_cases.id"))
+    suite_case_id: Mapped[int | None] = mapped_column(
+        ForeignKey("test_suite_cases.id", ondelete="CASCADE")
+    )
     node_key: Mapped[UUID | None] = mapped_column(nullable=True)
     reason_code: Mapped[str] = mapped_column(String(32), nullable=False)
     reason_note: Mapped[str | None] = mapped_column(String(500))
@@ -417,6 +417,11 @@ class ExecutionExclusion(Base):
             "case_id_snapshot",
             postgresql_where=text("case_id_snapshot IS NOT NULL"),
         ),
+        Index(
+            "idx_execution_exclusions_suite_case",
+            "suite_case_id_snapshot",
+            postgresql_where=text("suite_case_id_snapshot IS NOT NULL"),
+        ),
         Index("idx_execution_exclusions_created_brin", text("created_at"), postgresql_using="brin"),
     )
 
@@ -427,6 +432,7 @@ class ExecutionExclusion(Base):
     suite_id_snapshot: Mapped[int | None] = mapped_column(Integer)
     suite_name_snapshot: Mapped[str | None] = mapped_column(String(255))
     case_id_snapshot: Mapped[int | None] = mapped_column(Integer)
+    suite_case_id_snapshot: Mapped[int | None] = mapped_column(Integer)
     # 同一套件中重复编排同一用例时，用例 occurrence 的顺序快照。
     occurrence_order: Mapped[int | None] = mapped_column(Integer)
     case_name_snapshot: Mapped[str | None] = mapped_column(String(255))

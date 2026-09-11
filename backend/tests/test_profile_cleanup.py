@@ -87,7 +87,7 @@ async def test_profile_tables_cleaned_by_conftest(client: AsyncClient):
         )
         db.add(
             AppProfileSkipRule(
-                profile_id=profile.id, target_type="case", suite_id=suite_id, case_id=case_id,
+                profile_id=profile.id, target_type="case", suite_case_id=suite_case_id,
                 reason_code="unsupported", reason_note="x", created_by=user.id,
             )
         )

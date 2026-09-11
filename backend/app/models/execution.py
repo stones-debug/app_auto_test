@@ -158,6 +158,7 @@ class ExecutionCase(Base, TimestampMixin):
     execution_id: Mapped[int] = mapped_column(ForeignKey("executions.id"), nullable=False)
     execution_suite_id: Mapped[int] = mapped_column(ForeignKey("execution_suites.id"), nullable=False)
     case_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    suite_case_id_snapshot: Mapped[int | None] = mapped_column(Integer)
     case_name: Mapped[str] = mapped_column(String(255), nullable=False)  # 快照
     module_name: Mapped[str | None] = mapped_column(String(255))
     case_order: Mapped[int] = mapped_column(Integer, nullable=False)

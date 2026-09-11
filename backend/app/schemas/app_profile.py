@@ -133,11 +133,27 @@ class SkipReason(BaseModel):
 
 
 class SkipTarget(BaseModel):
+    model_config = {"extra": "forbid"}
+
     type: Literal["suite", "case", "step", "assertion", "suite_step"]
-    # 用例/节点必须携带所属套件，防止共享用例规则串到其他套件。
+    # suite/suite_step 使用 suite_id；case/step/assertion 使用 occurrence 身份。
     suite_id: int | None = None
-    case_id: int | None = None
+    suite_case_id: int | None = None
     node_key: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_identity(self) -> "SkipTarget":
+        if self.type in ("suite", "suite_step"):
+            if self.suite_id is None or self.suite_case_id is not None:
+                raise ValueError("套件目标必须使用 suite_id，不能携带 suite_case_id")
+        else:
+            if self.suite_case_id is None or self.suite_id is not None:
+                raise ValueError("用例及节点目标必须使用 suite_case_id，不能携带 suite_id")
+        if self.type in ("suite", "case") and self.node_key is not None:
+            raise ValueError("套件/用例目标不允许 node_key")
+        if self.type in ("step", "assertion", "suite_step") and not self.node_key:
+            raise ValueError("节点目标必须提供 node_key")
+        return self
 
 
 class SkipBatchRequest(BaseModel):

@@ -155,7 +155,7 @@ async def workspace_nodes(
             case = case_rows.get(membership.case_id)
             if case is None:
                 continue
-            direct_rule = skip["case"].get((parent_id, membership.case_id))
+            direct_rule = skip["case"].get(membership.id)
             rule = suite_rule or direct_rule
             override_count = (
                 len(overrides["membership"].get(membership.id, {}))
@@ -205,11 +205,18 @@ async def workspace_nodes(
             if ancestor_suite_id is None:
                 ancestor_suite_id = membership.suite_id
         elif ancestor_suite_id is not None:
-            membership = await resolution_repo.find_membership(db, ancestor_suite_id, case.id)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="套件上下文必须提供 suite_case_id",
+            )
         suite_rule = None
         if ancestor_suite_id is not None:
+            assert membership is not None
             suite, _case, relation = await skip_rules_repo.load_target(
-                db, project_id=profile.project_id, suite_id=ancestor_suite_id, case_id=case.id
+                db,
+                project_id=profile.project_id,
+                suite_id=ancestor_suite_id,
+                suite_case_id=membership.id,
             )
             if (
                 suite is None
@@ -220,7 +227,7 @@ async def workspace_nodes(
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="套件用例关系不存在")
             suite_rule = skip["suite"].get(ancestor_suite_id)
         case_rule = suite_rule or (
-            skip["case"].get((ancestor_suite_id, case.id))
+            skip["case"].get(membership.id if membership is not None else None)
             if ancestor_suite_id is not None
             else None
         )
@@ -250,16 +257,16 @@ async def workspace_nodes(
             if node.get("kind", "action") != "action":
                 continue
             node_key = str(node.get("key") or "")
-            rule = skip["step"].get((ancestor_suite_id, case.id), {}).get(node_key)
+            rule = skip["step"].get(membership_id, {}).get(node_key)
             overridden = membership_types.get(node_key) == "step"
-            items.append(_node_item("step", case.id, node_key, effective_nodes[node_key], rule, case_rule, overridden, element_names))
+            items.append(_node_item("step", case.id, node_key, effective_nodes[node_key], rule, case_rule, overridden, element_names, membership_id))
         for node in nodes:
             if node.get("kind") != "assertion":
                 continue
             node_key = str(node.get("key") or "")
-            rule = skip["assertion"].get((ancestor_suite_id, case.id), {}).get(node_key)
+            rule = skip["assertion"].get(membership_id, {}).get(node_key)
             overridden = membership_types.get(node_key) == "assertion"
-            items.append(_node_item("assertion", case.id, node_key, effective_nodes[node_key], rule, case_rule, overridden, element_names))
+            items.append(_node_item("assertion", case.id, node_key, effective_nodes[node_key], rule, case_rule, overridden, element_names, membership_id))
         start = (page - 1) * page_size
         return {"total": len(items), "page": page, "page_size": page_size, "items": items[start : start + page_size]}
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="parent_type 必须是 suite 或 case")
@@ -356,15 +363,7 @@ async def differences(
     step_suite_ids: set[int] = set()
     for sid in skip["suite"]:
         suite_ids.add(sid)
-    for (sid, cid) in skip["case"]:
-        suite_ids.add(sid)
-        case_ids.add(cid)
-    for (sid, cid) in skip["step"]:
-        suite_ids.add(sid)
-        case_ids.add(cid)
-    for (sid, cid) in skip["assertion"]:
-        suite_ids.add(sid)
-        case_ids.add(cid)
+    skip_membership_ids = set(skip["case"]) | set(skip["step"]) | set(skip["assertion"])
     for sid, _nk in skip["suite_step"]:
         suite_ids.add(sid)
         step_suite_ids.add(sid)
@@ -375,7 +374,7 @@ async def differences(
         suite_ids.add(sid)
         step_suite_ids.add(sid)
     occurrence_names = await resolution_repo.difference_occurrence_names(
-        db, set(overrides["occurrence_variables"])
+        db, skip_membership_ids | set(overrides["occurrence_variables"])
     )
     for sid, cid in occurrence_names.values():
         suite_ids.add(sid)
@@ -404,14 +403,17 @@ async def differences(
     # 跳过项
     for sid, rule in skip["suite"].items():
         rows.append(_skip_row("suite", _n(sid), rule, "direct", suite_id=sid))
-    for (sid, cid), rule in skip["case"].items():
-        rows.append(_skip_row("case", f"{_n(sid)} / {_c(cid)}", rule, "direct", suite_id=sid, case_id=cid))
-    for (sid, cid), rules in skip["step"].items():
+    for membership_id, rule in skip["case"].items():
+        sid, cid = occurrence_names.get(membership_id, (None, None))
+        rows.append(_skip_row("case", f"{_n(sid)} / {_c(cid)}", rule, "direct", suite_id=sid, suite_case_id=membership_id, case_id=cid))
+    for membership_id, rules in skip["step"].items():
+        sid, cid = occurrence_names.get(membership_id, (None, None))
         for rule in rules.values():
-            rows.append(_skip_row("step", f"{_n(sid)} / {_c(cid)} / 步骤", rule, "direct", suite_id=sid, case_id=cid))
-    for (sid, cid), rules in skip["assertion"].items():
+            rows.append(_skip_row("step", f"{_n(sid)} / {_c(cid)} / 步骤", rule, "direct", suite_id=sid, suite_case_id=membership_id, case_id=cid))
+    for membership_id, rules in skip["assertion"].items():
+        sid, cid = occurrence_names.get(membership_id, (None, None))
         for rule in rules.values():
-            rows.append(_skip_row("assertion", f"{_n(sid)} / {_c(cid)} / 断言", rule, "direct", suite_id=sid, case_id=cid))
+            rows.append(_skip_row("assertion", f"{_n(sid)} / {_c(cid)} / 断言", rule, "direct", suite_id=sid, suite_case_id=membership_id, case_id=cid))
     for (sid, nk), rule in skip["suite_step"].items():
         label = "前置" if _suite_step_phase(sid, nk) == "suite_setup" else "后置"
         rows.append(_skip_row("suite_step", f"{_n(sid)} / {label} / 步骤", rule, "direct", suite_id=sid))

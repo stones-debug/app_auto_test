@@ -51,6 +51,7 @@ def test_prepare_canonical_target_captures_final_source_and_exclusions():
         "ids": [31, 12],
         "target_scope": "profile_all",
         "context_suite_id": None,
+        "context_suite_case_id": None,
         "excluded_suite_ids": [3, 9],
     }
 

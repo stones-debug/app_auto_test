@@ -31,6 +31,7 @@ from app.repositories import executions as executions_repo
 from app.repositories import projects as projects_repo
 from app.repositories import suites as suites_repo
 from app.repositories.app_profiles import profiles as profiles_repo
+from app.repositories.app_profiles import resolution as resolution_repo
 from app.schemas.execution import (
     BatchExecutionCreate,
     ExecutionCaseOut,
@@ -128,12 +129,13 @@ async def preview_execution(
         raise api_error(status.HTTP_404_NOT_FOUND, ErrorCode.APP_PROFILE_NOT_FOUND, "APP 档案不存在")
     expected_profile_rev = profile.revision
     expected_asset_rev = project.test_asset_revision
-    await _validate_context_suite(
+    resolved_context_suite_id = await _validate_context_suite(
         db,
         project_id=body.project_id,
         target_type=cast(Literal["case", "suite", "batch"], body.target.type),
         target_ids=body.target.ids,
         context_suite_id=body.context_suite_id,
+        context_suite_case_id=body.context_suite_case_id,
     )
     if body.target.target_scope == "profile_all" and body.target.type != "batch":
         raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_TARGET_INVALID", "profile_all 仅支持批量套件预检")
@@ -147,7 +149,8 @@ async def preview_execution(
         expected_test_asset_revision=expected_asset_rev,
         run_options=body.parameters,
         execution_variables=(body.parameters or {}).get("variables") or {},
-        context_suite_id=body.context_suite_id,
+        context_suite_id=resolved_context_suite_id,
+        context_suite_case_id=body.context_suite_case_id,
         target_scope=body.target.target_scope,
         excluded_suite_ids=body.target.excluded_suite_ids,
         user_id=user.id,
@@ -182,6 +185,7 @@ async def preview_execution(
                 "target_type": e.target_type,
                 "path": e.display_snapshot.get("name") or "",
                 "suite_id": e.suite_id,
+                "suite_case_id": e.suite_case_id,
                 "case_id": e.case_id,
                 "occurrence_order": e.occurrence_order,
                 "reason_code": e.reason_code,
@@ -203,7 +207,8 @@ async def preview_execution(
             target_type=body.target.type,
             target_ids=body.target.ids,
             target_scope=body.target.target_scope,
-            context_suite_id=body.context_suite_id,
+            context_suite_id=resolved_context_suite_id,
+            context_suite_case_id=body.context_suite_case_id,
             resolved_ids=target_ids,
             excluded_suite_ids=(
                 result.normalized_excluded_suite_ids
@@ -276,22 +281,44 @@ async def _get_suite_or_404(suite_id: int, db: AsyncSession) -> TestSuite:
 
 
 async def _validate_context_suite(
-    db: AsyncSession, *, project_id: int, target_type: str, target_ids: list[int], context_suite_id: int | None
-) -> None:
+    db: AsyncSession,
+    *,
+    project_id: int,
+    target_type: str,
+    target_ids: list[int],
+    context_suite_id: int | None,
+    context_suite_case_id: int | None,
+) -> int | None:
     """方案 §2：单用例套件上下文校验——仅 case 类型；用例必须属于该套件；套件/用例/项目同项目。"""
-    if context_suite_id is None:
-        return
+    if context_suite_id is None and context_suite_case_id is None:
+        return None
     if target_type != "case":
         raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_CONTEXT_INVALID", "context_suite_id 仅支持执行单个用例")
     if len(target_ids) != 1:
         raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_CONTEXT_INVALID", "context_suite_id 仅支持单个用例")
-    suite = await _get_suite_or_404(context_suite_id, db)
     case = await _get_case_or_404(target_ids[0], db)
-    if suite.project_id != project_id or case.project_id != project_id:
+    if case.project_id != project_id:
         raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_CONTEXT_INVALID", "套件/用例/项目必须属于同一项目")
-    member = await suites_repo.get_case_relation(db, suite.id, case.id)
-    if member is None:
+    if context_suite_case_id is not None:
+        member = await resolution_repo.get_suite_case(db, context_suite_case_id)
+        if member is None or member.case_id != case.id:
+            raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_CONTEXT_INVALID", "context_suite_case_id 与执行用例不匹配")
+        suite = await _get_suite_or_404(member.suite_id, db)
+        if suite.project_id != project_id:
+            raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_CONTEXT_INVALID", "套件/用例/项目必须属于同一项目")
+        if context_suite_id is not None and context_suite_id != suite.id:
+            raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_CONTEXT_INVALID", "context_suite_id 与 context_suite_case_id 不匹配")
+        return suite.id
+    assert context_suite_id is not None
+    suite = await _get_suite_or_404(context_suite_id, db)
+    if suite.project_id != project_id:
+        raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_CONTEXT_INVALID", "套件/用例/项目必须属于同一项目")
+    members = await suites_repo.list_case_relations(db, suite.id, case.id)
+    if not members:
         raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_CONTEXT_INVALID", "用例不属于该套件")
+    if len(members) > 1:
+        raise api_error(status.HTTP_400_BAD_REQUEST, "EXECUTION_CONTEXT_INVALID", "用例在该套件中存在多个编排项，必须指定 suite_case_id")
+    return suite.id
 
 
 async def _validate_device_for_execution(
@@ -360,20 +387,21 @@ async def create_case_execution(
         project_id = prepared.project_id
     assert project_id is not None
     await require_project_write(project_id, user, db)
-    if case is not None:
-        await _validate_context_suite(
-            db,
-            project_id=project_id,
-            target_type="case",
-            target_ids=[case.id],
-            context_suite_id=body.context_suite_id,
-        )
+    resolved_context_suite_id = await _validate_context_suite(
+        db,
+        project_id=project_id,
+        target_type="case",
+        target_ids=[case_id],
+        context_suite_id=body.context_suite_id,
+        context_suite_case_id=body.context_suite_case_id,
+    )
     await _validate_device_for_execution(body.device_id, user, db)
     profile_body = body if body.prepare_token else await execution_service.apply_app_profile_feature_mode(db, project_id, body)
     return _safe_execution_output(await execution_service.create_case_execution(
         db, case, user, body.device_id, body.parameters, body.timeout_seconds,
         body=profile_body,
-        context_suite_id=body.context_suite_id,
+        context_suite_id=resolved_context_suite_id,
+        context_suite_case_id=body.context_suite_case_id,
         project_id=project_id,
         asset_case_id=case_id,
     ))

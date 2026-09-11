@@ -113,7 +113,7 @@ async def test_skip_batch(client: AsyncClient):
     node_key = str(uuid.uuid4())
     suite_id = (await client.post(f"/api/projects/{pid}/suites", json={"name": "套件A"}, headers=h)).json()["id"]
     case_id = (await client.post(f"/api/projects/{pid}/cases", json={"name": "用A", "steps": [{"key": node_key, "order": 1, "action": "sleep", "params": {"duration": 1}}], "assertions": []}, headers=h)).json()["id"]
-    await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)
+    membership_id = (await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)).json()[0]["id"]
 
     resp = await client.post(
         f"/api/app-profiles/{pid2}/skip-rules/batch",
@@ -123,11 +123,10 @@ async def test_skip_batch(client: AsyncClient):
             "reason": {"code": "unsupported", "note": "DVR 无此功能"},
             "targets": [
                 {"type": "suite", "suite_id": suite_id},
-                {"type": "case", "suite_id": suite_id, "case_id": case_id},
+                {"type": "case", "suite_case_id": membership_id},
                 {
                     "type": "step",
-                    "suite_id": suite_id,
-                    "case_id": case_id,
+                    "suite_case_id": membership_id,
                     "node_key": node_key,
                 },
             ],
@@ -435,7 +434,7 @@ async def test_workspace_and_nodes(client: AsyncClient):
     suite_id = (await client.post(f"/api/projects/{pid}/suites", json={"name": "套件W"}, headers=h)).json()["id"]
     el_id = (await client.post(f"/api/projects/{pid}/elements", json={"name": "按钮W", "locator_type": "id", "locator_value": "btn_w"}, headers=h)).json()["id"]
     case_id = (await client.post(f"/api/projects/{pid}/cases", json={"name": "用W", "steps": [{"order": 1, "key": str(uuid.uuid4()), "action": "click", "element_id": el_id, "params": {}}], "assertions": []}, headers=h)).json()["id"]
-    await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)
+    membership_id = (await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)).json()[0]["id"]
 
     ws = await client.get(f"/api/app-profiles/{profile_id}/workspace", headers=h)
     assert ws.status_code == 200
@@ -448,7 +447,7 @@ async def test_workspace_and_nodes(client: AsyncClient):
     assert nodes.json()["items"][0]["node_type"] == "case"
 
     step_nodes = await client.get(
-        f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=case&parent_id={case_id}&ancestor_suite_id={suite_id}",
+        f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=case&parent_id={case_id}&ancestor_suite_id={suite_id}&suite_case_id={membership_id}",
         headers=h,
     )
     assert step_nodes.status_code == 200
@@ -459,7 +458,7 @@ async def test_workspace_and_nodes(client: AsyncClient):
     # 跳过一个用例后差异列表出现
     case_node = (await client.post(
         f"/api/app-profiles/{profile_id}/skip-rules/batch",
-        json={"expected_revision": 1, "operation": "skip", "reason": {"code": "unsupported"}, "targets": [{"type": "case", "suite_id": suite_id, "case_id": case_id}]},
+        json={"expected_revision": 1, "operation": "skip", "reason": {"code": "unsupported"}, "targets": [{"type": "case", "suite_case_id": membership_id}]},
         headers=h,
     )).json()
     assert case_node["changed"] == 1
@@ -518,7 +517,7 @@ async def test_workspace_nodes_enforce_project_and_inherit_parent_skip(client: A
             headers=h,
         )
     ).json()["id"]
-    await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)
+    membership_id = (await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)).json()[0]["id"]
 
     other_case_id = (
         await client.post(
@@ -551,7 +550,7 @@ async def test_workspace_nodes_enforce_project_and_inherit_parent_skip(client: A
     assert cases.json()["items"][0]["effective_status"] == "skipped"
     assert cases.json()["items"][0]["status_source"] == "inherited"
     nodes = await client.get(
-        f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=case&parent_id={case_id}&ancestor_suite_id={suite_id}",
+        f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=case&parent_id={case_id}&ancestor_suite_id={suite_id}&suite_case_id={membership_id}",
         headers=h,
     )
     node = nodes.json()["items"][0]
@@ -595,6 +594,7 @@ async def test_shared_case_skip_is_scoped_to_selected_suite(client: AsyncClient)
         )
     ).json()["id"]
     suite_ids = []
+    membership_ids = []
     for name in ("DVR 套件", "部标机套件"):
         suite_id = (
             await client.post(
@@ -603,11 +603,11 @@ async def test_shared_case_skip_is_scoped_to_selected_suite(client: AsyncClient)
                 headers=headers,
             )
         ).json()["id"]
-        await client.post(
+        membership_ids.append((await client.post(
             f"/api/suites/{suite_id}/cases",
             json={"case_id": case_id},
             headers=headers,
-        )
+            )).json()[0]["id"])
         suite_ids.append(suite_id)
 
     skipped = await client.post(
@@ -617,7 +617,7 @@ async def test_shared_case_skip_is_scoped_to_selected_suite(client: AsyncClient)
             "operation": "skip",
             "reason": {"code": "unsupported"},
             "targets": [
-                {"type": "case", "suite_id": suite_ids[0], "case_id": case_id}
+                {"type": "case", "suite_case_id": membership_ids[0]}
             ],
         },
         headers=headers,
@@ -681,7 +681,6 @@ async def test_case_skip_rejects_unrelated_suite_context(client: AsyncClient):
     )
 
     assert response.status_code == 422
-    assert "套件用例关系不存在" in response.text
 
 
 async def test_execution_preview(client: AsyncClient):
@@ -699,7 +698,7 @@ async def test_execution_preview(client: AsyncClient):
     ).json()["id"]
     case_id = (await client.post(f"/api/projects/{pid}/cases", json={"name": "预检用例", "steps": [{"order": 1, "key": str(uuid.uuid4()), "action": "sleep", "params": {"duration": 1}}], "assertions": []}, headers=h)).json()["id"]
     suite_id = (await client.post(f"/api/projects/{pid}/suites", json={"name": "预检套件"}, headers=h)).json()["id"]
-    await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)
+    membership_id = (await client.post(f"/api/suites/{suite_id}/cases", json={"case_id": case_id}, headers=h)).json()[0]["id"]
 
     resp = await client.post(
         "/api/executions/preview",
@@ -716,7 +715,7 @@ async def test_execution_preview(client: AsyncClient):
     # 空档案（所有用例跳过）→ 400 PROFILE_EMPTY
     await client.post(
         f"/api/app-profiles/{profile_id}/skip-rules/batch",
-        json={"expected_revision": 1, "operation": "skip", "reason": {"code": "unsupported"}, "targets": [{"type": "case", "suite_id": suite_id, "case_id": case_id}]},
+        json={"expected_revision": 1, "operation": "skip", "reason": {"code": "unsupported"}, "targets": [{"type": "case", "suite_case_id": membership_id}]},
         headers=h,
     )
     empty = await client.post(
@@ -876,7 +875,7 @@ async def test_workspace_step_element_name_uses_node_patch_and_missing_fallback(
     )).json()[0]["id"]
 
     initial = await client.get(
-        f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=case&parent_id={case_id}&ancestor_suite_id={suite_id}", headers=h,
+        f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=case&parent_id={case_id}&ancestor_suite_id={suite_id}&suite_case_id={membership_id}", headers=h,
     )
     step = initial.json()["items"][0]
     assert (step["element_id"], step["element_name"]) == (first, "初始元素")
@@ -887,7 +886,7 @@ async def test_workspace_step_element_name_uses_node_patch_and_missing_fallback(
     )
     assert patched.status_code == 200, patched.text
     after = await client.get(
-        f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=case&parent_id={case_id}&ancestor_suite_id={suite_id}", headers=h,
+        f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=case&parent_id={case_id}&ancestor_suite_id={suite_id}&suite_case_id={membership_id}", headers=h,
     )
     step = after.json()["items"][0]
     assert (step["element_id"], step["element_name"]) == (second, "覆盖元素")
@@ -898,7 +897,7 @@ async def test_workspace_step_element_name_uses_node_patch_and_missing_fallback(
     )
     assert missing.status_code == 200, missing.text
     unknown = await client.get(
-        f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=case&parent_id={case_id}&ancestor_suite_id={suite_id}", headers=h,
+        f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=case&parent_id={case_id}&ancestor_suite_id={suite_id}&suite_case_id={membership_id}", headers=h,
     )
     assert (unknown.json()["items"][0]["element_id"], unknown.json()["items"][0]["element_name"]) == (999999999, None)
 
