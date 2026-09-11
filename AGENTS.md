@@ -94,7 +94,7 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 - **删除编排项必须先物理删除其节点覆盖**（FK 无 ON DELETE），见 `suite_service.remove_case` → `overrides_repo.delete_for_membership`。
 - 前端 `utils/caseVariables.ts` 是唯一口径：套件侧 `variablePreviewChips` / `buildOccurrenceUpdates`；档案侧 `variableOverrideState` / `variableDisplayText`（多值→「多个值」、空值区分「（空）」与「未定义」）/ `variableEditSeed` / `variableQuickUpdates`（值未变化返回 `null`，避免空提交推进 revision）/ `variableRestoreUpdates` / `buildVariableUpdates`。
 - `CaseVariableSummary.vue`、`CaseVariableEditor.vue` **只服务套件编排项**（`CaseVariableEditor` 已无 mode，仅编排项覆盖）。
-- APP 档案工作台的变量入口是**独立的「变量」列**（列序：名称 / 类型 / 阶段 / 生效状态 / **变量** / 原因 / 操作），只对用例行渲染，不再挂在用例名称旁边。单元格内竖排展示 `变量名：变量值`（多值→「多个值」、空值区分「（空）」/「未定义」），**点击变量值就地变成输入框**，回车或失焦提交；已覆盖的变量值后面带「恢复」按钮（提交 `null`）。
+- APP 档案工作台的变量入口是**独立的「变量」列**（列序：名称 / 类型 / 阶段 / 生效状态 / **变量** / 原因 / 操作），只对用例行渲染，不再挂在用例名称旁边。单元格内竖排展示 `变量名：变量值`（多值→「多个值」、空值区分「（空）」/「未定义」）；**点右侧编辑图标进入编辑态**，编辑态给「保存 / 取消」按钮（回车=保存、Esc=取消），**不做失焦自动保存**（避免误触）；已覆盖的变量值后面带「恢复」按钮（提交 `null`）。契约由 `tests/app-profile-variable-column.test.ts` 钉住。
 - **档案侧没有逐节点粒度**：没有「应用到全部节点」，也不再有步骤行的「变量覆盖」弹窗（已移除，连同 `openVariableOverride` / `variableOverrideDialog`）。用户视角的语义就是「改这个变量在**当前编排项**里的取值」，写入时对该变量的全部引用节点统一赋同一个值（`buildVariableUpdates` → 批量 PATCH）；同一用例的其它编排项、其它套件与公共用例都不受影响。保存后只就地替换该编排项的变量列表，不重置滚动/排序/展开。
 
 ## 编码测试规则（Step 门禁）

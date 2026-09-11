@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { Edit } from '@element-plus/icons-vue'
 
 import AppProfileTree from '@/components/AppProfileTree.vue'
 import DevicePicker from '@/components/DevicePicker.vue'
@@ -224,8 +225,9 @@ async function batchRestore() {
 }
 
 // ---------- 用例变量就地覆盖（仅 APP 档案用例行） ----------
-// 「变量」列竖排展示 `变量名：变量值`；点击变量值就地变成输入框，输入后回车或失焦即保存。
-// 覆盖范围 = 该变量在**当前这条编排项**里的取值，不写公共用例、不影响同一用例的其它编排。
+// 「变量」列竖排展示 `变量名：变量值`；点右侧编辑图标进入编辑态，输入后由「保存」提交、「取消」放弃。
+// 不做失焦自动保存（避免误触）。覆盖范围 = 该变量在**当前这条编排项**里的取值，
+// 不写公共用例、不影响同一用例的其它编排。
 const caseVariableEdit = reactive({ key: '', value: '' })
 const variableSaving = ref(false)
 
@@ -287,7 +289,7 @@ async function saveCaseVariableUpdates(row: DisplayNode, updates: ProfileVariabl
   }
 }
 
-/** 输入框回车 / 失焦提交；值没变化就静默收起编辑框（不发请求、不推进 revision）。 */
+/** 「保存」提交（回车等价）；值没变化就静默收起编辑框（不发请求、不推进 revision）。 */
 async function commitVariableEdit(row: DisplayNode, variable: ProfileCaseVariable) {
   if (variableSaving.value) return
   if (caseVariableEdit.key !== caseVariableKey(row, variable)) return
@@ -444,26 +446,35 @@ onMounted(load)
               >
                 <code class="variable-name" :title="`引用 ${variable.reference_count} 处`">{{ variableToken(variable.name) }}</code>
                 <span class="variable-colon">：</span>
-                <el-input
-                  v-if="isEditingVariable(displayNode(row), variable)"
-                  v-model="caseVariableEdit.value"
-                  class="variable-input"
-                  size="small"
-                  :disabled="variableSaving"
-                  placeholder="输入新值"
-                  :aria-label="`${variable.name} 的新值`"
-                  @click.stop
-                  @keyup.enter="commitVariableEdit(displayNode(row), variable)"
-                  @keyup.esc="cancelVariableEdit"
-                  @blur="commitVariableEdit(displayNode(row), variable)"
-                />
+                <template v-if="isEditingVariable(displayNode(row), variable)">
+                  <el-input
+                    v-model="caseVariableEdit.value"
+                    class="variable-input"
+                    size="small"
+                    autofocus
+                    :disabled="variableSaving"
+                    placeholder="输入新值"
+                    :aria-label="`${variable.name} 的新值`"
+                    @click.stop
+                    @keyup.enter="commitVariableEdit(displayNode(row), variable)"
+                    @keyup.esc="cancelVariableEdit"
+                  />
+                  <el-button size="small" type="primary" :loading="variableSaving" @click.stop="commitVariableEdit(displayNode(row), variable)">保存</el-button>
+                  <el-button size="small" :disabled="variableSaving" @click.stop="cancelVariableEdit">取消</el-button>
+                </template>
                 <template v-else>
-                  <span
-                    class="variable-value"
-                    :class="{ editable: canEditProject }"
-                    :title="canEditProject ? '点击修改该用例中的取值' : undefined"
+                  <span class="variable-value" :title="`引用 ${variable.reference_count} 处`">{{ variableDisplayText(variable) }}</span>
+                  <el-button
+                    v-if="canEditProject"
+                    class="variable-icon-button"
+                    size="small"
+                    text
+                    :icon="Edit"
+                    :aria-label="`编辑 ${variable.name}`"
+                    title="编辑该用例中的取值"
+                    :disabled="variableSaving"
                     @click.stop="beginVariableEdit(displayNode(row), variable)"
-                  >{{ variableDisplayText(variable) }}</span>
+                  />
                   <el-button
                     v-if="variableOverrideState(variable).overridden"
                     class="variable-restore"
@@ -532,7 +543,7 @@ onMounted(load)
 .batch-bar { padding: 8px 12px; border-radius: 6px; background: var(--el-color-primary-light-9); }
 .node-name { display: inline-flex; align-items: center; }
 .node-label { display: inline-flex; flex-direction: column; gap: 2px; }
-/* 变量列：竖排展示「变量名：变量值」，点击变量值就地编辑 */
+/* 变量列：竖排展示「变量名：变量值」；编辑图标进入编辑态，编辑态给「保存 / 取消」 */
 .case-variable-list { display: flex; flex-direction: column; gap: 4px; padding: 2px 0; }
 .case-variable-empty { color: var(--el-text-color-secondary); font-size: 12px; }
 .case-variable-item {
@@ -555,10 +566,11 @@ onMounted(load)
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.case-variable-item .variable-value.editable { cursor: text; border-bottom: 1px dashed transparent; }
-.case-variable-item .variable-value.editable:hover { border-bottom-color: currentColor; }
 .case-variable-item .variable-input { width: 180px; }
+.case-variable-item .variable-icon-button,
 .case-variable-item .variable-restore { padding: 0 4px; }
+.case-variable-item .variable-icon-button { color: var(--el-text-color-secondary); }
+.case-variable-item .variable-icon-button:hover { color: var(--el-color-primary); }
 .case-variable-item.tone-overridden { color: #1d4ed8; background: rgba(37, 99, 235, 0.12); border-color: rgba(37, 99, 235, 0.35); }
 .case-variable-item.tone-inherited { color: var(--el-text-color-regular); background: rgba(100, 116, 139, 0.08); border-color: rgba(100, 116, 139, 0.24); }
 .case-variable-item.tone-undefined { color: #c2410c; background: rgba(249, 115, 22, 0.12); border-color: rgba(249, 115, 22, 0.35); }
