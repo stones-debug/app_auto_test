@@ -99,15 +99,23 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 - **档案侧没有逐节点粒度**：没有「应用到全部节点」，也不再有步骤行的「变量覆盖」弹窗。用户视角的语义就是「改这个变量在**当前编排项**里的取值」，写入 occurrence 表后该变量自动作用于所有引用节点；同一用例的其它编排项、其它套件与公共用例都不受影响。
 
 ## 编码测试规则（Step 门禁）
-- **测试只在整个 Step 全部子任务完成后才执行**。一个 Step 内若包含多个子步骤任务（后端接口 / 前端页面 / 迁移 / 文档等），必须等所有子任务都实现完成，才运行该 Step 的完整测试（后端 pytest / Agent pytest / 前端 vitest+build / ruff / alembic check）。
-- 禁止在 Step 中途对半成品跑完整测试集或提交；中途只做轻量语法自检（如 `ruff` 单文件、`vue-tsc` 单文件），不作为通过依据。
-- 每个 Step 完成时的验收命令（按需组合，全部通过才提交）：
-  - 后端：`uv run ruff check app/ tests/ worker.py scripts/` + `uv run pyright` + `uv run pytest tests/ -q` + `uv run alembic check`
-  - Agent：`uv run ruff check .` + `uv run pytest tests/ -q`
-  - 前端：`npm run test`（vitest）+ `npm run build`（vue-tsc + vite）
+- **三档测试门禁：`related` / `fast` / `full`。** related 可在开发循环中随时运行；fast/full 只在整个 Step 的全部子任务完成后运行。Step 中途禁止对半成品跑全量测试。
+- **related（开发循环）**：只运行变更直接相关的精确测试文件或测试节点；只改某一端时绝不运行另外两端。后端示例：`uv run pytest tests/test_x.py -q` 或 `uv run pytest tests/test_x.py::test_name -q`。Agent 使用同样的精确 pytest 形式。前端使用 `npm run test:related -- src/__tests__/xxx.test.ts`，需要限定用例名时追加 `-t "用例名"`；禁止 `src/**tests**` 等模糊路径，禁止重复传 `--run`。
+- **fast（本地默认验收）**：Step 实现完成后，只在受影响端执行静态检查、类型检查和 related 测试；普通低/中风险改动通过 fast 即可提交。命令如下：
+  - 后端：`uv run ruff check <受影响文件>`（必要时改为 `uv run ruff check app/ tests/ worker.py scripts/` 的完整静态范围）+ `uv run pyright` + 精确 pytest 文件/节点。
+  - Agent：`uv run ruff check <相关文件>` + 精确 pytest 文件/节点。
+  - 前端：`npm run typecheck` + `npm run test:related -- src/__tests__/xxx.test.ts`。
+- **full（有条件的全量验收）**：仅在高风险改动、合并 master 前、发布前、CI 或用户明确要求时执行；三端全量绝不是默认，未改的端不跑 full。高风险包括数据库迁移、事务、认证/权限、Worker 队列并发、WS、跨模块公共 API/协议、测试基础设施。受影响端命令如下：
+  - 后端：`uv run ruff check app/ tests/ worker.py scripts/` + `uv run pyright` + `uv run pytest tests/ -q` + `uv run alembic check`。
+  - Agent：`uv run ruff check .` + `uv run pytest tests/ -q`。
+  - 前端：`npm run test:full` + `npm run build`。
+- **失败路由硬规则**：首次 full 失败后禁止立即重跑 full；先提取失败项，只运行精确失败节点。相关失败全部转绿后，最多再跑一轮 final full。同一命令同一失败出现两次，必须先判断代码、测试数据、配置、迁移或环境原因，不能盲改盲跑。默认每个 Step 的每个受影响端最多两轮 full（首次 + 最终）；需要第三轮时必须先说明理由。
+- Step 完成后按受影响端门禁结果提交一次；提交前确认相关检查已通过，不为流程额外重复测试。
+- 纯文档或注释改动默认只做格式/链接检查，不运行后端、前端或 Agent 产品测试；若文档同时描述了新契约，则运行该契约对应的 related 测试。
 - **拉取含 `.env.example` 改动的提交后，先同步本地 `backend/.env`**：部分用例断言的就是配置上限（如 `tests/test_execution_timeout_limits.py` 断言 24h），`.env` 落后会让门禁以"代码 bug"的样子变红。典型：`MAX_EXECUTION_TIMEOUT` 必须与 `settings.max_execution_timeout` 的默认值一致
-- Step 内子任务实现过程中发现的错误可当场修复，但**测试通过以整个 Step 完成后一次为准**；Step 间不共享半成品状态。
-- 提交时机：Step 门禁全部通过后提交一次，提交信息 `feat(backend|frontend|agent): Step N <内容>`。
+- Step 内实现过程中发现的错误可当场修复，但不要把半成品的全量结果当作门禁依据；Step 间不共享半成品状态。
+- 本机测试/构建若触发 `SAFE_DELETE_FAIL_CLOSED` 或 `SAFE_DELETE_BULK_CONFIRM_REQUIRED`，按环境说明使用 `CODEBUDDY_SAFE_DELETE_ENABLED=0` 后重跑对应命令；不要改用 `CODEBUDDY_SAFE_DELETE_SANDBOX=0`。
+- 提交信息格式：`feat(backend|frontend|agent): Step N <内容>`。
 
 ## Git
 - 提交信息格式：`feat(backend|frontend|agent): Step N <内容>` 或 `chore: ...`
