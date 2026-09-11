@@ -3,10 +3,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_editable_project, get_project_permission
 from app.core.database import get_db
+from app.core.errors import api_error
 from app.models import Project, User
 from app.schemas.suite import (
     SuiteAddCaseRequest,
     SuiteCaseOut,
+    SuiteCaseVariableOverrideRequest,
+    SuiteCaseVariablesOut,
     SuiteCreate,
     SuiteOut,
     SuitePage,
@@ -14,6 +17,7 @@ from app.schemas.suite import (
     SuiteUpdate,
 )
 from app.services import suite_service
+from app.services.profile_resolver_nodes import ProfileRuleError
 from app.utils.pagination import get_pagination
 
 router = APIRouter(tags=["套件管理"])
@@ -124,15 +128,52 @@ async def list_suite_cases(
     suite = await suite_service.get_or_404(db, suite_id)
     await get_project_permission(suite.project_id, user, db)
     return [
-        SuiteCaseOut(
-            id=relation.id,
-            case_id=relation.case_id,
-            case_name=case_name,
-            module_name=module_name,
-            sort_order=relation.sort_order,
-        )
-        for relation, case_name, module_name in await suite_service.list_cases(db, suite.id)
+        SuiteCaseOut(**item)
+        for item in await suite_service.list_cases_with_variables(db, suite)
     ]
+
+
+@router.get(
+    "/suites/{suite_id}/cases/{membership_id}/variables",
+    response_model=SuiteCaseVariablesOut,
+)
+async def get_suite_case_variables(
+    suite_id: int,
+    membership_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    suite = await suite_service.get_or_404(db, suite_id)
+    await get_project_permission(suite.project_id, user, db)
+    return await suite_service.membership_variables(
+        db, suite=suite, membership_id=membership_id
+    )
+
+
+@router.patch(
+    "/suites/{suite_id}/cases/{membership_id}/variable-overrides",
+    response_model=SuiteCaseVariablesOut,
+)
+async def patch_suite_case_variables(
+    suite_id: int,
+    membership_id: int,
+    body: SuiteCaseVariableOverrideRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    suite = await suite_service.get_or_404(db, suite_id)
+    _project, role = await get_project_permission(suite.project_id, user, db)
+    if role not in ("owner", "admin", "member"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    try:
+        return await suite_service.update_membership_variables(
+            db, suite=suite, membership_id=membership_id,
+            updates=body.updates, user_id=user.id,
+        )
+    except ProfileRuleError as exc:
+        raise api_error(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, exc.code, exc.message
+        ) from None
 
 
 @router.post(
@@ -150,18 +191,10 @@ async def add_suite_case(
     _project, role = await get_project_permission(suite.project_id, user, db)
     if role not in ("owner", "admin", "member"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
-    return [
-        SuiteCaseOut(
-            id=relation.id,
-            case_id=relation.case_id,
-            case_name=case.name,
-            module_name=None,
-            sort_order=relation.sort_order,
-        )
-        for relation, case in await suite_service.add_cases(
-            db, suite=suite, case_ids=body.case_ids or []
-        )
-    ]
+    created = await suite_service.add_cases(db, suite=suite, case_ids=body.case_ids or [])
+    created_ids = {relation.id for relation, _case in created}
+    items = await suite_service.list_cases_with_variables(db, suite)
+    return [SuiteCaseOut(**item) for item in items if item["id"] in created_ids]
 
 
 @router.put("/suites/{suite_id}/cases/order", status_code=status.HTTP_204_NO_CONTENT)

@@ -214,12 +214,60 @@ class NodeOverrideDelete(BaseModel):
     expected_revision: int = Field(ge=1)
 
 
+class ProfileVariableReference(BaseModel):
+    """同名变量在某个步骤/断言节点上的引用与覆盖。"""
+
+    node_type: Literal["step", "assertion"]
+    node_key: str
+    order: int | None = None
+    node_name: str
+    inherited_value: str | None = None
+    override_enabled: bool
+    override_value: str
+
+
+class ProfileCaseVariableItem(BaseModel):
+    name: str
+    reference_count: int
+    # mixed=同名变量在不同节点存在不同覆盖值
+    status: str
+    inherited_value: str | None = None
+    inherited_scope: str | None = None
+    references: list[ProfileVariableReference] = Field(default_factory=list)
+
+
+class ProfileSuiteCaseVariablesOut(BaseModel):
+    profile_id: int
+    profile_revision: int
+    suite_case_id: int
+    case_id: int
+    case_name: str
+    total: int
+    variables: list[ProfileCaseVariableItem]
+
+
+class ProfileVariableUpdateItem(BaseModel):
+    node_type: Literal["step", "assertion"]
+    node_key: str
+    name: str
+    # null 表示删除该节点上的变量覆盖
+    value: str | None = None
+
+
+class ProfileVariableOverrideBatchRequest(BaseModel):
+    request_id: str | None = None
+    expected_revision: int = Field(ge=1)
+    updates: list[ProfileVariableUpdateItem] = Field(min_length=1)
+
+
 # ---------- 工作台（方案 §4.4） ----------
 
 
 class WorkspaceNode(BaseModel):
     node_type: str
     id: int | None = None
+    # 用例节点的编排项身份（test_suite_cases.id），重复编排时用于区分展开与覆盖
+    suite_case_id: int | None = None
     node_key: str | None = None
     element_id: int | None = None
     element_name: str | None = None

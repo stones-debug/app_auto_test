@@ -65,6 +65,7 @@ async def list_profile_overrides(
         "nodes": [
             {
                 "suite_id": row.suite_id,
+                "suite_case_id": row.suite_case_id,
                 "case_id": row.case_id,
                 "node_type": row.target_type,
                 "node_key": str(row.node_key),
@@ -237,11 +238,13 @@ async def upsert_node_override(
         raise api_error(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.code, exc.message) from None
     await overrides_repo.upsert_node(
         db, profile_id=profile_id, suite_id=suite_id, case_id=case_id,
+        suite_case_id=membership,
         target_type=node_type, node_key=normalized_key, patch=body.patch, user_id=user.id,
     )
     response_data = {
         "suite_id": suite_id,
         "case_id": case_id,
+        "suite_case_id": membership,
         "node_type": node_type,
         "node_key": normalized_key,
         "patch": body.patch,
@@ -274,9 +277,11 @@ async def restore_node_override(
         normalized_key = str(UUID(node_key))
     except ValueError:
         return
+    membership = await resolution_repo.find_membership(db, suite_id, case_id)
     existing = await overrides_repo.get_node(
         db, profile_id, suite_id=suite_id, case_id=case_id,
         target_type=node_type, node_key=normalized_key,
+        suite_case_id=membership.id if membership is not None else None,
     )
     if existing is None:
         return

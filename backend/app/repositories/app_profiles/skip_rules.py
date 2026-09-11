@@ -14,10 +14,12 @@ async def load_target(db: AsyncSession, *, project_id: int, suite_id: int | None
     case = await db.get(TestCase, case_id) if case_id is not None else None
     membership = None
     if suite_id is not None and case_id is not None:
+        # 重复编排时取排序最前的编排项，保证（仅按 suite/case 寻址的）旧调用稳定
         membership = await db.scalar(
-            select(TestSuiteCase.id).where(
-                TestSuiteCase.suite_id == suite_id, TestSuiteCase.case_id == case_id
-            )
+            select(TestSuiteCase.id)
+            .where(TestSuiteCase.suite_id == suite_id, TestSuiteCase.case_id == case_id)
+            .order_by(TestSuiteCase.sort_order, TestSuiteCase.id)
+            .limit(1)
         )
     return suite, case, membership
 

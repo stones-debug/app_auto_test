@@ -8,9 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import ErrorCode, api_error
 from app.models import TestSuite
 from app.repositories import elements as elements_repo
+from app.repositories import projects as projects_repo
 from app.repositories import suites as suites_repo
+from app.repositories.app_profiles import overrides as overrides_repo
+from app.repositories.app_profiles import resolution as resolution_repo
 from app.schemas.suite import SuiteCreate, SuiteUpdate
-from app.services import asset_service, element_service
+from app.services import asset_service, case_variable_service, element_service
 from app.services.case_service import validate_elements
 
 
@@ -156,6 +159,84 @@ async def list_cases(db: AsyncSession, suite_id: int):
     return await suites_repo.list_cases(db, suite_id)
 
 
+async def list_cases_with_variables(db: AsyncSession, suite: TestSuite):
+    """列表接口随行携带变量摘要（最多 2 项），一次批量加载避免 N+1。"""
+    rows = await suites_repo.list_cases(db, suite.id)
+    case_ids = [relation.case_id for relation, _name, _module in rows]
+    cases = await resolution_repo.load_cases_by_ids(db, case_ids)
+    definitions = await case_variable_service.load_definitions_batch(
+        db, project_id=suite.project_id, suite_id=suite.id, cases=list(cases.values())
+    )
+    items = []
+    for relation, case_name, module_name in rows:
+        case = cases.get(relation.case_id)
+        preview: dict = {"variable_count": 0, "variables_preview": []}
+        if case is not None:
+            variables = case_variable_service.build_membership_variables(
+                case, definitions.get(case.id, {}), relation.variable_overrides or {}
+            )
+            preview = case_variable_service.membership_preview(variables)
+        items.append(
+            {
+                "id": relation.id,
+                "case_id": relation.case_id,
+                "case_name": case_name,
+                "module_name": module_name,
+                "sort_order": relation.sort_order,
+                "variable_count": preview["variable_count"],
+                "variables_preview": preview["variables_preview"],
+            }
+        )
+    return items
+
+
+async def _membership_or_404(db: AsyncSession, suite: TestSuite, membership_id: int):
+    relation = await suites_repo.find_relation(db, suite_id=suite.id, membership_id=membership_id)
+    if relation is None:
+        raise api_error(status.HTTP_404_NOT_FOUND, "SUITE_CASE_NOT_FOUND", "套件用例编排项不存在")
+    case = await resolution_repo.get_case(db, relation.case_id)
+    if case is None or case.deleted_at is not None:
+        raise api_error(status.HTTP_404_NOT_FOUND, "CASE_NOT_FOUND", "用例不存在或已删除")
+    return relation, case
+
+
+async def membership_variables(db: AsyncSession, *, suite: TestSuite, membership_id: int) -> dict:
+    relation, case = await _membership_or_404(db, suite, membership_id)
+    definitions = await case_variable_service.inherited_variable_definitions(
+        db, project_id=suite.project_id, suite_id=suite.id, case=case
+    )
+    variables = case_variable_service.build_membership_variables(
+        case, definitions, relation.variable_overrides or {}
+    )
+    project = await projects_repo.get_by_id(db, suite.project_id)
+    return {
+        "suite_id": suite.id,
+        "membership_id": relation.id,
+        "case_id": case.id,
+        "case_name": case.name,
+        "test_asset_revision": project.test_asset_revision if project is not None else 0,
+        "total": len(variables),
+        "variables": variables,
+    }
+
+
+async def update_membership_variables(
+    db: AsyncSession, *, suite: TestSuite, membership_id: int, updates: dict, user_id: int
+) -> dict:
+    relation, case = await _membership_or_404(db, suite, membership_id)
+    try:
+        normalized = case_variable_service.validate_membership_updates(case, updates)
+        merged = case_variable_service.apply_membership_updates(
+            relation.variable_overrides or {}, normalized
+        )
+        await suites_repo.update_membership_overrides(db, relation, merged)
+        await asset_service.commit_asset_change(db, [suite.project_id])
+    except Exception:
+        await _rollback_on_error(db)
+        raise
+    return await membership_variables(db, suite=suite, membership_id=membership_id)
+
+
 async def count_cases(db: AsyncSession, suite_id: int) -> int:
     return await suites_repo.count_cases(db, suite_id)
 
@@ -215,6 +296,8 @@ async def remove_case(db: AsyncSession, *, suite: TestSuite, membership_id: int)
     if relation is None:
         return
     try:
+        # 编排项消失后其节点覆盖失去意义；先物理清理子行，再删除编排项（外键约束要求）
+        await overrides_repo.delete_for_membership(db, membership_id)
         await suites_repo.delete_relation(db, relation)
         await asset_service.commit_asset_change(db, [suite.project_id])
     except Exception:

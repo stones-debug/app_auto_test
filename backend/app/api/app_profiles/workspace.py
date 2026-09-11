@@ -12,6 +12,7 @@ from app.models import User
 from app.repositories import projects as projects_repo
 from app.repositories.app_profiles import resolution as resolution_repo
 from app.repositories.app_profiles import skip_rules as skip_rules_repo
+from app.services import case_variable_service
 
 from . import router
 from ._shared import (
@@ -115,6 +116,7 @@ async def workspace_nodes(
     parent_type: str,
     parent_id: int,
     ancestor_suite_id: int | None = None,
+    suite_case_id: int | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=500),
     include: str = "",
@@ -129,20 +131,37 @@ async def workspace_nodes(
         suite = await resolution_repo.get_suite(db, parent_id)
         if suite is None or suite.deleted_at is not None or suite.project_id != profile.project_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="套件不存在")
-        rows = await resolution_repo.suite_cases(db, parent_id)
+        # occurrence-aware：同一用例重复编排时每行独立（row key 使用 suite_case_id）
+        members = await resolution_repo.suite_memberships(db, parent_id)
+        case_rows = await resolution_repo.load_cases_by_ids(db, [member.case_id for member in members])
+        cases = [case_rows[member.case_id] for member in members if member.case_id in case_rows]
+        definitions = await case_variable_service.load_definitions_batch(
+            db, project_id=profile.project_id, suite_id=parent_id, cases=cases
+        )
         suite_rule = skip["suite"].get(parent_id)
         items = []
-        for case in rows:
-            direct_rule = skip["case"].get((parent_id, case.id))
+        for membership in members:
+            case = case_rows.get(membership.case_id)
+            if case is None:
+                continue
+            direct_rule = skip["case"].get((parent_id, membership.case_id))
             rule = suite_rule or direct_rule
-            override_count = len(overrides["node"].get((parent_id, case.id), {}))
+            override_count = len(overrides["membership"].get(membership.id, {}))
             effective = "skipped" if rule else ("overridden" if override_count else "enabled")
             source = "inherited" if suite_rule else ("direct" if direct_rule else ("override" if override_count else "none"))
             reason = None
             if rule:
                 reason = {"code": rule.reason_code, "note": rule.reason_note or ""}
+            variables = case_variable_service.build_profile_variables(
+                case,
+                definitions.get(case.id, {}),
+                case_variable_service.node_variable_override_map(
+                    overrides["membership_patches"].get(membership.id, {})
+                ),
+            )
+            preview = case_variable_service.profile_case_preview(variables)
             items.append(
-                {"node_type": "case", "id": case.id, "name": case.name, "effective_status": effective, "status_source": source, "reason": reason, "has_children": True, "override_count": override_count}
+                {"node_type": "case", "id": case.id, "suite_case_id": membership.id, "name": case.name, "effective_status": effective, "status_source": source, "reason": reason, "has_children": True, "override_count": override_count, "variable_count": preview["variable_count"], "variables_preview": preview["variables_preview"]}
             )
         start = (page - 1) * page_size
         return {"total": len(items), "page": page, "page_size": page_size, "items": items[start : start + page_size]}
@@ -150,16 +169,29 @@ async def workspace_nodes(
         case = await resolution_repo.get_case(db, parent_id)
         if case is None or case.deleted_at is not None or case.project_id != profile.project_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用例不存在")
+        membership = None
+        if suite_case_id is not None:
+            membership = await resolution_repo.get_suite_case(db, suite_case_id)
+            if (
+                membership is None
+                or membership.case_id != case.id
+                or (ancestor_suite_id is not None and membership.suite_id != ancestor_suite_id)
+            ):
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="套件用例关系不存在")
+            if ancestor_suite_id is None:
+                ancestor_suite_id = membership.suite_id
+        elif ancestor_suite_id is not None:
+            membership = await resolution_repo.find_membership(db, ancestor_suite_id, case.id)
         suite_rule = None
         if ancestor_suite_id is not None:
-            suite, _case, membership = await skip_rules_repo.load_target(
+            suite, _case, relation = await skip_rules_repo.load_target(
                 db, project_id=profile.project_id, suite_id=ancestor_suite_id, case_id=case.id
             )
             if (
                 suite is None
                 or suite.deleted_at is not None
                 or suite.project_id != profile.project_id
-                or membership is None
+                or relation is None
             ):
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="套件用例关系不存在")
             suite_rule = skip["suite"].get(ancestor_suite_id)
@@ -168,12 +200,15 @@ async def workspace_nodes(
             if ancestor_suite_id is not None
             else None
         )
+        membership_id = membership.id if membership is not None else None
+        membership_patches = overrides["membership_patches"].get(membership_id, {}) if membership_id is not None else {}
+        membership_types = overrides["membership"].get(membership_id, {}) if membership_id is not None else {}
         nodes = [node for node in (case.flow_nodes or case.steps or []) if isinstance(node, dict)]
         effective_nodes: dict[str, dict] = {}
         element_ids: set[int] = set()
         for node in nodes:
             node_key = str(node.get("key") or "")
-            patch = overrides["node_patches"].get((ancestor_suite_id, case.id, node_key), {})
+            patch = membership_patches.get(node_key, {})
             effective_node = {**node, **({"element_id": patch["element_id"]} if "element_id" in patch else {})}
             effective_nodes[node_key] = effective_node
             try:
@@ -192,14 +227,14 @@ async def workspace_nodes(
                 continue
             node_key = str(node.get("key") or "")
             rule = skip["step"].get((ancestor_suite_id, case.id), {}).get(node_key)
-            overridden = overrides["node"].get((ancestor_suite_id, case.id), {}).get(node_key) == "step"
+            overridden = membership_types.get(node_key) == "step"
             items.append(_node_item("step", case.id, node_key, effective_nodes[node_key], rule, case_rule, overridden, element_names))
         for node in nodes:
             if node.get("kind") != "assertion":
                 continue
             node_key = str(node.get("key") or "")
             rule = skip["assertion"].get((ancestor_suite_id, case.id), {}).get(node_key)
-            overridden = overrides["node"].get((ancestor_suite_id, case.id), {}).get(node_key) == "assertion"
+            overridden = membership_types.get(node_key) == "assertion"
             items.append(_node_item("assertion", case.id, node_key, effective_nodes[node_key], rule, case_rule, overridden, element_names))
         start = (page - 1) * page_size
         return {"total": len(items), "page": page, "page_size": page_size, "items": items[start : start + page_size]}

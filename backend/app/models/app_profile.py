@@ -244,7 +244,11 @@ class AppProfileVariableOverride(Base, TimestampMixin, SoftDeleteMixin):
 
 
 class AppProfileNodeOverride(Base, TimestampMixin, SoftDeleteMixin):
-    """步骤/断言可变字段的白名单补丁，不允许修改节点身份与顺序（方案 §2.4）。"""
+    """步骤/断言可变字段的白名单补丁，不允许修改节点身份与顺序（方案 §2.4）。
+
+    用例节点覆盖以 ``suite_case_id``（``test_suite_cases.id``）为身份，避免同一用例在同一
+    套件中重复编排时共享覆盖配置；套件前后置步骤的 ``suite_case_id`` 始终为空。
+    """
 
     __tablename__ = "app_profile_node_overrides"
     __table_args__ = (
@@ -256,16 +260,17 @@ class AppProfileNodeOverride(Base, TimestampMixin, SoftDeleteMixin):
             name="ck_profile_node_override_patch",
         ),
         CheckConstraint(
-            "(target_type IN ('step', 'assertion') AND suite_id IS NOT NULL AND case_id IS NOT NULL)"
-            " OR (target_type = 'suite_step' AND suite_id IS NOT NULL AND case_id IS NULL)",
+            "(target_type IN ('step', 'assertion') AND suite_id IS NOT NULL AND case_id IS NOT NULL"
+            " AND suite_case_id IS NOT NULL)"
+            " OR (target_type = 'suite_step' AND suite_id IS NOT NULL AND case_id IS NULL"
+            " AND suite_case_id IS NULL)",
             name="ck_profile_node_override_shape",
         ),
         Index(
             "uq_profile_node_override_active",
             "profile_id",
-            "suite_id",
+            "suite_case_id",
             "target_type",
-            "case_id",
             "node_key",
             unique=True,
             postgresql_where=text(
@@ -290,12 +295,19 @@ class AppProfileNodeOverride(Base, TimestampMixin, SoftDeleteMixin):
             "suite_id",
             postgresql_where=text("deleted_at IS NULL AND suite_id IS NOT NULL"),
         ),
+        Index(
+            "idx_profile_node_override_suite_case",
+            "suite_case_id",
+            postgresql_where=text("deleted_at IS NULL AND suite_case_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     profile_id: Mapped[int] = mapped_column(ForeignKey("app_profiles.id"), nullable=False)
     # 方案 §2.3：套件上下文，避免共享用例在不同套件中的覆盖互相污染；套件步骤覆盖时 case_id 为空
     suite_id: Mapped[int | None] = mapped_column(ForeignKey("test_suites.id"))
+    # 编排项身份（test_suite_cases.id）：区分同一用例在同一套件的重复编排；套件步骤为空
+    suite_case_id: Mapped[int | None] = mapped_column(ForeignKey("test_suite_cases.id"))
     target_type: Mapped[str] = mapped_column(String(16), nullable=False)
     case_id: Mapped[int | None] = mapped_column(ForeignKey("test_cases.id"))
     node_key: Mapped[UUID] = mapped_column(nullable=False)
@@ -314,7 +326,8 @@ class AppProfileAuditLog(Base):
             " 'release_create', 'release_update', 'release_disable',"
             " 'skip_batch', 'restore_batch', 'element_override_upsert',"
             " 'element_override_restore', 'variable_override_upsert',"
-            " 'variable_override_restore', 'node_override_upsert', 'node_override_restore')",
+            " 'variable_override_restore', 'node_override_upsert', 'node_override_restore',"
+            " 'node_override_batch')",
             name="ck_profile_audit_action",
         ),
         CheckConstraint("jsonb_typeof(changes) = 'array'", name="ck_profile_audit_changes"),

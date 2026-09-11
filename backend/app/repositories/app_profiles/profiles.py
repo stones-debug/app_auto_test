@@ -225,6 +225,7 @@ AUDIT_ACTIONS = frozenset(
         "release_create", "release_update", "release_disable",
         "skip_batch", "restore_batch", "element_override_upsert", "element_override_restore",
         "variable_override_upsert", "variable_override_restore", "node_override_upsert", "node_override_restore",
+        "node_override_batch",
     }
 )
 

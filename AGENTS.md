@@ -82,6 +82,16 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 - 执行详情/报告详情响应由扁平 `cases` 改为嵌套 `suites`（`load_suite_tree`）；报告服务保留 `cases`（`load_case_tree`）供 HTML/列表，`suites` 供分层展示。
 - 执行状态优先级：`error > failed > stopped > skipped > passed`；套件前置失败则套件内用例 `skipped` 但套件后置仍执行。
 
+## 用例变量快捷展示与覆盖（套件编排项 / APP 档案节点）
+- **编排项身份是 `test_suite_cases.id`（`suite_case_id`）**：同一用例可在同一套件重复编排，变量/节点覆盖都按编排项隔离。APP 档案树、工作台子节点缓存键、前端 row key 全部用 `suite_case_id`（解析器里叫 `membership_*` 索引）。
+- `test_suite_cases.variable_overrides`（JSONB）是编排项级覆盖；`app_profile_node_overrides.suite_case_id` 绑定编排项，唯一键 `(profile_id, suite_case_id, target_type, node_key)`，套件前后置步骤该列恒空。
+- **变量优先级**：执行参数 > APP档案节点覆盖 > APP档案变量覆盖 > **编排项覆盖** > 套件变量 > 用例变量 > 项目变量 > 全局变量。`profile_resolver_load.merge_variables` 与 `repositories/worker.build_variable_map`、`_materialize_unprofiled_tree`（无档案执行同样应用编排项覆盖）三处必须一致。
+- **变量引用统一口径**：只扫动作/断言 `params|parameters` 里真实出现的 `${name}`（`node_variable_references`，会排除 `variable_name` 等运行时输出名），元素智能定位配置不纳入。动作与断言都支持 `variable_overrides`。
+- 覆盖只改当前编排项 / 当前档案节点，不改公共用例；空字符串是合法覆盖值，`null` 表示删除覆盖恢复继承。
+- 用例列表接口只带 `variable_count` + 前 2 项 `variables_preview`（批量查询，禁 N+1）；完整详情走 `GET /api/suites/{sid}/cases/{membership_id}/variables`、`GET /api/app-profiles/{pid}/suite-cases/{suite_case_id}/variables`；写入分别走对应 `PATCH .../variable-overrides`（档案侧是批量事务：保留其它 patch 字段、空 patch 软删、单次 revision + 单条 `node_override_batch` 审计、无效整体回滚、revision 冲突 409）。
+- **删除编排项必须先物理删除其节点覆盖**（FK 无 ON DELETE），见 `suite_service.remove_case` → `overrides_repo.delete_for_membership`。
+- 前端 `utils/caseVariables.ts` 持有共享口径的纯函数（摘要裁剪、状态色、点击阻断父级事件、增量 payload、多值显示）；`CaseVariableSummary.vue` / `CaseVariableEditor.vue` 是共享组件。保存后只就地更新当前行摘要，不重置滚动/排序/展开。
+
 ## 编码测试规则（Step 门禁）
 - **测试只在整个 Step 全部子任务完成后才执行**。一个 Step 内若包含多个子步骤任务（后端接口 / 前端页面 / 迁移 / 文档等），必须等所有子任务都实现完成，才运行该 Step 的完整测试（后端 pytest / Agent pytest / 前端 vitest+build / ruff / alembic check）。
 - 禁止在 Step 中途对半成品跑完整测试集或提交；中途只做轻量语法自检（如 `ruff` 单文件、`vue-tsc` 单文件），不作为通过依据。

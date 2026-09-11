@@ -69,6 +69,8 @@ async def test_profile_tables_cleaned_by_conftest(client: AsyncClient):
         json={"case_id": case_id},
         headers=headers,
     )
+    memberships = await client.get(f"/api/suites/{suite_id}/cases", headers=headers)
+    suite_case_id = memberships.json()[0]["id"]
 
     # 直接插入档案相关数据（ORM，接口尚不存在）
     async with SessionLocal() as db:
@@ -103,6 +105,7 @@ async def test_profile_tables_cleaned_by_conftest(client: AsyncClient):
         db.add(
             AppProfileNodeOverride(
                 profile_id=profile.id, target_type="step", suite_id=suite_id, case_id=case_id,
+                suite_case_id=suite_case_id,
                 node_key=uuid.UUID("a58047bb-4ed8-4c22-94d2-bef66fe8468a"),
                 patch={"timeout": 15}, created_by=user.id,
             )

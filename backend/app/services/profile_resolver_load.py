@@ -54,12 +54,10 @@ async def prepare_load_context(
         element_ids.update(collect_element_ids(suite.setup_steps, suite.teardown_steps))
     for case in cases.values():
         element_ids.update(collect_element_ids(case.flow_nodes or case.steps))
-    suite_ids = set(context.suites)
-    case_ids = set(cases)
-    for bucket in ("step_overrides", "assertion_overrides"):
-        for (suite_id, case_id), patches in config.get(bucket, {}).items():
-            if suite_id in suite_ids and case_id in case_ids:
-                element_ids.update(collect_element_ids(patches))
+    for bucket in ("membership_step_overrides", "membership_assertion_overrides"):
+        for patches in config.get(bucket, {}).values():
+            for patch in patches.values():
+                element_ids.update(collect_element_ids(patch))
     for (suite_id, _node_key), patch in config.get("suite_step_overrides", {}).items():
         if suite_id in suite_ids:
             element_ids.update(collect_element_ids(patch))
@@ -72,10 +70,13 @@ async def load_config(db: AsyncSession, profile_id: int) -> dict:
     return await resolution_repo.load_config(db, profile_id)
 
 
-async def collect_suite_cases(db: AsyncSession, suite_ids: list[int]) -> tuple[dict[int, list[int]], dict[int, TestCase]]:
-    suite_case_ids = await resolution_repo.list_suite_members(db, suite_ids)
-    case_ids = [case_id for ids in suite_case_ids.values() for case_id in ids]
-    return suite_case_ids, await load_cases_by_id(db, case_ids)
+async def collect_suite_cases(
+    db: AsyncSession, suite_ids: list[int]
+) -> tuple[dict[int, list[tuple[int, int, dict[str, str]]]], dict[int, TestCase]]:
+    """返回每个套件的编排项 ``(membership_id, case_id, variable_overrides)`` 与用例索引。"""
+    memberships = await resolution_repo.list_suite_memberships(db, suite_ids)
+    case_ids = [case_id for members in memberships.values() for _mid, case_id, _ov in members]
+    return memberships, await load_cases_by_id(db, case_ids)
 
 
 async def load_cases_by_id(db: AsyncSession, case_ids: list[int]) -> dict[int, TestCase]:
@@ -91,8 +92,9 @@ async def merge_variables(
     execution_variables: dict,
     context: ResolutionLoadContext | None = None,
     case_occurrence: int | None = None,
+    membership_overrides: dict[str, str] | None = None,
 ) -> dict:
-    """变量优先级：全局 → 项目 → 用例 → 套件 → APP 档案 → 执行参数。"""
+    """变量优先级（§10.6）：全局 → 项目 → 用例 → 套件 → 编排项 → APP 档案 → 执行参数。"""
     loaded = (
         [*context.global_variables, *context.project_variables]
         if context is not None
@@ -105,8 +107,10 @@ async def merge_variables(
         if context is not None and suite_id is not None else
         [variable for variable in loaded if variable.scope == "suite"]
     )
+    # 编排项覆盖高于套件/用例变量，但低于 APP 档案覆盖与执行参数
+    membership_names = set(membership_overrides or {})
     higher_names = (
-        set(execution_variables) | set(config["variable_overrides"]) |
+        set(execution_variables) | set(config["variable_overrides"]) | membership_names |
         {variable.name for variable in case_rows} | {variable.name for variable in suite_rows} |
         set(case.variables if case is not None else {})
     )
@@ -123,7 +127,8 @@ async def merge_variables(
         merged.update(resolve_rows(
             case_rows, cache,
             ("case", suite_id, case.id, case_occurrence if case_occurrence is not None else case.id),
-            skip_names=set(execution_variables) | set(config["variable_overrides"]) | {variable.name for variable in suite_rows},
+            skip_names=set(execution_variables) | set(config["variable_overrides"]) | membership_names
+            | {variable.name for variable in suite_rows},
         ))
     if case is not None and case.variables:
         merged.update(case.variables)
@@ -132,8 +137,9 @@ async def merge_variables(
         if variable.scope == "suite":
             merged.update(resolve_rows(
                 [variable], cache, ("suite", suite_id),
-                skip_names=set(config["variable_overrides"]) | set(execution_variables),
+                skip_names=set(config["variable_overrides"]) | set(execution_variables) | membership_names,
             ))
+    merged.update(membership_overrides or {})
     merged.update(config["variable_overrides"])
     merged.update(execution_variables)
     return merged

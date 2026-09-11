@@ -95,19 +95,32 @@ def variable_references(value: Any) -> list[str]:
     return found
 
 
+# 运行时输出变量名（如 get_text/get_attribute 的 variable_name），不是输入变量
+_OUTPUT_PARAM_KEYS = frozenset({"variable_name"})
+
+
+def node_variable_references(node: dict) -> list[str]:
+    """节点参数中真实引用的输入变量；排除 variable_name 等运行时输出名。"""
+    params = node.get("params")
+    if not isinstance(params, dict):
+        params = node.get("parameters")
+    if not isinstance(params, dict):
+        return []
+    return variable_references(
+        {key: value for key, value in params.items() if key not in _OUTPUT_PARAM_KEYS}
+    )
+
+
 def validate_variable_override(source_node: dict, value: Any) -> dict[str, str]:
     if not isinstance(value, dict):
         raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", "variable_overrides 必须是字符串字典")
-    params = source_node.get("params")
-    if not isinstance(params, dict):
-        params = source_node.get("parameters")
-    references = set(variable_references(params if isinstance(params, dict) else {}))
+    references = set(node_variable_references(source_node))
     result: dict[str, str] = {}
     for name, override in value.items():
         if not isinstance(name, str) or not name:
             raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", "variable_overrides 的变量名不能为空")
         if name not in references:
-            raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", f"变量未被目标步骤引用: {name}")
+            raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", f"变量未被目标节点引用: {name}")
         if not isinstance(override, str):
             raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", f"变量覆盖值必须是字符串: {name}")
         result[name] = override
@@ -188,8 +201,7 @@ def validate_node_patch(node_type: str, source_node: dict, patch: dict[str, Any]
     """保存覆盖前，以公共节点合并补丁并执行与解析阶段相同的 Registry 校验。"""
     variable_patch = patch.get("variable_overrides")
     if variable_patch is not None:
-        if node_type != "step":
-            raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", "variable_overrides 只允许动作步骤")
+        # 动作与断言节点都允许覆盖变量；校验仍以该节点参数中真实引用的 ${name} 为界
         validate_variable_override(source_node, variable_patch)
     patched = _apply_whitelist_patch(
         deepcopy(source_node), {key: value for key, value in patch.items() if key != "variable_overrides"}

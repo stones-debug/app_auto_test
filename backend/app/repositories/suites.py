@@ -213,6 +213,14 @@ async def find_relation(
     return rows.scalar_one_or_none()
 
 
+async def update_membership_overrides(
+    db: AsyncSession, relation: TestSuiteCase, overrides: dict[str, str]
+) -> TestSuiteCase:
+    relation.variable_overrides = overrides
+    await db.flush()
+    return relation
+
+
 async def delete_relation(db: AsyncSession, relation: TestSuiteCase) -> None:
     await db.delete(relation)
 

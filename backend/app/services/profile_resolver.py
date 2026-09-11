@@ -248,14 +248,14 @@ def _filter_and_patch(*args: Any, **kwargs: Any) -> tuple[list[dict], list[Exclu
     return _filter_and_patch_impl(*args, exclusion_cls=ExclusionItem, **kwargs)
 
 
-def _case_scoped(
-    config: dict, suite_id: int | None, case_id: int, kind: str
+def _membership_scoped(
+    config: dict, membership_id: int | None, kind: str
 ) -> dict[str, dict[str, Any]]:
-    """读取当前套件中的用例节点覆盖；共享用例的其他套件不受影响。"""
-    if suite_id is None:
+    """读取当前编排项（suite_case_id）的节点覆盖；重复编排的同一用例互不影响。"""
+    if membership_id is None:
         return {}
-    bucket = config["step_overrides"] if kind == "step" else config["assertion_overrides"]
-    return dict(bucket.get((suite_id, case_id), {}))
+    bucket = config["membership_step_overrides"] if kind == "step" else config["membership_assertion_overrides"]
+    return dict(bucket.get(membership_id, {}))
 
 
 async def resolve(
@@ -304,11 +304,27 @@ async def resolve(
     if request.target_type == "case":
         case_ids = list(dict.fromkeys(request.target_ids))
         if request.context_suite_id is not None:
+            # 单用例带套件上下文：取每个用例在该套件中排序最前的编排项作为覆盖身份
+            members_map = await resolution_repo.list_suite_memberships(
+                db, [request.context_suite_id]
+            )
+            first_by_case: dict[int, tuple[int, int, dict[str, str]]] = {}
+            for member in members_map.get(request.context_suite_id, []):
+                first_by_case.setdefault(member[1], member)
+            members: list[tuple[int | None, int, dict[str, str]]] = [
+                first_by_case.get(case_id, (None, case_id, {})) for case_id in case_ids
+            ]
             suite_specs: list[dict] = [
-                {"suite_id": request.context_suite_id, "virtual": False, "case_ids": case_ids}
+                {"suite_id": request.context_suite_id, "virtual": False, "members": members}
             ]
         else:
-            suite_specs = [{"suite_id": None, "virtual": True, "case_ids": case_ids}]
+            suite_specs = [
+                {
+                    "suite_id": None,
+                    "virtual": True,
+                    "members": [(None, case_id, {}) for case_id in case_ids],
+                }
+            ]
         cases_by_id = await _load_cases_by_id(db, case_ids)
     else:
         if request.target_scope == "profile_all":
@@ -317,9 +333,9 @@ async def resolve(
         else:
             suite_ids = list(dict.fromkeys(request.target_ids))
             suite_rows = []
-        suite_case_ids, cases_by_id = await _collect_suite_cases(db, suite_ids)
+        memberships, cases_by_id = await _collect_suite_cases(db, suite_ids)
         suite_specs = [
-            {"suite_id": suite_id, "virtual": False, "case_ids": suite_case_ids.get(suite_id, [])}
+            {"suite_id": suite_id, "virtual": False, "members": memberships.get(suite_id, [])}
             for suite_id in suite_ids
         ]
 
@@ -381,7 +397,7 @@ async def resolve(
     na_cases = [item for item in exclusions if item.target_type == "case"]
     summary = {
         "source_suites": len(suite_specs),
-        "source_cases": sum(len(spec["case_ids"]) for spec in suite_specs),
+        "source_cases": sum(len(spec["members"]) for spec in suite_specs),
         "executable_suites": len(executable_suites),
         "executable_cases": len(executable_cases),
         "executable_steps": sum(
@@ -497,7 +513,7 @@ async def _build_suite(
             )
 
     resolved_cases: list[ResolvedCase] = []
-    for case_pos, case_id in enumerate(spec["case_ids"], start=1):
+    for case_pos, (membership_id, case_id, membership_overrides) in enumerate(spec["members"], start=1):
         case = cases_by_id.get(case_id)
         if case is None:
             continue
@@ -518,7 +534,8 @@ async def _build_suite(
                 )
                 continue
         resolved_case, case_exclusions, case_override_count = await _resolve_case(
-            db, request, config, case, suite_id, suite_name, case_pos, module_names, load_context
+            db, request, config, case, suite_id, suite_name, case_pos, module_names, load_context,
+            membership_id=membership_id, membership_overrides=membership_overrides,
         )
         exclusions.extend(case_exclusions)
         override_count += case_override_count
@@ -566,15 +583,17 @@ async def _resolve_case(
     case_order: int,
     module_names: dict[int, str],
     load_context: ResolutionLoadContext,
+    membership_id: int | None = None,
+    membership_overrides: dict[str, str] | None = None,
 ) -> tuple[ResolvedCase | None, list[ExclusionItem], int]:
     """解析单个用例（步骤/断言/元素），返回 ResolvedCase 或整体 N/A。"""
     variables = await _merge_variables(
         db, request.project_id, suite_id, case, config, request.execution_variables, load_context,
-        case_occurrence=case_order,
+        case_occurrence=case_order, membership_overrides=membership_overrides,
     )
     selected_steps = _select_steps_for_run(case.flow_nodes or case.steps or [], request.run_options)
-    step_overrides = _case_scoped(config, suite_id, case.id, "step")
-    assertion_overrides = _case_scoped(config, suite_id, case.id, "assertion")
+    step_overrides = _membership_scoped(config, membership_id, "step")
+    assertion_overrides = _membership_scoped(config, membership_id, "assertion")
     override_count = len(
         {str(node.get("key") or "") for node in selected_steps if isinstance(node, dict)} & set(step_overrides)
     )
@@ -602,8 +621,7 @@ async def _resolve_case(
         node = kept[0]
         variable_patch = node.pop("variable_overrides", None)
         if variable_patch is not None:
-            if is_assertion:
-                raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", "variable_overrides 只允许动作步骤")
+            # 动作与断言节点都支持变量覆盖，边界为该节点参数里真实引用的 ${name}
             variable_patch = validate_variable_override(source_node, variable_patch)
         render_variables = dict(variables)
         if variable_patch:

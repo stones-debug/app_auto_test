@@ -47,22 +47,24 @@ async def load_config(db: AsyncSession, profile_id: int) -> dict:
         elif rule.target_type in ("step", "assertion") and rule.suite_id is not None and rule.case_id is not None and rule.node_key is not None:
             bucket = step_rules if rule.target_type == "step" else assertion_rules
             bucket.setdefault((rule.suite_id, rule.case_id), {})[str(rule.node_key)] = rule
-    step_overrides: dict[tuple[int, int], dict[str, dict[str, Any]]] = {}
-    assertion_overrides: dict[tuple[int, int], dict[str, dict[str, Any]]] = {}
+    step_overrides: dict[int, dict[str, dict[str, Any]]] = {}
+    assertion_overrides: dict[int, dict[str, dict[str, Any]]] = {}
     suite_step_overrides: dict[tuple[int, str], dict[str, Any]] = {}
     for override in node_overrides:
         if override.target_type == "suite_step":
             if override.suite_id is not None:
                 suite_step_overrides[(override.suite_id, str(override.node_key))] = deepcopy(override.patch)
-        elif override.suite_id is not None and override.case_id is not None:
+        elif override.suite_case_id is not None:
+            # 用例节点覆盖以编排项 suite_case_id 为身份，重复编排互不污染
             bucket = step_overrides if override.target_type == "step" else assertion_overrides
-            bucket.setdefault((override.suite_id, override.case_id), {})[str(override.node_key)] = deepcopy(override.patch)
+            bucket.setdefault(override.suite_case_id, {})[str(override.node_key)] = deepcopy(override.patch)
     return {
         "skip_suite": skip_suite, "skip_case": skip_case, "step_rules": step_rules,
         "assertion_rules": assertion_rules, "skip_suite_step": skip_suite_step,
         "element_overrides": {row.element_id: row for row in element_overrides},
         "variable_overrides": {row.name: row.value for row in variable_overrides},
-        "step_overrides": step_overrides, "assertion_overrides": assertion_overrides,
+        "membership_step_overrides": step_overrides,
+        "membership_assertion_overrides": assertion_overrides,
         "suite_step_overrides": suite_step_overrides,
     }
 
@@ -78,6 +80,28 @@ async def list_suite_members(db: AsyncSession, suite_ids: list[int]) -> dict[int
     )
     for suite_id, case_id in rows.all():
         result.setdefault(suite_id, []).append(case_id)
+    return result
+
+
+async def list_suite_memberships(
+    db: AsyncSession, suite_ids: list[int]
+) -> dict[int, list[tuple[int, int, dict[str, str]]]]:
+    """返回每个套件的编排项 ``(membership_id, case_id, variable_overrides)``，按执行顺序。"""
+    result: dict[int, list[tuple[int, int, dict[str, str]]]] = {suite_id: [] for suite_id in suite_ids}
+    if not suite_ids:
+        return result
+    rows = await db.execute(
+        select(
+            TestSuiteCase.id,
+            TestSuiteCase.suite_id,
+            TestSuiteCase.case_id,
+            TestSuiteCase.variable_overrides,
+        )
+        .where(TestSuiteCase.suite_id.in_(suite_ids))
+        .order_by(TestSuiteCase.suite_id, TestSuiteCase.sort_order, TestSuiteCase.id)
+    )
+    for membership_id, suite_id, case_id, overrides in rows.all():
+        result.setdefault(suite_id, []).append((membership_id, case_id, dict(overrides or {})))
     return result
 
 
@@ -147,6 +171,24 @@ async def get_case(db: AsyncSession, case_id: int) -> TestCase | None:
     return await db.get(TestCase, case_id)
 
 
+async def get_suite_case(db: AsyncSession, membership_id: int) -> TestSuiteCase | None:
+    return await db.get(TestSuiteCase, membership_id)
+
+
+async def find_membership(
+    db: AsyncSession, suite_id: int, case_id: int
+) -> TestSuiteCase | None:
+    """取套件中该用例排序最前的编排项（兼容仅按 suite/case 寻址的旧调用）。"""
+    return (
+        await db.execute(
+            select(TestSuiteCase)
+            .where(TestSuiteCase.suite_id == suite_id, TestSuiteCase.case_id == case_id)
+            .order_by(TestSuiteCase.sort_order, TestSuiteCase.id)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
 async def get_project_modules(db: AsyncSession, module_ids: set[int]) -> dict[int, str]:
     if not module_ids:
         return {}
@@ -214,21 +256,40 @@ async def load_override_index(db: AsyncSession, profile_id: int) -> dict:
         loaded.append(list(rows.scalars().all()))
     element_rows, variable_rows, node_rows = loaded
     node_idx: dict[tuple[int, int], dict[str, str]] = {}
+    membership_idx: dict[int, dict[str, str]] = {}
     suite_step_idx: dict[tuple[int, str], dict] = {}
     node_patches: dict[tuple[int, int, str], dict] = {}
+    membership_patches: dict[int, dict[str, dict]] = {}
     for row in node_rows:
         if row.target_type == "suite_step" and row.suite_id is not None:
             suite_step_idx[(row.suite_id, str(row.node_key))] = row.patch
         elif row.suite_id is not None and row.case_id is not None:
-            node_idx.setdefault((row.suite_id, row.case_id), {})[str(row.node_key)] = row.target_type
-            node_patches[(row.suite_id, row.case_id, str(row.node_key))] = deepcopy(row.patch)
+            node_key = str(row.node_key)
+            node_idx.setdefault((row.suite_id, row.case_id), {})[node_key] = row.target_type
+            node_patches[(row.suite_id, row.case_id, node_key)] = deepcopy(row.patch)
+            if row.suite_case_id is not None:
+                membership_idx.setdefault(row.suite_case_id, {})[node_key] = row.target_type
+                membership_patches.setdefault(row.suite_case_id, {})[node_key] = deepcopy(row.patch)
     return {
         "element": [row.element_id for row in element_rows],
         "variable": [row.name for row in variable_rows],
         "node": node_idx,
         "node_patches": node_patches,
+        "membership": membership_idx,
+        "membership_patches": membership_patches,
         "suite_step": suite_step_idx,
     }
+
+
+async def suite_memberships(db: AsyncSession, suite_id: int) -> list[TestSuiteCase]:
+    """套件内的全部编排项（occurrence），按执行顺序；已软删用例被排除。"""
+    rows = await db.execute(
+        select(TestSuiteCase)
+        .join(TestCase, TestCase.id == TestSuiteCase.case_id)
+        .where(TestSuiteCase.suite_id == suite_id, TestCase.deleted_at.is_(None))
+        .order_by(TestSuiteCase.sort_order, TestSuiteCase.id)
+    )
+    return list(rows.scalars().all())
 
 
 async def case_counts(db: AsyncSession, project_id: int) -> dict[int, int]:

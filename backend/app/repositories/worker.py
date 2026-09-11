@@ -194,8 +194,9 @@ async def build_variable_map(
     suite_id: int | None = None,
     use_execution_suite: bool = True,
     case_occurrence: int | None = None,
+    membership_overrides: dict[str, str] | None = None,
 ) -> dict:
-    """按 §10.6 优先级构造变量表：全局 → 项目 → 用例 → 套件 → 执行参数。
+    """按 §10.6 优先级构造变量表：全局 → 项目 → 用例 → 套件 → 编排项 → 执行参数。
 
     suite_id 显式传入时以它为准（批量执行会逐套件物化）；未传入且
     use_execution_suite 为真时退回 execution.suite_id（仅单套件执行）。
@@ -216,9 +217,10 @@ async def build_variable_map(
             select(Variable).where(Variable.scope == "suite", Variable.suite_id == target_suite_id)
         )).scalars().all()
     case_values = set(case.variables or {}) if case is not None else set()
+    membership_values = set(membership_overrides or {})
     merged = await build_base_variable_map(
         db, execution,
-        excluded_names=set(execution_variables) | case_values |
+        excluded_names=set(execution_variables) | case_values | membership_values |
         {row.name for row in case_rows} | {row.name for row in suite_rows},
     )
     cache = getattr(execution, "_variable_resolution_cache", {})
@@ -226,14 +228,16 @@ async def build_variable_map(
         merged.update(resolve_rows(
             list(case_rows), cache,
             ("case", suite_id, case.id, case_occurrence if case_occurrence is not None else case.id),
-            skip_names=case_values,
+            skip_names=case_values | membership_values,
         ))
         if case.variables:
             merged.update({key: str(value) for key, value in case.variables.items()})
     if target_suite_id is not None:
         merged.update(resolve_rows(
-            list(suite_rows), cache, ("suite", target_suite_id), skip_names=set(execution_variables),
+            list(suite_rows), cache, ("suite", target_suite_id),
+            skip_names=set(execution_variables) | membership_values,
         ))
+    merged.update(membership_overrides or {})
     merged.update(execution_variables)
     return merged
 
@@ -462,14 +466,20 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
                 ))
 
         if selected_case_ids is None:
-            selected_case_ids = list((await db.execute(
-                select(TestSuiteCase.case_id).where(TestSuiteCase.suite_id == suite_id).order_by(TestSuiteCase.sort_order, TestSuiteCase.id)
-            )).scalars().all())
-        for case_order, case_id in enumerate(selected_case_ids, start=1):
+            member_rows = (await db.execute(
+                select(TestSuiteCase.id, TestSuiteCase.case_id, TestSuiteCase.variable_overrides)
+                .where(TestSuiteCase.suite_id == suite_id)
+                .order_by(TestSuiteCase.sort_order, TestSuiteCase.id)
+            )).all()
+            members = [(membership_id, case_id, dict(overrides or {})) for membership_id, case_id, overrides in member_rows]
+        else:
+            # 单用例执行无套件编排上下文，不应用编排项覆盖
+            members = [(None, case_id, {}) for case_id in selected_case_ids]
+        for case_order, (_membership_id, case_id, membership_overrides) in enumerate(members, start=1):
             case = await db.get(TestCase, case_id)
             if case is None or case.deleted_at is not None:
                 continue
-            # 用例变量位于项目/全局之上、套件变量之下；执行参数始终最高。
+            # 用例变量位于项目/全局之上、套件变量之下；编排项覆盖高于套件变量、低于执行参数。
             variable_map = {**base_map}
             case_rows = (await db.execute(
                 select(Variable).where(Variable.scope == "case", Variable.case_id == case.id)
@@ -477,10 +487,11 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
             variable_map.update(resolve_rows(
                 list(case_rows), getattr(execution, "_variable_resolution_cache", {}),
                 ("case", suite_order, suite_id, case.id, case_order),
-                skip_names=set(case.variables or {}),
+                skip_names=set(case.variables or {}) | set(membership_overrides),
             ))
             variable_map.update({key: str(value) for key, value in (case.variables or {}).items()})
             variable_map.update(suite_variables)
+            variable_map.update(membership_overrides)
             variable_map.update(execution_variables)
             snapshot = await build_case_snapshot(
                 db, case, variable_map,

@@ -130,6 +130,18 @@ async def _attach_case_to_suite(db, project_id: int, case_id: int, name: str) ->
     return suite.id
 
 
+async def _membership_id(db, suite_id: int, case_id: int) -> int:
+    """用例节点覆盖以编排项 suite_case_id 为身份。"""
+    return (
+        await db.execute(
+            select(SuiteCaseModel.id)
+            .where(SuiteCaseModel.suite_id == suite_id, SuiteCaseModel.case_id == case_id)
+            .order_by(SuiteCaseModel.sort_order, SuiteCaseModel.id)
+            .limit(1)
+        )
+    ).scalar_one()
+
+
 async def test_run_options_select_and_order_phases(client):
     """默认只执行 main；勾选前置后按 setup → main 连续编号。"""
     base = await _base(client)
@@ -192,7 +204,7 @@ async def test_step_skip_and_override(client):
         )
         db.add(AppProfileSkipRule(profile_id=profile_id, target_type="step", suite_id=suite_id, case_id=case_id, node_key=K2, reason_code="unsupported", reason_note="n"))
         # 覆盖 K1(setup launch_app) 的 params.package
-        db.add(AppProfileNodeOverride(profile_id=profile_id, target_type="step", suite_id=suite_id, case_id=case_id, node_key=K1, patch={"params": {"package": "patched_pkg"}}))
+        db.add(AppProfileNodeOverride(profile_id=profile_id, target_type="step", suite_id=suite_id, case_id=case_id, suite_case_id=await _membership_id(db, suite_id, case_id), node_key=K1, patch={"params": {"package": "patched_pkg"}}))
         await db.commit()
         result = await resolve_compat(
             ResolutionRequest(
@@ -399,6 +411,7 @@ async def test_step_variable_override_is_local_and_not_in_snapshot(client):
                 target_type="step",
                 suite_id=suite_id,
                 case_id=case_id,
+                suite_case_id=await _membership_id(db, suite_id, case_id),
                 node_key=K1,
                 patch={"variable_overrides": {"pkg": "from_step"}},
             )
@@ -428,6 +441,7 @@ async def test_execution_variables_still_win_over_step_variable_override(client)
         db.add(
             AppProfileNodeOverride(
                 profile_id=profile_id, target_type="step", suite_id=suite_id, case_id=case_id,
+                suite_case_id=await _membership_id(db, suite_id, case_id),
                 node_key=K1, patch={"variable_overrides": {"pkg": "from_step"}},
             )
         )
@@ -469,12 +483,22 @@ def test_variable_override_patch_validates_source_and_keeps_empty_values():
     }
     patched = validate_node_patch("step", source, {"variable_overrides": {"pkg": ""}})
     assert patched["params"]["package"] == source["params"]["package"]
-    with pytest.raises(ProfileRuleError, match="变量未被目标步骤引用"):
+    with pytest.raises(ProfileRuleError, match="变量未被目标节点引用"):
         validate_node_patch("step", source, {"variable_overrides": {"missing": "x"}})
     with pytest.raises(ProfileRuleError, match="变量覆盖值必须是字符串"):
         validate_node_patch("step", source, {"variable_overrides": {"pkg": 1}})
-    with pytest.raises(ProfileRuleError, match="只允许动作步骤"):
-        validate_node_patch("assertion", {"type": "element_exists", "params": {"x": "${pkg}"}}, {"variable_overrides": {"pkg": "x"}})
+    # 断言节点同样支持变量覆盖（本次扩展），边界仍是该断言参数中真实引用的变量
+    assertion = {
+        "type": "text_equals",
+        "element_id": 11,
+        "params": {"expected": "${flag}", "trim": False},
+    }
+    patched_assertion = validate_node_patch(
+        "assertion", assertion, {"variable_overrides": {"flag": ""}}
+    )
+    assert patched_assertion["params"]["expected"] == "${flag}"
+    with pytest.raises(ProfileRuleError, match="变量未被目标节点引用"):
+        validate_node_patch("assertion", assertion, {"variable_overrides": {"missing": "x"}})
 
 
 async def test_suite_variable_overrides_case_and_suite_order_is_preserved(client):
@@ -572,7 +596,12 @@ async def test_duplicate_suite_memberships_resolve_and_materialize_independently
         headers=base["headers"],
     )
     assert workspace.status_code == 200
-    assert [item["id"] for item in workspace.json()["items"]] == [case_id]
+    items = workspace.json()["items"]
+    # occurrence-aware：重复编排各占一行，suid 用 suite_case_id 区分
+    assert [item["id"] for item in items] == [case_id, case_id]
+    membership_ids = [item["suite_case_id"] for item in items]
+    assert len(set(membership_ids)) == 2
+    assert all(mid is not None for mid in membership_ids)
 
 
 async def test_undefined_variable_rejected(client):

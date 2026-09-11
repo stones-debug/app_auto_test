@@ -85,12 +85,53 @@ class SuitePage(BaseModel):
     items: list[SuiteOut]
 
 
+class SuiteCaseVariablePreview(BaseModel):
+    """用例行内变量摘要（最多 2 项）。"""
+
+    name: str
+    display_value: str
+    # occurrence=编排项覆盖 / 具体作用域名=继承 / random / undefined
+    source: str
+    # overridden / inherited / undefined / random
+    status: str
+    reference_count: int
+
+
 class SuiteCaseOut(BaseModel):
-    id: int  # test_suite_cases.id
+    id: int  # test_suite_cases.id（编排项 / suite_case_id）
     case_id: int
     case_name: str
     module_name: str | None = None
     sort_order: int
+    variable_count: int = 0
+    variables_preview: list[SuiteCaseVariablePreview] = Field(default_factory=list)
+
+
+class SuiteCaseVariableItem(BaseModel):
+    name: str
+    reference_count: int
+    status: str
+    display_value: str
+    inherited_value: str | None = None
+    inherited_scope: str | None = None
+    override_enabled: bool
+    override_value: str
+
+
+class SuiteCaseVariablesOut(BaseModel):
+    suite_id: int
+    membership_id: int
+    case_id: int
+    case_name: str
+    test_asset_revision: int
+    total: int
+    variables: list[SuiteCaseVariableItem]
+
+
+class SuiteCaseVariableOverrideRequest(BaseModel):
+    """增量覆盖：字符串=设置编排项覆盖，null=删除覆盖并恢复继承。"""
+
+    updates: dict[str, str | None] = Field(default_factory=dict)
 
 
 class SuiteAddCaseRequest(BaseModel):
