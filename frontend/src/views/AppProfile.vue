@@ -4,8 +4,6 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
 import AppProfileTree from '@/components/AppProfileTree.vue'
-import CaseVariableEditor, { type VariableSavePayload } from '@/components/CaseVariableEditor.vue'
-import CaseVariableSummary from '@/components/CaseVariableSummary.vue'
 import DevicePicker from '@/components/DevicePicker.vue'
 import ProfileStatusTag from '@/components/ProfileStatusTag.vue'
 import ProfileReleaseManager from '@/components/ProfileReleaseManager.vue'
@@ -16,7 +14,6 @@ import {
   listReleases,
   listProfileOverrides,
   patchProfileSuiteCaseVariables,
-  profileSuiteCaseVariables,
   restoreNodeOverride,
   restoreSuiteStepOverride,
   skipRulesBatch,
@@ -31,7 +28,15 @@ import { usePermission } from '@/composables/usePermission'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { useAppProfileStore } from '@/stores/appProfile'
 import { buildProfileSkipTarget } from '@/utils/appProfileSkip'
-import { profileVariablesToPreview, type EditorVariable } from '@/utils/caseVariables'
+import {
+  variableDisplayText,
+  variableEditSeed,
+  variableOverrideState,
+  variableQuickUpdates,
+  variableRestoreUpdates,
+  variableStatusMeta,
+  variableToken,
+} from '@/utils/caseVariables'
 import { stepVariableReferences } from '@/utils/variableReferences'
 
 interface DisplayNode extends ProfileNode {
@@ -87,10 +92,6 @@ function canVariableOverride(row: DisplayNode): boolean {
 function elementDisplayName(row: DisplayNode): string | null {
   if ((row.node_type !== 'step' && row.node_type !== 'suite_step') || row.element_id == null) return null
   return row.element_name ?? `未知元素（#${row.element_id}）`
-}
-
-function variableToken(name: string): string {
-  return `\${${name}}`
 }
 
 const displayRows = computed<DisplayNode[]>(() => {
@@ -276,42 +277,43 @@ async function openVariableOverride(row: DisplayNode) {
   variableOverrideDialog.visible = true
 }
 
-// ---------- 用例变量快捷展示与节点级覆盖 ----------
-const caseVariableEditor = reactive({
-  visible: false,
-  loading: false,
-  saving: false,
-  row: null as DisplayNode | null,
-  variables: [] as EditorVariable[],
-})
+// ---------- 用例变量就地快捷覆盖 ----------
+// 用例行竖排展示全部变量；点击单个变量就地编辑，一个值写入它在当前用例的全部引用节点。
+const caseVariableEdit = reactive({ key: '', value: '' })
+const variableSaving = ref(false)
 
-function previewFromProfileVariables(variables: ProfileCaseVariable[]) {
-  return profileVariablesToPreview(
-    variables.map((variable) => ({
-      name: variable.name,
-      status: variable.status,
-      reference_count: variable.reference_count,
-      inherited_value: variable.inherited_value,
-      inherited_scope: variable.inherited_scope,
-      references: variable.references.map((ref) => ({
-        node_key: ref.node_key,
-        override_enabled: ref.override_enabled,
-        override_value: ref.override_value,
-      })),
-    })),
-  )
+function caseVariables(row: DisplayNode): ProfileCaseVariable[] {
+  return row.variables ?? []
 }
 
-/** 保存后只更新当前用例摘要，保持套件/用例展开状态与滚动位置。 */
-function applyCasePreview(suiteId: number, membershipId: number, variables: ProfileCaseVariable[]) {
+function caseVariableKey(row: DisplayNode, variable: ProfileCaseVariable): string {
+  return `${row._key}:${variable.name}`
+}
+
+function isEditingVariable(row: DisplayNode, variable: ProfileCaseVariable): boolean {
+  return caseVariableEdit.key === caseVariableKey(row, variable)
+}
+
+function beginVariableEdit(row: DisplayNode, variable: ProfileCaseVariable) {
+  if (!canEditProject.value) return
+  caseVariableEdit.key = caseVariableKey(row, variable)
+  caseVariableEdit.value = variableEditSeed(variable)
+}
+
+function cancelVariableEdit() {
+  caseVariableEdit.key = ''
+  caseVariableEdit.value = ''
+}
+
+/** 保存后只就地替换当前编排项的变量列表，保持展开状态与滚动位置。 */
+function applyCaseVariables(suiteId: number, membershipId: number, variables: ProfileCaseVariable[]) {
   const key = `suite:${suiteId}`
   const rows = store.childrenByParent[key]
   if (!rows) return
-  const preview = previewFromProfileVariables(variables)
   store.childrenByParent = {
     ...store.childrenByParent,
     [key]: rows.map((node) => node.suite_case_id === membershipId
-      ? { ...node, variable_count: variables.length, variables_preview: preview }
+      ? { ...node, variable_count: variables.length, variables }
       : node),
   }
 }
@@ -324,47 +326,46 @@ async function refreshCaseChildren(row: DisplayNode) {
   }
 }
 
-async function openCaseVariables(row: DisplayNode) {
+async function saveCaseVariableUpdates(row: DisplayNode, updates: ProfileVariableUpdate[]) {
   const membershipId = row._membershipId
-  if (!store.selectedProfileId || row.node_type !== 'case' || membershipId == null) return
-  caseVariableEditor.row = row
-  caseVariableEditor.variables = []
-  caseVariableEditor.visible = true
-  caseVariableEditor.loading = true
-  try {
-    const detail = await profileSuiteCaseVariables(store.selectedProfileId, membershipId)
-    caseVariableEditor.variables = detail.variables.map((variable) => ({ ...variable }))
-  } catch (error) {
-    ElMessage.error((error as Error).message || '加载变量详情失败')
-    caseVariableEditor.visible = false
-  } finally {
-    caseVariableEditor.loading = false
+  if (!store.selectedProfileId || store.profileRevision == null || membershipId == null) return
+  if (updates.length === 0) {
+    ElMessage.info('没有需要保存的变更')
+    return
   }
-}
-
-async function saveCaseVariables(payload: VariableSavePayload) {
-  const row = caseVariableEditor.row
-  const membershipId = row?._membershipId
-  if (!store.selectedProfileId || store.profileRevision == null || membershipId == null || payload.kind !== 'nodes') return
-  caseVariableEditor.saving = true
+  variableSaving.value = true
   try {
     const result = await patchProfileSuiteCaseVariables(store.selectedProfileId, membershipId, {
       expected_revision: store.profileRevision,
-      updates: payload.updates as ProfileVariableUpdate[],
+      updates,
     })
     store.markRevision(result.revision, store.testAssetRevision ?? 1)
-    if (row?._suiteId != null) applyCasePreview(row._suiteId, membershipId, result.variables)
-    if (row) await refreshCaseChildren(row)
-    caseVariableEditor.visible = false
+    if (row._suiteId != null) applyCaseVariables(row._suiteId, membershipId, result.variables)
+    cancelVariableEdit()
     ElMessage.success('变量覆盖已保存')
   } catch (error) {
     ElMessage.error((error as Error).message || '保存失败，请刷新后重试')
   } finally {
-    caseVariableEditor.saving = false
+    variableSaving.value = false
   }
 }
 
-/** 步骤行「变量覆盖」入口与用例面板共用同一批量接口。 */
+async function commitVariableEdit(row: DisplayNode, variable: ProfileCaseVariable) {
+  const updates = variableQuickUpdates(variable, caseVariableEdit.value)
+  if (updates == null) {
+    cancelVariableEdit()
+    ElMessage.info('没有需要保存的变更')
+    return
+  }
+  await saveCaseVariableUpdates(row, updates)
+}
+
+/** 恢复原值：删除该变量在当前用例全部引用节点上的覆盖。 */
+async function restoreCaseVariable(row: DisplayNode, variable: ProfileCaseVariable) {
+  await saveCaseVariableUpdates(row, variableRestoreUpdates(variable))
+}
+
+/** 步骤行「变量覆盖」入口与用例行就地覆盖共用同一批量接口。 */
 function buildStepUpdates(row: DisplayNode, value: (name: string) => string | null): ProfileVariableUpdate[] {
   return variableOverrideDialog.names.map((name) => ({
     node_type: 'step',
@@ -388,7 +389,7 @@ async function saveVariableOverride() {
         )),
       })
       store.markRevision(result.revision, store.testAssetRevision ?? 1)
-      if (row._suiteId != null) applyCasePreview(row._suiteId, membershipId, result.variables)
+      if (row._suiteId != null) applyCaseVariables(row._suiteId, membershipId, result.variables)
       variableOverrideDialog.visible = false
       await refreshCaseChildren(row)
       ElMessage.success('节点覆盖已保存')
@@ -448,7 +449,7 @@ async function restoreVariableOverride() {
         updates: buildStepUpdates(row, () => null),
       })
       store.markRevision(result.revision, store.testAssetRevision ?? 1)
-      if (row._suiteId != null) applyCasePreview(row._suiteId, membershipId, result.variables)
+      if (row._suiteId != null) applyCaseVariables(row._suiteId, membershipId, result.variables)
       variableOverrideDialog.visible = false
       await refreshCaseChildren(row)
       ElMessage.success('节点覆盖已恢复')
@@ -603,15 +604,56 @@ onMounted(load)
               <button v-if="row.has_children" type="button" class="expand-button" @click="toggleNode(displayNode(row))">{{ store.expandedKeys.has(row._key) ? '▾' : '▸' }}</button>
               <span v-else class="node-dot">·</span>
               <span class="node-label"><span>{{ row.name }}</span><small v-if="elementDisplayName(displayNode(row))" class="element-label">元素：{{ elementDisplayName(displayNode(row)) }}</small></span>
-              <CaseVariableSummary
-                v-if="row.node_type === 'case'"
-                class="row-variables"
-                :variables="row.variables_preview ?? []"
-                :total="row.variable_count ?? 0"
-                :readonly="!canEditProject"
-                @open="openCaseVariables(displayNode(row))"
-              />
             </span>
+            <div
+              v-if="row.node_type === 'case' && caseVariables(displayNode(row)).length"
+              class="case-variable-list"
+              :style="{ paddingLeft: `${row._depth * 22 + 22}px` }"
+              @click.stop
+              @dblclick.stop
+              @mousedown.stop
+            >
+              <div
+                v-for="variable in caseVariables(displayNode(row))"
+                :key="variable.name"
+                class="case-variable-item"
+                :class="`tone-${variableStatusMeta(variable.status).tone}`"
+              >
+                <code class="variable-name">{{ variableToken(variable.name) }}</code>
+                <template v-if="isEditingVariable(displayNode(row), variable)">
+                  <el-input
+                    v-model="caseVariableEdit.value"
+                    class="variable-input"
+                    size="small"
+                    :disabled="variableSaving"
+                    placeholder="输入覆盖值（可为空）"
+                    :aria-label="`${variable.name} 的覆盖值`"
+                    @click.stop
+                    @keyup.enter="commitVariableEdit(displayNode(row), variable)"
+                    @keyup.esc="cancelVariableEdit"
+                  />
+                  <el-button size="small" type="primary" :loading="variableSaving" @click.stop="commitVariableEdit(displayNode(row), variable)">保存</el-button>
+                  <el-button size="small" :disabled="variableSaving" @click.stop="cancelVariableEdit">取消</el-button>
+                  <el-button
+                    v-if="variableOverrideState(variable).overridden"
+                    size="small"
+                    text
+                    type="danger"
+                    :disabled="variableSaving"
+                    @click.stop="restoreCaseVariable(displayNode(row), variable)"
+                  >恢复原值</el-button>
+                </template>
+                <template v-else>
+                  <span
+                    class="variable-value"
+                    :class="{ editable: canEditProject }"
+                    :title="`${variableToken(variable.name)} = ${variableDisplayText(variable)}（引用 ${variable.reference_count} 处）`"
+                    @click.stop="beginVariableEdit(displayNode(row), variable)"
+                  >{{ variableDisplayText(variable) }}</span>
+                  <span class="variable-refs" :title="`共 ${variable.reference_count} 处引用`">×{{ variable.reference_count }}</span>
+                </template>
+              </div>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="类型" width="90" prop="node_type" />
@@ -712,18 +754,6 @@ onMounted(load)
         <ProfileDifferenceView v-model="diffView" :profile-id="store.selectedProfileId" />
         <ProfileOverrideDrawer v-model="overrideDrawer" :profile-id="store.selectedProfileId" :project-id="projectId" :revision="store.profileRevision ?? 1" @revision-change="updateRevision" />
       </template>
-      <CaseVariableEditor
-        v-model="caseVariableEditor.visible"
-        mode="nodes"
-        title="用例变量覆盖"
-        subtitle="同名变量按引用节点分别保存；执行参数优先级仍高于此处"
-        :variables="caseVariableEditor.variables"
-        :loading="caseVariableEditor.loading"
-        :saving="caseVariableEditor.saving"
-        :readonly="!canEditProject"
-        :context="caseVariableEditor.row ? { name: caseVariableEditor.row.name, element: null } : undefined"
-        @save="saveCaseVariables"
-      />
       <DevicePicker ref="devicePicker" :project-id="projectId" />
     </section>
   </div>
@@ -740,8 +770,36 @@ onMounted(load)
 .rev { color: var(--el-text-color-secondary); font-size: 12px; }
 .batch-bar { padding: 8px 12px; border-radius: 6px; background: var(--el-color-primary-light-9); }
 .node-name { display: inline-flex; align-items: center; }
-.row-variables { margin-left: 8px; vertical-align: middle; }
 .node-label { display: inline-flex; flex-direction: column; gap: 2px; }
+/* 用例行变量：竖排展示全部变量，点击就地编辑（一个值写入全部引用节点） */
+.case-variable-list { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
+.case-variable-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 20px;
+}
+.case-variable-item .variable-name { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.case-variable-item .variable-value {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.case-variable-item .variable-value.editable { cursor: pointer; border-bottom: 1px dashed transparent; }
+.case-variable-item .variable-value.editable:hover { border-bottom-color: currentColor; }
+.case-variable-item .variable-refs { flex-shrink: 0; opacity: 0.6; }
+.case-variable-item .variable-input { width: 200px; }
+.case-variable-item.tone-overridden { color: #1d4ed8; background: rgba(37, 99, 235, 0.12); border-color: rgba(37, 99, 235, 0.35); }
+.case-variable-item.tone-inherited { color: var(--el-text-color-regular); background: rgba(100, 116, 139, 0.08); border-color: rgba(100, 116, 139, 0.24); }
+.case-variable-item.tone-undefined { color: #c2410c; background: rgba(249, 115, 22, 0.12); border-color: rgba(249, 115, 22, 0.35); }
+.case-variable-item.tone-random { color: #7c3aed; background: rgba(139, 92, 246, 0.14); border-color: rgba(139, 92, 246, 0.38); }
+.case-variable-item.tone-mixed { color: #b45309; background: rgba(245, 158, 11, 0.14); border-color: rgba(245, 158, 11, 0.4); }
 .element-label, .element-context { color: var(--el-text-color-secondary); font-size: 12px; }
 .expand-button { width: 22px; padding: 0; border: 0; background: transparent; cursor: pointer; color: inherit; }
 .node-dot { display: inline-block; width: 22px; text-align: center; }

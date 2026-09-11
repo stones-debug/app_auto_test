@@ -673,7 +673,6 @@ onMounted(() => {
 
   <CaseVariableEditor
     v-model="variableEditor.visible"
-    mode="occurrence"
     title="编排项变量覆盖"
     :subtitle="variableEditor.membership ? `仅作用于当前套件中的「${variableEditor.membership.case_name}」这一次编排` : ''"
     :variables="variableEditor.variables"

@@ -23,7 +23,15 @@ from app.services.profile_resolver_nodes import (
 # 列表接口只携带前 2 项摘要，避免用例很多时响应过大
 MAX_PREVIEW = 2
 _RANDOM_KINDS = {"random_integer", "random_choice"}
-_SCOPE_LABELS = {"global": "全局", "project": "项目", "suite": "套件", "case": "用例"}
+_SCOPE_LABELS = {
+    "global": "全局",
+    "project": "项目",
+    "suite": "套件",
+    "case": "用例",
+    # 节点覆盖之下的两层覆盖：编排项覆盖与 APP 档案变量覆盖
+    "occurrence": "编排项",
+    "profile": "档案",
+}
 
 
 def is_assertion_node(node: dict) -> bool:
@@ -114,6 +122,15 @@ async def load_definitions_batch(
     return {case.id: definitions_for_case(rows, suite_id, case) for case in cases}
 
 
+def apply_fixed_layer(
+    definitions: dict[str, dict[str, Any]], scope: str, values: dict[str, str] | None
+) -> dict[str, dict[str, Any]]:
+    """在节点覆盖之下再叠一层固定值覆盖（编排项覆盖 / 档案变量覆盖）。"""
+    for name, value in (values or {}).items():
+        definitions[name] = describe_definition(scope, "fixed", value, None)
+    return definitions
+
+
 def _status_for(definition: dict[str, Any] | None, overridden: bool) -> str:
     if overridden:
         return "overridden"
@@ -160,30 +177,6 @@ def membership_preview(variables: list[dict[str, Any]]) -> dict[str, Any]:
             {
                 "name": item["name"],
                 "display_value": item["display_value"],
-                "source": source,
-                "status": item["status"],
-                "reference_count": item["reference_count"],
-            }
-        )
-    return {"variable_count": len(variables), "variables_preview": preview}
-
-
-def profile_case_preview(variables: list[dict[str, Any]]) -> dict[str, Any]:
-    """工作台用例行的变量摘要：同名变量存在不同节点覆盖时显示“多个值”。"""
-    preview = []
-    for item in variables[:MAX_PREVIEW]:
-        enabled = [ref for ref in item["references"] if ref["override_enabled"]]
-        if item["status"] == "mixed":
-            display = "多个值"
-        elif enabled:
-            display = str(enabled[0]["override_value"])
-        else:
-            display = item["inherited_value"] or ""
-        source = "occurrence" if enabled else (item["inherited_scope"] or item["status"])
-        preview.append(
-            {
-                "name": item["name"],
-                "display_value": display,
                 "source": source,
                 "status": item["status"],
                 "reference_count": item["reference_count"],

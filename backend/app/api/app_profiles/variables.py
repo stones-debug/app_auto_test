@@ -47,6 +47,14 @@ async def _build_variables(
     definitions = await case_variable_service.inherited_variable_definitions(
         db, project_id=profile.project_id, suite_id=membership.suite_id, case=case
     )
+    # 节点覆盖之下依次是档案变量覆盖与编排项覆盖，保证“原值”就是恢复后的真实取值
+    case_variable_service.apply_fixed_layer(
+        definitions, "occurrence", membership.variable_overrides or {}
+    )
+    profile_variables = await overrides_repo.list_variable_overrides(db, profile.id)
+    case_variable_service.apply_fixed_layer(
+        definitions, "profile", {row.name: row.value for row in profile_variables}
+    )
     rows = await overrides_repo.list_nodes_for_membership(db, profile.id, membership.id)
     node_overrides = {
         str(row.node_key): dict((row.patch or {}).get("variable_overrides") or {}) for row in rows

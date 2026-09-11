@@ -2,7 +2,6 @@ import request from '@/utils/request'
 export { apiErrorDetail } from '@/utils/request'
 export type { ApiErrorDetail } from '@/utils/request'
 
-import type { VariableChip } from '@/utils/caseVariables'
 import type { SmartLocatorConfig } from '@/utils/smartLocator'
 import type { PageData } from './projects'
 
@@ -36,9 +35,6 @@ export interface AppProfileRelease {
   updated_at: string
 }
 
-/** 工作台用例行的变量摘要（最多 2 项；多节点不同覆盖值时 display_value 为「多个值」）。 */
-export type ProfileVariablePreview = VariableChip
-
 export interface ProfileNode {
   node_type: 'suite' | 'case' | 'step' | 'assertion' | 'suite_step'
   id: number | null
@@ -63,9 +59,9 @@ export interface ProfileNode {
   // 套件节点：前后置步骤计数（工作台树状展开用）
   setup_step_count?: number
   teardown_step_count?: number
-  // 用例节点：变量摘要（最多 2 项）
+  // 用例节点：完整变量列表（表内竖排展示与就地编辑）
   variable_count?: number
-  variables_preview?: ProfileVariablePreview[]
+  variables?: ProfileCaseVariable[]
   updated_at?: string | null
 }
 

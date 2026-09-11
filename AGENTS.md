@@ -88,9 +88,12 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 - **变量优先级**：执行参数 > APP档案节点覆盖 > APP档案变量覆盖 > **编排项覆盖** > 套件变量 > 用例变量 > 项目变量 > 全局变量。`profile_resolver_load.merge_variables` 与 `repositories/worker.build_variable_map`、`_materialize_unprofiled_tree`（无档案执行同样应用编排项覆盖）三处必须一致。
 - **变量引用统一口径**：只扫动作/断言 `params|parameters` 里真实出现的 `${name}`（`node_variable_references`，会排除 `variable_name` 等运行时输出名），元素智能定位配置不纳入。动作与断言都支持 `variable_overrides`。
 - 覆盖只改当前编排项 / 当前档案节点，不改公共用例；空字符串是合法覆盖值，`null` 表示删除覆盖恢复继承。
-- 用例列表接口只带 `variable_count` + 前 2 项 `variables_preview`（批量查询，禁 N+1）；完整详情走 `GET /api/suites/{sid}/cases/{membership_id}/variables`、`GET /api/app-profiles/{pid}/suite-cases/{suite_case_id}/variables`；写入分别走对应 `PATCH .../variable-overrides`（档案侧是批量事务：保留其它 patch 字段、空 patch 软删、单次 revision + 单条 `node_override_batch` 审计、无效整体回滚、revision 冲突 409）。
+- **「原值」必须是恢复后的真实取值**：节点覆盖之下还有两层，展示的继承值按 `编排项覆盖 → 档案变量覆盖` 依次叠加（`case_variable_service.apply_fixed_layer`，scope 标签 `occurrence` / `profile`）；否则行内展示的「原值」和点「恢复原值」之后的取值会对不上。
+- 列表接口口径分开：套件编排项 `GET /api/suites/{sid}/cases` 只带 `variable_count` + 前 2 项 `variables_preview`；**APP 档案工作台用例行带完整 `variables`**（含每个变量的全部引用节点及各自覆盖），因为档案侧要在行内竖排展示全部变量并就地编辑。
+- 完整详情仍走 `GET /api/suites/{sid}/cases/{membership_id}/variables`、`GET /api/app-profiles/{pid}/suite-cases/{suite_case_id}/variables`；写入分别走对应 `PATCH .../variable-overrides`（档案侧是批量事务：保留其它 patch 字段、空 patch 软删、单次 revision + 单条 `node_override_batch` 审计、无效整体回滚、revision 冲突 409）。
 - **删除编排项必须先物理删除其节点覆盖**（FK 无 ON DELETE），见 `suite_service.remove_case` → `overrides_repo.delete_for_membership`。
-- 前端 `utils/caseVariables.ts` 持有共享口径的纯函数（摘要裁剪、状态色、点击阻断父级事件、增量 payload、多值显示）；`CaseVariableSummary.vue` / `CaseVariableEditor.vue` 是共享组件。保存后只就地更新当前行摘要，不重置滚动/排序/展开。
+- 前端 `utils/caseVariables.ts` 是唯一口径：套件侧 `variablePreviewChips` / `buildOccurrenceUpdates`；档案侧 `variableOverrideState` / `variableDisplayText`（多值→「多个值」、空值区分「（空）」与「未定义」）/ `variableEditSeed` / `variableQuickUpdates`（值未变化返回 `null`，避免空提交推进 revision）/ `variableRestoreUpdates` / `buildVariableUpdates`。
+- `CaseVariableSummary.vue`、`CaseVariableEditor.vue` **只服务套件编排项**（`CaseVariableEditor` 已无 mode，仅编排项覆盖）。APP 档案用例行走**行内竖排变量列表 + 就地覆盖**：一个值写入该变量的**全部引用节点**（`buildVariableUpdates` → 批量 PATCH），不支持逐节点编辑；逐节点精确覆盖只走步骤行「变量覆盖」弹窗（`openVariableOverride`）。保存后只就地替换该编排项的变量列表，不重置滚动/排序/展开。
 
 ## 编码测试规则（Step 门禁）
 - **测试只在整个 Step 全部子任务完成后才执行**。一个 Step 内若包含多个子步骤任务（后端接口 / 前端页面 / 迁移 / 文档等），必须等所有子任务都实现完成，才运行该 Step 的完整测试（后端 pytest / Agent pytest / 前端 vitest+build / ruff / alembic check）。

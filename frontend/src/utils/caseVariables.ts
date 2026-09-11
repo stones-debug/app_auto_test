@@ -1,8 +1,9 @@
 /**
  * 用例变量快捷展示与覆盖的共享口径（前端）。
  *
- * 与后端一致：只展示/编辑动作与断言参数中真实出现的 `${name}`；
- * 行内最多 2 项，超出显示「+N 更多」；状态色随展示层统一。
+ * 与后端一致：只展示/编辑动作与断言参数中真实出现的 `${name}`。两条展示口径：
+ * - 套件页编排项行：最多 2 项摘要，超出显示「+N 更多」，点击打开编排项覆盖面板；
+ * - APP 档案页用例行：竖排展示全部变量，单个变量就地编辑，一个值写入其全部引用节点。
  */
 
 export const MAX_VARIABLE_PREVIEW = 2
@@ -15,27 +16,15 @@ export interface VariableChip {
   reference_count?: number
 }
 
-export interface EditorReference {
-  node_type: 'step' | 'assertion'
-  node_key: string
-  order: number | null
-  node_name: string
-  inherited_value: string | null
-  override_enabled: boolean
-  override_value: string
-}
-
 export interface EditorVariable {
   name: string
   status: string
   reference_count: number
   inherited_value: string | null
   inherited_scope: string | null
-  /** occurrence 模式：编排项级覆盖 */
+  /** 编排项级覆盖（套件编排项面板） */
   override_enabled?: boolean
   override_value?: string
-  /** nodes 模式：按引用节点分别覆盖 */
-  references?: EditorReference[]
 }
 
 export interface VariableOverrideUpdate {
@@ -89,40 +78,83 @@ export function buildOccurrenceUpdates(
   return updates
 }
 
-/** 节点级覆盖的增量提交：仅提交相对原值发生变化的项。 */
-export function diffNodeEntries(
-  original: EditorReference[],
-  edited: { node_key: string; node_type: 'step' | 'assertion'; name: string; enabled: boolean; value: string }[],
-): VariableOverrideUpdate[] {
-  const updates: VariableOverrideUpdate[] = []
-  for (const entry of edited) {
-    const source = original.find((ref) => ref.node_key === entry.node_key)
-    if (!entry.enabled) {
-      if (source?.override_enabled) {
-        updates.push({ node_type: entry.node_type, node_key: entry.node_key, name: entry.name, value: null })
-      }
-      continue
-    }
-    if (!source?.override_enabled || source.override_value !== entry.value) {
-      updates.push({ node_type: entry.node_type, node_key: entry.node_key, name: entry.name, value: entry.value })
-    }
-  }
-  return updates
+export interface ProfileCaseVariableLike {
+  name: string
+  status: string
+  reference_count: number
+  inherited_value: string | null
+  inherited_scope: string | null
+  references: {
+    node_key: string
+    node_type: 'step' | 'assertion'
+    override_enabled: boolean
+    override_value: string
+  }[]
 }
 
-/** 「全部设为同一值」：主体仍是多个节点级覆盖，只是取值相同。 */
-export function applySameValue(
-  references: EditorReference[],
-  name: string,
-  value: string,
-): { node_key: string; node_type: 'step' | 'assertion'; name: string; enabled: boolean; value: string }[] {
-  return references.map((ref) => ({
-    node_key: ref.node_key,
+/** 变量在一张用例内的覆盖状态：是否已覆盖、各节点覆盖值是否统一。 */
+export function variableOverrideState(variable: ProfileCaseVariableLike): {
+  overridden: boolean
+  uniform: boolean
+  value: string
+} {
+  const enabled = variable.references.filter((ref) => ref.override_enabled)
+  const values = new Set(enabled.map((ref) => ref.override_value))
+  return {
+    overridden: enabled.length > 0,
+    uniform: values.size <= 1,
+    value: enabled.length > 0 ? enabled[0].override_value : (variable.inherited_value ?? ''),
+  }
+}
+
+/** 表内展示文本：多节点覆盖值不一致时显示「多个值」，空值区分「（空）」与「未定义」。 */
+export function variableDisplayText(variable: ProfileCaseVariableLike): string {
+  const state = variableOverrideState(variable)
+  if (state.overridden && !state.uniform) return '多个值'
+  if (state.value === '') return variable.inherited_value === null && !state.overridden ? '未定义' : '（空）'
+  return state.value
+}
+
+/** 进入编辑时的初始值：统一值直接带出，多值状态留空等待输入统一值。 */
+export function variableEditSeed(variable: ProfileCaseVariableLike): string {
+  const state = variableOverrideState(variable)
+  if (state.overridden && !state.uniform) return ''
+  return state.value
+}
+
+/**
+ * 变量覆盖写入载荷：一个变量在该用例内被多个节点引用时，统一写成多个节点级覆盖。
+ * ``value=null`` 表示恢复原值（删除各节点的覆盖）。
+ */
+export function buildVariableUpdates(
+  variable: { name: string; references: { node_key: string; node_type: 'step' | 'assertion' }[] },
+  value: string | null,
+): VariableOverrideUpdate[] {
+  return variable.references.map((ref) => ({
     node_type: ref.node_type,
-    name,
-    enabled: true,
+    node_key: ref.node_key,
+    name: variable.name,
     value,
   }))
+}
+
+/**
+ * 就地编辑提交：值等于当前生效值时不产生变更（返回 null），避免空提交推进 revision。
+ * 多值状态（各节点覆盖值不一致）下任何输入都是变更——包括统一为空串。
+ */
+export function variableQuickUpdates(
+  variable: ProfileCaseVariableLike,
+  value: string,
+): VariableOverrideUpdate[] | null {
+  const state = variableOverrideState(variable)
+  if (state.overridden && !state.uniform) return buildVariableUpdates(variable, value)
+  if (value === state.value) return null
+  return buildVariableUpdates(variable, value)
+}
+
+/** 恢复原值：删除该变量在其全部引用节点上的覆盖，重新继承底层定义。 */
+export function variableRestoreUpdates(variable: ProfileCaseVariableLike): VariableOverrideUpdate[] {
+  return buildVariableUpdates(variable, null)
 }
 
 /** 变量区域点击必须阻断父级的拖拽/排序编辑/双击打开用例；只读时不打开面板。 */
@@ -154,33 +186,4 @@ export function membershipVariablesToPreview(variables: MembershipVariableLike[]
     status: variable.status,
     reference_count: variable.reference_count,
   }))
-}
-
-export interface ProfileCaseVariableLike {
-  name: string
-  status: string
-  reference_count: number
-  inherited_value: string | null
-  inherited_scope: string | null
-  references: { node_key: string; override_enabled: boolean; override_value: string }[]
-}
-
-/** APP 档案变量详情 → 行内摘要；同名变量在不同节点取值不同时显示「多个值」。 */
-export function profileVariablesToPreview(variables: ProfileCaseVariableLike[]): VariableChip[] {
-  return variables.slice(0, MAX_VARIABLE_PREVIEW).map((variable) => {
-    const enabled = variable.references.filter((ref) => ref.override_enabled)
-    const display =
-      variable.status === 'mixed'
-        ? '多个值'
-        : enabled.length
-          ? enabled[0].override_value
-          : (variable.inherited_value ?? '')
-    return {
-      name: variable.name,
-      display_value: display,
-      source: enabled.length ? 'occurrence' : (variable.inherited_scope ?? variable.status),
-      status: variable.status,
-      reference_count: variable.reference_count,
-    }
-  })
 }

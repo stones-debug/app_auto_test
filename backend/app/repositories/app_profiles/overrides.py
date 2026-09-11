@@ -31,6 +31,17 @@ async def list_all(
     return tuple(result)  # type: ignore[return-value]
 
 
+async def list_variable_overrides(db: AsyncSession, profile_id: int) -> list[AppProfileVariableOverride]:
+    """档案级变量覆盖；用于计算节点覆盖之下、编排项覆盖之上的“原值”。"""
+    rows = await db.execute(
+        select(AppProfileVariableOverride).where(
+            AppProfileVariableOverride.profile_id == profile_id,
+            AppProfileVariableOverride.deleted_at.is_(None),
+        )
+    )
+    return list(rows.scalars().all())
+
+
 async def get_element(db: AsyncSession, profile_id: int, element_id: int):
     return (
         await db.execute(

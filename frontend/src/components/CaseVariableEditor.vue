@@ -1,25 +1,21 @@
 <script setup lang="ts">
 import { computed, reactive, watch } from 'vue'
-import { ElMessage } from 'element-plus'
 
 import {
-  applySameValue,
   buildOccurrenceUpdates,
-  diffNodeEntries,
   variableStatusMeta,
   variableToken,
   type EditorVariable,
 } from '@/utils/caseVariables'
 
 export interface VariableSavePayload {
-  kind: 'occurrence' | 'nodes'
-  updates: Record<string, string | null> | ReturnType<typeof diffNodeEntries>
+  kind: 'occurrence'
+  updates: Record<string, string | null>
 }
 
 const props = withDefaults(
   defineProps<{
     modelValue: boolean
-    mode: 'occurrence' | 'nodes'
     title: string
     subtitle?: string
     variables?: EditorVariable[]
@@ -49,26 +45,14 @@ const visible = computed({
 })
 
 const occurrenceState = reactive<Record<string, { enabled: boolean; value: string }>>({})
-const nodeState = reactive<Record<string, { node_key: string; node_type: 'step' | 'assertion'; name: string; enabled: boolean; value: string }[]>>({})
-const sharedValue = reactive<Record<string, string>>({})
 
 function resetState() {
   for (const key of Object.keys(occurrenceState)) delete occurrenceState[key]
-  for (const key of Object.keys(nodeState)) delete nodeState[key]
-  for (const key of Object.keys(sharedValue)) delete sharedValue[key]
   for (const variable of props.variables) {
     occurrenceState[variable.name] = {
       enabled: Boolean(variable.override_enabled),
       value: variable.override_value ?? '',
     }
-    nodeState[variable.name] = (variable.references ?? []).map((ref) => ({
-      node_key: ref.node_key,
-      node_type: ref.node_type,
-      name: variable.name,
-      enabled: ref.override_enabled,
-      value: ref.override_value ?? '',
-    }))
-    sharedValue[variable.name] = ''
   }
 }
 
@@ -85,34 +69,15 @@ watch(
   },
 )
 
-function applyShared(variable: EditorVariable) {
-  const value = sharedValue[variable.name]
-  const next = applySameValue(variable.references ?? [], variable.name, value ?? '')
-  nodeState[variable.name] = next
-}
-
 function onSave() {
-  if (props.mode === 'occurrence') {
-    emit('save', {
-      kind: 'occurrence',
-      updates: buildOccurrenceUpdates(props.variables, occurrenceState),
-    })
-    return
-  }
-  const updates: ReturnType<typeof diffNodeEntries> = []
-  for (const variable of props.variables) {
-    updates.push(...diffNodeEntries(variable.references ?? [], nodeState[variable.name] ?? []))
-  }
-  if (updates.length === 0) {
-    ElMessage.info('没有需要保存的变更')
-    return
-  }
-  emit('save', { kind: 'nodes', updates })
+  emit('save', {
+    kind: 'occurrence',
+    updates: buildOccurrenceUpdates(props.variables, occurrenceState),
+  })
 }
 
-function enabledCount(variable: EditorVariable): number {
-  if (props.mode === 'occurrence') return occurrenceState[variable.name]?.enabled ? 1 : 0
-  return (nodeState[variable.name] ?? []).filter((entry) => entry.enabled).length
+function enabledCount(): number {
+  return props.variables.filter((variable) => occurrenceState[variable.name]?.enabled).length
 }
 </script>
 
@@ -139,12 +104,14 @@ function enabledCount(variable: EditorVariable): number {
     </div>
 
     <div class="editor-hint" role="note">
-      覆盖只作用于当前
-      {{ mode === 'occurrence' ? '套件编排项' : 'APP 档案节点' }}；未启用的变量继续继承原值，执行参数优先级仍高于此处。
+      覆盖只作用于当前套件编排项；未启用的变量继续继承原值，执行参数优先级仍高于此处。
     </div>
 
     <div v-loading="loading" class="editor-body">
       <div v-if="!loading && variables.length === 0" class="editor-empty">该用例没有参数变量</div>
+      <div v-else-if="variables.length" class="editor-summary">
+        已启用 {{ enabledCount() }} / 共 {{ variables.length }} 个变量
+      </div>
 
       <section v-for="variable in variables" :key="variable.name" class="variable-group">
         <header class="group-head">
@@ -156,60 +123,22 @@ function enabledCount(variable: EditorVariable): number {
             引用 {{ variable.reference_count }} 处
             <template v-if="variable.inherited_scope">· 继承自{{ variable.inherited_scope }}</template>
           </span>
-          <span class="group-count">已启用 {{ enabledCount(variable) }}</span>
         </header>
 
-        <template v-if="mode === 'occurrence'">
-          <div class="variable-row">
-            <el-input
-              v-model="occurrenceState[variable.name].value"
-              class="variable-input"
-              :disabled="readonly || !occurrenceState[variable.name]?.enabled"
-              :placeholder="occurrenceState[variable.name]?.enabled ? '输入编排项覆盖值（可为空）' : '启用覆盖后输入值'"
-              :aria-label="`${variable.name} 的编排项覆盖值`"
-            />
-            <el-switch
-              v-model="occurrenceState[variable.name].enabled"
-              :disabled="readonly"
-              :aria-label="`启用 ${variable.name} 覆盖`"
-            />
-          </div>
-        </template>
-
-        <template v-else>
-          <div class="shared-row">
-            <el-input
-              v-model="sharedValue[variable.name]"
-              class="variable-input"
-              :disabled="readonly"
-              placeholder="全部设为同一值（可选）"
-              :aria-label="`${variable.name} 的全部节点统一值`"
-            />
-            <el-button :disabled="readonly" size="small" @click="applyShared(variable)">应用到全部节点</el-button>
-          </div>
-          <div class="reference-list">
-            <div
-              v-for="entry in nodeState[variable.name]"
-              :key="entry.node_key"
-              class="variable-row reference-row"
-            >
-              <span class="reference-node" :title="entry.node_key">
-                <span class="node-type">{{ entry.node_type === 'assertion' ? '断言' : '动作' }}</span>
-                <span class="node-name">
-                  {{ (variable.references ?? []).find((ref) => ref.node_key === entry.node_key)?.node_name || entry.node_key }}
-                </span>
-              </span>
-              <el-input
-                v-model="entry.value"
-                class="variable-input"
-                :disabled="readonly || !entry.enabled"
-                :placeholder="entry.enabled ? '输入该节点覆盖值（可为空）' : '启用覆盖后输入值'"
-                :aria-label="`${variable.name} 在 ${entry.node_key} 的覆盖值`"
-              />
-              <el-switch v-model="entry.enabled" :disabled="readonly" :aria-label="`启用 ${variable.name} 在 ${entry.node_key} 的覆盖`" />
-            </div>
-          </div>
-        </template>
+        <div class="variable-row">
+          <el-input
+            v-model="occurrenceState[variable.name].value"
+            class="variable-input"
+            :disabled="readonly || !occurrenceState[variable.name]?.enabled"
+            :placeholder="occurrenceState[variable.name]?.enabled ? '输入编排项覆盖值（可为空）' : '启用覆盖后输入值'"
+            :aria-label="`${variable.name} 的编排项覆盖值`"
+          />
+          <el-switch
+            v-model="occurrenceState[variable.name].enabled"
+            :disabled="readonly"
+            :aria-label="`启用 ${variable.name} 覆盖`"
+          />
+        </div>
       </section>
     </div>
 
@@ -276,6 +205,11 @@ function enabledCount(variable: EditorVariable): number {
   text-align: center;
   color: var(--el-text-color-secondary);
 }
+.editor-summary {
+  margin-bottom: 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
 .variable-group {
   padding: 10px 12px;
   margin-bottom: 10px;
@@ -306,13 +240,9 @@ function enabledCount(variable: EditorVariable): number {
 .tone-undefined { color: #c2410c; background: rgba(249, 115, 22, 0.12); border-color: rgba(249, 115, 22, 0.35); }
 .tone-random { color: #7c3aed; background: rgba(139, 92, 246, 0.14); border-color: rgba(139, 92, 246, 0.38); }
 .tone-mixed { color: #b45309; background: rgba(245, 158, 11, 0.14); border-color: rgba(245, 158, 11, 0.4); }
-.group-meta,
-.group-count {
+.group-meta {
   color: var(--el-text-color-secondary);
   font-size: 12px;
-}
-.group-count {
-  margin-left: auto;
 }
 .variable-row {
   display: flex;
@@ -322,37 +252,6 @@ function enabledCount(variable: EditorVariable): number {
 .variable-input {
   flex: 1;
   min-width: 120px;
-}
-.shared-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-.reference-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.reference-node {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 0 190px;
-  min-width: 0;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-.node-type {
-  flex-shrink: 0;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: var(--el-fill-color-light);
-}
-.node-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .editor-footer {
   display: flex;

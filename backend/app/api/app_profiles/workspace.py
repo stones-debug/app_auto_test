@@ -10,6 +10,7 @@ from app.api.deps import get_current_user, get_project_permission
 from app.core.database import get_db
 from app.models import User
 from app.repositories import projects as projects_repo
+from app.repositories.app_profiles import overrides as overrides_repo
 from app.repositories.app_profiles import resolution as resolution_repo
 from app.repositories.app_profiles import skip_rules as skip_rules_repo
 from app.services import case_variable_service
@@ -138,6 +139,8 @@ async def workspace_nodes(
         definitions = await case_variable_service.load_definitions_batch(
             db, project_id=profile.project_id, suite_id=parent_id, cases=cases
         )
+        # 节点覆盖之下的两层覆盖：档案变量覆盖 > 编排项覆盖，用于展示“原值”
+        profile_variables = await overrides_repo.list_variable_overrides(db, profile_id)
         suite_rule = skip["suite"].get(parent_id)
         items = []
         for membership in members:
@@ -152,16 +155,25 @@ async def workspace_nodes(
             reason = None
             if rule:
                 reason = {"code": rule.reason_code, "note": rule.reason_note or ""}
+            case_definitions = case_variable_service.apply_fixed_layer(
+                dict(definitions.get(case.id, {})),
+                "occurrence",
+                membership.variable_overrides or {},
+            )
+            case_variable_service.apply_fixed_layer(
+                case_definitions,
+                "profile",
+                {row.name: row.value for row in profile_variables},
+            )
             variables = case_variable_service.build_profile_variables(
                 case,
-                definitions.get(case.id, {}),
+                case_definitions,
                 case_variable_service.node_variable_override_map(
                     overrides["membership_patches"].get(membership.id, {})
                 ),
             )
-            preview = case_variable_service.profile_case_preview(variables)
             items.append(
-                {"node_type": "case", "id": case.id, "suite_case_id": membership.id, "name": case.name, "effective_status": effective, "status_source": source, "reason": reason, "has_children": True, "override_count": override_count, "variable_count": preview["variable_count"], "variables_preview": preview["variables_preview"]}
+                {"node_type": "case", "id": case.id, "suite_case_id": membership.id, "name": case.name, "effective_status": effective, "status_source": source, "reason": reason, "has_children": True, "override_count": override_count, "variable_count": len(variables), "variables": variables}
             )
         start = (page - 1) * page_size
         return {"total": len(items), "page": page, "page_size": page_size, "items": items[start : start + page_size]}
