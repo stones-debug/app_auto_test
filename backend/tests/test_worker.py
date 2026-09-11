@@ -904,7 +904,6 @@ async def _seed_five_layer_variables(client: AsyncClient) -> tuple[int, int, int
                 ],
             }
         ]
-        case.variables = {"host": "from_case"}
         owner = (
             await db.execute(select(User).where(User.username == REG["username"]))
         ).scalar_one()
@@ -933,6 +932,10 @@ async def _seed_five_layer_variables(client: AsyncClient) -> tuple[int, int, int
                     suite_id=suite.id,
                     name="host",
                     value="from_suite",
+                ),
+                Variable(
+                    scope="case", project_id=project_id, case_id=case_id,
+                    name="host", value="from_case",
                 ),
             ]
         )

@@ -196,7 +196,6 @@ async def test_element_delete_rejects_each_case_reference_without_fallback(
             name="当前用例引用",
             flow_nodes=flow_nodes,
             steps=steps,
-            variables={},
         )
         db.add(case)
         revision_before = project.test_asset_revision
@@ -305,7 +304,6 @@ async def test_element_delete_ignores_deleted_assets_and_execution_snapshots(
             deleted_at=deleted_at,
             flow_nodes=[{"element_id": element_id}],
             steps=[],
-            variables={},
         )
         suite = TestSuite(
             project_id=project_id,

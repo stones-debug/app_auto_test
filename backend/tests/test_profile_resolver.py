@@ -93,11 +93,17 @@ async def _setup_case_with_steps(client: AsyncClient, base: dict, name: str) -> 
                     ],
                 },
             ],
-            "variables": {"pkg": "com.v"},
         },
     )
     assert resp.status_code == 201
-    return resp.json()["id"]
+    case_id = resp.json()["id"]
+    variable = await client.post(
+        "/api/variables",
+        headers=base["headers"],
+        json={"scope": "case", "case_id": case_id, "name": "pkg", "value": "com.v"},
+    )
+    assert variable.status_code == 201
+    return case_id
 
 
 async def _make_profile(db, base: dict) -> int:
@@ -314,7 +320,6 @@ async def test_variable_scope_priority_is_consistent_for_suite_setup_and_case(cl
         profile_id = await _make_profile(db, base)
         case = await db.get(TestCase, case_id)
         assert case is not None
-        case.variables = {}
         suite = SuiteModel(
             project_id=base["project_id"],
             name="变量作用域套件",
@@ -326,11 +331,19 @@ async def test_variable_scope_priority_is_consistent_for_suite_setup_and_case(cl
         db.add(suite)
         await db.flush()
         db.add(SuiteCaseModel(suite_id=suite.id, case_id=case_id, sort_order=1))
+        case_variable = await db.scalar(
+            select(Variable).where(
+                Variable.scope == "case",
+                Variable.case_id == case_id,
+                Variable.name == "pkg",
+            )
+        )
+        assert case_variable is not None
+        case_variable.value = "from_case"
         db.add_all(
             [
                 Variable(scope="global", name="pkg", value="from_global"),
                 Variable(scope="project", project_id=base["project_id"], name="pkg", value="from_project"),
-                Variable(scope="case", project_id=base["project_id"], case_id=case_id, name="pkg", value="from_case"),
             ]
         )
         await db.commit()

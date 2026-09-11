@@ -189,21 +189,38 @@ async def test_candidate_variables_keep_suite_identity_and_membership_mask(clien
 
 
 @pytest.mark.asyncio
-async def test_inline_case_variable_masks_case_and_project_definitions(client: AsyncClient):
-    token, _user_id = await _login(client, "step66_inline")
+async def test_case_scope_variable_has_stable_identity_and_private_override(client: AsyncClient):
+    token, _user_id = await _login(client, "step67_case_identity")
     headers = {"Authorization": f"Bearer {token}"}
     project_id = (await client.post("/api/projects", json={"name": f"内联项目-{uuid.uuid4().hex[:6]}"}, headers=headers)).json()["id"]
     project_var = (await client.post("/api/variables", json={"scope": "project", "project_id": project_id, "name": "username", "value": "project"}, headers=headers)).json()["id"]
     case = await client.post(
         f"/api/projects/{project_id}/cases",
-        json={"name": "内联用例", "variables": {"username": "inline"}, "steps": [{"key": str(uuid.uuid4()), "order": 1, "action": "launch_app", "params": {"package": "${username}"}}], "assertions": []},
+        json={"name": "正式用例变量", "steps": [{"key": str(uuid.uuid4()), "order": 1, "action": "launch_app", "params": {"package": "${username}"}}], "assertions": []},
         headers=headers,
     )
     assert case.status_code == 201
+    case_id = case.json()["id"]
+    case_var = await client.post(
+        "/api/variables",
+        json={"scope": "case", "case_id": case_id, "name": "username", "value": "case"},
+        headers=headers,
+    )
+    assert case_var.status_code == 201
+    case_variable_id = case_var.json()["id"]
     profile_id = (await client.post(f"/api/projects/{project_id}/app-profiles", json={"name": "内联设备", "code": f"p{uuid.uuid4().hex[:7]}"}, headers=headers)).json()["id"]
     listed = await client.get(f"/api/app-profiles/{profile_id}/my-variables", headers=headers)
     assert listed.status_code == 200
-    assert project_var not in {row["variable_id"] for row in listed.json()["items"]}
+    listed_ids = {row["variable_id"] for row in listed.json()["items"]}
+    assert case_variable_id in listed_ids
+    assert project_var not in listed_ids
+    saved = await client.patch(
+        f"/api/app-profiles/{profile_id}/my-variables",
+        json={"request_id": str(uuid.uuid4()), "updates": [{"variable_id": case_variable_id, "value": "private-case"}]},
+        headers=headers,
+    )
+    assert saved.status_code == 200
+    assert next(row for row in saved.json()["items"] if row["variable_id"] == case_variable_id)["display_value"] == "private-case"
 
 
 @pytest.mark.asyncio

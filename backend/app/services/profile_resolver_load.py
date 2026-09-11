@@ -137,8 +137,7 @@ async def merge_variables(
     membership_names = set(membership_overrides)
     occurrence_names = set(occurrence_profile_overrides)
     profile_names = set(profile_overrides)
-    case_values = {str(key): value for key, value in (case.variables if case is not None else {}).items()}
-    case_names = {variable.name for variable in case_rows} | set(case_values)
+    case_names = {variable.name for variable in case_rows}
     suite_names = {variable.name for variable in suite_rows}
     project_names = {variable.name for variable in loaded if variable.scope == "project"}
     merged = resolve_rows(
@@ -158,9 +157,6 @@ async def merge_variables(
             skip_names=suite_names | membership_names | profile_names | occurrence_names | set(execution_variables),
             value_overrides=user_overrides,
         ))
-    for name, value in case_values.items():
-        if name not in suite_names and name not in membership_names and name not in profile_names and name not in occurrence_names and name not in execution_variables:
-            merged[name] = value
     merged.update(resolve_rows(
         suite_rows, cache, ("suite", suite_id),
         skip_names=membership_names | profile_names | occurrence_names | set(execution_variables),

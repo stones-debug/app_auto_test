@@ -1,12 +1,13 @@
 """测试用例及其列表扩展信息的数据访问。"""
 
+from copy import deepcopy
 from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Execution, TestCase, TestElement, TestModule
+from app.models import Execution, TestCase, TestElement, TestModule, Variable
 from app.repositories import elements as elements_repo
 
 
@@ -109,7 +110,6 @@ async def create(
     status: str,
     flow_nodes: list[dict[str, Any]],
     steps: list[dict[str, Any]] | None = None,
-    variables: dict[str, Any],
     user_id: int,
 ) -> TestCase:
     case = TestCase(
@@ -120,7 +120,6 @@ async def create(
         status=status,
         flow_nodes=flow_nodes,
         steps=steps or [],
-        variables=variables,
         created_by=user_id,
         updated_by=user_id,
     )
@@ -131,7 +130,7 @@ async def create(
 async def update_fields(
     case: TestCase, *, fields: set[str], values: dict[str, Any], user_id: int
 ) -> TestCase:
-    for field in ("name", "module_id", "description", "status", "flow_nodes", "steps", "variables"):
+    for field in ("name", "module_id", "description", "status", "flow_nodes", "steps"):
         if field in fields:
             setattr(case, field, values[field])
     case.updated_by = user_id
@@ -178,14 +177,46 @@ async def clone(
         description=source.description,
         status="draft",
         flow_nodes=flow_nodes,
-        # 保留一份旧字段的只读投影，避免旧列表/详情接口在升级期间出现空数据。
         steps=steps or [],
-        variables=dict(source.variables or {}),
         created_by=user_id,
         updated_by=user_id,
     )
     db.add(case)
     return case
+
+
+async def copy_variables(
+    db: AsyncSession,
+    *,
+    source_case_id: int,
+    target_case: TestCase,
+    project_id: int,
+    user_id: int,
+) -> None:
+    """为克隆用例复制正式 case-scope 变量，生成独立稳定 ID。"""
+    await db.flush()
+    source_variables = (
+        await db.execute(
+            select(Variable).where(
+                Variable.scope == "case", Variable.case_id == source_case_id
+            )
+        )
+    ).scalars().all()
+    db.add_all([
+        Variable(
+            scope="case",
+            project_id=project_id,
+            case_id=target_case.id,
+            name=variable.name,
+            value=variable.value,
+            kind=variable.kind,
+            spec=deepcopy(variable.spec),
+            description=variable.description,
+            is_sensitive=variable.is_sensitive,
+            created_by=user_id,
+        )
+        for variable in source_variables
+    ])
 
 
 async def refresh(db: AsyncSession, case: TestCase) -> TestCase:

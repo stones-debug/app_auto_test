@@ -127,7 +127,6 @@ class CaseCreate(BaseModel):
     status: str = Field(default="draft", pattern="^(draft|active|disabled)$")
     flow_nodes: list[FlowNode] = Field(default_factory=list)
     steps: list[dict[str, Any]] | None = None
-    variables: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _dump_nodes(self):
@@ -138,6 +137,8 @@ class CaseCreate(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _accept_legacy_steps(cls, values):
+        if isinstance(values, dict) and "variables" in values:
+            raise ValueError("用例变量必须通过 /api/variables 的 case scope 配置")
         if isinstance(values, dict) and not values.get("flow_nodes") and values.get("steps"):
             values = dict(values)
             values["flow_nodes"] = _flatten_legacy_steps(values["steps"])
@@ -151,7 +152,6 @@ class CaseUpdate(BaseModel):
     status: str | None = Field(default=None, pattern="^(draft|active|disabled)$")
     flow_nodes: list[FlowNode] | None = None
     steps: list[dict[str, Any]] | None = None
-    variables: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def _dump_nodes(self):
@@ -162,6 +162,8 @@ class CaseUpdate(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _accept_legacy_steps(cls, values):
+        if isinstance(values, dict) and "variables" in values:
+            raise ValueError("用例变量必须通过 /api/variables 的 case scope 配置")
         if isinstance(values, dict) and "steps" in values and "flow_nodes" not in values:
             values = dict(values)
             values["flow_nodes"] = _flatten_legacy_steps(values["steps"] or [])
@@ -199,7 +201,6 @@ class CaseOut(BaseModel):
     flow_nodes: list[dict[str, Any]]
     # 仅用于读取旧客户端缓存，服务端新建/更新不再接收 steps。
     steps: list[dict[str, Any]] | None = None
-    variables: dict[str, Any]
     created_by: int | None
     created_at: datetime
     updated_at: datetime

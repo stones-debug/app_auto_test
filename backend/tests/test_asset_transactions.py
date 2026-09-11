@@ -64,8 +64,8 @@ async def test_suite_reorder_missing_item_does_not_partially_mutate(monkeypatch)
 @pytest.mark.asyncio
 async def test_batch_delete_referenced_cases_soft_deletes_all(monkeypatch):
     db = AsyncMock()
-    first = CaseModel(id=201, project_id=9, name="引用", steps=[], variables={})
-    second = CaseModel(id=202, project_id=9, name="未引用", steps=[], variables={})
+    first = CaseModel(id=201, project_id=9, name="引用", steps=[])
+    second = CaseModel(id=202, project_id=9, name="未引用", steps=[])
     monkeypatch.setattr(
         case_service.cases_repo,
         "load_deletable",
@@ -83,7 +83,7 @@ async def test_batch_delete_referenced_cases_soft_deletes_all(monkeypatch):
 @pytest.mark.asyncio
 async def test_single_delete_referenced_case_soft_deletes(monkeypatch):
     db = AsyncMock()
-    case = CaseModel(id=203, project_id=9, name="历史引用", steps=[], variables={})
+    case = CaseModel(id=203, project_id=9, name="历史引用", steps=[])
     monkeypatch.setattr(case_service.asset_service, "commit_asset_change", AsyncMock())
 
     await case_service.soft_delete(db, case=case)

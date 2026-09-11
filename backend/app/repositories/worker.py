@@ -216,11 +216,10 @@ async def build_variable_map(
         suite_rows = (await db.execute(
             select(Variable).where(Variable.scope == "suite", Variable.suite_id == target_suite_id)
         )).scalars().all()
-    case_values = set(case.variables or {}) if case is not None else set()
     membership_values = set(membership_overrides or {})
     merged = await build_base_variable_map(
         db, execution,
-        excluded_names=set(execution_variables) | case_values | membership_values |
+        excluded_names=set(execution_variables) | membership_values |
         {row.name for row in case_rows} | {row.name for row in suite_rows},
     )
     cache = getattr(execution, "_variable_resolution_cache", {})
@@ -228,10 +227,8 @@ async def build_variable_map(
         merged.update(resolve_rows(
             list(case_rows), cache,
             ("case", suite_id, case.id, case_occurrence if case_occurrence is not None else case.id),
-            skip_names=case_values | membership_values,
+            skip_names=membership_values,
         ))
-        if case.variables:
-            merged.update({key: str(value) for key, value in case.variables.items()})
     if target_suite_id is not None:
         merged.update(resolve_rows(
             list(suite_rows), cache, ("suite", target_suite_id),
@@ -487,9 +484,8 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
             variable_map.update(resolve_rows(
                 list(case_rows), getattr(execution, "_variable_resolution_cache", {}),
                 ("case", suite_order, suite_id, case.id, case_order),
-                skip_names=set(case.variables or {}) | set(membership_overrides),
+                skip_names=set(membership_overrides),
             ))
-            variable_map.update({key: str(value) for key, value in (case.variables or {}).items()})
             variable_map.update(suite_variables)
             variable_map.update(membership_overrides)
             variable_map.update(execution_variables)

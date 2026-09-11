@@ -183,7 +183,6 @@ async def create(db: AsyncSession, *, project_id: int, body: CaseCreate, user_id
             status=body.status,
             flow_nodes=cast(list[dict], body.flow_nodes),
             steps=_legacy_steps_from_nodes(cast(list[dict], body.flow_nodes)),
-            variables=body.variables,
             user_id=user_id,
         )
         await asset_service.commit_asset_change(db, [project_id])
@@ -204,7 +203,7 @@ async def update(db: AsyncSession, *, case: TestCase, body: CaseUpdate, user_id:
     validate_orders(body.steps if body.steps is not None else body.flow_nodes)
     validate_keys(body.flow_nodes)
     validate_node_requirements(body.flow_nodes)
-    allowed_fields = {"name", "module_id", "description", "status", "flow_nodes", "variables"}
+    allowed_fields = {"name", "module_id", "description", "status", "flow_nodes"}
     values = {
         field: getattr(body, field)
         for field in body.model_fields_set
@@ -265,6 +264,13 @@ async def clone(db: AsyncSession, *, source: TestCase, user_id: int) -> TestCase
             source,
             flow_nodes=flow_nodes,
             steps=_legacy_steps_from_nodes(flow_nodes),
+            user_id=user_id,
+        )
+        await cases_repo.copy_variables(
+            db,
+            source_case_id=source.id,
+            target_case=cloned,
+            project_id=source.project_id,
             user_id=user_id,
         )
         await asset_service.commit_asset_change(db, [source.project_id])

@@ -98,13 +98,24 @@ async def test_case_crud(client: AsyncClient):
             "description": "测试登录",
             "status": "active",
             "steps": steps,
-            "variables": {"username": "u1"},
         },
         headers=headers,
     )
     assert created.status_code == 201
     case_id = created.json()["id"]
+    variable = await client.post(
+        "/api/variables",
+        json={"scope": "case", "case_id": case_id, "name": "username", "value": "u1"},
+        headers=headers,
+    )
+    assert variable.status_code == 201
     assert len(created.json()["steps"]) == 2
+    legacy_payload = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={"name": "禁止内联变量", "variables": {"username": "legacy"}},
+        headers=headers,
+    )
+    assert legacy_payload.status_code == 422
 
     # 列表 + 关键字筛选
     listing = await client.get(
@@ -116,7 +127,11 @@ async def test_case_crud(client: AsyncClient):
     # 详情
     detail = await client.get(f"/api/cases/{case_id}", headers=headers)
     assert detail.status_code == 200
-    assert detail.json()["variables"]["username"] == "u1"
+    assert "variables" not in detail.json()
+    listed_variables = await client.get(
+        f"/api/variables?scope=case&case_id={case_id}", headers=headers
+    )
+    assert listed_variables.json()[0]["value"] == "u1"
 
     # 更新
     updated = await client.put(
@@ -134,6 +149,12 @@ async def test_case_crud(client: AsyncClient):
     assert "副本" in cloned.json()["name"]
     assert cloned.json()["status"] == "draft"
     assert len(cloned.json()["steps"]) == 3
+    cloned_variables = await client.get(
+        f"/api/variables?scope=case&case_id={cloned.json()['id']}", headers=headers
+    )
+    assert cloned_variables.status_code == 200
+    assert cloned_variables.json()[0]["value"] == "u1"
+    assert cloned_variables.json()[0]["id"] != variable.json()["id"]
 
     # 删除
     deleted = await client.delete(f"/api/cases/{case_id}", headers=headers)

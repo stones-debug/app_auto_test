@@ -18,8 +18,7 @@ async def candidate_variables(
 ) -> tuple[list[Variable], dict[int, int], dict[int, str], dict[int, str]]:
     """批量读取项目档案可配置变量及节点引用统计。
 
-    TestCase.variables 旧内联字典没有稳定变量 ID，故本查询明确只收集
-    variables 表中的定义，不按名称猜测身份。
+    只收集 ``variables`` 表中的定义，变量 ID 是唯一身份。
     """
     suite_rows = list((await db.execute(select(TestSuite).where(
         TestSuite.project_id == project_id, TestSuite.deleted_at.is_(None)
@@ -74,17 +73,6 @@ async def candidate_variables(
         definitions.update({name: variable for (cid, name), variable in by_case.items() if cid == membership.case_id and name not in definitions})
         definitions.update({name: variable for name, variable in by_project.items() if name not in definitions})
         masked = set((membership.variable_overrides or {}).keys())
-        inline_names = set((case.variables or {}).keys()) if isinstance(case.variables, dict) else set()
-        # The real resolver applies suite definitions before legacy inline
-        # case values.  Inline values therefore mask case/project definitions
-        # only when no suite definition wins; they never mask the suite row.
-        case_definition_names = {
-            name for (cid, name) in by_case if cid == membership.case_id
-        }
-        suite_definition_names = {
-            name for (sid, name) in by_suite if sid == membership.suite_id
-        }
-        masked.update(inline_names & (case_definition_names | set(by_project)) - suite_definition_names)
         for node in (case.flow_nodes or case.steps or []):
             add_node_refs(node, definitions, masked)
 
@@ -94,11 +82,8 @@ async def candidate_variables(
             continue
         definitions = {name: variable for (cid, name), variable in by_case.items() if cid == case.id}
         definitions.update({name: variable for name, variable in by_project.items() if name not in definitions})
-        inline_names = set((case.variables or {}).keys()) if isinstance(case.variables, dict) else set()
-        case_definition_names = {name for (cid, name) in by_case if cid == case.id}
-        masked = inline_names & (case_definition_names | set(by_project))
         for node in (case.flow_nodes or case.steps or []):
-            add_node_refs(node, definitions, masked)
+            add_node_refs(node, definitions)
 
     variables = [variable for variable in variables if refs_by_id.get(variable.id, 0) > 0]
     scope_order = {"project": 0, "suite": 1, "case": 2}

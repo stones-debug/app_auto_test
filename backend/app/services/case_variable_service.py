@@ -83,9 +83,6 @@ def definitions_for_case(
             if scope == "case" and row.case_id != case.id:
                 continue
             result[row.name] = describe_definition(row.scope, row.kind or "fixed", row.value, row.spec)
-    if isinstance(case.variables, dict):
-        for name, value in case.variables.items():
-            result[name] = describe_definition("case", "fixed", str(value), None)
     if suite_id is not None:
         for row in rows:
             if row.scope == "suite" and row.suite_id == suite_id:
