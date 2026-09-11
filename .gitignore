@@ -42,6 +42,7 @@ data/
 .vscode/
 *.swp
 
+
 # 系统
 Thumbs.db
 .DS_Store
@@ -50,6 +51,7 @@ Thumbs.db
 # agent
 .opencode
 .omo
+.workbuddy/
 # deepwork session state
 /session-*.md
 .slim/deepwork/
