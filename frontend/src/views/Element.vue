@@ -583,44 +583,38 @@ onUnmounted(() => {
       <div class="tree-item" :class="{ active: selectedPage === 'all' }" @click="selectPage('all')">
         <span>全部</span><span class="count">{{ allTotal }}</span>
       </div>
-      <div
-        v-for="row in visiblePageGroups"
-        :key="row.node.page_name"
-        class="tree-item tree-group"
-        :class="{ active: selectedPage === row.node.page_name }"
-        :style="{ paddingLeft: `${12 + row.level * 18}px` }"
-        @click="selectPage(row.node.page_name)"
-        @contextmenu="openGroupContextMenu($event, row.node)"
-      >
+      <div v-for="row in visiblePageGroups" :key="row.node.page_name" class="tree-item tree-group"
+        :class="{ active: selectedPage === row.node.page_name }" :style="{ paddingLeft: `${12 + row.level * 18}px` }"
+        @click="selectPage(row.node.page_name)" @contextmenu="openGroupContextMenu($event, row.node)">
         <span class="tree-label">
-          <span
-            class="tree-chevron"
-            :class="{ expanded: !isCollapsed(row.node) }"
-            :style="{ visibility: row.node.children.length ? 'visible' : 'hidden' }"
-            title="展开/折叠"
-            @click.stop="toggleGroup(row.node)"
-          >›</span>
-          <el-icon class="group-folder-icon"><Folder /></el-icon>
+          <span class="tree-chevron" :class="{ expanded: !isCollapsed(row.node) }"
+            :style="{ visibility: row.node.children.length ? 'visible' : 'hidden' }" title="展开/折叠"
+            @click.stop="toggleGroup(row.node)">›</span>
+          <el-icon class="group-folder-icon">
+            <Folder />
+          </el-icon>
           <span class="group-name">{{ row.node.page_name }}</span>
         </span>
         <span class="group-right">
           <span v-if="canManageGroup(row.node)" class="group-actions">
-            <el-icon class="group-action-icon" title="编辑页面" @click.stop="openEditGroup(row.node)"><Edit /></el-icon>
-            <el-icon class="group-action-icon group-del-icon" title="删除页面" @click.stop="removeGroup(row.node)"><Delete /></el-icon>
+            <el-icon class="group-action-icon" title="编辑页面" @click.stop="openEditGroup(row.node)">
+              <Edit />
+            </el-icon>
+            <el-icon class="group-action-icon group-del-icon" title="删除页面" @click.stop="removeGroup(row.node)">
+              <Delete />
+            </el-icon>
           </span>
           <span class="count">{{ row.node.count }}</span>
         </span>
       </div>
       <el-button v-if="canWriteSelectedProject" class="add-group-btn" text type="primary" @click="openCreateGroup">
-        <el-icon><Plus /></el-icon>
+        <el-icon>
+          <Plus />
+        </el-icon>
         <span>新增分组</span>
       </el-button>
-      <div
-        v-if="groupContextMenu.visible && groupContextMenu.group"
-        class="group-context-menu"
-        :style="{ left: `${groupContextMenu.left}px`, top: `${groupContextMenu.top}px` }"
-        @click.stop
-      >
+      <div v-if="groupContextMenu.visible && groupContextMenu.group" class="group-context-menu"
+        :style="{ left: `${groupContextMenu.left}px`, top: `${groupContextMenu.top}px` }" @click.stop>
         <button type="button" @click="openCreateChildGroup(groupContextMenu.group)">新建页面</button>
       </div>
     </div>
@@ -628,8 +622,10 @@ onUnmounted(() => {
     <!-- 右：元素列表 -->
     <div class="elements-main">
       <div class="toolbar-card">
-        <el-input v-model="keyword" placeholder="按名称搜索" clearable class="search" @keyup.enter="resetPageAndLoad" @clear="resetPageAndLoad" />
-        <el-select v-model="projectFilter" placeholder="全部项目" clearable :disabled="isProjectMode" class="platform" @change="resetPageAndLoad">
+        <el-input v-model="keyword" placeholder="按名称搜索" clearable class="search" @keyup.enter="resetPageAndLoad"
+          @clear="resetPageAndLoad" />
+        <el-select v-model="projectFilter" placeholder="全部项目" clearable :disabled="isProjectMode" class="platform"
+          @change="resetPageAndLoad">
           <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
         </el-select>
         <el-select v-model="platform" placeholder="平台" clearable class="platform" @change="resetPageAndLoad">
@@ -663,7 +659,8 @@ onUnmounted(() => {
         </el-table-column>
         <el-table-column prop="locator_value" label="定位值" min-width="170">
           <template #default="{ row }">
-            <el-tag v-if="row.locator_type === 'smart'" size="small" type="primary" class="smart-tag" :title="smartSummary(row as TestElement)">
+            <el-tag v-if="row.locator_type === 'smart'" size="small" type="primary" class="smart-tag"
+              :title="smartSummary(row as TestElement)">
               {{ smartSummary(row as TestElement) }}
             </el-tag>
             <span v-else class="locator-cell">{{ smartSummary(row as TestElement) || '—' }}</span>
@@ -684,16 +681,9 @@ onUnmounted(() => {
         </el-table-column>
       </el-table>
 
-      <el-pagination
-        :current-page="page"
-        :page-size="pageSize"
-        :total="total"
-        :page-sizes="[20, 50, 100]"
-        layout="total, sizes, prev, pager, next, jumper"
-        class="pager"
-        @current-change="onPageChange"
-        @size-change="onPageSizeChange"
-      />
+      <el-pagination :current-page="page" :page-size="pageSize" :total="total" :page-sizes="[20, 50, 100]"
+        layout="total, sizes, prev, pager, next, jumper" class="pager" @current-change="onPageChange"
+        @size-change="onPageSizeChange" />
     </div>
 
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑元素' : '新建元素'" width="800px">
@@ -707,14 +697,8 @@ onUnmounted(() => {
           <el-input v-model="form.name" />
         </el-form-item>
         <el-form-item label="页面">
-          <el-select
-            v-model="form.page_name"
-            filterable
-            allow-create
-            default-first-option
-            class="full"
-            placeholder="选择页面分组，如 登录页"
-          >
+          <el-select v-model="form.page_name" filterable allow-create default-first-option class="full"
+            placeholder="选择页面分组，如 登录页">
             <el-option label="未分组" value="" />
             <el-option v-for="g in pageGroups" :key="g.page_name" :label="g.page_name" :value="g.page_name" />
           </el-select>
@@ -753,7 +737,8 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
-    <el-dialog v-model="groupDialogVisible" :title="editingGroupId ? '编辑页面' : creatingParentId ? '新建子页面' : '新增页面分组'" width="420px">
+    <el-dialog v-model="groupDialogVisible" :title="editingGroupId ? '编辑页面' : creatingParentId ? '新建子页面' : '新增页面分组'"
+      width="420px">
       <div v-if="creatingParentId" class="group-parent-hint">归属层级：{{ creatingParentName }}</div>
       <el-input v-model="groupName" placeholder="输入分组名称，如 登录页" @keyup.enter="saveGroup" />
       <template #footer>
@@ -768,7 +753,8 @@ onUnmounted(() => {
       <div class="import-actions">
         <el-button @click="downloadTemplate">下载 Excel 模板</el-button>
         <el-button type="primary" plain @click="chooseImportFile">选择 .xlsx 文件</el-button>
-        <span v-if="importFile" class="import-file">{{ importFile.name }}（{{ Math.ceil(importFile.size / 1024) }} KB）</span>
+        <span v-if="importFile" class="import-file">{{ importFile.name }}（{{ Math.ceil(importFile.size / 1024) }}
+          KB）</span>
       </div>
       <el-empty v-if="!importFile && importErrors.length === 0" :image-size="60" description="请选择 Excel 文件" />
       <el-table v-if="importErrors.length" :data="importErrors" max-height="260" class="import-errors">
@@ -778,7 +764,8 @@ onUnmounted(() => {
       </el-table>
       <template #footer>
         <el-button @click="importDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="importLoading" :disabled="!importFile" @click="submitImport">开始导入</el-button>
+        <el-button type="primary" :loading="importLoading" :disabled="!importFile"
+          @click="submitImport">开始导入</el-button>
       </template>
     </el-dialog>
 
@@ -797,6 +784,7 @@ onUnmounted(() => {
   display: flex;
   gap: 16px;
 }
+
 .page-tree {
   width: 260px;
   flex-shrink: 0;
@@ -809,9 +797,11 @@ onUnmounted(() => {
   overflow-y: auto;
   box-sizing: border-box;
 }
+
 .tree-head {
   padding: 8px 12px 12px;
 }
+
 .tree-item {
   display: flex;
   align-items: center;
@@ -822,20 +812,24 @@ onUnmounted(() => {
   color: var(--text-2);
   font-size: 13px;
 }
+
 .tree-item:hover {
   background: var(--primary-light);
 }
+
 .tree-item.active {
   background: var(--primary-light);
   color: var(--primary);
   font-weight: 600;
 }
+
 .tree-label {
   display: inline-flex;
   align-items: center;
   min-width: 0;
   gap: 4px;
 }
+
 .tree-chevron {
   width: 14px;
   flex: 0 0 14px;
@@ -847,18 +841,22 @@ onUnmounted(() => {
   transform: rotate(0deg);
   transition: transform 0.15s ease;
 }
+
 .tree-chevron.expanded {
   transform: rotate(90deg);
 }
+
 .group-folder-icon {
   color: #e6b800;
   flex: 0 0 auto;
 }
+
 .group-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
 .tree-item .count {
   font-size: 12px;
   color: var(--text-2);
@@ -866,30 +864,37 @@ onUnmounted(() => {
   border-radius: 10px;
   padding: 0 8px;
 }
+
 .group-right {
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
+
 .group-actions {
   display: inline-flex;
   align-items: center;
   gap: 4px;
 }
+
 .group-action-icon {
   font-size: 13px;
   color: var(--text-2);
   cursor: pointer;
 }
+
 .group-action-icon:hover {
   color: var(--primary);
 }
+
 .group-del-icon {
   color: var(--text-2);
 }
+
 .group-del-icon:hover {
   color: var(--el-color-danger);
 }
+
 .group-context-menu {
   position: fixed;
   z-index: 3000;
@@ -900,6 +905,7 @@ onUnmounted(() => {
   background: var(--card-bg);
   box-shadow: var(--shadow-md);
 }
+
 .group-context-menu button {
   display: block;
   width: 100%;
@@ -912,47 +918,58 @@ onUnmounted(() => {
   cursor: pointer;
   font-size: 13px;
 }
+
 .group-context-menu button:hover {
   background: var(--primary-light);
   color: var(--primary);
 }
+
 .group-parent-hint {
   margin-bottom: 10px;
   color: var(--text-2);
   font-size: 12px;
 }
+
 .el-button {
   margin-left: 0px;
 }
+
 .add-group-btn {
   width: 100%;
   margin-top: 8px;
   justify-content: flex-start;
 }
+
 .elements-main {
   flex: 1;
   min-width: 0;
 }
+
 .search {
   width: 200px;
 }
+
 .platform {
   width: 140px;
 }
+
 .full {
   width: 100%;
 }
+
 .field-help {
   color: var(--text-2);
   font-size: 12px;
   line-height: 20px;
 }
+
 .import-actions {
   display: flex;
   align-items: center;
   gap: 10px;
   margin: 18px 0 12px;
 }
+
 .import-file {
   color: var(--text-2);
   font-size: 12px;
@@ -960,9 +977,11 @@ onUnmounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
 .import-errors {
   margin-top: 12px;
 }
+
 .smart-tag {
   display: inline-block;
   max-width: 280px;
@@ -971,6 +990,7 @@ onUnmounted(() => {
   white-space: nowrap;
   vertical-align: middle;
 }
+
 .locator-cell {
   display: inline-block;
   max-width: 100%;
