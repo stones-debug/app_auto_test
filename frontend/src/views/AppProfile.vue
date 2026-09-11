@@ -10,15 +10,9 @@ import ProfileReleaseManager from '@/components/ProfileReleaseManager.vue'
 import ProfileDifferenceView from '@/components/ProfileDifferenceView.vue'
 import ProfileOverrideDrawer from '@/components/ProfileOverrideDrawer.vue'
 import {
-  getAppProfile,
   listReleases,
-  listProfileOverrides,
   patchProfileSuiteCaseVariables,
-  restoreNodeOverride,
-  restoreSuiteStepOverride,
   skipRulesBatch,
-  upsertNodeOverride,
-  upsertSuiteStepOverride,
   type ProfileCaseVariable,
   type ProfileNode,
   type ProfileVariableUpdate,
@@ -37,7 +31,6 @@ import {
   variableStatusMeta,
   variableToken,
 } from '@/utils/caseVariables'
-import { stepVariableReferences } from '@/utils/variableReferences'
 
 interface DisplayNode extends ProfileNode {
   _key: string
@@ -71,23 +64,6 @@ const skipDialog = reactive({
   note: '',
   targets: [] as SkipTarget[],
 })
-
-const variableOverrideDialog = reactive({
-  visible: false,
-  row: null as DisplayNode | null,
-  names: [] as string[],
-  values: {} as Record<string, string>,
-  enabled: {} as Record<string, boolean>,
-  existingPatch: {} as Record<string, unknown>,
-})
-
-function variableNames(row: DisplayNode): string[] {
-  return stepVariableReferences(row)
-}
-
-function canVariableOverride(row: DisplayNode): boolean {
-  return (row.node_type === 'step' || row.node_type === 'suite_step') && variableNames(row).length > 0
-}
 
 function elementDisplayName(row: DisplayNode): string | null {
   if ((row.node_type !== 'step' && row.node_type !== 'suite_step') || row.element_id == null) return null
@@ -247,38 +223,9 @@ async function batchRestore() {
   await mutateSkip('restore', targets)
 }
 
-async function openVariableOverride(row: DisplayNode) {
-  if (!store.selectedProfileId || !row.node_key || row._suiteId == null) return
-  if (!canVariableOverride(row) || (row.node_type !== 'suite_step' && row._caseId == null)) return
-  const data = await listProfileOverrides(store.selectedProfileId)
-  const existing = data.nodes.find((item) => (
-    item.suite_id === row._suiteId
-      && (item.suite_case_id ?? null) === (row._membershipId ?? null)
-      && item.case_id === (row.node_type === 'suite_step' ? null : row._caseId)
-      && item.node_type === row.node_type
-      && item.node_key === row.node_key
-  ))
-  const names = variableNames(row)
-  const existingVariables = existing?.patch?.variable_overrides
-  const values: Record<string, string> = {}
-  const enabled: Record<string, boolean> = {}
-  for (const name of names) {
-    const hasValue = existingVariables != null
-      && typeof existingVariables === 'object'
-      && Object.prototype.hasOwnProperty.call(existingVariables, name)
-    values[name] = hasValue ? String((existingVariables as Record<string, unknown>)[name]) : ''
-    enabled[name] = hasValue
-  }
-  variableOverrideDialog.row = row
-  variableOverrideDialog.names = names
-  variableOverrideDialog.values = values
-  variableOverrideDialog.enabled = enabled
-  variableOverrideDialog.existingPatch = { ...(existing?.patch ?? {}) }
-  variableOverrideDialog.visible = true
-}
-
-// ---------- 用例变量就地快捷覆盖 ----------
-// 用例行竖排展示全部变量；点击单个变量就地编辑，一个值写入它在当前用例的全部引用节点。
+// ---------- 用例变量就地覆盖（仅 APP 档案用例行） ----------
+// 「变量」列竖排展示 `变量名：变量值`；点击变量值就地变成输入框，输入后回车或失焦即保存。
+// 覆盖范围 = 该变量在**当前这条编排项**里的取值，不写公共用例、不影响同一用例的其它编排。
 const caseVariableEdit = reactive({ key: '', value: '' })
 const variableSaving = ref(false)
 
@@ -318,21 +265,10 @@ function applyCaseVariables(suiteId: number, membershipId: number, variables: Pr
   }
 }
 
-async function refreshCaseChildren(row: DisplayNode) {
-  if (row._caseId != null && row._suiteId != null) {
-    await store.loadChildren('case', row._caseId, row._suiteId, row._membershipId, true)
-  } else {
-    await store.refreshVisibleWorkspace()
-  }
-}
-
 async function saveCaseVariableUpdates(row: DisplayNode, updates: ProfileVariableUpdate[]) {
   const membershipId = row._membershipId
   if (!store.selectedProfileId || store.profileRevision == null || membershipId == null) return
-  if (updates.length === 0) {
-    ElMessage.info('没有需要保存的变更')
-    return
-  }
+  if (updates.length === 0) return
   variableSaving.value = true
   try {
     const result = await patchProfileSuiteCaseVariables(store.selectedProfileId, membershipId, {
@@ -342,152 +278,31 @@ async function saveCaseVariableUpdates(row: DisplayNode, updates: ProfileVariabl
     store.markRevision(result.revision, store.testAssetRevision ?? 1)
     if (row._suiteId != null) applyCaseVariables(row._suiteId, membershipId, result.variables)
     cancelVariableEdit()
-    ElMessage.success('变量覆盖已保存')
+    ElMessage.success('变量已更新')
   } catch (error) {
+    // 失败时保留编辑态，便于直接改完重试
     ElMessage.error((error as Error).message || '保存失败，请刷新后重试')
   } finally {
     variableSaving.value = false
   }
 }
 
+/** 输入框回车 / 失焦提交；值没变化就静默收起编辑框（不发请求、不推进 revision）。 */
 async function commitVariableEdit(row: DisplayNode, variable: ProfileCaseVariable) {
+  if (variableSaving.value) return
+  if (caseVariableEdit.key !== caseVariableKey(row, variable)) return
   const updates = variableQuickUpdates(variable, caseVariableEdit.value)
   if (updates == null) {
     cancelVariableEdit()
-    ElMessage.info('没有需要保存的变更')
     return
   }
   await saveCaseVariableUpdates(row, updates)
 }
 
-/** 恢复原值：删除该变量在当前用例全部引用节点上的覆盖。 */
+/** 恢复原值：删除该变量在当前编排项上全部引用节点的覆盖，回到继承值。 */
 async function restoreCaseVariable(row: DisplayNode, variable: ProfileCaseVariable) {
+  if (variableSaving.value) return
   await saveCaseVariableUpdates(row, variableRestoreUpdates(variable))
-}
-
-/** 步骤行「变量覆盖」入口与用例行就地覆盖共用同一批量接口。 */
-function buildStepUpdates(row: DisplayNode, value: (name: string) => string | null): ProfileVariableUpdate[] {
-  return variableOverrideDialog.names.map((name) => ({
-    node_type: 'step',
-    node_key: row.node_key as string,
-    name,
-    value: value(name),
-  }))
-}
-
-async function saveVariableOverride() {
-  const row = variableOverrideDialog.row
-  if (!store.selectedProfileId || store.profileRevision == null || !row?.node_key) return
-  const membershipId = row._membershipId
-  if (row.node_type === 'step' && membershipId != null) {
-    saving.value = true
-    try {
-      const result = await patchProfileSuiteCaseVariables(store.selectedProfileId, membershipId, {
-        expected_revision: store.profileRevision,
-        updates: buildStepUpdates(row, (name) => (
-          variableOverrideDialog.enabled[name] ? (variableOverrideDialog.values[name] ?? '') : null
-        )),
-      })
-      store.markRevision(result.revision, store.testAssetRevision ?? 1)
-      if (row._suiteId != null) applyCaseVariables(row._suiteId, membershipId, result.variables)
-      variableOverrideDialog.visible = false
-      await refreshCaseChildren(row)
-      ElMessage.success('节点覆盖已保存')
-    } catch (error) {
-      ElMessage.error((error as Error).message || '保存失败，请刷新后重试')
-    } finally {
-      saving.value = false
-    }
-    return
-  }
-  const variableOverrides: Record<string, string> = {}
-  for (const name of variableOverrideDialog.names) {
-    if (variableOverrideDialog.enabled[name]) variableOverrides[name] = variableOverrideDialog.values[name] ?? ''
-  }
-  const patch = { ...variableOverrideDialog.existingPatch }
-  if (Object.keys(variableOverrides).length > 0) patch.variable_overrides = variableOverrides
-  else delete patch.variable_overrides
-  if (Object.keys(patch).length === 0) {
-    await restoreVariableOverride()
-    return
-  }
-  saving.value = true
-  try {
-    const result = row.node_type === 'suite_step'
-      ? await upsertSuiteStepOverride(
-          store.selectedProfileId,
-          row._suiteId!,
-          row.node_key,
-          { expected_revision: store.profileRevision, patch },
-        )
-      : await upsertNodeOverride(
-          store.selectedProfileId,
-          row._suiteId!,
-          row._caseId!,
-          'step',
-          row.node_key,
-          { expected_revision: store.profileRevision, patch },
-        )
-    store.markRevision(result.revision, store.testAssetRevision ?? 1)
-    variableOverrideDialog.visible = false
-    await store.refreshVisibleWorkspace()
-    ElMessage.success('节点覆盖已保存')
-  } finally {
-    saving.value = false
-  }
-}
-
-async function restoreVariableOverride() {
-  const row = variableOverrideDialog.row
-  if (!store.selectedProfileId || store.profileRevision == null || !row?.node_key) return
-  const membershipId = row._membershipId
-  if (row.node_type === 'step' && membershipId != null) {
-    saving.value = true
-    try {
-      const result = await patchProfileSuiteCaseVariables(store.selectedProfileId, membershipId, {
-        expected_revision: store.profileRevision,
-        updates: buildStepUpdates(row, () => null),
-      })
-      store.markRevision(result.revision, store.testAssetRevision ?? 1)
-      if (row._suiteId != null) applyCaseVariables(row._suiteId, membershipId, result.variables)
-      variableOverrideDialog.visible = false
-      await refreshCaseChildren(row)
-      ElMessage.success('节点覆盖已恢复')
-    } catch (error) {
-      ElMessage.error((error as Error).message || '恢复失败，请刷新后重试')
-    } finally {
-      saving.value = false
-    }
-    return
-  }
-  const rest = { ...variableOverrideDialog.existingPatch }
-  delete rest.variable_overrides
-  if (Object.keys(rest).length > 0) {
-    saving.value = true
-    try {
-      const result = row.node_type === 'suite_step'
-        ? await upsertSuiteStepOverride(store.selectedProfileId, row._suiteId!, row.node_key, {
-            expected_revision: store.profileRevision, patch: rest,
-          })
-        : await upsertNodeOverride(store.selectedProfileId, row._suiteId!, row._caseId!, 'step', row.node_key, {
-            expected_revision: store.profileRevision, patch: rest,
-          })
-      store.markRevision(result.revision, store.testAssetRevision ?? 1)
-    } finally {
-      saving.value = false
-    }
-  } else {
-    if (row.node_type === 'suite_step') {
-      await restoreSuiteStepOverride(store.selectedProfileId, row._suiteId!, row.node_key, { expected_revision: store.profileRevision })
-    } else {
-      await restoreNodeOverride(store.selectedProfileId, row._suiteId!, row._caseId!, 'step', row.node_key, { expected_revision: store.profileRevision })
-    }
-  }
-  const profile = await getAppProfile(store.selectedProfileId)
-  store.markRevision(profile.revision, store.testAssetRevision ?? 1)
-  variableOverrideDialog.visible = false
-  await store.refreshVisibleWorkspace()
-  ElMessage.success('节点覆盖已恢复')
 }
 
 async function refreshProfile() {
@@ -605,10 +420,18 @@ onMounted(load)
               <span v-else class="node-dot">·</span>
               <span class="node-label"><span>{{ row.name }}</span><small v-if="elementDisplayName(displayNode(row))" class="element-label">元素：{{ elementDisplayName(displayNode(row)) }}</small></span>
             </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="类型" width="90" prop="node_type" />
+        <el-table-column label="阶段" width="90"><template #default="{ row }">{{ row.phase ?? '-' }}</template></el-table-column>
+        <el-table-column label="生效状态" width="120">
+          <template #default="{ row }"><ProfileStatusTag :effective-status="row.effective_status" :status-source="row.status_source" /></template>
+        </el-table-column>
+        <el-table-column label="变量" min-width="260">
+          <template #default="{ row }">
             <div
-              v-if="row.node_type === 'case' && caseVariables(displayNode(row)).length"
+              v-if="row.node_type === 'case'"
               class="case-variable-list"
-              :style="{ paddingLeft: `${row._depth * 22 + 22}px` }"
               @click.stop
               @dblclick.stop
               @mousedown.stop
@@ -619,54 +442,50 @@ onMounted(load)
                 class="case-variable-item"
                 :class="`tone-${variableStatusMeta(variable.status).tone}`"
               >
-                <code class="variable-name">{{ variableToken(variable.name) }}</code>
-                <template v-if="isEditingVariable(displayNode(row), variable)">
-                  <el-input
-                    v-model="caseVariableEdit.value"
-                    class="variable-input"
-                    size="small"
-                    :disabled="variableSaving"
-                    placeholder="输入覆盖值（可为空）"
-                    :aria-label="`${variable.name} 的覆盖值`"
-                    @click.stop
-                    @keyup.enter="commitVariableEdit(displayNode(row), variable)"
-                    @keyup.esc="cancelVariableEdit"
-                  />
-                  <el-button size="small" type="primary" :loading="variableSaving" @click.stop="commitVariableEdit(displayNode(row), variable)">保存</el-button>
-                  <el-button size="small" :disabled="variableSaving" @click.stop="cancelVariableEdit">取消</el-button>
-                  <el-button
-                    v-if="variableOverrideState(variable).overridden"
-                    size="small"
-                    text
-                    type="danger"
-                    :disabled="variableSaving"
-                    @click.stop="restoreCaseVariable(displayNode(row), variable)"
-                  >恢复原值</el-button>
-                </template>
+                <code class="variable-name" :title="`引用 ${variable.reference_count} 处`">{{ variableToken(variable.name) }}</code>
+                <span class="variable-colon">：</span>
+                <el-input
+                  v-if="isEditingVariable(displayNode(row), variable)"
+                  v-model="caseVariableEdit.value"
+                  class="variable-input"
+                  size="small"
+                  :disabled="variableSaving"
+                  placeholder="输入新值"
+                  :aria-label="`${variable.name} 的新值`"
+                  @click.stop
+                  @keyup.enter="commitVariableEdit(displayNode(row), variable)"
+                  @keyup.esc="cancelVariableEdit"
+                  @blur="commitVariableEdit(displayNode(row), variable)"
+                />
                 <template v-else>
                   <span
                     class="variable-value"
                     :class="{ editable: canEditProject }"
-                    :title="`${variableToken(variable.name)} = ${variableDisplayText(variable)}（引用 ${variable.reference_count} 处）`"
+                    :title="canEditProject ? '点击修改该用例中的取值' : undefined"
                     @click.stop="beginVariableEdit(displayNode(row), variable)"
                   >{{ variableDisplayText(variable) }}</span>
-                  <span class="variable-refs" :title="`共 ${variable.reference_count} 处引用`">×{{ variable.reference_count }}</span>
+                  <el-button
+                    v-if="variableOverrideState(variable).overridden"
+                    class="variable-restore"
+                    size="small"
+                    text
+                    type="danger"
+                    :disabled="variableSaving"
+                    title="恢复原值"
+                    @click.stop="restoreCaseVariable(displayNode(row), variable)"
+                  >恢复</el-button>
                 </template>
               </div>
+              <span v-if="caseVariables(displayNode(row)).length === 0" class="case-variable-empty">无参数变量</span>
             </div>
+            <span v-else class="case-variable-empty">-</span>
           </template>
-        </el-table-column>
-        <el-table-column label="类型" width="90" prop="node_type" />
-        <el-table-column label="阶段" width="90"><template #default="{ row }">{{ row.phase ?? '-' }}</template></el-table-column>
-        <el-table-column label="生效状态" width="120">
-          <template #default="{ row }"><ProfileStatusTag :effective-status="row.effective_status" :status-source="row.status_source" /></template>
         </el-table-column>
         <el-table-column label="原因" min-width="150"><template #default="{ row }">{{ row.reason?.note || row.reason?.code || '-' }}</template></el-table-column>
         <el-table-column label="操作" width="210" align="right">
           <template #default="{ row }">
             <el-button v-if="canExecute && (row.node_type === 'suite' || row.node_type === 'case')" size="small" text type="primary" @click="runNode(displayNode(row))">运行</el-button>
             <template v-if="canEditProject && !displayNode(row)._isPhaseGroup">
-              <el-button v-if="canVariableOverride(displayNode(row))" size="small" text @click="openVariableOverride(displayNode(row))">变量覆盖</el-button>
               <el-button v-if="row.status_source === 'direct'" size="small" text @click="restoreRow(displayNode(row))">恢复</el-button>
               <el-button v-else-if="row.status_source !== 'inherited'" size="small" text type="danger" @click="openSkip([displayNode(row)])">跳过</el-button>
             </template>
@@ -691,64 +510,6 @@ onMounted(load)
         <template #footer><el-button @click="skipDialog.visible = false">取消</el-button><el-button type="primary" :loading="saving" @click="confirmSkip">确认跳过</el-button></template>
       </el-dialog>
 
-      <el-dialog v-model="variableOverrideDialog.visible" width="min(640px, calc(100vw - 32px))" class="variable-override-dialog">
-        <template #header>
-          <div class="override-dialog-header">
-            <div class="override-dialog-title">步骤变量覆盖</div>
-            <div class="override-dialog-subtitle">仅修改当前步骤引用的变量</div>
-          </div>
-        </template>
-        <div v-if="variableOverrideDialog.row" class="override-context-card">
-          <div class="context-main">
-            <span class="context-kicker">当前步骤</span>
-            <strong class="context-name" :title="variableOverrideDialog.row.name">{{ variableOverrideDialog.row.name }}</strong>
-            <span class="context-action">{{ variableOverrideDialog.row.registry_key || '动作' }}</span>
-          </div>
-          <div class="context-details">
-            <span v-if="variableOverrideDialog.row.order != null">第 {{ variableOverrideDialog.row.order }} 项</span>
-            <span v-if="elementDisplayName(variableOverrideDialog.row)" class="element-context" :title="elementDisplayName(variableOverrideDialog.row) ?? undefined">元素：{{ elementDisplayName(variableOverrideDialog.row) }}</span>
-          </div>
-        </div>
-        <div class="override-hint" role="note">
-          覆盖值仅对当前步骤生效；未启用的变量继续继承原值，执行参数优先级仍高于此处。
-        </div>
-        <section class="variable-section" aria-labelledby="variable-section-title">
-          <div class="variable-section-head">
-            <span id="variable-section-title" class="variable-section-title">变量覆盖</span>
-            <span class="variable-section-count">已启用 {{ Object.values(variableOverrideDialog.enabled).filter(Boolean).length }} / 共 {{ variableOverrideDialog.names.length }}</span>
-          </div>
-          <div class="variable-list" role="list">
-            <div v-for="name in variableOverrideDialog.names" :key="name" class="variable-row" role="listitem">
-              <div class="variable-meta">
-                <el-tooltip :content="variableToken(name)" placement="top">
-                  <code class="variable-name">{{ variableToken(name) }}</code>
-                </el-tooltip>
-                <span class="variable-state">{{ variableOverrideDialog.enabled[name] ? '已启用覆盖' : '继承原值' }}</span>
-              </div>
-              <el-input
-                v-model="variableOverrideDialog.values[name]"
-                class="variable-input"
-                :disabled="!variableOverrideDialog.enabled[name]"
-                :placeholder="variableOverrideDialog.enabled[name] ? '输入当前步骤的覆盖值（可为空）' : '启用覆盖后输入值'"
-                :aria-label="`${name} 的步骤覆盖值`"
-              />
-              <el-switch v-model="variableOverrideDialog.enabled[name]" :aria-label="`启用 ${name} 覆盖`" />
-            </div>
-          </div>
-        </section>
-        <template #footer>
-          <div class="override-dialog-footer">
-            <div class="footer-left">
-              <el-button v-if="Object.prototype.hasOwnProperty.call(variableOverrideDialog.existingPatch, 'variable_overrides')" text type="danger" @click="restoreVariableOverride">恢复全部变量</el-button>
-            </div>
-            <div class="footer-right">
-              <el-button @click="variableOverrideDialog.visible = false">取消</el-button>
-              <el-button type="primary" :loading="saving" @click="saveVariableOverride">保存覆盖</el-button>
-            </div>
-          </div>
-        </template>
-      </el-dialog>
-
       <template v-if="store.selectedProfileId">
         <ProfileReleaseManager v-if="releaseMgr" v-model="releaseMgr" :profile-id="store.selectedProfileId" :revision="store.profileRevision ?? 1" />
         <ProfileDifferenceView v-model="diffView" :profile-id="store.selectedProfileId" />
@@ -771,30 +532,33 @@ onMounted(load)
 .batch-bar { padding: 8px 12px; border-radius: 6px; background: var(--el-color-primary-light-9); }
 .node-name { display: inline-flex; align-items: center; }
 .node-label { display: inline-flex; flex-direction: column; gap: 2px; }
-/* 用例行变量：竖排展示全部变量，点击就地编辑（一个值写入全部引用节点） */
-.case-variable-list { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
+/* 变量列：竖排展示「变量名：变量值」，点击变量值就地编辑 */
+.case-variable-list { display: flex; flex-direction: column; gap: 4px; padding: 2px 0; }
+.case-variable-empty { color: var(--el-text-color-secondary); font-size: 12px; }
 .case-variable-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   min-height: 22px;
-  padding: 0 4px;
+  padding: 0 6px;
   border: 1px solid transparent;
   border-radius: 4px;
   font-size: 12px;
   line-height: 20px;
 }
 .case-variable-item .variable-name { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.case-variable-item .variable-colon { opacity: 0.7; }
 .case-variable-item .variable-value {
-  max-width: 260px;
+  min-width: 40px;
+  max-width: 320px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.case-variable-item .variable-value.editable { cursor: pointer; border-bottom: 1px dashed transparent; }
+.case-variable-item .variable-value.editable { cursor: text; border-bottom: 1px dashed transparent; }
 .case-variable-item .variable-value.editable:hover { border-bottom-color: currentColor; }
-.case-variable-item .variable-refs { flex-shrink: 0; opacity: 0.6; }
-.case-variable-item .variable-input { width: 200px; }
+.case-variable-item .variable-input { width: 180px; }
+.case-variable-item .variable-restore { padding: 0 4px; }
 .case-variable-item.tone-overridden { color: #1d4ed8; background: rgba(37, 99, 235, 0.12); border-color: rgba(37, 99, 235, 0.35); }
 .case-variable-item.tone-inherited { color: var(--el-text-color-regular); background: rgba(100, 116, 139, 0.08); border-color: rgba(100, 116, 139, 0.24); }
 .case-variable-item.tone-undefined { color: #c2410c; background: rgba(249, 115, 22, 0.12); border-color: rgba(249, 115, 22, 0.35); }
@@ -803,37 +567,4 @@ onMounted(load)
 .element-label, .element-context { color: var(--el-text-color-secondary); font-size: 12px; }
 .expand-button { width: 22px; padding: 0; border: 0; background: transparent; cursor: pointer; color: inherit; }
 .node-dot { display: inline-block; width: 22px; text-align: center; }
-.override-dialog-header { display: flex; flex-direction: column; gap: 2px; }
-.override-dialog-title { color: var(--el-text-color-primary); font-size: 17px; font-weight: 600; line-height: 1.35; }
-.override-dialog-subtitle { color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.5; }
-.override-context-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; border: 1px solid var(--el-border-color-light); border-radius: 8px; background: var(--el-color-primary-light-9); }
-.context-main, .context-details { display: flex; align-items: center; min-width: 0; gap: 8px; }
-.context-main { flex: 1; flex-wrap: wrap; }
-.context-kicker { color: var(--el-text-color-secondary); font-size: 12px; }
-.context-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.context-action, .context-details { color: var(--el-text-color-secondary); font-size: 12px; }
-.context-details { flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
-.element-context { overflow: hidden; max-width: 240px; text-overflow: ellipsis; white-space: nowrap; }
-.override-hint { margin-top: 12px; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.6; }
-.variable-section { margin-top: 18px; }
-.variable-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
-.variable-section-title { color: var(--el-text-color-primary); font-size: 14px; font-weight: 600; }
-.variable-section-count { color: var(--el-text-color-secondary); font-size: 12px; }
-.variable-list { display: flex; flex-direction: column; gap: 8px; max-height: min(46vh, 380px); overflow-y: auto; padding: 2px; }
-.variable-row { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 9px 10px; border: 1px solid var(--el-border-color-light); border-radius: 7px; background: var(--el-bg-color); }
-.variable-meta { display: flex; flex-direction: column; flex: 0 0 150px; min-width: 0; gap: 3px; }
-.variable-name { display: block; overflow: hidden; padding: 2px 6px; border-radius: 4px; background: var(--el-fill-color-light); color: var(--el-color-primary); text-overflow: ellipsis; white-space: nowrap; }
-.variable-state { overflow: hidden; color: var(--el-text-color-secondary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.variable-input { flex: 1; min-width: 120px; }
-.override-dialog-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; }
-.footer-left, .footer-right { display: flex; align-items: center; gap: 8px; }
-@media (max-width: 600px) {
-  .override-context-card { align-items: flex-start; flex-direction: column; gap: 8px; }
-  .context-details { justify-content: flex-start; }
-  .variable-row { align-items: stretch; flex-wrap: wrap; }
-  .variable-meta { flex-basis: calc(100% - 40px); }
-  .variable-input { flex-basis: calc(100% - 40px); }
-  .override-dialog-footer { align-items: stretch; flex-direction: column-reverse; }
-  .footer-left, .footer-right { justify-content: flex-end; }
-}
 </style>
