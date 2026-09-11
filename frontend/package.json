@@ -7,6 +7,9 @@
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
     "test": "vitest run",
+    "typecheck": "vue-tsc -b",
+    "test:related": "vitest run",
+    "test:full": "vitest run",
     "preview": "vite preview",
     "check:bundle": "node scripts/check-bundle-size.mjs"
   },
