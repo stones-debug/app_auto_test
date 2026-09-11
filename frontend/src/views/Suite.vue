@@ -1,11 +1,23 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref, watch, type ComponentPublicInstance } from 'vue'
+import { nextTick, onMounted, onUnmounted, reactive, ref, watch, type ComponentPublicInstance } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { MoreFilled, Plus, Search } from '@element-plus/icons-vue'
 import Draggable from 'vuedraggable'
 
-import { createSuite, createVariable, deleteSuite, updateSuite, type Suite, type SuiteCase } from '@/api/suites'
+import {
+  createSuite,
+  createVariable,
+  deleteSuite,
+  getSuiteCaseVariables,
+  patchSuiteCaseVariables,
+  updateSuite,
+  type Suite,
+  type SuiteCase,
+  type SuiteCaseVariables,
+} from '@/api/suites'
 import { listModules, type TestModule } from '@/api/modules'
+import CaseVariableEditor, { type VariableSavePayload } from '@/components/CaseVariableEditor.vue'
+import CaseVariableSummary from '@/components/CaseVariableSummary.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import ModuleTree from '@/components/ModuleTree.vue'
 import PageHeader from '@/components/PageHeader.vue'
@@ -17,6 +29,7 @@ import { useSuiteDetail } from '@/composables/useSuiteDetail'
 import { useSuiteList } from '@/composables/useSuiteList'
 import { usePermission } from '@/composables/usePermission'
 import { useProjectContextStore } from '@/stores/projectContext'
+import { membershipVariablesToPreview, type EditorVariable } from '@/utils/caseVariables'
 import { formatDateTime } from '@/utils/format'
 import { moduleFilterParams, parseModuleKey, type ModuleKey } from '@/utils/moduleFilter'
 import { parseSuiteId } from '@/utils/suiteNavigation'
@@ -217,6 +230,64 @@ function openCaseEditor(suiteCase: SuiteCase) {
       suite_id: String(suiteId),
     },
   })
+}
+
+// ---------- 用例变量快捷展示与编排项覆盖 ----------
+const variableEditor = reactive({
+  visible: false,
+  loading: false,
+  saving: false,
+  membership: null as SuiteCase | null,
+  variables: [] as EditorVariable[],
+})
+
+/** 保存后只刷新当前编排项摘要，不重置滚动位置、排序或展开状态。 */
+function applyMembershipPreview(membershipId: number, detail: SuiteCaseVariables) {
+  const index = suiteCases.value.findIndex((item) => item.id === membershipId)
+  if (index === -1) return
+  const preview = membershipVariablesToPreview(detail.variables)
+  const next = [...suiteCases.value]
+  next[index] = { ...next[index], variable_count: detail.total, variables_preview: preview }
+  suiteCases.value = next
+}
+
+async function openVariableEditor(item: SuiteCase) {
+  const suiteId = activeSuite.value
+  if (!suiteId) return
+  variableEditor.membership = item
+  variableEditor.variables = []
+  variableEditor.visible = true
+  variableEditor.loading = true
+  try {
+    const detail = await getSuiteCaseVariables(suiteId, item.id)
+    variableEditor.variables = detail.variables.map((variable) => ({ ...variable }))
+  } catch (error) {
+    ElMessage.error((error as Error).message || '加载变量详情失败')
+    variableEditor.visible = false
+  } finally {
+    variableEditor.loading = false
+  }
+}
+
+async function saveVariableOverrides(payload: VariableSavePayload) {
+  const suiteId = activeSuite.value
+  const membership = variableEditor.membership
+  if (!suiteId || !membership || payload.kind !== 'occurrence') return
+  variableEditor.saving = true
+  try {
+    const detail = await patchSuiteCaseVariables(
+      suiteId,
+      membership.id,
+      payload.updates as Record<string, string | null>,
+    )
+    applyMembershipPreview(membership.id, detail)
+    ElMessage.success('编排项变量覆盖已保存')
+    variableEditor.visible = false
+  } catch (error) {
+    ElMessage.error((error as Error).message || '保存失败')
+  } finally {
+    variableEditor.saving = false
+  }
 }
 
 async function loadModuleOptions() {
@@ -515,7 +586,15 @@ onMounted(() => {
                       <el-input v-else :ref="setOrderInputRef" v-model="editingOrderValue" class="case-order-input" size="small" @click.stop @dblclick.stop
                         @input="cleanOrderInput" @keydown="onOrderKeydown" @blur="void submitOrderEdit()" />
                       <span class="case-name" :title="element.case_name">{{ element.case_name
-                        }}</span><el-tag v-if="element.module_name" size="small" type="info" effect="plain"
+                        }}</span>
+                      <CaseVariableSummary
+                        class="case-variables"
+                        :variables="element.variables_preview ?? []"
+                        :total="element.variable_count ?? 0"
+                        :readonly="!canWriteAssets"
+                        @open="openVariableEditor(element)"
+                      />
+                      <el-tag v-if="element.module_name" size="small" type="info" effect="plain"
                         class="case-module">{{ element.module_name }}</el-tag><el-button v-if="canWriteAssets" class="case-remove"
                         size="small" text type="danger" @click="removeCase(element)" @dblclick.stop>移除</el-button></div>
                   </div>
@@ -617,6 +696,19 @@ onMounted(() => {
     :case-status-meta="caseStatusMeta" :group-selection-state="groupSelectionState"
     :is-group-collapsed="isCaseGroupCollapsed" @update:keyword="addKeyword = $event" @toggle="toggleSelect"
     @toggle-group="toggleGroupSelection" @collapse="toggleCaseGroup" @add="addSelectedCases" />
+
+  <CaseVariableEditor
+    v-model="variableEditor.visible"
+    mode="occurrence"
+    title="编排项变量覆盖"
+    :subtitle="variableEditor.membership ? `仅作用于当前套件中的「${variableEditor.membership.case_name}」这一次编排` : ''"
+    :variables="variableEditor.variables"
+    :loading="variableEditor.loading"
+    :saving="variableEditor.saving"
+    :readonly="!canWriteAssets"
+    :context="variableEditor.membership ? { name: variableEditor.membership.case_name, order: suiteCases.findIndex((item) => item.id === variableEditor.membership?.id) + 1 } : undefined"
+    @save="saveVariableOverrides"
+  />
 </template>
 
 <style scoped>
@@ -955,6 +1047,12 @@ onMounted(() => {
 .case-module,
 .case-remove {
   flex-shrink: 0;
+}
+
+.case-variables {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 60%;
 }
 
 .case-empty {

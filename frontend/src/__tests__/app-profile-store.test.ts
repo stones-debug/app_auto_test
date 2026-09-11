@@ -80,6 +80,33 @@ describe('useAppProfileStore 档案工作台状态', () => {
     expect(store.childrenByParent['case:3:15']).toHaveLength(1)
   })
 
+  it('用例节点按 suite_case_id 区分重复编排并支持刷新重放', async () => {
+    mocks.workspaceNodes.mockResolvedValue({ total: 1, page: 1, page_size: 200, items: [{ node_type: 'step', node_key: 'step-1' }] })
+    mocks.workspace.mockResolvedValue({
+      profile_revision: 3, test_asset_revision: 11, total: 0, page: 1, page_size: 30, items: [],
+    })
+    const store = useAppProfileStore()
+    store.projectId = 7
+    store.selectedProfileId = 2
+    store.expandedKeys = new Set(['case:3:99'])
+    await store.loadChildren('case', 15, 3, 99)
+
+    // 缓存键与请求都以编排项身份为准
+    expect(mocks.workspaceNodes).toHaveBeenCalledWith(2, expect.objectContaining({
+      parent_type: 'case',
+      parent_id: 15,
+      ancestor_suite_id: 3,
+      suite_case_id: 99,
+    }))
+    expect(store.childrenByParent['case:3:99']).toHaveLength(1)
+
+    // 刷新保留展开状态，并按原参数重放子节点加载
+    await store.refreshVisibleWorkspace()
+    expect(store.expandedKeys.has('case:3:99')).toBe(true)
+    expect(store.childrenByParent['case:3:99']).toHaveLength(1)
+    expect(mocks.workspaceNodes).toHaveBeenLastCalledWith(2, expect.objectContaining({ suite_case_id: 99 }))
+  })
+
   it('markRevision 更新 revision 且清除 stale', () => {
     const store = useAppProfileStore()
     store.stale = true

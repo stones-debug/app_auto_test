@@ -2,6 +2,7 @@ import request from '@/utils/request'
 export { apiErrorDetail } from '@/utils/request'
 export type { ApiErrorDetail } from '@/utils/request'
 
+import type { VariableChip } from '@/utils/caseVariables'
 import type { SmartLocatorConfig } from '@/utils/smartLocator'
 import type { PageData } from './projects'
 
@@ -35,9 +36,14 @@ export interface AppProfileRelease {
   updated_at: string
 }
 
+/** 工作台用例行的变量摘要（最多 2 项；多节点不同覆盖值时 display_value 为「多个值」）。 */
+export type ProfileVariablePreview = VariableChip
+
 export interface ProfileNode {
   node_type: 'suite' | 'case' | 'step' | 'assertion' | 'suite_step'
   id: number | null
+  /** 用例节点的编排项身份（test_suite_cases.id），重复编排时用于区分 */
+  suite_case_id?: number | null
   node_key: string | null
   element_id?: number | null
   element_name?: string | null
@@ -57,7 +63,48 @@ export interface ProfileNode {
   // 套件节点：前后置步骤计数（工作台树状展开用）
   setup_step_count?: number
   teardown_step_count?: number
+  // 用例节点：变量摘要（最多 2 项）
+  variable_count?: number
+  variables_preview?: ProfileVariablePreview[]
   updated_at?: string | null
+}
+
+export interface ProfileVariableReference {
+  node_type: 'step' | 'assertion'
+  node_key: string
+  order: number | null
+  node_name: string
+  inherited_value: string | null
+  override_enabled: boolean
+  override_value: string
+}
+
+export interface ProfileCaseVariable {
+  name: string
+  reference_count: number
+  /** mixed=同名变量在不同节点存在不同覆盖值 */
+  status: string
+  inherited_value: string | null
+  inherited_scope: string | null
+  references: ProfileVariableReference[]
+}
+
+export interface ProfileSuiteCaseVariables {
+  profile_id: number
+  profile_revision: number
+  suite_case_id: number
+  case_id: number
+  case_name: string
+  total: number
+  variables: ProfileCaseVariable[]
+}
+
+export interface ProfileVariableUpdate {
+  node_type: 'step' | 'assertion'
+  node_key: string
+  name: string
+  /** null 表示删除该节点上的变量覆盖 */
+  value: string | null
 }
 
 export interface WorkspacePage {
@@ -137,7 +184,7 @@ export interface ProfileOverrides {
   revision: number
   elements: { element_id: number; locator_type: string; locator_value: string | null; locator_config?: SmartLocatorConfig | null }[]
   variables: { name: string; value: string; description: string | null }[]
-  nodes: { suite_id: number; case_id: number | null; node_type: 'step' | 'assertion' | 'suite_step'; node_key: string; patch: Record<string, unknown> }[]
+  nodes: { suite_id: number; suite_case_id: number | null; case_id: number | null; node_type: 'step' | 'assertion' | 'suite_step'; node_key: string; patch: Record<string, unknown> }[]
 }
 
 // ---------- 档案 ----------
@@ -232,8 +279,25 @@ export function workspace(profileId: number, params?: { page?: number; page_size
   return request.get<WorkspacePage>(`/app-profiles/${profileId}/workspace`, { params })
 }
 
-export function workspaceNodes(profileId: number, params: { parent_type: 'suite' | 'case'; parent_id: number; ancestor_suite_id?: number; page?: number; page_size?: number; include?: string }) {
+export function workspaceNodes(profileId: number, params: { parent_type: 'suite' | 'case'; parent_id: number; ancestor_suite_id?: number; suite_case_id?: number; page?: number; page_size?: number; include?: string }) {
   return request.get<PageData<ProfileNode>>(`/app-profiles/${profileId}/workspace/nodes`, { params })
+}
+
+/** 用例节点变量详情：按变量分组并列出引用节点。 */
+export function profileSuiteCaseVariables(profileId: number, suiteCaseId: number) {
+  return request.get<ProfileSuiteCaseVariables>(`/app-profiles/${profileId}/suite-cases/${suiteCaseId}/variables`)
+}
+
+/** 批量写入节点级变量覆盖；服务端在单事务内合并 patch、递增一次 revision。 */
+export function patchProfileSuiteCaseVariables(
+  profileId: number,
+  suiteCaseId: number,
+  data: { request_id?: string; expected_revision: number; updates: ProfileVariableUpdate[] },
+) {
+  return request.patch<ProfileSuiteCaseVariables & { revision: number }>(
+    `/app-profiles/${profileId}/suite-cases/${suiteCaseId}/variable-overrides`,
+    data,
+  )
 }
 
 export function suiteSteps(profileId: number, suiteId: number, params?: { phase?: 'suite_setup' | 'suite_teardown'; page?: number; page_size?: number }) {

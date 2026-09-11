@@ -15,7 +15,7 @@ vi.mock('@/api/cases', () => ({ listCases }))
 
 import { useSuiteCases } from '@/composables/useSuiteCases'
 
-const item = (caseId: number): SuiteCase => ({ id: caseId, case_id: caseId, case_name: `case-${caseId}`, module_name: null, sort_order: caseId })
+const item = (caseId: number): SuiteCase => ({ id: caseId, case_id: caseId, case_name: `case-${caseId}`, module_name: null, sort_order: caseId, variable_count: 0, variables_preview: [] })
 
 beforeEach(() => {
   reorder.mockReset()

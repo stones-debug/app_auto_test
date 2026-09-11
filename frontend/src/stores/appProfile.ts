@@ -29,6 +29,8 @@ export const useAppProfileStore = defineStore('appProfile', () => {
   const testAssetRevision = ref<number | null>(null)
   const suitePage = ref<WorkspacePage | null>(null)
   const childrenByParent = ref<Record<string, ProfileNode[]>>({})
+  // 记录每个子节点缓存的加载参数，刷新时可原样重放（用例节点身份是 suite_case_id）
+  const childArgsByKey = ref<Record<string, { parentType: 'suite' | 'case'; parentId: number; ancestorSuiteId?: number; suiteCaseId?: number }>>({})
   const expandedKeys = ref<Set<string>>(new Set())
   const selectedKeys = ref<Set<string>>(new Set())
   const loading = ref(false)
@@ -51,6 +53,7 @@ export const useAppProfileStore = defineStore('appProfile', () => {
       selectedProfileId.value = null
       suitePage.value = null
       childrenByParent.value = {}
+      childArgsByKey.value = {}
       expandedKeys.value = new Set()
       selectedKeys.value = new Set()
       profileRevision.value = null
@@ -68,6 +71,7 @@ export const useAppProfileStore = defineStore('appProfile', () => {
     selectedProfileId.value = id
     stale.value = false
     childrenByParent.value = {}
+    childArgsByKey.value = {}
     expandedKeys.value = new Set()
     selectedKeys.value = new Set()
     suitePage.value = null
@@ -102,18 +106,26 @@ export const useAppProfileStore = defineStore('appProfile', () => {
     parentType: 'suite' | 'case',
     parentId: number,
     ancestorSuiteId?: number,
+    suiteCaseId?: number,
     force = false,
   ): Promise<ProfileNode[]> {
     if (projectId.value == null || selectedProfileId.value == null) return []
-    const key = parentType === 'case' ? `case:${ancestorSuiteId ?? 0}:${parentId}` : `suite:${parentId}`
+    // 用例节点的缓存键用编排项身份（suite_case_id），同一用例重复编排互不覆盖
+    const identity = parentType === 'case' ? (suiteCaseId ?? parentId) : parentId
+    const key = parentType === 'case' ? `case:${ancestorSuiteId ?? 0}:${identity}` : `suite:${parentId}`
     if (!force && childrenByParent.value[key]) return childrenByParent.value[key]
     const page = await workspaceNodes(selectedProfileId.value, {
       parent_type: parentType,
       parent_id: parentId,
       ancestor_suite_id: parentType === 'case' ? ancestorSuiteId : undefined,
+      suite_case_id: parentType === 'case' ? suiteCaseId : undefined,
       page_size: 200,
     })
     childrenByParent.value = { ...childrenByParent.value, [key]: page.items }
+    childArgsByKey.value = {
+      ...childArgsByKey.value,
+      [key]: { parentType, parentId, ancestorSuiteId, suiteCaseId },
+    }
     return page.items
   }
 
@@ -133,9 +145,16 @@ export const useAppProfileStore = defineStore('appProfile', () => {
 
   async function refreshVisibleWorkspace() {
     const expanded = [...expandedKeys.value]
+    const previousArgs = { ...childArgsByKey.value }
     childrenByParent.value = {}
+    childArgsByKey.value = {}
     await loadWorkspace()
     for (const key of expanded) {
+      const args = previousArgs[key]
+      if (args) {
+        await loadChildren(args.parentType, args.parentId, args.ancestorSuiteId, args.suiteCaseId)
+        continue
+      }
       const parts = key.split(':')
       if (parts[0] === 'suite') {
         if (parts.length === 3 && (parts[2] === 'setup' || parts[2] === 'teardown')) {
@@ -143,8 +162,6 @@ export const useAppProfileStore = defineStore('appProfile', () => {
         } else {
           await loadChildren('suite', Number(parts[1]))
         }
-      } else if (parts[0] === 'case') {
-        await loadChildren('case', Number(parts[2]), Number(parts[1]))
       }
     }
   }
@@ -173,6 +190,7 @@ export const useAppProfileStore = defineStore('appProfile', () => {
     selectedProfileId.value = null
     suitePage.value = null
     childrenByParent.value = {}
+    childArgsByKey.value = {}
     expandedKeys.value = new Set()
     selectedKeys.value = new Set()
     stale.value = false

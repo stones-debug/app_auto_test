@@ -1,5 +1,6 @@
 import request from '@/utils/request'
 
+import type { VariableChip } from '@/utils/caseVariables'
 import type { Step } from './cases'
 
 export interface Suite {
@@ -20,12 +21,38 @@ export interface Suite {
   updated_at: string
 }
 
+/** 行内变量摘要（最多 2 项），与共享展示口径一致。 */
+export type SuiteVariablePreview = VariableChip
+
 export interface SuiteCase {
   id: number
   case_id: number
   case_name: string
   module_name?: string | null
   sort_order: number
+  variable_count: number
+  variables_preview: SuiteVariablePreview[]
+}
+
+export interface SuiteCaseVariable {
+  name: string
+  reference_count: number
+  status: string
+  display_value: string
+  inherited_value: string | null
+  inherited_scope: string | null
+  override_enabled: boolean
+  override_value: string
+}
+
+export interface SuiteCaseVariables {
+  suite_id: number
+  membership_id: number
+  case_id: number
+  case_name: string
+  test_asset_revision: number
+  total: number
+  variables: SuiteCaseVariable[]
 }
 
 export interface Variable {
@@ -96,6 +123,22 @@ export function deleteSuite(id: number) {
 
 export function listSuiteCases(suiteId: number) {
   return request.get<SuiteCase[]>(`/suites/${suiteId}/cases`)
+}
+
+export function getSuiteCaseVariables(suiteId: number, membershipId: number) {
+  return request.get<SuiteCaseVariables>(`/suites/${suiteId}/cases/${membershipId}/variables`)
+}
+
+/** 增量覆盖：字符串=设置编排项覆盖，null=删除覆盖并恢复继承。 */
+export function patchSuiteCaseVariables(
+  suiteId: number,
+  membershipId: number,
+  updates: Record<string, string | null>,
+) {
+  return request.patch<SuiteCaseVariables>(
+    `/suites/${suiteId}/cases/${membershipId}/variable-overrides`,
+    { updates },
+  )
 }
 
 export function addSuiteCases(suiteId: number, caseIds: number[]) {

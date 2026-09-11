@@ -33,3 +33,23 @@ export function stepVariableReferences(node: {
   const params = template.params ?? template.parameters
   return extractVariableReferences(params)
 }
+
+/** 动作与断言都参与变量引用（统一的快捷覆盖口径），套件前后置步骤同样适用。 */
+export const VARIABLE_REFERENCE_NODE_TYPES = ['step', 'assertion', 'suite_step'] as const
+
+/** 运行时输出变量名（如 get_text/get_attribute 的 variable_name），不是输入变量。 */
+const OUTPUT_PARAM_KEYS = new Set(['variable_name'])
+
+export function nodeVariableReferences(node: {
+  node_type: string
+  override_template?: Record<string, unknown>
+}): string[] {
+  if (!(VARIABLE_REFERENCE_NODE_TYPES as readonly string[]).includes(node.node_type)) return []
+  const template = node.override_template ?? {}
+  const params = template.params ?? template.parameters
+  if (params === null || typeof params !== 'object' || Array.isArray(params)) return []
+  const filtered = Object.fromEntries(
+    Object.entries(params as Record<string, unknown>).filter(([key]) => !OUTPUT_PARAM_KEYS.has(key)),
+  )
+  return extractVariableReferences(filtered)
+}

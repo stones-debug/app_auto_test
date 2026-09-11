@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
 import AppProfileTree from '@/components/AppProfileTree.vue'
+import CaseVariableEditor, { type VariableSavePayload } from '@/components/CaseVariableEditor.vue'
+import CaseVariableSummary from '@/components/CaseVariableSummary.vue'
 import DevicePicker from '@/components/DevicePicker.vue'
 import ProfileStatusTag from '@/components/ProfileStatusTag.vue'
 import ProfileReleaseManager from '@/components/ProfileReleaseManager.vue'
@@ -13,18 +15,23 @@ import {
   getAppProfile,
   listReleases,
   listProfileOverrides,
+  patchProfileSuiteCaseVariables,
+  profileSuiteCaseVariables,
   restoreNodeOverride,
   restoreSuiteStepOverride,
   skipRulesBatch,
   upsertNodeOverride,
   upsertSuiteStepOverride,
+  type ProfileCaseVariable,
   type ProfileNode,
+  type ProfileVariableUpdate,
   type SkipTarget,
 } from '@/api/appProfiles'
 import { usePermission } from '@/composables/usePermission'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { useAppProfileStore } from '@/stores/appProfile'
 import { buildProfileSkipTarget } from '@/utils/appProfileSkip'
+import { profileVariablesToPreview, type EditorVariable } from '@/utils/caseVariables'
 import { stepVariableReferences } from '@/utils/variableReferences'
 
 interface DisplayNode extends ProfileNode {
@@ -32,6 +39,8 @@ interface DisplayNode extends ProfileNode {
   _depth: number
   _suiteId?: number
   _caseId?: number
+  /** 用例节点的编排项身份（重复编排时区分展开与覆盖） */
+  _membershipId?: number
   _phase?: 'suite_setup' | 'suite_teardown'
   _isPhaseGroup?: boolean
 }
@@ -132,17 +141,20 @@ const displayRows = computed<DisplayNode[]>(() => {
     for (const testCase of store.childrenByParent[`suite:${suiteId}`] ?? []) {
       if (testCase.id == null) continue
       const caseId = testCase.id
-      const caseKey = `case:${suiteId}:${caseId}`
-      rows.push({ ...testCase, _key: caseKey, _depth: 1, _suiteId: suiteId, _caseId: caseId })
+      // 用例行键用 suite_case_id：同一用例重复编排时各自独立展开与覆盖
+      const membershipId = testCase.suite_case_id ?? caseId
+      const caseKey = `case:${suiteId}:${membershipId}`
+      rows.push({ ...testCase, _key: caseKey, _depth: 1, _suiteId: suiteId, _caseId: caseId, _membershipId: membershipId })
       if (!store.expandedKeys.has(caseKey)) continue
       for (const node of store.childrenByParent[caseKey] ?? []) {
         const nodeKey = node.node_key ?? String(node.id)
         rows.push({
           ...node,
-          _key: `${node.node_type}:${suiteId}:${caseId}:${nodeKey}`,
+          _key: `${node.node_type}:${suiteId}:${membershipId}:${nodeKey}`,
           _depth: 2,
           _suiteId: suiteId,
           _caseId: caseId,
+          _membershipId: membershipId,
         })
       }
     }
@@ -172,7 +184,9 @@ async function toggleNode(row: DisplayNode) {
   if (row.node_type === 'suite') {
     if (!store.expandedKeys.has(row._key)) await store.loadChildren('suite', row.id)
   } else if (row.node_type === 'case' && row._suiteId != null) {
-    if (!store.expandedKeys.has(row._key)) await store.loadChildren('case', row.id, row._suiteId)
+    if (!store.expandedKeys.has(row._key)) {
+      await store.loadChildren('case', row.id, row._suiteId, row._membershipId)
+    }
   }
   store.toggleExpand(row._key)
 }
@@ -238,6 +252,7 @@ async function openVariableOverride(row: DisplayNode) {
   const data = await listProfileOverrides(store.selectedProfileId)
   const existing = data.nodes.find((item) => (
     item.suite_id === row._suiteId
+      && (item.suite_case_id ?? null) === (row._membershipId ?? null)
       && item.case_id === (row.node_type === 'suite_step' ? null : row._caseId)
       && item.node_type === row.node_type
       && item.node_key === row.node_key
@@ -261,9 +276,129 @@ async function openVariableOverride(row: DisplayNode) {
   variableOverrideDialog.visible = true
 }
 
+// ---------- 用例变量快捷展示与节点级覆盖 ----------
+const caseVariableEditor = reactive({
+  visible: false,
+  loading: false,
+  saving: false,
+  row: null as DisplayNode | null,
+  variables: [] as EditorVariable[],
+})
+
+function previewFromProfileVariables(variables: ProfileCaseVariable[]) {
+  return profileVariablesToPreview(
+    variables.map((variable) => ({
+      name: variable.name,
+      status: variable.status,
+      reference_count: variable.reference_count,
+      inherited_value: variable.inherited_value,
+      inherited_scope: variable.inherited_scope,
+      references: variable.references.map((ref) => ({
+        node_key: ref.node_key,
+        override_enabled: ref.override_enabled,
+        override_value: ref.override_value,
+      })),
+    })),
+  )
+}
+
+/** 保存后只更新当前用例摘要，保持套件/用例展开状态与滚动位置。 */
+function applyCasePreview(suiteId: number, membershipId: number, variables: ProfileCaseVariable[]) {
+  const key = `suite:${suiteId}`
+  const rows = store.childrenByParent[key]
+  if (!rows) return
+  const preview = previewFromProfileVariables(variables)
+  store.childrenByParent = {
+    ...store.childrenByParent,
+    [key]: rows.map((node) => node.suite_case_id === membershipId
+      ? { ...node, variable_count: variables.length, variables_preview: preview }
+      : node),
+  }
+}
+
+async function refreshCaseChildren(row: DisplayNode) {
+  if (row._caseId != null && row._suiteId != null) {
+    await store.loadChildren('case', row._caseId, row._suiteId, row._membershipId, true)
+  } else {
+    await store.refreshVisibleWorkspace()
+  }
+}
+
+async function openCaseVariables(row: DisplayNode) {
+  const membershipId = row._membershipId
+  if (!store.selectedProfileId || row.node_type !== 'case' || membershipId == null) return
+  caseVariableEditor.row = row
+  caseVariableEditor.variables = []
+  caseVariableEditor.visible = true
+  caseVariableEditor.loading = true
+  try {
+    const detail = await profileSuiteCaseVariables(store.selectedProfileId, membershipId)
+    caseVariableEditor.variables = detail.variables.map((variable) => ({ ...variable }))
+  } catch (error) {
+    ElMessage.error((error as Error).message || '加载变量详情失败')
+    caseVariableEditor.visible = false
+  } finally {
+    caseVariableEditor.loading = false
+  }
+}
+
+async function saveCaseVariables(payload: VariableSavePayload) {
+  const row = caseVariableEditor.row
+  const membershipId = row?._membershipId
+  if (!store.selectedProfileId || store.profileRevision == null || membershipId == null || payload.kind !== 'nodes') return
+  caseVariableEditor.saving = true
+  try {
+    const result = await patchProfileSuiteCaseVariables(store.selectedProfileId, membershipId, {
+      expected_revision: store.profileRevision,
+      updates: payload.updates as ProfileVariableUpdate[],
+    })
+    store.markRevision(result.revision, store.testAssetRevision ?? 1)
+    if (row?._suiteId != null) applyCasePreview(row._suiteId, membershipId, result.variables)
+    if (row) await refreshCaseChildren(row)
+    caseVariableEditor.visible = false
+    ElMessage.success('变量覆盖已保存')
+  } catch (error) {
+    ElMessage.error((error as Error).message || '保存失败，请刷新后重试')
+  } finally {
+    caseVariableEditor.saving = false
+  }
+}
+
+/** 步骤行「变量覆盖」入口与用例面板共用同一批量接口。 */
+function buildStepUpdates(row: DisplayNode, value: (name: string) => string | null): ProfileVariableUpdate[] {
+  return variableOverrideDialog.names.map((name) => ({
+    node_type: 'step',
+    node_key: row.node_key as string,
+    name,
+    value: value(name),
+  }))
+}
+
 async function saveVariableOverride() {
   const row = variableOverrideDialog.row
   if (!store.selectedProfileId || store.profileRevision == null || !row?.node_key) return
+  const membershipId = row._membershipId
+  if (row.node_type === 'step' && membershipId != null) {
+    saving.value = true
+    try {
+      const result = await patchProfileSuiteCaseVariables(store.selectedProfileId, membershipId, {
+        expected_revision: store.profileRevision,
+        updates: buildStepUpdates(row, (name) => (
+          variableOverrideDialog.enabled[name] ? (variableOverrideDialog.values[name] ?? '') : null
+        )),
+      })
+      store.markRevision(result.revision, store.testAssetRevision ?? 1)
+      if (row._suiteId != null) applyCasePreview(row._suiteId, membershipId, result.variables)
+      variableOverrideDialog.visible = false
+      await refreshCaseChildren(row)
+      ElMessage.success('节点覆盖已保存')
+    } catch (error) {
+      ElMessage.error((error as Error).message || '保存失败，请刷新后重试')
+    } finally {
+      saving.value = false
+    }
+    return
+  }
   const variableOverrides: Record<string, string> = {}
   for (const name of variableOverrideDialog.names) {
     if (variableOverrideDialog.enabled[name]) variableOverrides[name] = variableOverrideDialog.values[name] ?? ''
@@ -304,6 +439,26 @@ async function saveVariableOverride() {
 async function restoreVariableOverride() {
   const row = variableOverrideDialog.row
   if (!store.selectedProfileId || store.profileRevision == null || !row?.node_key) return
+  const membershipId = row._membershipId
+  if (row.node_type === 'step' && membershipId != null) {
+    saving.value = true
+    try {
+      const result = await patchProfileSuiteCaseVariables(store.selectedProfileId, membershipId, {
+        expected_revision: store.profileRevision,
+        updates: buildStepUpdates(row, () => null),
+      })
+      store.markRevision(result.revision, store.testAssetRevision ?? 1)
+      if (row._suiteId != null) applyCasePreview(row._suiteId, membershipId, result.variables)
+      variableOverrideDialog.visible = false
+      await refreshCaseChildren(row)
+      ElMessage.success('节点覆盖已恢复')
+    } catch (error) {
+      ElMessage.error((error as Error).message || '恢复失败，请刷新后重试')
+    } finally {
+      saving.value = false
+    }
+    return
+  }
   const rest = { ...variableOverrideDialog.existingPatch }
   delete rest.variable_overrides
   if (Object.keys(rest).length > 0) {
@@ -448,6 +603,14 @@ onMounted(load)
               <button v-if="row.has_children" type="button" class="expand-button" @click="toggleNode(displayNode(row))">{{ store.expandedKeys.has(row._key) ? '▾' : '▸' }}</button>
               <span v-else class="node-dot">·</span>
               <span class="node-label"><span>{{ row.name }}</span><small v-if="elementDisplayName(displayNode(row))" class="element-label">元素：{{ elementDisplayName(displayNode(row)) }}</small></span>
+              <CaseVariableSummary
+                v-if="row.node_type === 'case'"
+                class="row-variables"
+                :variables="row.variables_preview ?? []"
+                :total="row.variable_count ?? 0"
+                :readonly="!canEditProject"
+                @open="openCaseVariables(displayNode(row))"
+              />
             </span>
           </template>
         </el-table-column>
@@ -549,6 +712,18 @@ onMounted(load)
         <ProfileDifferenceView v-model="diffView" :profile-id="store.selectedProfileId" />
         <ProfileOverrideDrawer v-model="overrideDrawer" :profile-id="store.selectedProfileId" :project-id="projectId" :revision="store.profileRevision ?? 1" @revision-change="updateRevision" />
       </template>
+      <CaseVariableEditor
+        v-model="caseVariableEditor.visible"
+        mode="nodes"
+        title="用例变量覆盖"
+        subtitle="同名变量按引用节点分别保存；执行参数优先级仍高于此处"
+        :variables="caseVariableEditor.variables"
+        :loading="caseVariableEditor.loading"
+        :saving="caseVariableEditor.saving"
+        :readonly="!canEditProject"
+        :context="caseVariableEditor.row ? { name: caseVariableEditor.row.name, element: null } : undefined"
+        @save="saveCaseVariables"
+      />
       <DevicePicker ref="devicePicker" :project-id="projectId" />
     </section>
   </div>
@@ -565,6 +740,7 @@ onMounted(load)
 .rev { color: var(--el-text-color-secondary); font-size: 12px; }
 .batch-bar { padding: 8px 12px; border-radius: 6px; background: var(--el-color-primary-light-9); }
 .node-name { display: inline-flex; align-items: center; }
+.row-variables { margin-left: 8px; vertical-align: middle; }
 .node-label { display: inline-flex; flex-direction: column; gap: 2px; }
 .element-label, .element-context { color: var(--el-text-color-secondary); font-size: 12px; }
 .expand-button { width: 22px; padding: 0; border: 0; background: transparent; cursor: pointer; color: inherit; }

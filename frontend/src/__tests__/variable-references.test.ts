@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { extractVariableReferences, stepVariableReferences } from '@/utils/variableReferences'
+import { extractVariableReferences, nodeVariableReferences, stepVariableReferences } from '@/utils/variableReferences'
 
 describe('APP 档案步骤变量引用', () => {
   it('递归提取嵌套参数中的变量并保持首次顺序、去重', () => {
@@ -37,5 +37,20 @@ describe('APP 档案步骤变量引用', () => {
       mixed: '${用户Name_2}/${变量_3}',
       invalid: '${with-dash} ${with.dot} ${带 空格}',
     })).toEqual(['用户名', '用户Name_2', '变量_3'])
+  })
+
+  it('统一口径同时覆盖动作与断言参数，且不扫描非参数字段', () => {
+    expect(nodeVariableReferences({
+      node_type: 'assertion',
+      override_template: { params: { expected: '${expected_port}' } },
+    })).toEqual(['expected_port'])
+    expect(nodeVariableReferences({
+      node_type: 'step',
+      override_template: { params: { value: '${port_name}' }, element_id: '${not_a_param}' },
+    })).toEqual(['port_name'])
+    expect(nodeVariableReferences({
+      node_type: 'case',
+      override_template: { params: { value: '${ignored}' } },
+    })).toEqual([])
   })
 })
