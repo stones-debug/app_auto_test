@@ -31,6 +31,7 @@ function onUsernameBlur() {
     fieldErrors.value.username = '用户名至少 3 个字符'
   } else {
     delete fieldErrors.value.username
+    delete fieldErrors.value.password
   }
 }
 
@@ -105,26 +106,14 @@ async function handleSubmit() {
             <el-input v-model="form.username" placeholder="请输入用户名" size="large" @blur="onUsernameBlur" />
           </el-form-item>
           <el-form-item label="密码" :error="fieldErrors.password">
-            <el-input
-              v-model="form.password"
-              type="password"
-              placeholder="请输入密码"
-              show-password
-              size="large"
-              @blur="onPasswordBlur"
-            />
+            <el-input v-model="form.password" type="password" placeholder="请输入密码" show-password size="large"
+              @blur="onPasswordBlur" />
           </el-form-item>
           <div v-if="mode === 'login'" class="row-between">
             <el-checkbox v-model="remember">记住我</el-checkbox>
           </div>
-          <el-alert
-            v-if="registerError"
-            class="reg-error"
-            type="error"
-            :closable="false"
-            show-icon
-            :title="registerError"
-          />
+          <el-alert v-if="registerError" class="reg-error" type="error" :closable="false" show-icon
+            :title="registerError" />
           <el-button type="primary" class="login-btn" size="large" :loading="loading" @click="handleSubmit">
             {{ mode === 'login' ? '登 录' : '注 册' }}
           </el-button>
@@ -161,17 +150,20 @@ async function handleSubmit() {
   justify-content: center;
   overflow: hidden;
 }
+
 .deco {
   position: absolute;
   border-radius: 50%;
   background: rgba(79, 70, 229, 0.08);
 }
+
 .deco-1 {
   width: 360px;
   height: 360px;
   top: -120px;
   right: -80px;
 }
+
 .deco-2 {
   width: 260px;
   height: 260px;
@@ -179,11 +171,13 @@ async function handleSubmit() {
   left: -60px;
   background: rgba(16, 185, 129, 0.07);
 }
+
 .brand-inner {
   position: relative;
   max-width: 420px;
   padding: 0 24px;
 }
+
 .brand-logo {
   width: 72px;
   height: 72px;
@@ -191,20 +185,24 @@ async function handleSubmit() {
   margin-bottom: 20px;
   box-shadow: 0 10px 24px rgba(79, 70, 229, 0.25);
 }
+
 .brand-title {
   font-size: 34px;
   font-weight: 700;
   color: var(--text);
   margin-bottom: 12px;
 }
+
 .brand-desc {
   font-size: 15px;
   color: var(--text-2);
   margin-bottom: 36px;
 }
+
 .highlights {
   list-style: none;
 }
+
 .highlights li {
   font-size: 14px;
   color: var(--text);
@@ -223,52 +221,63 @@ async function handleSubmit() {
   align-items: center;
   justify-content: center;
 }
+
 .login-card {
   width: 380px;
 }
+
 .welcome {
   font-size: 24px;
   font-weight: 700;
   color: var(--text);
   margin-bottom: 6px;
 }
+
 .subtitle {
   font-size: 14px;
   color: var(--text-2);
   margin-bottom: 28px;
 }
+
 .row-between {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 20px;
 }
+
 .login-btn {
   width: 100%;
   background: linear-gradient(135deg, #4f46e5, #4338ca);
   border: none;
   transition: box-shadow 0.2s;
 }
+
 .login-btn:hover {
   box-shadow: 0 6px 16px rgba(79, 70, 229, 0.35);
 }
+
 .reg-error {
   margin-bottom: 16px;
 }
+
 .switch-mode {
   text-align: center;
   margin-top: 18px;
   font-size: 13px;
   color: var(--text-2);
 }
+
 .switch-mode a {
   color: var(--primary);
   cursor: pointer;
   font-weight: 500;
 }
+
 .switch-mode a:hover {
   text-decoration: underline;
 }
+
 .version {
   text-align: center;
   font-size: 12px;
