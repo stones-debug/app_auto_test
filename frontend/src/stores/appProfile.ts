@@ -33,6 +33,9 @@ export const useAppProfileStore = defineStore('appProfile', () => {
   const childArgsByKey = ref<Record<string, { parentType: 'suite' | 'case'; parentId: number; ancestorSuiteId?: number; suiteCaseId?: number }>>({})
   const expandedKeys = ref<Set<string>>(new Set())
   const selectedKeys = ref<Set<string>>(new Set())
+  // profile_all 选择是“默认全选”的补集：只记录用户明确取消的套件，
+  // 不随当前页、筛选或展开状态收集全量 suite IDs。
+  const excludedSuiteIds = ref<Set<number>>(new Set())
   const loading = ref(false)
   const stale = ref(false)
   const filters = ref<WorkspaceFilters>({
@@ -46,6 +49,11 @@ export const useAppProfileStore = defineStore('appProfile', () => {
   const currentProfile = computed(() =>
     profiles.value.find((p) => p.id === selectedProfileId.value) ?? null,
   )
+  const executionSelectableTotal = computed(() => suitePage.value?.execution_selectable_total ?? 0)
+  const selectedSuiteCount = computed(() => Math.max(
+    0,
+    executionSelectableTotal.value - excludedSuiteIds.value.size,
+  ))
 
   async function loadProfiles() {
     if (projectId.value == null) return
@@ -56,6 +64,7 @@ export const useAppProfileStore = defineStore('appProfile', () => {
       childArgsByKey.value = {}
       expandedKeys.value = new Set()
       selectedKeys.value = new Set()
+      excludedSuiteIds.value = new Set()
       profileRevision.value = null
       testAssetRevision.value = null
       stale.value = false
@@ -74,6 +83,7 @@ export const useAppProfileStore = defineStore('appProfile', () => {
     childArgsByKey.value = {}
     expandedKeys.value = new Set()
     selectedKeys.value = new Set()
+    excludedSuiteIds.value = new Set()
     suitePage.value = null
     profileRevision.value = null
     if (id != null) {
@@ -81,12 +91,12 @@ export const useAppProfileStore = defineStore('appProfile', () => {
     }
   }
 
-  async function loadWorkspace() {
+  async function loadWorkspace(page = 1) {
     if (projectId.value == null || selectedProfileId.value == null) return
     loading.value = true
     try {
-      const page = await workspace(selectedProfileId.value, {
-        page: 1,
+      const result = await workspace(selectedProfileId.value, {
+        page,
         page_size: 30,
         keyword: filters.value.keyword || undefined,
         effective_status: filters.value.effective_status,
@@ -94,12 +104,56 @@ export const useAppProfileStore = defineStore('appProfile', () => {
         sort_by: filters.value.sort_by,
         sort_order: filters.value.sort_order,
       })
-      suitePage.value = page
-      profileRevision.value = page.profile_revision
-      testAssetRevision.value = page.test_asset_revision
+      suitePage.value = result
+      const directlySkipped = new Set(
+        result.items
+          .filter((item) => item.node_type === 'suite' && item.effective_status === 'skipped')
+          .map((item) => item.id)
+          .filter((id): id is number => id != null),
+      )
+      if (directlySkipped.size > 0) {
+        excludedSuiteIds.value = new Set(
+          [...excludedSuiteIds.value].filter((id) => !directlySkipped.has(id)),
+        )
+      }
+      profileRevision.value = result.profile_revision
+      testAssetRevision.value = result.test_asset_revision
     } finally {
       loading.value = false
     }
+  }
+
+  function isSuiteSelectable(_suiteId: number, status?: string): boolean {
+    return status !== 'skipped'
+  }
+
+  function isSuiteSelected(suiteId: number, status?: string): boolean {
+    return isSuiteSelectable(suiteId, status) && !excludedSuiteIds.value.has(suiteId)
+  }
+
+  function setSuiteSelected(suiteId: number, selected: boolean, status?: string) {
+    if (!isSuiteSelectable(suiteId, status)) {
+      excludedSuiteIds.value = new Set([...excludedSuiteIds.value].filter((id) => id !== suiteId))
+      return
+    }
+    const next = new Set(excludedSuiteIds.value)
+    if (selected) next.delete(suiteId)
+    else next.add(suiteId)
+    excludedSuiteIds.value = next
+  }
+
+  function markSuiteSkipped(suiteId: number) {
+    // 规则变化后，直接跳过套件始终是未选状态；它不会进入取消补集。
+    excludedSuiteIds.value = new Set([...excludedSuiteIds.value].filter((id) => id !== suiteId))
+  }
+
+  function markSuiteRestored(suiteId: number) {
+    // 恢复直接跳过规则后默认重新选中。
+    excludedSuiteIds.value = new Set([...excludedSuiteIds.value].filter((id) => id !== suiteId))
+  }
+
+  function restoreAllSuiteSelection() {
+    excludedSuiteIds.value = new Set()
   }
 
   async function loadChildren(
@@ -193,6 +247,7 @@ export const useAppProfileStore = defineStore('appProfile', () => {
     childArgsByKey.value = {}
     expandedKeys.value = new Set()
     selectedKeys.value = new Set()
+    excludedSuiteIds.value = new Set()
     stale.value = false
   }
 
@@ -206,6 +261,9 @@ export const useAppProfileStore = defineStore('appProfile', () => {
     childrenByParent,
     expandedKeys,
     selectedKeys,
+    excludedSuiteIds,
+    executionSelectableTotal,
+    selectedSuiteCount,
     loading,
     stale,
     filters,
@@ -213,6 +271,12 @@ export const useAppProfileStore = defineStore('appProfile', () => {
     loadProfiles,
     selectProfile,
     loadWorkspace,
+    isSuiteSelectable,
+    isSuiteSelected,
+    setSuiteSelected,
+    markSuiteSkipped,
+    markSuiteRestored,
+    restoreAllSuiteSelection,
     loadChildren,
     loadSuiteSteps,
     refreshVisibleWorkspace,

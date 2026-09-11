@@ -55,7 +55,6 @@ const projectId = computed(() => Number(route.params.projectId))
 const releaseMgr = ref(false)
 const diffView = ref(false)
 const overrideDrawer = ref(false)
-const selectedRows = ref<DisplayNode[]>([])
 const saving = ref(false)
 const devicePicker = ref<InstanceType<typeof DevicePicker> | null>(null)
 const runAllLoading = ref(false)
@@ -192,8 +191,12 @@ async function mutateSkip(operation: 'skip' | 'restore', targets: SkipTarget[]) 
       targets,
     })
     store.markRevision(res.revision_after, store.testAssetRevision ?? 1)
+    for (const target of targets) {
+      if (target.type !== 'suite' || target.suite_id == null) continue
+      if (operation === 'skip') store.markSuiteSkipped(target.suite_id)
+      else store.markSuiteRestored(target.suite_id)
+    }
     ElMessage.success(operation === 'skip' ? `已跳过 ${res.changed} 项` : `已恢复 ${res.changed} 项`)
-    selectedRows.value = []
     await store.refreshVisibleWorkspace()
     // 左侧树 skip_counts（“X 用例 / Y 步骤”）随跳过/恢复实时变化，需重新拉取档案列表
     await store.loadProfiles()
@@ -215,14 +218,6 @@ async function confirmSkip() {
 async function restoreRow(row: DisplayNode) {
   const target = targetFor(row)
   if (target) await mutateSkip('restore', [target])
-}
-
-async function batchRestore() {
-  const targets = selectedRows.value
-    .filter((row) => row.status_source === 'direct')
-    .map(targetFor)
-    .filter((target): target is SkipTarget => target != null)
-  await mutateSkip('restore', targets)
 }
 
 // ---------- 用例变量就地覆盖（仅 APP 档案用例行） ----------
@@ -326,6 +321,7 @@ async function refreshProfile() {
 
 async function runNode(row: DisplayNode) {
   if (row.id == null || (row.node_type !== 'suite' && row.node_type !== 'case')) return
+  if (row.effective_status === 'skipped') return
   await runTarget(row.node_type, row.id, row.name)
 }
 
@@ -368,7 +364,8 @@ async function runAllSuites() {
         kind: 'batch',
         suiteIds: [],
         targetScope: 'profile_all',
-        name: `${store.currentProfile?.name ?? '当前 APP'}全部套件`,
+        excludedSuiteIds: [...store.excludedSuiteIds].sort((a, b) => a - b),
+        name: `${store.currentProfile?.name ?? '当前 APP'}已选套件`,
       },
       {
         profile: {
@@ -391,6 +388,15 @@ async function updateRevision(revision: number) {
   await store.refreshVisibleWorkspace()
 }
 
+function onSuiteSelectionChanged(row: DisplayNode, selected: boolean | string | number) {
+  if (row.id == null || row.node_type !== 'suite') return
+  store.setSuiteSelected(row.id, Boolean(selected), row.effective_status)
+}
+
+function onSuitePageChanged(page: number) {
+  void store.loadWorkspace(page)
+}
+
 watch(() => route.params.projectId, load)
 onMounted(load)
 </script>
@@ -406,12 +412,14 @@ onMounted(load)
           <el-button size="small" text @click="refreshProfile">刷新</el-button>
         </div>
         <div class="head-right">
-          <el-button v-if="canExecute" size="small" type="primary" :loading="runAllLoading" :disabled="!store.selectedProfileId" @click="runAllSuites">运行当前 APP 全部套件</el-button>
+          <el-button v-if="canExecute" size="small" type="primary" :loading="runAllLoading" :disabled="!store.selectedProfileId || store.selectedSuiteCount === 0" @click="runAllSuites">运行已选套件</el-button>
+          <span v-if="canExecute" class="selection-summary">已选 {{ store.selectedSuiteCount }} / {{ store.executionSelectableTotal }} 个套件</span>
+          <el-button v-if="canExecute && store.excludedSuiteIds.size" size="small" text @click="store.restoreAllSuiteSelection">恢复全部选择</el-button>
           <el-button v-if="canEditProject" size="small" @click="releaseMgr = true">发布版本</el-button>
           <el-button size="small" @click="diffView = true">差异清单</el-button>
           <el-button v-if="canEditProject" size="small" @click="overrideDrawer = true">覆盖配置</el-button>
-          <el-input v-model="store.filters.keyword" size="small" placeholder="搜索套件" clearable style="width: 180px" @change="store.loadWorkspace" />
-          <el-select v-model="store.filters.effective_status" size="small" style="width: 130px" @change="store.loadWorkspace">
+          <el-input v-model="store.filters.keyword" size="small" placeholder="搜索套件" clearable style="width: 180px" @change="() => store.loadWorkspace()" />
+          <el-select v-model="store.filters.effective_status" size="small" style="width: 130px" @change="() => store.loadWorkspace()">
             <el-option label="全部状态" value="all" />
             <el-option label="正常" value="enabled" />
             <el-option label="已跳过" value="skipped" />
@@ -420,14 +428,18 @@ onMounted(load)
         </div>
       </div>
 
-      <div v-if="canEditProject && selectedRows.length" class="batch-bar">
-        <span>已选 {{ selectedRows.length }} 项</span>
-        <el-button size="small" type="danger" plain @click="openSkip(selectedRows)">批量跳过</el-button>
-        <el-button size="small" @click="batchRestore">批量恢复直接规则</el-button>
-      </div>
-
-      <el-table v-loading="store.loading || saving" :data="displayRows" row-key="_key" size="small" @selection-change="selectedRows = $event">
-        <el-table-column v-if="canEditProject" type="selection" width="42" :selectable="(row: unknown) => !displayNode(row)._isPhaseGroup" />
+      <el-table v-loading="store.loading || saving" :data="displayRows" row-key="_key" size="small">
+        <el-table-column v-if="canExecute" label="选择" width="58" align="center">
+          <template #default="{ row }">
+            <el-checkbox
+              v-if="row.node_type === 'suite' && row.id != null"
+              :model-value="store.isSuiteSelected(row.id, row.effective_status)"
+              :disabled="row.effective_status === 'skipped'"
+              :aria-label="`选择套件 ${row.name}`"
+              @change="onSuiteSelectionChanged(displayNode(row), $event)"
+            />
+          </template>
+        </el-table-column>
         <el-table-column label="名称" min-width="260">
           <template #default="{ row }">
             <span class="node-name" :style="{ paddingLeft: `${row._depth * 22}px` }">
@@ -508,7 +520,7 @@ onMounted(load)
         <el-table-column label="原因" min-width="150"><template #default="{ row }">{{ row.reason?.note || row.reason?.code || '-' }}</template></el-table-column>
         <el-table-column label="操作" width="210" align="right">
           <template #default="{ row }">
-            <el-button v-if="canExecute && (row.node_type === 'suite' || row.node_type === 'case')" size="small" text type="primary" @click="runNode(displayNode(row))">运行</el-button>
+            <el-button v-if="canExecute && (row.node_type === 'suite' || row.node_type === 'case')" size="small" text type="primary" :disabled="row.effective_status === 'skipped'" @click="runNode(displayNode(row))">运行</el-button>
             <template v-if="canEditProject && !displayNode(row)._isPhaseGroup">
               <el-button v-if="row.status_source === 'direct'" size="small" text @click="restoreRow(displayNode(row))">恢复</el-button>
               <el-button v-else-if="row.status_source !== 'inherited'" size="small" text type="danger" @click="openSkip([displayNode(row)])">跳过</el-button>
@@ -516,6 +528,17 @@ onMounted(load)
           </template>
         </el-table-column>
       </el-table>
+
+      <el-pagination
+        v-if="store.suitePage && store.suitePage.total > store.suitePage.page_size"
+        class="suite-pagination"
+        background
+        layout="prev, pager, next"
+        :current-page="store.suitePage.page"
+        :page-size="store.suitePage.page_size"
+        :total="store.suitePage.total"
+        @current-change="onSuitePageChanged"
+      />
 
       <el-empty v-if="!store.loading && displayRows.length === 0" description="暂无套件" />
 
@@ -549,11 +572,12 @@ onMounted(load)
 .tree-panel { width: 240px; flex-shrink: 0; border-right: 1px solid var(--el-border-color-light); overflow: auto; }
 .workspace-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
 .workspace-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.head-left, .head-right, .batch-bar { display: flex; align-items: center; gap: 8px; }
+.head-left, .head-right { display: flex; align-items: center; gap: 8px; }
 .head-right { flex-wrap: wrap; justify-content: flex-end; }
+.selection-summary { color: var(--el-text-color-secondary); font-size: 12px; white-space: nowrap; }
+.suite-pagination { justify-content: flex-end; margin-top: 2px; }
 .profile-name { font-weight: 600; font-size: 16px; }
 .rev { color: var(--el-text-color-secondary); font-size: 12px; }
-.batch-bar { padding: 8px 12px; border-radius: 6px; background: var(--el-color-primary-light-9); }
 .node-name { display: inline-flex; align-items: center; }
 .node-label { display: inline-flex; flex-direction: column; gap: 2px; }
 /* 变量列：竖排展示「变量名：变量值」；编辑图标进入编辑态，编辑态给「保存 / 取消」 */

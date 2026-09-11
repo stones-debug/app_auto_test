@@ -116,6 +116,8 @@ class ResolutionRequest:
     execution_variables: dict[str, Any] = field(default_factory=dict)
     context_suite_id: int | None = None
     target_scope: Literal["explicit", "profile_all"] = "explicit"
+    # profile_all 的“默认全选”补集。显式目标禁止携带该字段。
+    excluded_suite_ids: list[int] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -189,6 +191,9 @@ class ResolutionResult:
     exclusions: list[ExclusionItem]
     summary: dict[str, int]
     warnings: list[dict[str, Any]]
+    # 经过存在性/软删除/直接套件跳过过滤后的取消集合，供预检 canonical
+    # target 与正式执行 parameters 使用；请求原始集合不应把被忽略 ID 带入审计。
+    normalized_excluded_suite_ids: list[int] = field(default_factory=list)
 
     @property
     def cases(self) -> list[ResolvedCase]:
@@ -290,6 +295,19 @@ async def resolve(
     ):
         raise ProfileRuleError("APP_RELEASE_NOT_FOUND", "发布版本不存在、已停用或不属于该档案")
 
+    normalized_excluded = sorted({int(value) for value in request.excluded_suite_ids})
+    if request.target_scope == "profile_all":
+        if request.target_type != "batch" or request.target_ids:
+            raise ProfileRuleError("EXECUTION_TARGET_INVALID", "profile_all 仅支持空 ids 的批量套件目标")
+        try:
+            normalized_excluded = await resolution_repo.validate_profile_all_excluded_suite_ids(
+                db, project_id=request.project_id, suite_ids=normalized_excluded
+            )
+        except ValueError as err:
+            raise ProfileRuleError("EXECUTION_TARGET_INVALID", str(err)) from None
+    elif normalized_excluded:
+        raise ProfileRuleError("EXECUTION_TARGET_INVALID", "excluded_suite_ids 仅支持 profile_all")
+
     cache_key = (request.project_id, project.test_asset_revision, request.profile_id, profile.revision)
     config = cache.get(cache_key)
     config_cache_hit = config is not None
@@ -299,23 +317,36 @@ async def resolve(
 
     suite_rows = []
     suite_ids: list[int] = []
+    suite_specs: list[dict] = []
     load_started = time.monotonic()
     if request.target_type == "case":
         case_ids = list(dict.fromkeys(request.target_ids))
         if request.context_suite_id is not None:
+            if request.context_suite_id in config["skip_suite"]:
+                # 单用例携带已直接跳过的套件上下文时与工作台继承状态
+                # 一致：目标不可执行，不留下整套 N/A 排除记录。
+                suite_specs = []
+                cases_by_id = {}
+                case_ids = []
+                # 下面的分支只负责构造普通 context suite；空目标直接
+                # 进入 PROFILE_EMPTY。
+                context_skipped = True
+            else:
+                context_skipped = False
             # 单用例带套件上下文：取每个用例在该套件中排序最前的编排项作为覆盖身份
-            members_map = await resolution_repo.list_suite_memberships(
-                db, [request.context_suite_id]
-            )
-            first_by_case: dict[int, tuple[int, int, dict[str, str]]] = {}
-            for member in members_map.get(request.context_suite_id, []):
-                first_by_case.setdefault(member[1], member)
-            members: list[tuple[int | None, int, dict[str, str]]] = [
-                first_by_case.get(case_id, (None, case_id, {})) for case_id in case_ids
-            ]
-            suite_specs: list[dict] = [
-                {"suite_id": request.context_suite_id, "virtual": False, "members": members}
-            ]
+            if not context_skipped:
+                members_map = await resolution_repo.list_suite_memberships(
+                    db, [request.context_suite_id]
+                )
+                first_by_case: dict[int, tuple[int, int, dict[str, str]]] = {}
+                for member in members_map.get(request.context_suite_id, []):
+                    first_by_case.setdefault(member[1], member)
+                members: list[tuple[int | None, int, dict[str, str]]] = [
+                    first_by_case.get(case_id, (None, case_id, {})) for case_id in case_ids
+                ]
+                suite_specs = [
+                    {"suite_id": request.context_suite_id, "virtual": False, "members": members}
+                ]
         else:
             suite_specs = [
                 {
@@ -327,11 +358,34 @@ async def resolve(
         cases_by_id = await _load_cases_by_id(db, case_ids)
     else:
         if request.target_scope == "profile_all":
-            suite_rows = await resolution_repo.list_suites(db, request.project_id)
+            all_suite_rows = await resolution_repo.list_suites(db, request.project_id)
+            active_suite_ids = {suite.id for suite in all_suite_rows}
+            normalized_excluded = [
+                suite_id for suite_id in normalized_excluded
+                if suite_id in active_suite_ids and suite_id not in config["skip_suite"]
+            ]
+            # 套件级跳过是“不可选目标”，不是执行中的 N/A 节点。先在
+            # _build_suite 前过滤，因而不会展开用例，也不会产生 exclusion
+            # 或报告 not_applicable_suites。
+            suite_rows = [
+                suite for suite in all_suite_rows
+                if suite.id not in normalized_excluded
+                and suite.id not in config["skip_suite"]
+            ]
             suite_ids = [suite.id for suite in suite_rows]
         else:
             suite_ids = list(dict.fromkeys(request.target_ids))
             suite_rows = []
+            # 显式单套件入口遇到档案直接跳过也视为不可执行目标；与
+            # profile_all 保持一致，整套跳过不进入报告 N/A。
+            if suite_ids:
+                explicit_rows = await resolution_repo.load_suites_by_ids(
+                    db, project_id=request.project_id, suite_ids=suite_ids
+                )
+                suite_ids = [suite_id for suite_id in suite_ids if suite_id not in config["skip_suite"]]
+                suite_rows = [
+                    explicit_rows[suite_id] for suite_id in suite_ids if suite_id in explicit_rows
+                ]
         memberships, cases_by_id = await _collect_suite_cases(db, suite_ids)
         suite_specs = [
             {"suite_id": suite_id, "virtual": False, "members": memberships.get(suite_id, [])}
@@ -425,6 +479,7 @@ async def resolve(
         exclusions=exclusions,
         summary=summary,
         warnings=[],
+        normalized_excluded_suite_ids=normalized_excluded,
     )
     logger.info(
         "profile_resolution stage=resolve project_id=%s profile_id=%s target_scope=%s "
@@ -480,16 +535,6 @@ async def _build_suite(
                 override_count,
             )
         suite_name = suite.name
-        skip_rule = config["skip_suite"].get(suite_id)
-        if skip_rule is not None:
-            exclusions.append(
-                ExclusionItem(
-                    target_type="suite", suite_id=suite_id, case_id=None, node_key=None,
-                    source_type="direct", reason_code=skip_rule.reason_code,
-                    reason_note=skip_rule.reason_note,
-                    display_snapshot={"name": suite_name, "key": str(suite_id), "suite_name": suite_name},
-                )
-            )
         setup_snapshot, teardown_snapshot, suite_elements, step_exclusions, step_override_count = (
             await _parse_suite_steps(
                 db, request.project_id, suite.setup_steps or [], suite.teardown_steps or [],
@@ -499,17 +544,6 @@ async def _build_suite(
         )
         exclusions.extend(step_exclusions)
         override_count += step_override_count
-        if skip_rule is not None:
-            return (
-                ResolvedSuite(
-                    suite_id=suite_id, suite_name=suite_name, suite_order=suite_order,
-                    is_virtual=False, setup_steps_snapshot=setup_snapshot,
-                    teardown_steps_snapshot=teardown_snapshot, elements_snapshot=suite_elements,
-                    cases=[], is_na=True,
-                ),
-                exclusions,
-                override_count,
-            )
 
     resolved_cases: list[ResolvedCase] = []
     for case_pos, (membership_id, case_id, membership_overrides) in enumerate(spec["members"], start=1):

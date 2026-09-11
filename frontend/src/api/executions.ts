@@ -190,6 +190,7 @@ export interface RunOptions {
   expected_profile_revision?: number
   expected_test_asset_revision?: number
   target_scope?: 'explicit' | 'profile_all'
+  excluded_suite_ids?: number[]
   prepare_token?: string
 }
 
@@ -229,7 +230,7 @@ export function createSuiteExecution(suiteId: number, data: RunOptions) {
   return request.post<Execution>(`/executions/suites/${suiteId}`, data)
 }
 
-export function createBatchExecution(data: RunOptions & { suite_ids: number[]; target_scope?: 'explicit' | 'profile_all' }) {
+export function createBatchExecution(data: RunOptions & { suite_ids: number[]; target_scope?: 'explicit' | 'profile_all'; excluded_suite_ids?: number[] }) {
   return request.post<Execution>('/executions/suites/batch', data)
 }
 

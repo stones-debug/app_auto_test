@@ -160,10 +160,10 @@ async def test_preview_prepare_token_reuses_resolution_and_is_single_use(
     assert repeated.json()["detail"]["code"] == "EXECUTION_PREPARE_INVALID"
 
 
-async def test_profile_all_prepare_keeps_skipped_suite_ids_and_reuses_tree(
+async def test_profile_all_prepare_excludes_direct_skipped_suites_and_reuses_tree(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ):
-    """profile_all token 固化全部目标套件，物化仍只落可执行树。"""
+    """profile_all token 固化最终 source，直接跳过套件不产生 N/A。"""
     base = await _base(client)
     profile_id, release_id = await _make_profile(client, base)
     case_id = await _make_case(client, base)
@@ -218,12 +218,164 @@ async def test_profile_all_prepare_keeps_skipped_suite_ids_and_reuses_tree(
         json={"target_scope": "profile_all", "suite_ids": [], "prepare_token": token, "device_id": base["device_id"]},
     )
     assert created.status_code == 201, created.text
-    assert created.json()["parameters"]["suite_ids"] == suite_ids
+    assert created.json()["parameters"]["suite_ids"] == [suite_ids[0]]
+    assert created.json()["parameters"]["target_scope"] == "profile_all"
+    assert created.json()["parameters"]["excluded_suite_ids"] == []
     async with SessionLocal() as db:
         rows = (
             await db.execute(select(ExecutionExclusion).where(ExecutionExclusion.execution_id == created.json()["id"]))
         ).scalars().all()
-        assert any(row.suite_id_snapshot == suite_ids[1] for row in rows)
+        assert all(row.suite_id_snapshot != suite_ids[1] for row in rows)
+
+
+async def test_profile_all_excluded_suites_are_not_in_snapshot_or_exclusions(
+    client: AsyncClient,
+):
+    """工作台取消项走补集协议，预检/创建都固化规范化集合与最终 source。"""
+    base = await _base(client)
+    profile_id, release_id = await _make_profile(client, base)
+    case_id = await _make_case(client, base)
+    suite_ids: list[int] = []
+    for name in ("选中套件", "用户取消套件", "直接跳过套件", "已删除套件"):
+        suite = await client.post(
+            f"/api/projects/{base['project_id']}/suites",
+            headers=base["headers"],
+            json={"name": name},
+        )
+        assert suite.status_code == 201, suite.text
+        suite_id = suite.json()["id"]
+        relation = await client.post(
+            f"/api/suites/{suite_id}/cases",
+            headers=base["headers"],
+            json={"case_id": case_id},
+        )
+        assert relation.status_code in {200, 201}, relation.text
+        suite_ids.append(suite_id)
+
+    cancelled = suite_ids[1]
+    directly_skipped = suite_ids[2]
+    deleted = suite_ids[3]
+    skipped = await client.post(
+        f"/api/app-profiles/{profile_id}/skip-rules/batch",
+        headers=base["headers"],
+        json={
+            "expected_revision": 1,
+            "operation": "skip",
+            "reason": {"code": "unsupported"},
+            "targets": [{"type": "suite", "suite_id": directly_skipped}],
+        },
+    )
+    assert skipped.status_code == 200, skipped.text
+    deleted_response = await client.delete(f"/api/suites/{deleted}", headers=base["headers"])
+    assert deleted_response.status_code == 204, deleted_response.text
+    preview = await client.post(
+        "/api/executions/preview",
+        headers=base["headers"],
+        json={
+            "project_id": base["project_id"],
+            "target": {
+                "type": "batch",
+                "ids": [],
+                "target_scope": "profile_all",
+                "excluded_suite_ids": [deleted, directly_skipped, cancelled, cancelled],
+            },
+            "app_profile_id": profile_id,
+            "app_release_id": release_id,
+            "device_id": base["device_id"],
+        },
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["counts"]["source_suites"] == 1
+
+    all_cancelled = await client.post(
+        "/api/executions/preview",
+        headers=base["headers"],
+        json={
+            "project_id": base["project_id"],
+            "target": {
+                "type": "batch",
+                "ids": [],
+                "target_scope": "profile_all",
+                "excluded_suite_ids": [suite_ids[0], cancelled],
+            },
+            "app_profile_id": profile_id,
+            "app_release_id": release_id,
+        },
+    )
+    assert all_cancelled.status_code == 400, all_cancelled.text
+    assert all_cancelled.json()["detail"]["code"] == "PROFILE_EMPTY"
+
+    tampered_exclusions = await client.post(
+        "/api/executions/suites/batch",
+        headers=base["headers"],
+        json={
+            "target_scope": "profile_all",
+            "suite_ids": [],
+            "excluded_suite_ids": [],
+            "prepare_token": preview.json()["prepare_token"],
+            "device_id": base["device_id"],
+        },
+    )
+    assert tampered_exclusions.status_code == 409, tampered_exclusions.text
+    assert tampered_exclusions.json()["detail"]["code"] == "EXECUTION_PREPARE_INVALID"
+
+    tampered_target = await client.post(
+        "/api/executions/suites/batch",
+        headers=base["headers"],
+        json={
+            "target_scope": "profile_all",
+            "suite_ids": [suite_ids[0]],
+            "excluded_suite_ids": [cancelled],
+            "prepare_token": preview.json()["prepare_token"],
+            "device_id": base["device_id"],
+        },
+    )
+    assert tampered_target.status_code == 409, tampered_target.text
+    assert tampered_target.json()["detail"]["code"] == "EXECUTION_PREPARE_INVALID"
+
+    created = await client.post(
+        "/api/executions/suites/batch",
+        headers=base["headers"],
+        json={
+            "target_scope": "profile_all",
+            "suite_ids": [],
+            "excluded_suite_ids": [deleted, directly_skipped, cancelled, cancelled],
+            "prepare_token": preview.json()["prepare_token"],
+            "device_id": base["device_id"],
+        },
+    )
+    assert created.status_code == 201, created.text
+    execution_id = created.json()["id"]
+    assert created.json()["parameters"]["suite_ids"] == [suite_ids[0]]
+    assert created.json()["parameters"]["target_scope"] == "profile_all"
+    assert created.json()["parameters"]["excluded_suite_ids"] == [cancelled]
+    async with SessionLocal() as db:
+        assert not (
+            await db.execute(
+                select(ExecutionExclusion).where(ExecutionExclusion.execution_id == execution_id)
+            )
+        ).scalars().all()
+        execution_suites = (
+            await db.execute(select(ExecutionSuite).where(ExecutionSuite.execution_id == execution_id))
+        ).scalars().all()
+    assert [row.suite_id for row in execution_suites] == [suite_ids[0]]
+
+    missing = await client.post(
+        "/api/executions/preview",
+        headers=base["headers"],
+        json={
+            "project_id": base["project_id"],
+            "target": {
+                "type": "batch",
+                "ids": [],
+                "target_scope": "profile_all",
+                "excluded_suite_ids": [999999999],
+            },
+            "app_profile_id": profile_id,
+            "app_release_id": release_id,
+        },
+    )
+    assert missing.status_code == 422, missing.text
 
 
 async def test_prepare_rejects_parameter_mismatch_and_expiry_without_consuming(
@@ -618,10 +770,10 @@ async def test_execution_exclusion_persists_display_names(client: AsyncClient):
     assert exclusion.node_name_snapshot == "不支持步骤"
 
 
-async def test_batch_profile_execution_uses_all_suite_ids_and_excludes_skipped_suite(
+async def test_batch_profile_execution_omits_direct_skipped_suite(
     client: AsyncClient,
 ):
-    """批量入口把顶层 suite_ids 传入解析器，档案整套跳过后只固化可执行用例。"""
+    """批量入口保留显式目标协议，档案整套跳过后不固化 N/A 套件。"""
     base = await _base(client)
     profile_id, release_id = await _make_profile(client, base)
     case_ids = [await _make_case(client, base), await _make_case(client, base)]
@@ -680,9 +832,10 @@ async def test_batch_profile_execution_uses_all_suite_ids_and_excludes_skipped_s
                 )
             )
         ).scalars().all()
-    assert execution.parameters["suite_ids"] == suite_ids
+    assert execution.parameters["suite_ids"] == [suite_ids[1]]
+    assert execution.parameters["excluded_suite_ids"] == []
     assert [row.case_id for row in rows] == [case_ids[1]]
-    assert any(item.suite_id_snapshot == suite_ids[0] for item in exclusions)
+    assert all(item.suite_id_snapshot != suite_ids[0] for item in exclusions)
 
 
 async def test_profile_all_batch_matches_explicit_batch_without_client_suite_paging(
@@ -789,7 +942,8 @@ async def test_profile_all_batch_matches_explicit_batch_without_client_suite_pag
     )
     assert created.status_code == 201, created.text
     assert created.json()["parameters"]["target_scope"] == "profile_all"
-    assert created.json()["parameters"]["suite_ids"] == suite_ids
+    assert created.json()["parameters"]["suite_ids"] == [suite_ids[1]]
+    assert created.json()["parameters"]["excluded_suite_ids"] == []
     async with SessionLocal() as db:
         execution_cases = (
             await db.execute(select(ExecutionCase).where(ExecutionCase.execution_id == created.json()["id"]))

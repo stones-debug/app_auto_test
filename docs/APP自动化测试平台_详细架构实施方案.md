@@ -1871,11 +1871,21 @@ POST /api/executions/suites/batch
 }
 ```
 
-APP 档案工作区运行“当前 APP 全部套件”时，预检与创建均使用
+APP 档案工作区运行“运行已选套件”时，预检与创建均使用
 `target_scope=profile_all`、`type=batch`，客户端不分页收集 `suite_ids`：
 服务端在同一项目、档案、发布版本和双 revision 口径下确定当前全部未删除套件，
 再由统一 ProfileResolver 应用跳过规则与覆盖。显式 `suite_ids` 批量协议保持兼容；
 `profile_all` 仍要求档案、发布版本、设备和双 revision，并执行相同权限校验。
+
+档案工作区的套件复选框是本次执行范围选择，不是档案配置。其语义为“当前项目全部
+可执行套件减去 `excluded_suite_ids` 补集”：`profile_all` 请求的 `suite_ids`/目标 `ids`
+必须为空，`excluded_suite_ids` 在服务端排序去重后参与预检 canonical target 和哈希。
+不存在或跨项目的取消 ID 拒绝；同项目已软删除或已经直接跳过的套件忽略。用户取消的
+套件以及档案直接跳过的整套套件在解析前被移出 source，不生成快照、
+`execution_exclusions` 或报告 N/A；套件内用例/步骤跳过与 `empty_after_filter` 仍按原
+低层排除口径固化。预检令牌同时固化规范取消集合和最终 source suite IDs，正式创建若
+篡改任一目标或取消列表返回 `EXECUTION_PREPARE_INVALID`。执行 `parameters` 保存实际
+`suite_ids`、`target_scope` 与 `excluded_suite_ids`，重试直接复制这些参数和快照。
 
 - `use_pre_steps/use_post_steps` 缺省均为 false；套件执行时逐个用例应用各自的前置/后置阶段。
 - `attach_to_current_app` 仅允许单用例执行。为 true 时 Agent 创建不含 `appPackage/appActivity/bundleId` 的 Appium 会话，保持设备当前前台界面，并将快照中的 `launch_app` 记录为已跳过；套件和批量执行携带该参数返回 400。

@@ -440,6 +440,7 @@ async def test_workspace_and_nodes(client: AsyncClient):
     ws = await client.get(f"/api/app-profiles/{profile_id}/workspace", headers=h)
     assert ws.status_code == 200
     assert ws.json()["total"] == 1
+    assert ws.json()["execution_selectable_total"] == 1
     assert ws.json()["items"][0]["node_type"] == "suite"
 
     nodes = await client.get(f"/api/app-profiles/{profile_id}/workspace/nodes?parent_type=suite&parent_id={suite_id}", headers=h)
@@ -466,6 +467,33 @@ async def test_workspace_and_nodes(client: AsyncClient):
     assert diff.status_code == 200
     assert diff.json()["total"] >= 1
     assert diff.json()["items"][0]["target_type"] == "case"
+
+    # 可执行总数不随状态筛选变化；直接跳过套件才从全档案选择基数移除。
+    suite_skip = await client.post(
+        f"/api/app-profiles/{profile_id}/skip-rules/batch",
+        json={
+            "expected_revision": case_node["revision_after"],
+            "operation": "skip",
+            "reason": {"code": "unsupported"},
+            "targets": [{"type": "suite", "suite_id": suite_id}],
+        },
+        headers=h,
+    )
+    assert suite_skip.status_code == 200, suite_skip.text
+    skipped_page = await client.get(
+        f"/api/app-profiles/{profile_id}/workspace?effective_status=skipped",
+        headers=h,
+    )
+    assert skipped_page.status_code == 200
+    assert skipped_page.json()["total"] == 1
+    assert skipped_page.json()["execution_selectable_total"] == 0
+    enabled_page = await client.get(
+        f"/api/app-profiles/{profile_id}/workspace?effective_status=enabled",
+        headers=h,
+    )
+    assert enabled_page.status_code == 200
+    assert enabled_page.json()["total"] == 0
+    assert enabled_page.json()["execution_selectable_total"] == 0
 
 
 async def test_workspace_nodes_enforce_project_and_inherit_parent_skip(client: AsyncClient):

@@ -148,6 +148,7 @@ async def preview_execution(
         execution_variables=(body.parameters or {}).get("variables") or {},
         context_suite_id=body.context_suite_id,
         target_scope=body.target.target_scope,
+        excluded_suite_ids=body.target.excluded_suite_ids,
     )
     try:
         result = await get_resolver().preview(request, db)
@@ -202,6 +203,11 @@ async def preview_execution(
             target_scope=body.target.target_scope,
             context_suite_id=body.context_suite_id,
             resolved_ids=target_ids,
+            excluded_suite_ids=(
+                result.normalized_excluded_suite_ids
+                if body.target.target_scope == "profile_all"
+                else body.target.excluded_suite_ids
+            ),
         )
         try:
             prepare_token, prepare_expires_at = await execution_prepare.create_prepare(

@@ -16,7 +16,14 @@ import {
 export type RunTarget =
   | { kind: 'case'; id: number; name: string }
   | { kind: 'suite'; id: number; name: string }
-  | { kind: 'batch'; suiteIds: number[]; name: string; targetScope?: 'explicit' | 'profile_all' }
+  | {
+      kind: 'batch'
+      suiteIds: number[]
+      name: string
+      targetScope?: 'explicit' | 'profile_all'
+      /** profile_all 的本地取消补集；不分页收集全量 suite IDs。 */
+      excludedSuiteIds?: number[]
+    }
   | { kind: 'retry'; executionId: number; name: string }
 
 export type RetryTarget = Extract<RunTarget, { kind: 'retry' }>
@@ -103,6 +110,9 @@ export function useDeviceSelect() {
         ...opts,
         suite_ids: target.suiteIds,
         ...(target.targetScope ? { target_scope: target.targetScope } : {}),
+        ...(target.targetScope === 'profile_all'
+          ? { excluded_suite_ids: [...new Set(target.excludedSuiteIds ?? [])].sort((a, b) => a - b) }
+          : {}),
       })
     }
     // retry：后端仅接受 {device_id, timeout_seconds?}，档案由服务端按原执行读取

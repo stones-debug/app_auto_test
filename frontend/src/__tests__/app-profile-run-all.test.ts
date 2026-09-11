@@ -11,7 +11,15 @@ describe('APP 档案运行全部套件', () => {
 
     expect(runAll).toContain("targetScope: 'profile_all'")
     expect(runAll).toContain('suiteIds: []')
+    expect(runAll).toContain('excludedSuiteIds: [...store.excludedSuiteIds]')
     expect(runAll).not.toContain('workspace(')
+  })
+
+  it('档案页面只在套件行渲染受控选择框并提供分页', () => {
+    expect(appProfileSource).toContain('row.node_type === \'suite\' && row.id != null')
+    expect(appProfileSource).toContain('<el-pagination')
+    expect(appProfileSource).not.toContain('批量跳过')
+    expect(appProfileSource).not.toContain('批量恢复直接规则')
   })
 
   it('档案视图已传入发布版本时，DevicePicker 不重复加载 releases', () => {

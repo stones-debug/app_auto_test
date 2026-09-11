@@ -169,6 +169,44 @@ async def list_suites(db: AsyncSession, project_id: int) -> list[TestSuite]:
     return list(rows.scalars().all())
 
 
+async def validate_profile_all_excluded_suite_ids(
+    db: AsyncSession, *, project_id: int, suite_ids: list[int]
+) -> list[int]:
+    """校验 profile_all 的取消套件集合并返回稳定规范化 ID。
+
+    取消集合是请求的一部分，不能把“不存在”静默当作已删除。跨项目
+    的 ID 也必须拒绝，避免用一个项目的档案令牌影响另一个项目。只有
+    同项目但已软删除的套件允许继续存在于集合中，由解析器在建立当前
+    source 时自然忽略。
+    """
+    normalized = sorted({int(value) for value in suite_ids})
+    if not normalized:
+        return []
+    rows = await db.execute(select(TestSuite).where(TestSuite.id.in_(normalized)))
+    by_id = {row.id: row for row in rows.scalars().all()}
+    missing = [suite_id for suite_id in normalized if suite_id not in by_id]
+    if missing:
+        raise ValueError(f"取消套件不存在: {missing}")
+    foreign = [
+        suite_id for suite_id in normalized if by_id[suite_id].project_id != project_id
+    ]
+    if foreign:
+        raise ValueError(f"取消套件不属于当前项目: {foreign}")
+    return normalized
+
+
+async def normalize_profile_all_excluded_suite_ids(
+    db: AsyncSession, *, project_id: int, profile_id: int, suite_ids: list[int]
+) -> list[int]:
+    """校验并返回真正影响 profile_all source 的取消 ID。"""
+    normalized = await validate_profile_all_excluded_suite_ids(
+        db, project_id=project_id, suite_ids=suite_ids
+    )
+    active_ids = {suite.id for suite in await list_suites(db, project_id)}
+    skip = await load_skip_index(db, profile_id)
+    return [suite_id for suite_id in normalized if suite_id in active_ids and suite_id not in skip["suite"]]
+
+
 async def get_suite(db: AsyncSession, suite_id: int) -> TestSuite | None:
     return await db.get(TestSuite, suite_id)
 

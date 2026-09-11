@@ -68,6 +68,9 @@ class ExecutionCreate(_ExecutionTimeoutModel):
 class BatchExecutionCreate(_ExecutionTimeoutModel):
     suite_ids: list[int] = Field(default_factory=list)
     target_scope: Literal["explicit", "profile_all"] = "explicit"
+    # 档案工作台的 profile_all 使用“全量套件减去取消项”语义。取消项不
+    # 是客户端分页收集的目标套件，因此和 suite_ids 分开表达。
+    excluded_suite_ids: list[int] = Field(default_factory=list)
     device_id: int | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
     app_profile_id: int | None = None
@@ -78,10 +81,20 @@ class BatchExecutionCreate(_ExecutionTimeoutModel):
 
     _run_parameters = field_validator("parameters")(_validate_run_parameters)
 
+    @field_validator("excluded_suite_ids")
+    @classmethod
+    def _normalize_excluded_suite_ids(cls, values: list[int]) -> list[int]:
+        return sorted({int(value) for value in values})
+
     @model_validator(mode="after")
     def _complete_profile_context(self):
-        if self.target_scope == "explicit" and not self.suite_ids:
+        parameter_suite_ids = self.parameters.get("suite_ids") or []
+        if self.target_scope == "explicit" and not self.suite_ids and self.prepare_token is None:
             raise ValueError("显式批量执行至少需要一个套件")
+        if self.target_scope == "profile_all" and (self.suite_ids or parameter_suite_ids) and self.prepare_token is None:
+            raise ValueError("profile_all 不允许提交 suite_ids")
+        if self.target_scope != "profile_all" and self.excluded_suite_ids and self.prepare_token is None:
+            raise ValueError("excluded_suite_ids 仅支持 profile_all")
         if self.target_scope == "profile_all" and self.app_profile_id is None and self.prepare_token is None:
             raise ValueError("运行当前 APP 全部套件必须指定 APP 档案")
         values = (
@@ -108,13 +121,26 @@ class ExecutionPreviewTarget(BaseModel):
     type: str = Field(pattern="^(case|suite|batch)$")
     ids: list[int] = Field(default_factory=list)
     target_scope: Literal["explicit", "profile_all"] = "explicit"
+    excluded_suite_ids: list[int] = Field(default_factory=list)
+
+    @field_validator("excluded_suite_ids")
+    @classmethod
+    def _normalize_excluded_suite_ids(cls, values: list[int]) -> list[int]:
+        # 取消是集合语义。排序后写入 canonical target，保证预检哈希不依赖
+        # 页面遍历/点击顺序。
+        return sorted({int(value) for value in values})
 
     @model_validator(mode="after")
     def _require_explicit_ids(self):
         if self.target_scope == "explicit" and not self.ids:
             raise ValueError("显式预检至少需要一个目标")
-        if self.target_scope == "profile_all" and self.type != "batch":
-            raise ValueError("profile_all 仅支持批量套件预检")
+        if self.target_scope == "profile_all":
+            if self.type != "batch":
+                raise ValueError("profile_all 仅支持批量套件预检")
+            if self.ids:
+                raise ValueError("profile_all 不允许提交 ids")
+        elif self.excluded_suite_ids:
+            raise ValueError("excluded_suite_ids 仅支持 profile_all")
         return self
 
 
