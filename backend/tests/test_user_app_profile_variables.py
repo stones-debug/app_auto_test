@@ -12,6 +12,8 @@ from app.main import app
 from app.models import (
     AppProfileAuditLog,
     ProjectMember,
+    TestCase,
+    TestSuite,
     TestSuiteCase,
     User,
     UserAppProfileVariableOverride,
@@ -240,4 +242,86 @@ async def test_concurrent_same_request_is_serialized_and_replayed(client: AsyncC
     assert all(response.status_code == 200 for response in responses), [response.text for response in responses]
     async with SessionLocal() as db:
         audits = (await db.execute(select(AppProfileAuditLog).where(AppProfileAuditLog.profile_id == profile_id, AppProfileAuditLog.request_id == request_id))).scalars().all()
-        assert len(audits) == 1
+    assert len(audits) == 1
+
+
+@pytest.mark.asyncio
+async def test_my_variable_references_are_scoped_to_effective_definition(client: AsyncClient):
+    token, _user_id = await _login(client, "step71_references")
+    headers = {"Authorization": f"Bearer {token}"}
+    project_id = (await client.post("/api/projects", json={"name": f"引用项目-{uuid.uuid4().hex[:6]}"}, headers=headers)).json()["id"]
+    suite_a = (await client.post(f"/api/projects/{project_id}/suites", json={"name": "引用套件A"}, headers=headers)).json()["id"]
+    suite_b = (await client.post(f"/api/projects/{project_id}/suites", json={"name": "引用套件B"}, headers=headers)).json()["id"]
+    action_key = str(uuid.uuid4())
+    assertion_key = str(uuid.uuid4())
+    case_response = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "重复引用用例",
+            "steps": [{
+                "key": action_key, "order": 1, "action": "launch_app",
+                "params": {"package": "${username}", "activity": "${case_only}"},
+            }],
+            "assertions": [],
+        },
+        headers=headers,
+    )
+    assert case_response.status_code == 201, case_response.text
+    case_id = case_response.json()["id"]
+    async with SessionLocal() as db:
+        case_row = await db.get(TestCase, case_id)
+        assert case_row is not None
+        case_row.flow_nodes = [
+            {"kind": "action", "key": action_key, "order": 1, "phase": "main", "action": "launch_app", "params": {"package": "${username}", "activity": "${case_only}"}},
+            {"kind": "assertion", "key": assertion_key, "order": 1, "phase": "main", "type": "text_equals", "params": {"expected": "${username}"}},
+        ]
+        await db.commit()
+    virtual_case_response = await client.post(
+        f"/api/projects/{project_id}/cases",
+        json={
+            "name": "虚拟套件用例",
+            "steps": [{"key": str(uuid.uuid4()), "order": 1, "action": "launch_app", "params": {"package": "${project_only}"}}],
+            "assertions": [],
+        },
+        headers=headers,
+    )
+    assert virtual_case_response.status_code == 201, virtual_case_response.text
+    virtual_case_id = virtual_case_response.json()["id"]
+    first_a = (await client.post(f"/api/suites/{suite_a}/cases", json={"case_id": case_id}, headers=headers)).json()[0]["id"]
+    second_a = (await client.post(f"/api/suites/{suite_a}/cases", json={"case_id": case_id}, headers=headers)).json()[0]["id"]
+    membership_b = (await client.post(f"/api/suites/{suite_b}/cases", json={"case_id": case_id}, headers=headers)).json()[0]["id"]
+    async with SessionLocal() as db:
+        suite_a_row = await db.get(TestSuite, suite_a)
+        suite_b_row = await db.get(TestSuite, suite_b)
+        membership = await db.get(TestSuiteCase, first_a)
+        assert suite_a_row is not None and suite_b_row is not None and membership is not None
+        suite_a_row.setup_steps = [{"key": str(uuid.uuid4()), "order": 1, "phase": "setup", "action": "launch_app", "params": {"package": "${username}"}}]
+        suite_b_row.setup_steps = [{"key": str(uuid.uuid4()), "order": 1, "phase": "setup", "action": "launch_app", "params": {"package": "${username}"}}]
+        membership.variable_overrides = {"username": "masked-by-occurrence"}
+        await db.commit()
+    var_a = (await client.post("/api/variables", json={"scope": "suite", "suite_id": suite_a, "name": "username", "value": "a"}, headers=headers)).json()["id"]
+    var_b = (await client.post("/api/variables", json={"scope": "suite", "suite_id": suite_b, "name": "username", "value": "b"}, headers=headers)).json()["id"]
+    case_var = (await client.post("/api/variables", json={"scope": "case", "case_id": case_id, "name": "case_only", "value": "case"}, headers=headers)).json()["id"]
+    project_var = (await client.post("/api/variables", json={"scope": "project", "project_id": project_id, "name": "project_only", "value": "project"}, headers=headers)).json()["id"]
+    profile_id = (await client.post(f"/api/projects/{project_id}/app-profiles", json={"name": "引用档案", "code": f"p{uuid.uuid4().hex[:7]}"}, headers=headers)).json()["id"]
+    listed = await client.get(f"/api/app-profiles/{profile_id}/my-variables", headers=headers)
+    assert listed.status_code == 200, listed.text
+    rows = {row["variable_id"]: row for row in listed.json()["items"]}
+    assert {var_a, var_b, case_var, project_var} <= rows.keys()
+
+    refs_a = rows[var_a]["references"]
+    refs_b = rows[var_b]["references"]
+    assert rows[var_a]["reference_count"] == len(refs_a) == 3
+    assert rows[var_b]["reference_count"] == len(refs_b) == 3
+    assert {ref["suite_id"] for ref in refs_a} == {suite_a}
+    assert {ref["suite_id"] for ref in refs_b} == {suite_b}
+    assert first_a not in {ref["suite_case_id"] for ref in refs_a if ref["suite_case_id"] is not None}
+    assert second_a in {ref["suite_case_id"] for ref in refs_a}
+    assert membership_b in {ref["suite_case_id"] for ref in refs_b}
+    assert {ref["node_type"] for ref in refs_b if ref["suite_case_id"] == membership_b} == {"action", "assertion"}
+    assert rows[case_var]["reference_count"] == 3
+    assert {ref["suite_case_id"] for ref in rows[case_var]["references"]} == {first_a, second_a, membership_b}
+    project_refs = rows[project_var]["references"]
+    assert rows[project_var]["reference_count"] == 1
+    assert project_refs[0]["suite_id"] is None and project_refs[0]["suite_case_id"] is None
+    assert project_refs[0]["case_id"] == virtual_case_id and project_refs[0]["node_type"] == "action"

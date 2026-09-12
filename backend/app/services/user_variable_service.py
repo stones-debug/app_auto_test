@@ -30,7 +30,7 @@ async def _page(
     db: AsyncSession, *, profile: AppProfile, user_id: int, keyword: str, scope: str | None,
     overridden_only: bool, page: int, page_size: int,
 ) -> dict:
-    variables, ref_counts, suite_names, case_names = await user_variables_repo.candidate_variables(
+    variables, ref_counts, suite_names, case_names, references = await user_variables_repo.candidate_variables(
         db, project_id=profile.project_id
     )
     overrides = {
@@ -59,6 +59,7 @@ async def _page(
             "case_name": case_names.get(variable.case_id) if variable.case_id is not None else None,
             "overridden": overridden,
             "reference_count": ref_counts.get(variable.id, 0),
+            "references": references.get(variable.id, []),
             "is_sensitive": variable.is_sensitive,
         }
         item.update(_value_fields(variable, public_value, user_value, overridden))
@@ -93,7 +94,7 @@ async def update_my_variables(
     )
     if replay is not None:
         return replay
-    variables, _refs, _suite_names, _case_names = await user_variables_repo.candidate_variables(
+    variables, _refs, _suite_names, _case_names, _references = await user_variables_repo.candidate_variables(
         db, project_id=profile.project_id
     )
     candidates = {variable.id: variable for variable in variables}

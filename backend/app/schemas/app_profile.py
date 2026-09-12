@@ -224,6 +224,21 @@ class ProfileVariableOverrideBatchRequest(BaseModel):
     updates: list[ProfileVariableUpdateItem] = Field(min_length=1)
 
 
+class MyVariableReference(BaseModel):
+    suite_id: int | None = None
+    suite_name: str | None = None
+    suite_case_id: int | None = None
+    case_id: int | None = None
+    case_name: str | None = None
+    node_type: Literal["action", "assertion"]
+    node_key: str
+    node_name: str
+    action: str | None = None
+    type: str | None = None
+    phase: str | None = None
+    order: int | None = None
+
+
 class MyVariableItem(BaseModel):
     variable_id: int
     name: str
@@ -238,6 +253,7 @@ class MyVariableItem(BaseModel):
     display_value: str
     overridden: bool
     reference_count: int
+    references: list[MyVariableReference] = Field(default_factory=list)
     is_sensitive: bool
 
 
