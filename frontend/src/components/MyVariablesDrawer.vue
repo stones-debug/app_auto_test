@@ -2,7 +2,7 @@
 import { ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 
-import { listMyVariables, patchMyVariables, type MyVariableItem, type MyVariableScope } from '@/api/appProfiles'
+import { listMyVariables, patchMyVariables, type MyVariableItem, type MyVariableReference, type MyVariableScope } from '@/api/appProfiles'
 import { apiErrorDetail } from '@/utils/request'
 import { createUuid } from '@/utils/uuid'
 import { buildMyVariableValueUpdate, buildRestoreVariableUpdate, myVariableEditSeed, shouldApplyVariableResponse } from '@/utils/variableEditing'
@@ -46,6 +46,22 @@ function ownerText(item: MyVariableItem): string {
   if (item.scope === 'project') return `项目变量${item.project_id != null ? ` #${item.project_id}` : ''}`
   if (item.scope === 'suite') return item.suite_name ?? `套件 #${item.suite_id ?? '-'}`
   return item.case_name ?? `用例 #${item.case_id ?? '-'}`
+}
+
+function phaseText(phase: string | null): string {
+  return ({
+    suite_setup: '套件前置',
+    suite_teardown: '套件后置',
+    setup: '用例前置',
+    main: '主体',
+    teardown: '用例后置',
+  } as Record<string, string>)[phase ?? ''] ?? phase ?? '未标注阶段'
+}
+
+function nodeText(reference: MyVariableReference): string {
+  const kind = reference.node_type === 'action' ? `动作：${reference.action ?? '未知'}` : `断言：${reference.type ?? '未知'}`
+  const order = reference.order == null ? '' : ` · 第 ${reference.order} 项`
+  return `${kind}${order} · ${reference.node_name || reference.node_key}`
 }
 
 function variableRow(row: unknown): MyVariableItem {
@@ -188,6 +204,18 @@ defineExpose({ load })
     </div>
     <el-alert v-if="error" type="error" :closable="false" class="variable-error">{{ error }}</el-alert>
     <el-table v-loading="loading" :data="items" row-key="variable_id" size="small">
+      <el-table-column type="expand" width="44">
+        <template #default="{ row }">
+          <div class="reference-list">
+            <div v-for="reference in variableRow(row).references" :key="`${reference.suite_case_id ?? 'virtual'}-${reference.node_key}-${reference.phase ?? ''}`" class="reference-item">
+              <span class="reference-context">
+                {{ reference.suite_name ?? '虚拟套件' }} · {{ reference.case_name ?? (reference.case_id == null ? '套件步骤' : `用例 #${reference.case_id}`) }} · {{ phaseText(reference.phase) }}
+              </span>
+              <span class="reference-node">{{ nodeText(reference) }}</span>
+            </div>
+          </div>
+        </template>
+      </el-table-column>
       <el-table-column label="变量" min-width="150">
         <template #default="{ row }"><code>{{ variableToken(variableRow(row).name) }}</code></template>
       </el-table-column>
@@ -237,6 +265,10 @@ defineExpose({ load })
 .variable-toolbar { display: flex; align-items: center; gap: 8px; margin: 16px 0 12px; flex-wrap: wrap; }
 .variable-error { margin-bottom: 12px; }
 .owner { display: block; color: var(--el-text-color-secondary); margin-top: 2px; }
-.sensitive { letter-spacing: 0.08em; }
-.variable-pagination { justify-content: flex-end; margin-top: 14px; }
-</style>
+ .sensitive { letter-spacing: 0.08em; }
+ .variable-pagination { justify-content: flex-end; margin-top: 14px; }
+ .reference-list { display: flex; flex-direction: column; gap: 6px; padding: 4px 24px 4px 16px; }
+ .reference-item { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: 12px; line-height: 1.5; }
+ .reference-context { color: var(--el-text-color-secondary); }
+ .reference-node { color: var(--el-text-color-primary); }
+ </style>

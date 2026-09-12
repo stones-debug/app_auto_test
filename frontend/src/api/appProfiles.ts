@@ -183,6 +183,21 @@ export interface ProfileRunParams {
 
 export type MyVariableScope = 'project' | 'suite' | 'case'
 
+export interface MyVariableReference {
+  suite_id: number | null
+  suite_name: string | null
+  suite_case_id: number | null
+  case_id: number | null
+  case_name: string | null
+  node_type: 'action' | 'assertion'
+  node_key: string
+  node_name: string
+  action: string | null
+  type: string | null
+  phase: string | null
+  order: number | null
+}
+
 export interface MyVariableItem {
   variable_id: number
   name: string
@@ -197,6 +212,7 @@ export interface MyVariableItem {
   display_value: string
   overridden: boolean
   reference_count: number
+  references: MyVariableReference[]
   is_sensitive: boolean
 }
 

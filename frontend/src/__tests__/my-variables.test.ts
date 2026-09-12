@@ -17,6 +17,8 @@ describe('我的变量配置前端契约', () => {
   it('API 使用稳定 variable_id、分页筛选和 PATCH endpoint', () => {
     expect(apiSource).toContain('export interface MyVariableItem')
     expect(apiSource).toContain('variable_id: number')
+    expect(apiSource).toContain('export interface MyVariableReference')
+    expect(apiSource).toContain('references: MyVariableReference[]')
     expect(apiSource).toContain('export function listMyVariables(')
     expect(apiSource).toContain('export function patchMyVariables(')
     expect(apiSource).toContain('/my-variables')
@@ -31,6 +33,10 @@ describe('我的变量配置前端契约', () => {
     expect(drawerSource).toContain('buildRestoreVariableUpdate()')
     expect(drawerSource).toContain('let requestSequence = 0')
     expect(drawerSource).toContain('shouldApplyVariableResponse(sequence, requestSequence)')
+    expect(drawerSource).toContain('type="expand"')
+    expect(drawerSource).toContain('reference.suite_name')
+    expect(drawerSource).toContain('phaseText(reference.phase)')
+    expect(drawerSource).toContain('nodeText(reference)')
   })
 
   it('敏感编辑决策可执行验证：空值可保存，未重输公共敏感值不被覆盖', () => {
