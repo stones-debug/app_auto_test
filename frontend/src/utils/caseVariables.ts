@@ -90,7 +90,7 @@ export interface ProfileCaseVariableLike {
   }[]
 }
 
-/** 变量在一张用例内的覆盖状态：是否已覆盖、各节点覆盖值是否统一。 */
+/** 变量在一张用例内的覆盖状态：是否已覆盖、各引用节点的值是否统一。 */
 export function variableOverrideState(variable: ProfileCaseVariableLike): {
   overridden: boolean
   uniform: boolean
@@ -105,7 +105,7 @@ export function variableOverrideState(variable: ProfileCaseVariableLike): {
   }
 }
 
-/** 表内展示文本：多节点覆盖值不一致时显示「多个值」，空值区分「（空）」与「未定义」。 */
+/** 表内展示文本：各引用值不一致时显示「多个值」，空值区分「（空）」与「未定义」。 */
 export function variableDisplayText(variable: ProfileCaseVariableLike): string {
   const state = variableOverrideState(variable)
   if (state.overridden && !state.uniform) return '多个值'
@@ -133,7 +133,7 @@ export function buildVariableUpdates(
 
 /**
  * 就地编辑提交：值等于当前生效值时不产生变更（返回 null），避免空提交推进 revision。
- * 多值状态（各节点覆盖值不一致）下任何输入都是变更——包括统一为空串。
+ * 多值状态（各引用值不一致）下任何输入都是变更——包括统一为空串。
  */
 export function variableQuickUpdates(
   variable: ProfileCaseVariableLike,

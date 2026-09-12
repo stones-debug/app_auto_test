@@ -59,7 +59,7 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 - Worker 与 Agent **无直接 WS**：经 `/internal/ws/agents/{id}/send` 由 FastAPI 转发（`X-Internal-Token`）
 - 执行状态机**全小写**：`queued / running / stopping / passed / failed / error / stopped / cancelled`
 - Action/Assertion Registry 属于 agent 包，不属于 backend；废弃的 `backend/app/executor/` 空目录已删除，禁止恢复后端执行 Registry
-- **变量优先级（§10.6）固定为：执行参数 > 套件变量 > 用例变量 > 项目变量 > 全局变量**。无档案执行在 `app/repositories/worker.py::_materialize_unprofiled_tree` 里按此顺序逐层叠加（`base_map → case → suite → execution parameters`）；禁止"先复制完整映射再用低优先级覆盖高优先级"的写法，否则套件前后置与套件内用例会取到不同值
+- **变量优先级（§10.20）最终唯一口径为：APP 档案 occurrence > 执行参数 > 编排项 > 套件（用户私有值替换公共值） > 用例（用户私有值替换公共值） > 项目（用户私有值替换公共值） > 全局**。用户私有值不是额外一层，而是替换对应公共变量定义后参与原有作用域合并；无档案执行省略 APP 档案 occurrence 层，仍按执行参数 > 编排项 > 套件 > 用例 > 项目 > 全局逐层叠加。禁止"先复制完整映射再用低优先级覆盖高优先级"的写法，否则套件前后置与套件内用例会取到不同值
 - **Agent WS 一条连接只允许注册一次**：`app/ws/routes.py` 注册成功后拒绝后续 `register`（回 PROTOCOL_ERROR，不断连）。`AgentConnectionManager.connect()` 对同一 socket 幂等，且"先替换映射、后关闭旧连接"
 - **步骤/节点级状态同样受"终态不回退"保护**：`ws_handlers.py` 的 `_merge_step_status()` 按 `error > failed > stopped > skipped > passed` 合并（`cancelled` 与 `stopped` 同属中断终态）。禁止写成 `step.status = payload["status"]` 这类无条件赋值——重投/补报会把已落库的 failed 翻成 passed。判定类字段（`duration`/`actual_value`/`error_message`/`screenshot_path`）必须用 `_fill_if_present()`，**重投消息不带截图时不得清空已落库的失败证据**
 - **WS 发送失败只在连接确实不可用时才摘除映射**：`managers._is_socket_gone()` 区分"连接已关闭"（Starlette `RuntimeError` / websockets `ConnectionClosed*` / `OSError`）与其它异常；序列化等瞬时错误把 socket 摘掉会让仍在线的 Agent 被误判 offline
@@ -77,18 +77,18 @@ APP 自动化测试平台（Appium 移动端自动化：Vue3 + FastAPI + Postgre
 - `ExecutionAssertion` 直接关联 `execution_step_id`，`assertion_order` 在同一步骤内排序。用例资产只保存 `steps`，每个步骤以 `assertions` 子数组配置动作成功后立即执行的断言；Agent 上报使用 `execution_step_id` + `execution_assertion_id`，不再存在用例级 `assertions` / `assertions_snapshot`。
 - `ExecutionCase` 必填 `execution_suite_id` + `case_order`；同一 `case_id` 可在不同套件重复出现（取消跨套件去重）。
 - 单用例无套件上下文时建**虚拟套件**（`ExecutionSuite.is_virtual=True, suite_id IS NULL`）；带 `context_suite_id` 时用指定套件规则。
-- 解析器 `profile_resolver.ResolutionResult.suites: list[ResolvedSuite]`（不再扁平 cases，`cases` 仅为兼容属性）。节点覆盖以 `suite_case_id` 精确区分 occurrence，避免共享用例跨套件/重复编排污染；套件步跳过/覆盖用 `target_type='suite_step'` + `(suite_id, node_key)`。
+- 解析器 `profile_resolver.ResolutionResult.suites: list[ResolvedSuite]`（不再扁平 cases，`cases` 仅为兼容属性）。节点跳过以 `suite_case_id` 精确区分 occurrence，避免共享用例跨套件/重复编排污染；套件步跳过用 `target_type='suite_step'` + `(suite_id, node_key)`。
 - 报告三层统计：用例（`total/passed/...`）+ 套件（`suite_*`）+ 步骤（`step_*`），N/A 不入任何成功率分母；`not_applicable_suites` 单列。
 - 执行详情/报告详情响应由扁平 `cases` 改为嵌套 `suites`（`load_suite_tree`）；报告服务保留 `cases`（`load_case_tree`）供 HTML/列表，`suites` 供分层展示。
 - 执行状态优先级：`error > failed > stopped > skipped > passed`；套件前置失败则套件内用例 `skipped` 但套件后置仍执行。
 
 ## 用例变量快捷展示与覆盖（套件编排项 / APP 档案节点）
-- **编排项身份是 `test_suite_cases.id`（`suite_case_id`）**：同一用例可在同一套件重复编排，变量/节点覆盖都按编排项隔离。APP 档案树、工作台子节点缓存键、前端 row key 全部用 `suite_case_id`（解析器里叫 `membership_*` 索引）。
-- `test_suite_cases.variable_overrides`（JSONB）是编排项级覆盖；`app_profile_suite_case_variable_overrides` 是 APP 档案 occurrence 变量覆盖；`app_profile_node_overrides.suite_case_id` 仅绑定正常节点参数覆盖，唯一键 `(profile_id, suite_case_id, target_type, node_key)`，套件前后置步骤该列恒空。
-- **变量优先级**：执行参数 > APP 档案 occurrence 变量覆盖 > APP 档案全局变量覆盖 > **编排项覆盖** > 套件变量 > 用例变量 > 项目变量 > 全局变量。`profile_resolver_load.merge_variables` 与档案执行快照必须一致。
+- **编排项身份是 `test_suite_cases.id`（`suite_case_id`）**：同一用例可在同一套件重复编排，变量/节点跳过都按编排项隔离。APP 档案树、工作台子节点缓存键、前端 row key 全部用 `suite_case_id`（解析器里叫 `membership_*` 索引）。
+- `test_suite_cases.variable_overrides`（JSONB）是编排项级变量覆盖；`app_profile_suite_case_variable_overrides` 是 APP 档案 occurrence 变量覆盖，按 `suite_case_id` 隔离。APP 档案不保存节点参数覆盖。
+- **变量优先级（最终口径）**：APP 档案 occurrence > 执行参数 > 编排项 > 套件（用户私有值替换公共值） > 用例（用户私有值替换公共值） > 项目（用户私有值替换公共值） > 全局。用户私有值不是额外一层，而是替换对应公共变量定义后参与原有作用域合并；`profile_resolver_load.merge_variables` 与档案执行快照必须一致。
 - **变量引用统一口径**：只扫动作/断言 `params|parameters` 里真实出现的 `${name}`（`node_variable_references`，会排除 `variable_name` 等运行时输出名），元素智能定位配置不纳入。变量覆盖只允许 occurrence 级，节点/断言 `variable_overrides` 已取消。
 - 覆盖只改当前编排项 / 当前档案节点，不改公共用例；空字符串是合法覆盖值，`null` 表示删除覆盖恢复继承。
-- **「原值」必须是恢复后的真实取值**：展示的继承值按 `编排项覆盖 → 档案全局变量覆盖` 依次叠加，occurrence 档案变量覆盖再叠加在其上；恢复提交 `null` 后必须回到该继承值。
+- **「原值」必须是恢复后的真实取值**：展示的继承值按 `编排项覆盖` 叠加在公共作用域变量之上，occurrence 档案变量覆盖再叠加在其上；恢复提交 `null` 后必须回到该继承值。
 - 列表接口口径分开：套件编排项 `GET /api/suites/{sid}/cases` 只带 `variable_count` + 前 2 项 `variables_preview`；**APP 档案工作台用例行带完整 `variables`**（含每个变量的全部引用节点及各自覆盖），因为档案侧要在行内竖排展示全部变量并就地编辑。
 - 完整详情仍走 `GET /api/suites/{sid}/cases/{membership_id}/variables`、`GET /api/app-profiles/{pid}/suite-cases/{suite_case_id}/variables`；档案写入 PATCH 的 `updates` 为 `[{name, value|null}]`，单次 revision + 单条审计，revision 冲突 409。
 - **档案写操作的响应版本号字段是 `profile_revision`**，没有 `revision`。`PATCH .../suite-cases/{id}/variable-overrides` 的 `response_model=ProfileSuiteCaseVariablesOut` 会丢掉服务端多余的 `revision` 键（GET 同构）。前端读成 `result.revision` 会把 `undefined` 写回 store，之后所有「`profileRevision == null` 就 return」的守卫会**静默短路**——第一次保存成功、第二次（含点「恢复」）连请求都不发。契约由 `frontend/src/__tests__/app-profile-variable-column.test.ts` 钉住。

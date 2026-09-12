@@ -43,8 +43,6 @@ from app.services.profile_resolver_load import (
     resolve_element_snapshots as _resolve_element_snapshots,
 )
 from app.services.profile_resolver_nodes import (
-    NODE_IDENTITY_FIELDS,
-    NODE_PATCH_ALLOWED,
     ProfileRuleError,
     _finalize_case_step,
     _finalize_suite_step,
@@ -55,13 +53,12 @@ from app.services.profile_resolver_nodes import (
     render_value,
     runtime_variable_names,
     sensitive_parameter_paths,
-    validate_node_patch,
     variable_references,
 )
 from app.services.profile_resolver_nodes import (
     assign_order as _assign_order,
 )
-from app.services.profile_resolver_nodes import filter_and_patch as _filter_and_patch_impl
+from app.services.profile_resolver_nodes import filter_nodes as _filter_nodes_impl
 from app.services.profile_resolver_nodes import (
     select_steps_for_run as _select_steps_for_run,
 )
@@ -83,8 +80,6 @@ def _unique_context_membership(
 
 __all__ = [
     "ExclusionItem",
-    "NODE_IDENTITY_FIELDS",
-    "NODE_PATCH_ALLOWED",
     "ProfileEmpty",
     "ProfileRevisionConflict",
     "ProfileResolver",
@@ -97,7 +92,6 @@ __all__ = [
     "render_text",
     "render_value",
     "resolve",
-    "validate_node_patch",
     "variable_references",
 ]
 
@@ -269,9 +263,9 @@ def get_resolver() -> ProfileResolver:
     return _resolver
 
 
-def _filter_and_patch(*args: Any, **kwargs: Any) -> tuple[list[dict], list[ExclusionItem]]:
-    """兼容旧内部导入，为节点模块注入本模块定义的排除项类型。"""
-    return _filter_and_patch_impl(*args, exclusion_cls=ExclusionItem, **kwargs)
+def _filter_nodes(*args: Any, **kwargs: Any) -> tuple[list[dict], list[ExclusionItem]]:
+    """为节点过滤器注入本模块定义的排除项类型。"""
+    return _filter_nodes_impl(*args, exclusion_cls=ExclusionItem, **kwargs)
 
 
 async def resolve(
@@ -701,8 +695,8 @@ async def _resolve_case(
         is_assertion = node.get("kind") == "assertion" or "type" in node
         node_type = "assertion" if is_assertion else "step"
         rules = config["assertion_rules" if is_assertion else "step_rules"].get(membership_id, {})
-        kept, node_exclusions = _filter_and_patch(
-            [node], rules, {}, node_type, case.id,
+        kept, node_exclusions = _filter_nodes(
+            [node], rules, node_type, case.id,
             case_name=case.name, suite_id=suite_id, suite_name=suite_name,
             suite_case_id=membership_id,
             occurrence_order=case_order,
@@ -766,7 +760,7 @@ async def _parse_suite_steps(
     execution_variables: dict,
     load_context: ResolutionLoadContext,
 ) -> tuple[list[dict], list[dict], dict[str, dict[str, Any]], list[ExclusionItem], int]:
-    """套件前后置步骤：过滤、覆盖、渲染、校验并补全元素。"""
+    """套件前后置步骤：过滤、渲染、校验并补全元素。"""
     variables = await _merge_suite_variables(
         db, project_id, suite_id, config, execution_variables, load_context
     )
@@ -779,8 +773,8 @@ async def _parse_suite_steps(
 
     def process(nodes: list, phase: str) -> tuple[list[dict], list[ExclusionItem]]:
         nonlocal override_count
-        kept, exclusions = _filter_and_patch(
-            nodes or [], suite_rules, {}, "suite_step", None,
+        kept, exclusions = _filter_nodes(
+            nodes or [], suite_rules, "suite_step", None,
             case_name=None, suite_id=suite_id, suite_name=suite_name, phase=phase,
         )
         steps: list[dict] = []

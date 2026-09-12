@@ -1,6 +1,6 @@
 """APP 档案用例编排项的变量详情与批量覆盖路由。
 
-用例节点覆盖以 ``suite_case_id``（``test_suite_cases.id``）为身份，
+APP 档案 occurrence 变量覆盖以 ``suite_case_id``（``test_suite_cases.id``）为身份，
 同一用例在同一套件重复编排时各自独立。
 """
 

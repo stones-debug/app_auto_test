@@ -1,6 +1,6 @@
 """档案解析器的节点处理逻辑。
 
-本模块只负责节点的过滤、白名单覆盖、变量渲染、Registry 校验和快照最终化；
+本模块只负责节点的过滤、变量渲染、Registry 校验和快照最终化；
 数据库读取与套件/用例编排由 :mod:`profile_resolver_load` 与
 :mod:`profile_resolver` 负责。
 """
@@ -24,24 +24,8 @@ from app.schemas.generated_case_params import (
 _VAR_RE = re.compile(r"\$\{(\w+)\}")
 _RUNTIME_VARIABLE_ACTIONS = frozenset({"get_text", "get_attribute"})
 
-# 节点覆盖白名单（方案 §2.4）：仅允许覆盖业务字段；禁止改 key/order/phase/action/type/assertion_type
-NODE_PATCH_ALLOWED = {
-    "element_id",
-    "params",
-    "parameters",
-    "expected",
-    "expected_value",
-    "timeout",
-    "wait_timeout",
-    "max_swipes",
-    "duration",
-    "max_wait_seconds",
-}
-NODE_IDENTITY_FIELDS = {"key", "order", "phase", "action", "type", "assertion_type"}
-
-
 class ProfileRuleError(Exception):
-    """规则/覆盖/变量解析错误；用 code 对应 422/413 错误码。"""
+    """规则/变量解析错误；用 code 对应 422/413 错误码。"""
 
     def __init__(self, code: str = "PROFILE_RULE_INVALID", message: str = "") -> None:
         self.code = code
@@ -141,16 +125,6 @@ def node_variable_references(node: dict) -> list[str]:
     )
 
 
-def _apply_whitelist_patch(node: dict, patch: dict) -> dict:
-    for key, value in patch.items():
-        if key in NODE_IDENTITY_FIELDS:
-            raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", f"禁止修改节点字段: {key}")
-        if key not in NODE_PATCH_ALLOWED:
-            raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", f"不允许覆盖字段: {key}")
-        node[key] = value
-    return node
-
-
 def _render_node_with_context(
     node: dict,
     variables: dict,
@@ -182,7 +156,7 @@ def _registry_validate_step(step: dict) -> dict:
     model = STEP_PARAM_MODELS[action]
     params = deepcopy(step.get("params") or {})
     step["params"] = model(**params).model_dump(exclude_none=False)
-    # 需要元素的动作必须提供 element_id（覆盖档案/覆盖节点场景）
+    # 需要元素的动作必须提供 element_id
     if action in STEP_NEEDS_ELEMENT and step.get("element_id") is None:
         label = ELEMENT_LABELS.get(action, "元素")
         raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", f"动作 {action} 需要元素（{label}）")
@@ -209,21 +183,6 @@ def _registry_validate_assertion(assertion: dict) -> dict:
     assertion["max_wait_seconds"] = wait
     assertion["continue_on_failure"] = bool(assertion.get("continue_on_failure", False))
     return assertion
-
-
-def validate_node_patch(node_type: str, source_node: dict, patch: dict[str, Any]) -> dict:
-    """保存覆盖前，以公共节点合并补丁并执行与解析阶段相同的 Registry 校验。"""
-    patched = _apply_whitelist_patch(deepcopy(source_node), patch)
-    try:
-        if node_type == "step":
-            return _registry_validate_step(patched)
-        if node_type == "assertion":
-            return _registry_validate_assertion(patched)
-    except Exception as exc:
-        if isinstance(exc, ProfileRuleError):
-            raise
-        raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", str(exc)) from None
-    raise ProfileRuleError("PROFILE_OVERRIDE_INVALID", f"未知节点类型: {node_type}")
 
 
 def finalize_snapshot_node(node: dict, phase: str = "main", order_offset: int = 0) -> dict:
@@ -256,10 +215,9 @@ def _finalize_suite_step(node: dict, phase: str) -> dict:
     return out
 
 
-def filter_and_patch(
+def filter_nodes(
     nodes: list[dict],
     rules: dict[str, AppProfileSkipRule],
-    overrides: dict[str, dict[str, Any]],
     target_type: str,
     case_id: int | None,
     *,
@@ -271,7 +229,7 @@ def filter_and_patch(
     occurrence_order: int | None = None,
     exclusion_cls: Any,
 ) -> tuple[list[dict], list[Any]]:
-    """过滤被跳过节点并应用白名单覆盖，保留 _source_key/_source_order。"""
+    """过滤被跳过节点并保留 _source_key/_source_order。"""
     kept: list[dict] = []
     exclusions: list[Any] = []
     for node in nodes or []:
@@ -302,9 +260,6 @@ def filter_and_patch(
                 )
             )
             continue
-        patch = overrides.get(node_key)
-        if patch:
-            node = _apply_whitelist_patch(deepcopy(node), patch)
         kept.append({**deepcopy(node), "_source_order": node.get("order"), "_source_key": node_key})
     return kept, exclusions
 

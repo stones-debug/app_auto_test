@@ -1,6 +1,6 @@
 """Step B4：ProfileResolver 解析引擎行为验证（方案 §11.1）。
 
-基础设施：直接以 ORM 造档案/规则/覆盖 + 公共用例，调用 ProfileResolver.preview。
+基础设施：直接以 ORM 造档案、规则和公共用例，调用 ProfileResolver.preview。
 """
 
 import uuid
@@ -131,7 +131,7 @@ async def _attach_case_to_suite(db, project_id: int, case_id: int, name: str) ->
 
 
 async def _membership_id(db, suite_id: int, case_id: int) -> int:
-    """用例节点覆盖以编排项 suite_case_id 为身份。"""
+    """返回用例 occurrence 的 suite_case_id。"""
     return (
         await db.execute(
             select(SuiteCaseModel.id)
@@ -191,8 +191,8 @@ async def test_case_skip_excluded(client):
             await resolve_compat(request, db)
 
 
-async def test_step_skip_and_override(client):
-    """步骤跳过 + 节点参数覆盖仅作用于当前套件，共享用例的其他套件不受影响。"""
+async def test_step_skip_is_scoped_to_occurrence(client):
+    """步骤跳过按 suite_case_id 精确作用，共享用例的公共参数保持不变。"""
     base = await _base(client)
     case_id = await _setup_case_with_steps(client, base, "步骤跳过用例")
     async with SessionLocal() as db:
@@ -205,7 +205,6 @@ async def test_step_skip_and_override(client):
         )
         suite_case_id = await _membership_id(db, suite_id, case_id)
         db.add(AppProfileSkipRule(profile_id=profile_id, target_type="step", suite_case_id=suite_case_id, node_key=K2, reason_code="unsupported", reason_note="n"))
-        # 覆盖 K1(setup launch_app) 的 params.package
         await db.commit()
         result = await resolve_compat(
             ResolutionRequest(
@@ -293,7 +292,7 @@ async def test_variable_scope_priority_is_consistent_for_suite_setup_and_case(cl
         assert result.suites[0].cases[0].steps_snapshot[0]["params"]["package"] == "from_execution"
 
 
-def test_variable_override_references_are_recursive_and_ordered():
+def test_variable_references_are_recursive_and_ordered():
     assert variable_references({"a": "${first}/${second}", "nested": ["${first}", {"x": "${third}"}]}) == [
         "first", "second", "third"
     ]
@@ -309,8 +308,8 @@ def test_element_preload_reference_scan_covers_nested_assertions_and_parameter_p
     ) == {11, 12, 13, 14}
 
 
-async def test_suite_variable_overrides_case_and_suite_order_is_preserved(client):
-    """套件变量覆盖用例变量，解析结果严格遵守套件成员 sort_order。"""
+async def test_suite_variables_precede_case_and_preserve_member_order(client):
+    """套件变量优先于用例变量，解析结果严格遵守套件成员 sort_order。"""
     base = await _base(client)
     case_a = await _setup_case_with_steps(client, base, "顺序A")
     case_b = await _setup_case_with_steps(client, base, "顺序B")
@@ -548,8 +547,8 @@ async def test_preview_allows_directly_soft_deleted_element_referenced_by_case(c
     assert snap["locator_value"] == "login_btn"
 
 
-async def test_smart_element_passthrough_without_override(client):
-    """元素本身 smart、无覆盖：快照同样原样透传 locator_config，不渲染变量。"""
+async def test_smart_element_passthrough(client):
+    """元素本身 smart 时，快照原样透传 locator_config，不渲染变量。"""
     base = await _base(client)
     smart_config = {
         "version": 1,

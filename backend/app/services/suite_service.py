@@ -295,7 +295,7 @@ async def remove_case(db: AsyncSession, *, suite: TestSuite, membership_id: int)
     if relation is None:
         return
     try:
-        # 编排项消失后其节点覆盖失去意义；先物理清理子行，再删除编排项（外键约束要求）
+        # 编排项消失后其 occurrence 变量覆盖失去意义；先物理清理子行，再删除编排项（外键约束要求）
         await suites_repo.delete_relation(db, relation)
         await asset_service.commit_asset_change(db, [suite.project_id])
     except Exception:

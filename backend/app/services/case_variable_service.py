@@ -1,4 +1,4 @@
-"""套件编排项与 APP 档案用例节点的变量引用/覆盖共享计算。
+"""套件编排项与 APP 档案 occurrence 的变量引用/覆盖共享计算。
 
 统一口径：只提取动作与断言 ``params``/``parameters`` 中真实出现的 ``${name}``，
 按首次引用顺序去重；元素智能定位配置中的变量不纳入本次快捷编辑。
@@ -27,7 +27,7 @@ _SCOPE_LABELS = {
     "project": "项目",
     "suite": "套件",
     "case": "用例",
-    # 节点覆盖之下的两层覆盖：编排项覆盖与 APP 档案变量覆盖
+    # 公共变量层之上的两层覆盖：编排项覆盖与 APP 档案 occurrence 覆盖
     "occurrence": "编排项",
     "profile": "档案",
 }
@@ -93,7 +93,7 @@ def definitions_for_case(
 async def inherited_variable_definitions(
     db: AsyncSession, *, project_id: int, suite_id: int | None, case: TestCase
 ) -> dict[str, dict[str, Any]]:
-    """编排项/节点覆盖之外，该用例可见的变量定义（全局→项目→用例→套件）。"""
+    """排除编排项与档案 occurrence 覆盖后，该用例可见的变量定义。"""
     rows = await resolution_repo.load_resolution_variables_batch(
         db,
         project_id=project_id,
@@ -121,7 +121,7 @@ async def load_definitions_batch(
 def apply_fixed_layer(
     definitions: dict[str, dict[str, Any]], scope: str, values: dict[str, str] | None
 ) -> dict[str, dict[str, Any]]:
-    """在节点覆盖之下再叠一层固定值覆盖（编排项覆盖 / 档案变量覆盖）。"""
+    """在公共变量层之上叠加编排项或档案 occurrence 的固定值。"""
     for name, value in (values or {}).items():
         definitions[name] = describe_definition(scope, "fixed", value, None)
     return definitions

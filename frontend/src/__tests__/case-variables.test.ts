@@ -137,7 +137,7 @@ describe('APP 档案用例行变量就地覆盖', () => {
     expect(variableEditSeed(profileVariable())).toBe('COM1')
   })
 
-  it('各节点覆盖值不一致时展示「多个值」，编辑初始值留空等待统一', () => {
+  it('各引用值不一致时展示「多个值」，编辑初始值留空等待统一', () => {
     const variable = profileVariable({
       status: 'mixed',
       references: [
