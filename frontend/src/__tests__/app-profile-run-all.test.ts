@@ -7,7 +7,7 @@ const devicePickerSource = readFileSync(resolve(process.cwd(), 'src/components/D
 
 describe('APP 档案运行全部套件', () => {
   it('运行入口使用 profile_all，不分页收集 workspace 套件 ID', () => {
-    const runAll = appProfileSource.match(/async function runAllSuites\(\)[\s\S]*?(?=\nasync function updateRevision)/)?.[0] ?? ''
+    const runAll = appProfileSource.match(/async function runAllSuites\(\)[\s\S]*?(?=\nfunction onSuiteSelectionChanged)/)?.[0] ?? ''
 
     expect(runAll).toContain("targetScope: 'profile_all'")
     expect(runAll).toContain('suiteIds: []')

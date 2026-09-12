@@ -17,6 +17,7 @@ import {
 } from '@/api/cases'
 import { getElement, listElements, listModules } from '@/api/elements'
 import CaseFlowEditor from '@/components/CaseFlowEditor.vue'
+import CaseVariableManager from '@/components/CaseVariableManager.vue'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 import { usePermission } from '@/composables/usePermission'
 import { useProjectContextStore } from '@/stores/projectContext'
@@ -47,10 +48,8 @@ const form = reactive<Partial<TestCase>>({
   description: '',
   status: 'draft',
   flow_nodes: [] as FlowNode[],
-  variables: {} as Record<string, unknown>,
 })
 
-const variableEntries = ref<{ key: string; value: string }[]>([])
 const isEdit = computed(() => caseId.value !== null)
 // 返回列表时保留进入编辑页前的筛选与页码；新建成功后模块筛选按已保存模块返回。
 const returnModuleKey = ref<CaseModuleKey>(parseModuleKey(route.query.module))
@@ -73,7 +72,7 @@ function goBack() {
 // V2 §4.2：编辑页 dirty 离开确认
 const { markDirty, markSaved } = useUnsavedChanges()
 watch(
-  () => JSON.stringify({ ...form, variables: collectVariables() }),
+  () => JSON.stringify(form),
   () => {
     if (loadedOnce.value) markDirty()
   },
@@ -105,7 +104,7 @@ const moduleName = computed(() => {
 const summaryMeta = computed(() => {
   return buildCaseEditorSummary(
     (form.flow_nodes as FlowNode[]) ?? [],
-    variableEntries.value,
+    [],
   )
 })
 
@@ -123,22 +122,6 @@ function statusType(s: string | undefined): 'info' | 'success' | 'danger' {
 
 function toggleCollapsed() {
   collapsed.value = !collapsed.value
-}
-
-function addVariable() {
-  variableEntries.value.push({ key: '', value: '' })
-}
-
-function removeVariable(index: number) {
-  variableEntries.value.splice(index, 1)
-}
-
-function collectVariables(): Record<string, unknown> {
-  const vars: Record<string, unknown> = {}
-  for (const entry of variableEntries.value) {
-    if (entry.key) vars[entry.key] = entry.value
-  }
-  return vars
 }
 
 async function save() {
@@ -164,7 +147,6 @@ async function save() {
       description: form.description,
       status: form.status,
       flow_nodes: flowNodes,
-      variables: collectVariables(),
     }
     if (isEdit.value) {
       await updateCase(caseId.value!, payload)
@@ -236,11 +218,6 @@ onMounted(async () => {
     form.status = data.status
     // Step 4：加载旧数据时归一化 continue_on_failure，且清理历史留在 params 里的字段
     form.flow_nodes = (data.flow_nodes ?? data.steps ?? []).map((node) => normalizeFlowNode(node as FlowNode))
-    form.variables = data.variables
-    variableEntries.value = Object.entries(data.variables).map(([key, value]) => ({
-      key,
-      value: String(value),
-    }))
   }
   try {
     await loadElementNames((form.flow_nodes as FlowNode[]) ?? [])
@@ -287,6 +264,11 @@ onMounted(async () => {
         </el-form>
       </div>
 
+      <CaseVariableManager v-if="caseId !== null" :project-id="projectId" :case-id="caseId" :can-edit="canWriteAssets" />
+      <el-alert v-else class="mb16" type="info" :closable="false">
+        保存用例后即可维护正式的用例变量；变量会按稳定 ID 参与解析。
+      </el-alert>
+
       <CaseFlowEditor v-model="setupNodes" :project-id="projectId" phase="setup" title="前置操作"
         description="运行时勾选后，在每个用例主体步骤之前执行" tone="warning" :element-names="elementNames" />
 
@@ -295,21 +277,6 @@ onMounted(async () => {
 
       <CaseFlowEditor v-model="teardownNodes" :project-id="projectId" phase="teardown" title="后置操作"
         description="运行时勾选后，在主体步骤之后执行；主体失败时仍会尝试清理" tone="success" :element-names="elementNames" />
-
-      <div class="content-card mb16">
-        <div class="section-title-row">
-          <span class="section-title">用例变量</span>
-          <el-button type="primary" size="small" @click="addVariable">添加变量</el-button>
-        </div>
-        <div v-for="(entry, idx) in variableEntries" :key="idx" class="variable-row">
-          <el-input v-model="entry.key" placeholder="变量名" class="var-name" />
-          <el-input v-model="entry.value" placeholder="变量值" class="var-value" />
-          <el-button type="danger" text @click="removeVariable(idx)">删除</el-button>
-        </div>
-        <div class="add-more">
-          <el-button type="primary" plain class="w-full" @click="addVariable">+ 添加变量</el-button>
-        </div>
-      </div>
 
       <div class="footer">
         <el-button @click="goBack">返回</el-button>

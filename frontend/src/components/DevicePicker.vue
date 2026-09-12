@@ -50,6 +50,7 @@ let previewSequence = 0
 let targetIdsTracker: number[] = []
 let targetScope: 'explicit' | 'profile_all' = 'explicit'
 let excludedSuiteIdsTracker: number[] = []
+const contextSuiteCaseId = ref<number | null>(null)
 
 /** 弹窗路径的 open() 挂起解析器（成功/取消时唤醒父级 await）。 */
 let openResolve: ((exec: Execution | null) => void) | null = null
@@ -160,6 +161,9 @@ async function doPreview() {
       app_release_id: releaseId.value,
       device_id: selectedId.value,
       parameters: runParameters(),
+      ...(targetKind.value === 'case' && contextSuiteCaseId.value != null
+        ? { context_suite_case_id: contextSuiteCaseId.value }
+        : {}),
     })
     if (sequence === previewSequence) {
       preview.value = result
@@ -240,6 +244,7 @@ defineExpose({
       ].join('；')
     }
     targetScope = target.kind === 'batch' ? (target.targetScope ?? 'explicit') : 'explicit'
+    contextSuiteCaseId.value = target.kind === 'case' ? (target.contextSuiteCaseId ?? null) : null
     if (target.kind === 'batch') {
       targetIdsTracker = target.suiteIds
       excludedSuiteIdsTracker = [...new Set(target.excludedSuiteIds ?? [])].sort((a, b) => a - b)

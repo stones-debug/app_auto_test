@@ -9,7 +9,7 @@ import DevicePicker from '@/components/DevicePicker.vue'
 import ProfileStatusTag from '@/components/ProfileStatusTag.vue'
 import ProfileReleaseManager from '@/components/ProfileReleaseManager.vue'
 import ProfileDifferenceView from '@/components/ProfileDifferenceView.vue'
-import ProfileOverrideDrawer from '@/components/ProfileOverrideDrawer.vue'
+import MyVariablesDrawer from '@/components/MyVariablesDrawer.vue'
 import {
   listReleases,
   patchProfileSuiteCaseVariables,
@@ -20,6 +20,7 @@ import {
   type SkipTarget,
 } from '@/api/appProfiles'
 import { apiErrorDetail } from '@/utils/request'
+import { createUuid } from '@/utils/uuid'
 import { usePermission } from '@/composables/usePermission'
 import { useWorkspaceNavigation } from '@/composables/useWorkspaceNavigation'
 import { useAppProfileStore } from '@/stores/appProfile'
@@ -49,12 +50,12 @@ const route = useRoute()
 const router = useRouter()
 const navigation = useWorkspaceNavigation()
 const store = useAppProfileStore()
-const { canEditProject, canExecute } = usePermission()
+const { canEditProject, canExecute, canWriteAssets } = usePermission()
 const projectId = computed(() => Number(route.params.projectId))
 
 const releaseMgr = ref(false)
 const diffView = ref(false)
-const overrideDrawer = ref(false)
+const myVariablesDrawer = ref(false)
 const saving = ref(false)
 const devicePicker = ref<InstanceType<typeof DevicePicker> | null>(null)
 const runAllLoading = ref(false)
@@ -120,7 +121,8 @@ const displayRows = computed<DisplayNode[]>(() => {
       if (testCase.id == null) continue
       const caseId = testCase.id
       // 用例行键用 suite_case_id：同一用例重复编排时各自独立展开与覆盖
-      const membershipId = testCase.suite_case_id ?? caseId
+      const membershipId = testCase.suite_case_id
+      if (membershipId == null) continue
       const caseKey = `case:${suiteId}:${membershipId}`
       rows.push({ ...testCase, _key: caseKey, _depth: 1, _suiteId: suiteId, _caseId: caseId, _membershipId: membershipId })
       if (!store.expandedKeys.has(caseKey)) continue
@@ -274,6 +276,7 @@ async function saveCaseVariableUpdates(row: DisplayNode, update: ProfileVariable
   variableSaving.value = true
   try {
     const result = await patchProfileSuiteCaseVariables(store.selectedProfileId, membershipId, {
+      request_id: createUuid(),
       expected_revision: revision,
       // 引用节点仅用于展示；occurrence API 每个变量只接收一条更新。
       updates: [update],
@@ -322,10 +325,10 @@ async function refreshProfile() {
 async function runNode(row: DisplayNode) {
   if (row.id == null || (row.node_type !== 'suite' && row.node_type !== 'case')) return
   if (row.effective_status === 'skipped') return
-  await runTarget(row.node_type, row.id, row.name)
+  await runTarget(row.node_type, row.id, row.name, row._membershipId)
 }
 
-async function runTarget(kind: 'suite' | 'case', id: number, name: string) {
+async function runTarget(kind: 'suite' | 'case', id: number, name: string, contextSuiteCaseId?: number) {
   if (!store.selectedProfileId || store.profileRevision == null || store.testAssetRevision == null) return
   const page = await listReleases(store.selectedProfileId, { status: 'active', page_size: 100 })
   const release = page.items[0]
@@ -334,7 +337,7 @@ async function runTarget(kind: 'suite' | 'case', id: number, name: string) {
     return
   }
   const execution = await devicePicker.value?.open(
-    { kind, id, name },
+    { kind, id, name, ...(contextSuiteCaseId != null ? { contextSuiteCaseId } : {}) },
     {
       targetId: id,
       profile: {
@@ -383,11 +386,6 @@ async function runAllSuites() {
   }
 }
 
-async function updateRevision(revision: number) {
-  store.markRevision(revision, store.testAssetRevision ?? 1)
-  await store.refreshVisibleWorkspace()
-}
-
 function onSuiteSelectionChanged(row: DisplayNode, selected: boolean | string | number) {
   if (row.id == null || row.node_type !== 'suite') return
   store.setSuiteSelected(row.id, Boolean(selected), row.effective_status)
@@ -423,7 +421,7 @@ onMounted(load)
             @click="store.restoreAllSuiteSelection">恢复全部选择</el-button>
           <el-button v-if="canEditProject" size="small" @click="releaseMgr = true">发布版本</el-button>
           <el-button size="small" @click="diffView = true">差异清单</el-button>
-          <el-button v-if="canEditProject" size="small" @click="overrideDrawer = true">覆盖配置</el-button>
+          <el-button v-if="canWriteAssets" size="small" @click="myVariablesDrawer = true">我的变量配置</el-button>
           <el-input v-model="store.filters.keyword" size="small" placeholder="搜索套件" clearable style="width: 180px"
             @change="() => store.loadWorkspace()" />
           <el-select v-model="store.filters.effective_status" size="small" style="width: 130px"
@@ -464,7 +462,7 @@ onMounted(load)
             <ProfileStatusTag :effective-status="row.effective_status" :status-source="row.status_source" />
           </template>
         </el-table-column>
-        <el-table-column label="变量" min-width="260">
+        <el-table-column label="档案能力变量" min-width="260">
           <template #default="{ row }">
             <div v-if="row.node_type === 'case'" class="case-variable-list" @click.stop @dblclick.stop @mousedown.stop>
               <div v-for="variable in caseVariables(displayNode(row))" :key="variable.name" class="case-variable-item"
@@ -481,8 +479,7 @@ onMounted(load)
                   <el-button size="small" :disabled="variableSaving" @click.stop="cancelVariableEdit">取消</el-button>
                 </template>
                 <template v-else>
-                  <span class="variable-value" :title="`引用 ${variable.reference_count} 处`">{{
-                    variableDisplayText(variable) }}</span>
+                  <span class="variable-value" :title="`引用 ${variable.reference_count} 处`">{{ variableDisplayText(variable) }}</span>
                   <el-button v-if="canEditProject" class="variable-icon-button" size="small" text :icon="Edit"
                     :aria-label="`编辑 ${variable.name}`" title="编辑该用例中的取值" :disabled="variableSaving"
                     @click.stop="beginVariableEdit(displayNode(row), variable)" />
@@ -540,8 +537,7 @@ onMounted(load)
         <ProfileReleaseManager v-if="releaseMgr" v-model="releaseMgr" :profile-id="store.selectedProfileId"
           :revision="store.profileRevision ?? 1" />
         <ProfileDifferenceView v-model="diffView" :profile-id="store.selectedProfileId" />
-        <ProfileOverrideDrawer v-model="overrideDrawer" :profile-id="store.selectedProfileId" :project-id="projectId"
-          :revision="store.profileRevision ?? 1" @revision-change="updateRevision" />
+        <MyVariablesDrawer v-model="myVariablesDrawer" :profile-id="store.selectedProfileId" :can-edit="canWriteAssets" />
       </template>
       <DevicePicker ref="devicePicker" :project-id="projectId" />
     </section>

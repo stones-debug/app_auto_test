@@ -62,10 +62,12 @@ export interface Variable {
   suite_id?: number | null
   case_id?: number | null
   name: string
+  /** 敏感变量接口返回掩码；编辑时不得将该值回写。 */
   value: string
   kind: 'fixed' | 'random_integer' | 'random_choice'
   spec?: { min?: number; max?: number; items?: string[] } | null
   description?: string | null
+  is_sensitive: boolean
   created_at: string
   updated_at: string
 }
@@ -166,7 +168,7 @@ export function createVariable(data: Partial<Variable>) {
   return request.post<Variable>('/variables', data)
 }
 
-export function updateVariable(id: number, data: { value?: string; kind?: Variable['kind']; spec?: Variable['spec']; description?: string }) {
+export function updateVariable(id: number, data: { value?: string; kind?: Variable['kind']; spec?: Variable['spec']; description?: string | null; is_sensitive?: boolean }) {
   return request.put<Variable>(`/variables/${id}`, data)
 }
 

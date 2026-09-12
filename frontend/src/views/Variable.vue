@@ -12,6 +12,7 @@ import {
   type Variable,
 } from '@/api/suites'
 import { useAuthStore } from '@/stores/auth'
+import { buildVariableValueUpdate, variableEditSeed } from '@/utils/variableEditing'
 
 const route = useRoute()
 const projectId = Number(route.params.projectId)
@@ -43,22 +44,32 @@ function onScopeChange() {
 
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
-const form = ref<{ name: string; kind: Variable['kind']; value: string; min: string; max: string; items: string; description: string }>({ name: '', kind: 'fixed', value: '', min: '', max: '', items: '', description: '' })
+const form = ref<{ name: string; kind: Variable['kind']; value: string; min: string; max: string; items: string; description: string; is_sensitive: boolean }>({ name: '', kind: 'fixed', value: '', min: '', max: '', items: '', description: '', is_sensitive: false })
+const editingVariable = ref<Variable | null>(null)
+const sensitiveValueChanged = ref(false)
 
 function openCreate() {
   editingId.value = null
-  form.value = { name: '', kind: 'fixed', value: '', min: '', max: '', items: '', description: '' }
+  form.value = { name: '', kind: 'fixed', value: '', min: '', max: '', items: '', description: '', is_sensitive: false }
+  editingVariable.value = null
+  sensitiveValueChanged.value = false
   dialogVisible.value = true
 }
 
 function openEdit(row: Variable) {
   editingId.value = row.id
+  editingVariable.value = row
+  sensitiveValueChanged.value = false
   form.value = {
-    name: row.name, kind: row.kind ?? 'fixed', value: row.value,
+    name: row.name, kind: row.kind ?? 'fixed', value: variableEditSeed(row), is_sensitive: row.is_sensitive,
     min: row.spec?.min == null ? '' : String(row.spec.min), max: row.spec?.max == null ? '' : String(row.spec.max),
     items: row.spec?.items?.join('\n') ?? '', description: row.description ?? '',
   }
   dialogVisible.value = true
+}
+
+function onValueInput() {
+  if (form.value.is_sensitive) sensitiveValueChanged.value = true
 }
 
 async function save() {
@@ -79,13 +90,26 @@ async function save() {
     value = ''; spec = { items }
   }
   if (editingId.value) {
-    await updateVariable(editingId.value, { kind: form.value.kind, value, spec, description: form.value.description })
+    const valueUpdate = editingVariable.value
+      ? buildVariableValueUpdate(editingVariable.value, value, sensitiveValueChanged.value)
+      : { value }
+    const updateData: Parameters<typeof updateVariable>[1] = {
+      description: form.value.description,
+      is_sensitive: form.value.is_sensitive,
+      ...(valueUpdate ?? {}),
+    }
+    // 敏感变量的 spec/value 不回显；未重新输入时只更新明确修改的元数据，避免把掩码或空表单写回。
+    if (!editingVariable.value?.is_sensitive || sensitiveValueChanged.value) {
+      updateData.kind = form.value.kind
+      updateData.spec = spec
+    }
+    await updateVariable(editingId.value, updateData)
   } else {
     // CR-02：全局变量不携带 project_id
     await createVariable(
       scope.value === 'global'
-        ? { scope: 'global', name: form.value.name, kind: form.value.kind, value, spec, description: form.value.description }
-        : { scope: scope.value, project_id: projectId, name: form.value.name, kind: form.value.kind, value, spec, description: form.value.description },
+        ? { scope: 'global', name: form.value.name, kind: form.value.kind, value, spec, description: form.value.description, is_sensitive: form.value.is_sensitive }
+        : { scope: scope.value, project_id: projectId, name: form.value.name, kind: form.value.kind, value, spec, description: form.value.description, is_sensitive: form.value.is_sensitive },
     )
   }
   dialogVisible.value = false
@@ -103,6 +127,7 @@ function scopeLabel(v: string) {
 }
 
 function variableSummary(row: Variable): string {
+  if (row.is_sensitive) return '********'
   if (row.kind === 'random_integer') return `随机整数 [${row.spec?.min}, ${row.spec?.max}]`
   if (row.kind === 'random_choice') return `随机列表 ${row.spec?.items?.length ?? 0} 项`
   return row.value || '（空字符串）'
@@ -154,9 +179,10 @@ onMounted(onScopeChange)
             <el-option label="固定值" value="fixed" /><el-option label="随机整数" value="random_integer" /><el-option label="随机列表" value="random_choice" />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="form.kind === 'fixed'" label="固定值"><el-input v-model="form.value" /></el-form-item>
+        <el-form-item v-if="form.kind === 'fixed'" label="固定值"><el-input v-model="form.value" :type="form.is_sensitive ? 'password' : 'text'" show-password autocomplete="new-password" @input="onValueInput" /></el-form-item>
         <template v-else-if="form.kind === 'random_integer'"><el-form-item label="最小值"><el-input v-model="form.min" /></el-form-item><el-form-item label="最大值"><el-input v-model="form.max" /></el-form-item></template>
         <el-form-item v-else label="候选文本"><el-input v-model="form.items" type="textarea" :rows="5" placeholder="每行一个候选项" /></el-form-item>
+        <el-form-item label="敏感值"><el-switch v-model="form.is_sensitive" /><span class="scope-tip">敏感值接口不会回显；编辑时请重新输入</span></el-form-item>
         <el-form-item label="描述">
           <el-input v-model="form.description" type="textarea" :rows="2" />
         </el-form-item>

@@ -210,7 +210,7 @@ const form = ref<{ name: string; description: string; module_id: number }>({
 const moduleOptions = ref<TestModule[]>([])
 const savingSuite = ref(false)
 const variableDialogVisible = ref(false)
-const variableForm = ref({ name: '', value: '', description: '' })
+const variableForm = ref({ name: '', value: '', description: '', is_sensitive: false })
 const savingNewVariable = ref(false)
 
 async function onSelectSuite(suite: Suite) {
@@ -338,7 +338,7 @@ async function openEdit(suite: Suite) {
 }
 
 function openCreateVariable() {
-  variableForm.value = { name: '', value: '', description: '' }
+  variableForm.value = { name: '', value: '', description: '', is_sensitive: false }
   variableDialogVisible.value = true
 }
 
@@ -358,6 +358,7 @@ async function saveNewVariable() {
       name,
       value: variableForm.value.value,
       description: variableForm.value.description.trim() || null,
+      is_sensitive: variableForm.value.is_sensitive,
     })
     variableDialogVisible.value = false
     ElMessage.success('变量已创建')
@@ -606,13 +607,15 @@ onMounted(() => {
                 <div v-for="variable in suiteVars" :key="variable.id" class="var-row">
                   <span class="var-name">{{ variable.name }}</span>
                   <el-input v-if="varEditing?.id === variable.id" v-model="varEditing.value" size="small"
-                    class="var-input" @keyup.enter="saveVarValue(variable, activeSuite)"
+                    :type="varEditing.is_sensitive ? 'password' : 'text'" show-password autocomplete="new-password"
+                    class="var-input" @input="varEditing.sensitive_value_changed = true" @keyup.enter="saveVarValue(variable, activeSuite)"
                     @blur="saveVarValue(variable, activeSuite)" />
-                  <span v-else class="var-value" :title="variable.value">{{ variable.value || '—' }}</span>
+                  <el-switch v-if="varEditing?.id === variable.id" v-model="varEditing.is_sensitive" size="small" active-text="敏感" />
+                  <span v-else class="var-value" :title="variable.is_sensitive ? '敏感值不回显' : variable.value">{{ variable.is_sensitive ? '********' : (variable.value || '—') }}</span>
                   <span class="var-actions">
                     <el-button v-if="varEditing?.id === variable.id" size="small" type="primary" text
                       :loading="savingVar" @click="saveVarValue(variable, activeSuite)">保存</el-button>
-                    <el-button v-if="canWriteAssets && varEditing?.id !== variable.id" size="small" text
+                  <el-button v-if="canWriteAssets && varEditing?.id !== variable.id" size="small" text
                       @click="startEditVar(variable)">编辑</el-button>
                     <el-button v-if="canWriteAssets" size="small" type="danger" text
                       @click="removeVar(variable, activeSuite)">删除</el-button>
@@ -653,8 +656,9 @@ onMounted(() => {
         <el-input v-model="variableForm.name" placeholder="如 username" maxlength="100" @keyup.enter="saveNewVariable" />
       </el-form-item>
       <el-form-item label="值">
-        <el-input v-model="variableForm.value" placeholder="请输入变量值" />
+        <el-input v-model="variableForm.value" :type="variableForm.is_sensitive ? 'password' : 'text'" show-password autocomplete="new-password" placeholder="请输入变量值" />
       </el-form-item>
+      <el-form-item label="敏感值"><el-switch v-model="variableForm.is_sensitive" /><span class="scope-tip">敏感值不会回显</span></el-form-item>
       <el-form-item label="说明">
         <el-input v-model="variableForm.description" type="textarea" :rows="2" placeholder="可选" />
       </el-form-item>

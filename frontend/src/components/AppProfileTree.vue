@@ -68,7 +68,7 @@ async function onEdit(p: AppProfileSummary) {
 async function onDelete(p: AppProfileSummary) {
   try {
     await ElMessageBox.confirm(
-      `删除档案「${p.name}」？其跳过/覆盖配置与发布版本将一并失效，不可恢复。`,
+      `删除档案「${p.name}」？其跳过/能力配置与发布版本将一并失效，不可恢复。`,
       '删除档案',
       { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
     )

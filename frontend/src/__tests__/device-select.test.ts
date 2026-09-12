@@ -71,6 +71,19 @@ describe('useDeviceSelect（Windows 方案 §4.2 自动选机）', () => {
     expect(mCreateCase).not.toHaveBeenCalled()
   })
 
+  it('重复编排用例创建时携带精确 context_suite_case_id', async () => {
+    mGetDefault.mockResolvedValue({ device_id: null, device: null, available: false, reason: '' } as never)
+    const select = useDeviceSelect()
+    await select.open({ kind: 'case', id: 1, name: '重复用例', contextSuiteCaseId: 99 })
+    select.selectedId.value = 11
+    await select.confirmRun({ timeout_seconds: 600 })
+    expect(mCreateCase).toHaveBeenCalledWith(1, {
+      timeout_seconds: 600,
+      device_id: 11,
+      context_suite_case_id: 99,
+    })
+  })
+
   it('suite：默认设备可用 → 弹窗并预选默认设备，不直跑', async () => {
     mGetDefault.mockResolvedValue({
       device_id: 11,

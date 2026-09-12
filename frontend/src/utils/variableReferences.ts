@@ -26,11 +26,12 @@ export function extractVariableReferences(value: unknown): string[] {
 
 export function stepVariableReferences(node: {
   node_type: string
-  override_template?: Record<string, unknown>
+  params?: Record<string, unknown>
+  parameters?: Record<string, unknown>
+  element_id?: unknown
 }): string[] {
   if (node.node_type !== 'step' && node.node_type !== 'suite_step') return []
-  const template = node.override_template ?? {}
-  const params = template.params ?? template.parameters
+  const params = node.params ?? node.parameters
   return extractVariableReferences(params)
 }
 
@@ -42,11 +43,12 @@ const OUTPUT_PARAM_KEYS = new Set(['variable_name'])
 
 export function nodeVariableReferences(node: {
   node_type: string
-  override_template?: Record<string, unknown>
+  params?: Record<string, unknown>
+  parameters?: Record<string, unknown>
+  element_id?: unknown
 }): string[] {
   if (!(VARIABLE_REFERENCE_NODE_TYPES as readonly string[]).includes(node.node_type)) return []
-  const template = node.override_template ?? {}
-  const params = template.params ?? template.parameters
+  const params = node.params ?? node.parameters
   if (params === null || typeof params !== 'object' || Array.isArray(params)) return []
   const filtered = Object.fromEntries(
     Object.entries(params as Record<string, unknown>).filter(([key]) => !OUTPUT_PARAM_KEYS.has(key)),

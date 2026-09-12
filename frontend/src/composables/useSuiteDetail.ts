@@ -4,6 +4,7 @@ import { getSuite, listVariables, updateSuite, updateVariable, deleteVariable, t
 import { normalizeStep, validateStep, type Step } from '@/api/cases'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 import { toSuiteStepPayload } from '@/utils/suiteSteps'
+import { buildVariableValueUpdate, variableEditSeed } from '@/utils/variableEditing'
 
 export function useSuiteDetail(onSaved?: () => Promise<void>) {
   const loadingDetail = ref(false)
@@ -13,7 +14,7 @@ export function useSuiteDetail(onSaved?: () => Promise<void>) {
   const savingSteps = ref(false)
   const { dirty, markDirty, markSaved } = useUnsavedChanges()
   const suiteVars = ref<Variable[]>([])
-  const varEditing = ref<{ id: number; value: string } | null>(null)
+  const varEditing = ref<{ id: number; value: string; is_sensitive: boolean; sensitive_value_changed: boolean } | null>(null)
   const savingVar = ref(false)
   let stepsLoaded = false
 
@@ -101,14 +102,27 @@ export function useSuiteDetail(onSaved?: () => Promise<void>) {
   }
 
   function startEditVar(variable: Variable) {
-    varEditing.value = { id: variable.id, value: variable.value }
+    varEditing.value = {
+      id: variable.id,
+      value: variableEditSeed(variable),
+      is_sensitive: variable.is_sensitive,
+      sensitive_value_changed: false,
+    }
   }
 
   async function saveVarValue(variable: Variable, activeSuite: number | null) {
     if (!varEditing.value || varEditing.value.id !== variable.id || !activeSuite) return
     savingVar.value = true
     try {
-      await updateVariable(variable.id, { value: varEditing.value.value })
+      const valueUpdate = buildVariableValueUpdate(
+        variable,
+        varEditing.value.value,
+        varEditing.value.sensitive_value_changed,
+      )
+      await updateVariable(variable.id, {
+        ...(valueUpdate ?? {}),
+        is_sensitive: varEditing.value.is_sensitive,
+      })
       varEditing.value = null
       ElMessage.success('变量已更新')
       await selectSuite(activeSuite, { preserveSteps: true })

@@ -2,7 +2,6 @@ import request from '@/utils/request'
 export { apiErrorDetail } from '@/utils/request'
 export type { ApiErrorDetail } from '@/utils/request'
 
-import type { SmartLocatorConfig } from '@/utils/smartLocator'
 import type { PageData } from './projects'
 
 export interface AppProfileSummary {
@@ -16,7 +15,7 @@ export interface AppProfileSummary {
   revision: number
   release_count: number
   skip_counts: Record<'suite' | 'case' | 'step' | 'assertion', number>
-  override_counts: Record<'element' | 'variable' | 'node', number>
+  override_counts: Record<string, number>
   created_by: number | null
   updated_by: number | null
   created_at: string
@@ -51,8 +50,6 @@ export interface ProfileNode {
   status_source: string
   reason: { code: string; note: string } | null
   override_count: number
-  /** 公共节点中允许覆盖的当前参数；编辑器以此预填并仅提交差异。 */
-  override_template?: Record<string, unknown>
   child_count?: number
   difference_count?: number
   has_children: boolean
@@ -145,11 +142,20 @@ export interface ExecutionPreview {
   prepare_expires_at: string | null
 }
 
-export interface SkipTarget {
-  type: 'suite' | 'case' | 'step' | 'assertion' | 'suite_step'
-  suite_id?: number
-  case_id?: number
-  node_key?: string
+export type SkipTarget = {
+  type: 'suite'
+  suite_id: number
+} | {
+  type: 'case'
+  suite_case_id: number
+} | {
+  type: 'step' | 'assertion'
+  suite_case_id: number
+  node_key: string
+} | {
+  type: 'suite_step'
+  suite_id: number
+  node_key: string
 }
 
 export interface SkipBatchResultItem {
@@ -175,11 +181,36 @@ export interface ProfileRunParams {
   expected_test_asset_revision: number
 }
 
-export interface ProfileOverrides {
-  revision: number
-  elements: { element_id: number; locator_type: string; locator_value: string | null; locator_config?: SmartLocatorConfig | null }[]
-  variables: { name: string; value: string; description: string | null }[]
-  nodes: { suite_id: number; suite_case_id: number | null; case_id: number | null; node_type: 'step' | 'assertion' | 'suite_step'; node_key: string; patch: Record<string, unknown> }[]
+export type MyVariableScope = 'project' | 'suite' | 'case'
+
+export interface MyVariableItem {
+  variable_id: number
+  name: string
+  scope: MyVariableScope
+  project_id: number | null
+  suite_id: number | null
+  suite_name: string | null
+  case_id: number | null
+  case_name: string | null
+  public_value: string | null
+  user_value: string | null
+  display_value: string
+  overridden: boolean
+  reference_count: number
+  is_sensitive: boolean
+}
+
+export interface MyVariablesPage {
+  total: number
+  page: number
+  page_size: number
+  items: MyVariableItem[]
+}
+
+export interface MyVariableUpdate {
+  variable_id: number
+  /** null 恢复公共值；空字符串是合法个人值。 */
+  value: string | null
 }
 
 // ---------- 档案 ----------
@@ -228,44 +259,17 @@ export function skipRulesBatch(profileId: number, data: { request_id?: string; e
   return request.post<SkipBatchResponse>(`/app-profiles/${profileId}/skip-rules/batch`, data)
 }
 
-// ---------- 覆盖 ----------
+// ---------- 当前用户变量 ----------
 
-export function listProfileOverrides(profileId: number, params?: { include_nodes?: boolean }) {
-  return request.get<ProfileOverrides>(`/app-profiles/${profileId}/overrides`, { params })
+export function listMyVariables(
+  profileId: number,
+  params?: { keyword?: string; scope?: MyVariableScope; overridden_only?: boolean; page?: number; page_size?: number },
+) {
+  return request.get<MyVariablesPage>(`/app-profiles/${profileId}/my-variables`, { params })
 }
 
-export function upsertElementOverride(profileId: number, elementId: number, data: { request_id?: string; expected_revision: number; locator_type: string; locator_value: string | null; locator_config?: SmartLocatorConfig | null }) {
-  return request.put<{ revision: number }>(`/app-profiles/${profileId}/element-overrides/${elementId}`, data)
-}
-
-export function restoreElementOverride(profileId: number, elementId: number, data: { request_id?: string; expected_revision: number }) {
-  return request.delete<void>(`/app-profiles/${profileId}/element-overrides/${elementId}`, { data })
-}
-
-export function upsertVariableOverride(profileId: number, name: string, data: { request_id?: string; expected_revision: number; value: string; description?: string }) {
-  return request.put<{ revision: number }>(`/app-profiles/${profileId}/variable-overrides/${name}`, data)
-}
-
-export function restoreVariableOverride(profileId: number, name: string, data: { request_id?: string; expected_revision: number }) {
-  return request.delete<void>(`/app-profiles/${profileId}/variable-overrides/${name}`, { data })
-}
-
-export function upsertNodeOverride(profileId: number, suiteCaseId: number, nodeType: 'step' | 'assertion', nodeKey: string, data: { request_id?: string; expected_revision: number; patch: Record<string, unknown> }) {
-  return request.put<{ revision: number }>(`/app-profiles/${profileId}/node-overrides/${suiteCaseId}/${nodeType}/${nodeKey}`, data)
-}
-
-export function restoreNodeOverride(profileId: number, suiteCaseId: number, nodeType: 'step' | 'assertion', nodeKey: string, data: { request_id?: string; expected_revision: number }) {
-  return request.delete<void>(`/app-profiles/${profileId}/node-overrides/${suiteCaseId}/${nodeType}/${nodeKey}`, { data })
-}
-
-// ---------- 套件前后置步骤覆盖 ----------
-
-export function upsertSuiteStepOverride(profileId: number, suiteId: number, nodeKey: string, data: { request_id?: string; expected_revision: number; patch: Record<string, unknown> }) {
-  return request.put<{ revision: number }>(`/app-profiles/${profileId}/suite-step-overrides/${suiteId}/${nodeKey}`, data)
-}
-
-export function restoreSuiteStepOverride(profileId: number, suiteId: number, nodeKey: string, data: { request_id?: string; expected_revision: number }) {
-  return request.delete<void>(`/app-profiles/${profileId}/suite-step-overrides/${suiteId}/${nodeKey}`, { data })
+export function patchMyVariables(profileId: number, data: { request_id: string; updates: MyVariableUpdate[] }) {
+  return request.patch<MyVariablesPage>(`/app-profiles/${profileId}/my-variables`, data)
 }
 
 // ---------- 工作台 ----------
@@ -317,6 +321,7 @@ export function previewExecution(data: {
   app_release_id: number
   device_id?: number | null
   parameters?: Record<string, unknown>
+  context_suite_case_id?: number | null
 }) {
   return request.post<ExecutionPreview>('/executions/preview', data)
 }

@@ -13,21 +13,19 @@ describe('APP 档案步骤变量引用', () => {
   it('只扫描动作步骤参数，不扫描断言或智能定位配置', () => {
     expect(stepVariableReferences({
       node_type: 'assertion',
-      override_template: { params: { value: '${ignored}' } },
+      params: { value: '${ignored}' },
     })).toEqual([])
     expect(stepVariableReferences({
       node_type: 'step',
-      override_template: {
-        element_id: '${not_a_param}',
-        smart_locator: { anchor: '${not_a_param}' },
-      },
-    })).toEqual([])
+      params: { value: '${valid}' },
+      element_id: '${not_a_param}',
+    })).toEqual(['valid'])
   })
 
   it('兼容 parameters 旧字段', () => {
     expect(stepVariableReferences({
       node_type: 'suite_step',
-      override_template: { parameters: { package: '${pkg}' } },
+      parameters: { package: '${pkg}' },
     })).toEqual(['pkg'])
   })
 
@@ -42,15 +40,16 @@ describe('APP 档案步骤变量引用', () => {
   it('统一口径同时覆盖动作与断言参数，且不扫描非参数字段', () => {
     expect(nodeVariableReferences({
       node_type: 'assertion',
-      override_template: { params: { expected: '${expected_port}' } },
+      params: { expected: '${expected_port}' },
     })).toEqual(['expected_port'])
     expect(nodeVariableReferences({
       node_type: 'step',
-      override_template: { params: { value: '${port_name}' }, element_id: '${not_a_param}' },
+      params: { value: '${port_name}' },
+      element_id: '${not_a_param}',
     })).toEqual(['port_name'])
     expect(nodeVariableReferences({
       node_type: 'case',
-      override_template: { params: { value: '${ignored}' } },
+      params: { value: '${ignored}' },
     })).toEqual([])
   })
 })

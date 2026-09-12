@@ -40,7 +40,7 @@ function pageChange(p: number) {
 }
 
 function reasonText(r: any): string {
-  if (r.override) return '已覆盖'
+  if (r.override) return '档案能力变量'
   const note = r.reason_note
   return note || r.reason_code || '-'
 }
@@ -64,7 +64,7 @@ watch(() => visible.value, (open) => {
       <el-radio-group v-model="mode" size="small" @change="switchMode(mode)">
         <el-radio-button label="all">全部</el-radio-button>
         <el-radio-button label="skipped">只看跳过</el-radio-button>
-        <el-radio-button label="overridden">只看覆盖</el-radio-button>
+        <el-radio-button label="overridden">只看档案能力变量</el-radio-button>
       </el-radio-group>
       <span class="count">共 {{ pager.total }} 项</span>
     </div>

@@ -14,7 +14,7 @@ import {
 } from '@/api/executions'
 
 export type RunTarget =
-  | { kind: 'case'; id: number; name: string }
+  | { kind: 'case'; id: number; name: string; contextSuiteCaseId?: number }
   | { kind: 'suite'; id: number; name: string }
   | {
       kind: 'batch'
@@ -102,6 +102,9 @@ export function useDeviceSelect() {
       opts.expected_profile_revision = profileCtx.expected_profile_revision
       opts.expected_test_asset_revision = profileCtx.expected_test_asset_revision
       if (profileCtx.prepare_token) opts.prepare_token = profileCtx.prepare_token
+    }
+    if (target.kind === 'case' && target.contextSuiteCaseId != null) {
+      opts.context_suite_case_id = target.contextSuiteCaseId
     }
     if (target.kind === 'case') return createCaseExecution(target.id, opts)
     if (target.kind === 'suite') return createSuiteExecution(target.id, opts)

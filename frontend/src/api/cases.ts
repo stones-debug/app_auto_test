@@ -82,7 +82,6 @@ export interface TestCase {
   status: string
   flow_nodes: FlowNode[]
   steps?: Step[]
-  variables: Record<string, unknown>
   created_by?: number | null
   created_at: string
   updated_at: string

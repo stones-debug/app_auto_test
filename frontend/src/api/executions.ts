@@ -192,6 +192,7 @@ export interface RunOptions {
   target_scope?: 'explicit' | 'profile_all'
   excluded_suite_ids?: number[]
   prepare_token?: string
+  context_suite_case_id?: number
 }
 
 export interface ExecutionRunSettings {
