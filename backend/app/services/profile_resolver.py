@@ -274,16 +274,6 @@ def _filter_and_patch(*args: Any, **kwargs: Any) -> tuple[list[dict], list[Exclu
     return _filter_and_patch_impl(*args, exclusion_cls=ExclusionItem, **kwargs)
 
 
-def _membership_scoped(
-    config: dict, membership_id: int | None, kind: str
-) -> dict[str, dict[str, Any]]:
-    """读取当前编排项（suite_case_id）的节点覆盖；重复编排的同一用例互不影响。"""
-    if membership_id is None:
-        return {}
-    bucket = config["membership_step_overrides"] if kind == "step" else config["membership_assertion_overrides"]
-    return dict(bucket.get(membership_id, {}))
-
-
 async def resolve(
     request: ResolutionRequest, db: AsyncSession, cache: _LRUCache | None = None
 ) -> ResolutionResult:
@@ -538,7 +528,7 @@ async def resolve(
         "na_assertions": sum(1 for item in exclusions if item.target_type == "assertion"),
         "na_suite_steps": sum(1 for item in exclusions if item.target_type == "suite_step"),
         "na_suite_cases": sum(1 for item in na_cases if item.suite_id is not None),
-        "overrides": applied_override_count + len(config["variable_overrides"]),
+        "overrides": applied_override_count,
     }
     result = ResolutionResult(
         profile_revision=profile.revision,
@@ -701,17 +691,9 @@ async def _resolve_case(
         ),
     )
     selected_steps = _select_steps_for_run(case.flow_nodes or case.steps or [], request.run_options)
-    step_overrides = _membership_scoped(config, membership_id, "step")
-    assertion_overrides = _membership_scoped(config, membership_id, "assertion")
-    override_count = len(
-        {str(node.get("key") or "") for node in selected_steps if isinstance(node, dict)} & set(step_overrides)
-    )
+    override_count = 0
     if membership_id is not None:
         override_count += len(config.get("occurrence_variable_overrides", {}).get(membership_id, {}))
-    source_assertions = [node for node in selected_steps if node.get("kind") == "assertion"]
-    override_count += len(
-        {str(node.get("key") or "") for node in source_assertions} & set(assertion_overrides)
-    )
     kept_nodes: list[dict] = []
     exclusions: list[ExclusionItem] = []
     runtime_variables: set[str] = set()
@@ -719,9 +701,8 @@ async def _resolve_case(
         is_assertion = node.get("kind") == "assertion" or "type" in node
         node_type = "assertion" if is_assertion else "step"
         rules = config["assertion_rules" if is_assertion else "step_rules"].get(membership_id, {})
-        overrides = assertion_overrides if is_assertion else step_overrides
         kept, node_exclusions = _filter_and_patch(
-            [node], rules, overrides, node_type, case.id,
+            [node], rules, {}, node_type, case.id,
             case_name=case.name, suite_id=suite_id, suite_name=suite_name,
             suite_case_id=membership_id,
             occurrence_order=case_order,
@@ -754,10 +735,9 @@ async def _resolve_case(
         )
         return None, exclusions, override_count
     elements = await _resolve_element_snapshots(
-        db, request.project_id, nodes, config["element_overrides"], variables, runtime_variables,
+        db, request.project_id, nodes, variables, runtime_variables,
         load_context.elements,
     )
-    override_count += sum(1 for element_id in elements if int(element_id) in config["element_overrides"])
     return (
         ResolvedCase(
             suite_id=suite_id,
@@ -794,22 +774,14 @@ async def _parse_suite_steps(
         node_key: rule for (current_suite_id, node_key), rule in config["skip_suite_step"].items()
         if current_suite_id == suite_id
     }
-    suite_overrides = {
-        node_key: patch for (current_suite_id, node_key), patch in config["suite_step_overrides"].items()
-        if current_suite_id == suite_id
-    }
     override_count = 0
     runtime_variables: set[str] = set()
 
     def process(nodes: list, phase: str) -> tuple[list[dict], list[ExclusionItem]]:
         nonlocal override_count
         kept, exclusions = _filter_and_patch(
-            nodes or [], suite_rules, suite_overrides, "suite_step", None,
+            nodes or [], suite_rules, {}, "suite_step", None,
             case_name=None, suite_id=suite_id, suite_name=suite_name, phase=phase,
-        )
-        override_count += len(
-            {str(node.get("key") or "") for node in (nodes or []) if isinstance(node, dict)}
-            & set(suite_overrides)
         )
         steps: list[dict] = []
         for node in kept:
@@ -831,10 +803,8 @@ async def _parse_suite_steps(
         db,
         project_id,
         [*setup_snapshot, *teardown_snapshot],
-        config["element_overrides"],
         variables,
         runtime_variables,
         load_context.elements,
     )
-    override_count += sum(1 for element_id in elements if int(element_id) in config["element_overrides"])
     return setup_snapshot, teardown_snapshot, elements, exclusions, override_count

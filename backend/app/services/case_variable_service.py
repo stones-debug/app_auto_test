@@ -308,7 +308,8 @@ async def apply_profile_occurrence_variable_updates(
             existing = by_name.get(name)
             if value is None:
                 if existing is not None:
-                    await overrides_repo.soft_delete(existing, datetime.now(UTC), user_id)
+                    existing.deleted_at = datetime.now(UTC)
+                    existing.updated_by = user_id
             else:
                 await overrides_repo.upsert_suite_case_variable(
                     db, profile_id=profile_id, suite_case_id=membership.id,

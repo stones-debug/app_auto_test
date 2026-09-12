@@ -16,7 +16,6 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import INET, JSONB
-from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -180,7 +179,8 @@ class AppProfileSkipRule(Base, TimestampMixin, SoftDeleteMixin):
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
 
 
-class AppProfileElementOverride(Base, TimestampMixin, SoftDeleteMixin):
+'''REMOVED old profile capability override models in Step 69.'''
+'''
     """APP 档案元素定位覆盖，执行快照中替换公共定位（方案 §2.4）。"""
 
     __tablename__ = "app_profile_element_overrides"
@@ -243,6 +243,8 @@ class AppProfileVariableOverride(Base, TimestampMixin, SoftDeleteMixin):
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
 
 
+'''
+
 class AppProfileSuiteCaseVariableOverride(Base, TimestampMixin, SoftDeleteMixin):
     """APP 档案对单个套件编排项的变量覆盖。
 
@@ -281,7 +283,7 @@ class AppProfileSuiteCaseVariableOverride(Base, TimestampMixin, SoftDeleteMixin)
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
 
 
-class AppProfileNodeOverride(Base, TimestampMixin, SoftDeleteMixin):
+'''
     """步骤/断言可变字段的白名单补丁，不允许修改节点身份与顺序（方案 §2.4）。
 
     用例节点覆盖以 ``suite_case_id``（``test_suite_cases.id``）为身份，避免同一用例在同一
@@ -354,6 +356,8 @@ class AppProfileNodeOverride(Base, TimestampMixin, SoftDeleteMixin):
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
 
 
+'''
+
 class AppProfileAuditLog(Base):
     """每个配置命令一条不可变审计记录（方案 §2.5）。"""
 
@@ -362,10 +366,7 @@ class AppProfileAuditLog(Base):
         CheckConstraint(
             "action IN ('profile_create', 'profile_update', 'profile_disable',"
             " 'release_create', 'release_update', 'release_disable',"
-            " 'skip_batch', 'restore_batch', 'element_override_upsert',"
-            " 'element_override_restore', 'variable_override_upsert',"
-            " 'variable_override_restore', 'node_override_upsert', 'node_override_restore',"
-            " 'node_override_batch', 'occurrence_variable_override_batch',"
+            " 'skip_batch', 'restore_batch', 'occurrence_variable_override_batch',"
             " 'user_variable_override_batch')",
             name="ck_profile_audit_action",
         ),

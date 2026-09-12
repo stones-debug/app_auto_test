@@ -4,7 +4,6 @@
 conftest 自动清理段需能清空这些表（含父级 app_profiles 先于 suites/cases/elements 删除）。
 """
 
-import uuid
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -15,11 +14,9 @@ from app.main import app
 from app.models import (
     AppProfile,
     AppProfileAuditLog,
-    AppProfileElementOverride,
-    AppProfileNodeOverride,
     AppProfileRelease,
     AppProfileSkipRule,
-    AppProfileVariableOverride,
+    AppProfileSuiteCaseVariableOverride,
     User,
 )
 
@@ -48,12 +45,6 @@ async def test_profile_tables_cleaned_by_conftest(client: AsyncClient):
         f"/api/projects/{project_id}/modules", json={"name": "m1"}, headers=headers
     )
     module_id = m.json()["id"]
-    el = await client.post(
-        f"/api/projects/{project_id}/elements",
-        json={"name": "e1", "locator_type": "id", "locator_value": "x"},
-        headers=headers,
-    )
-    element_id = el.json()["id"]
     c = await client.post(
         f"/api/projects/{project_id}/cases",
         json={"name": "c1", "module_id": module_id, "steps": [], "assertions": []},
@@ -92,22 +83,8 @@ async def test_profile_tables_cleaned_by_conftest(client: AsyncClient):
             )
         )
         db.add(
-            AppProfileElementOverride(
-                profile_id=profile.id, element_id=element_id,
-                locator_type="id", locator_value="y", created_by=user.id,
-            )
-        )
-        db.add(
-            AppProfileVariableOverride(
-                profile_id=profile.id, name="K", value="v", created_by=user.id
-            )
-        )
-        db.add(
-            AppProfileNodeOverride(
-                profile_id=profile.id, target_type="step", suite_id=suite_id, case_id=case_id,
-                suite_case_id=suite_case_id,
-                node_key=uuid.UUID("a58047bb-4ed8-4c22-94d2-bef66fe8468a"),
-                patch={"timeout": 15}, created_by=user.id,
+            AppProfileSuiteCaseVariableOverride(
+                profile_id=profile.id, suite_case_id=suite_case_id, name="K", value="v", created_by=user.id
             )
         )
         db.add(

@@ -10,7 +10,6 @@ from app.models import TestSuite
 from app.repositories import elements as elements_repo
 from app.repositories import projects as projects_repo
 from app.repositories import suites as suites_repo
-from app.repositories.app_profiles import overrides as overrides_repo
 from app.repositories.app_profiles import resolution as resolution_repo
 from app.schemas.suite import SuiteCreate, SuiteUpdate
 from app.services import asset_service, case_variable_service, element_service
@@ -297,7 +296,6 @@ async def remove_case(db: AsyncSession, *, suite: TestSuite, membership_id: int)
         return
     try:
         # 编排项消失后其节点覆盖失去意义；先物理清理子行，再删除编排项（外键约束要求）
-        await overrides_repo.delete_for_membership(db, membership_id)
         await suites_repo.delete_relation(db, relation)
         await asset_service.commit_asset_change(db, [suite.project_id])
     except Exception:

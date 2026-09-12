@@ -15,7 +15,6 @@ import asyncio
 import copy
 import sys
 from collections import defaultdict
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,8 +24,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core.database import SessionLocal  # noqa: E402
 from app.models import (  # noqa: E402
-    AppProfile,
-    AppProfileNodeOverride,
     Project,
     TestCase,
     TestSuite,
@@ -97,7 +94,6 @@ def _new_stats() -> dict[str, Any]:
 async def _clean_session(db: Any, project_id: int | None) -> dict[str, Any]:
     stats = _new_stats()
     changed_project_ids: set[int] = set()
-    changed_profile_ids: set[int] = set()
 
     def project_filter(statement: Any, model: Any) -> Any:
         if project_id is not None:
@@ -146,37 +142,6 @@ async def _clean_session(db: Any, project_id: int | None) -> dict[str, Any]:
             stats["affected_rows"] += 1
             changed_project_ids.add(suite.project_id)
 
-    # A previously soft-deleted override is not part of execution and must not
-    # be repeatedly counted (an empty patch is intentionally retained on that
-    # tombstone because the check constraint forbids ``{}``).
-    override_statement = select(AppProfileNodeOverride).where(
-        AppProfileNodeOverride.deleted_at.is_(None)
-    )
-    if project_id is not None:
-        override_statement = override_statement.join(
-            AppProfile, AppProfile.id == AppProfileNodeOverride.profile_id
-        ).where(AppProfile.project_id == project_id)
-    overrides = (await db.scalars(override_statement)).all()
-    override_column = stats["columns"]["app_profile_node_overrides.patch"]
-    for override in overrides:
-        stats["scanned_rows"] += 1
-        override_column["scanned_rows"] += 1
-        cleaned, removed = _clean_value(override.patch, drop_empty_containers=True)
-        if not removed:
-            continue
-        stats["deleted_fields"] += removed
-        override_column["affected_rows"] += 1
-        override_column["deleted_fields"] += removed
-        stats["affected_rows"] += 1
-        changed_profile_ids.add(override.profile_id)
-        if isinstance(cleaned, dict) and not cleaned:
-            # Node overrides use the same soft-delete convention as the API. Do not
-            # assign an invalid {} patch: ck_profile_node_override_patch forbids it.
-            if override.deleted_at is None:
-                override.deleted_at = datetime.now(UTC)
-        else:
-            override.patch = cleaned
-
     if changed_project_ids:
         projects = (
             await db.scalars(select(Project).where(Project.id.in_(changed_project_ids)))
@@ -184,14 +149,6 @@ async def _clean_session(db: Any, project_id: int | None) -> dict[str, Any]:
         for project in projects:
             project.test_asset_revision += 1
         stats["project_revisions_bumped"] = len(projects)
-
-    if changed_profile_ids:
-        profiles = (
-            await db.scalars(select(AppProfile).where(AppProfile.id.in_(changed_profile_ids)))
-        ).all()
-        for profile in profiles:
-            profile.revision += 1
-        stats["profile_revisions_bumped"] = len(profiles)
 
     stats["columns"] = dict(stats["columns"])
     return stats

@@ -52,10 +52,6 @@ async def _build_variables(
     case_variable_service.apply_fixed_layer(
         definitions, "occurrence", membership.variable_overrides or {}
     )
-    profile_variables = await overrides_repo.list_variable_overrides(db, profile.id)
-    case_variable_service.apply_fixed_layer(
-        definitions, "profile", {row.name: row.value for row in profile_variables}
-    )
     occurrence_rows = await overrides_repo.list_suite_case_variable_overrides(db, profile.id, membership.id)
     occurrence_overrides = {row.name: row.value for row in occurrence_rows}
     variables = case_variable_service.build_profile_variables(case, definitions, occurrence_overrides)

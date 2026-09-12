@@ -1,6 +1,5 @@
 """档案工作台与执行解析所需的批量加载查询。"""
 
-from copy import deepcopy
 from typing import Any
 
 from sqlalchemy import func, select
@@ -8,11 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import decrypt_user_variable
 from app.models import (
-    AppProfileElementOverride,
-    AppProfileNodeOverride,
     AppProfileSkipRule,
     AppProfileSuiteCaseVariableOverride,
-    AppProfileVariableOverride,
     TestCase,
     TestElement,
     TestModule,
@@ -26,16 +22,12 @@ from app.models import (
 async def load_config(db: AsyncSession, profile_id: int) -> dict:
     """一次批量加载档案规则与覆盖，返回解析器索引。"""
     loaded = []
-    for model in (
-        AppProfileSkipRule, AppProfileElementOverride,
-        AppProfileVariableOverride, AppProfileNodeOverride,
-        AppProfileSuiteCaseVariableOverride,
-    ):
+    for model in (AppProfileSkipRule, AppProfileSuiteCaseVariableOverride):
         rows = await db.execute(
             select(model).where(model.profile_id == profile_id, model.deleted_at.is_(None))
         )
         loaded.append(list(rows.scalars().all()))
-    skip_rules, element_overrides, variable_overrides, node_overrides, occurrence_variables = loaded
+    skip_rules, occurrence_variables = loaded
     skip_suite: dict[int, Any] = {}
     skip_case: dict[int, Any] = {}
     step_rules: dict[int, dict[str, Any]] = {}
@@ -51,29 +43,13 @@ async def load_config(db: AsyncSession, profile_id: int) -> dict:
         elif rule.target_type in ("step", "assertion") and rule.suite_case_id is not None and rule.node_key is not None:
             bucket = step_rules if rule.target_type == "step" else assertion_rules
             bucket.setdefault(rule.suite_case_id, {})[str(rule.node_key)] = rule
-    step_overrides: dict[int, dict[str, dict[str, Any]]] = {}
-    assertion_overrides: dict[int, dict[str, dict[str, Any]]] = {}
-    suite_step_overrides: dict[tuple[int, str], dict[str, Any]] = {}
     occurrence_variable_overrides: dict[int, dict[str, str]] = {}
     for row in occurrence_variables:
         occurrence_variable_overrides.setdefault(row.suite_case_id, {})[row.name] = row.value
-    for override in node_overrides:
-        if override.target_type == "suite_step":
-            if override.suite_id is not None:
-                suite_step_overrides[(override.suite_id, str(override.node_key))] = deepcopy(override.patch)
-        elif override.suite_case_id is not None:
-            # 用例节点覆盖以编排项 suite_case_id 为身份，重复编排互不污染
-            bucket = step_overrides if override.target_type == "step" else assertion_overrides
-            bucket.setdefault(override.suite_case_id, {})[str(override.node_key)] = deepcopy(override.patch)
     return {
         "skip_suite": skip_suite, "skip_case": skip_case, "step_rules": step_rules,
         "assertion_rules": assertion_rules, "skip_suite_step": skip_suite_step,
-        "element_overrides": {row.element_id: row for row in element_overrides},
-        "variable_overrides": {row.name: row.value for row in variable_overrides},
         "occurrence_variable_overrides": occurrence_variable_overrides,
-        "membership_step_overrides": step_overrides,
-        "membership_assertion_overrides": assertion_overrides,
-        "suite_step_overrides": suite_step_overrides,
     }
 
 
@@ -295,46 +271,15 @@ async def load_skip_index(db: AsyncSession, profile_id: int) -> dict:
 
 
 async def load_override_index(db: AsyncSession, profile_id: int) -> dict:
-    loaded = []
-    for model in (
-        AppProfileElementOverride,
-        AppProfileVariableOverride,
-        AppProfileNodeOverride,
-        AppProfileSuiteCaseVariableOverride,
-    ):
-        rows = await db.execute(select(model).where(model.profile_id == profile_id, model.deleted_at.is_(None)))
-        loaded.append(list(rows.scalars().all()))
-    element_rows, variable_rows, node_rows, occurrence_variable_rows = loaded
-    node_idx: dict[tuple[int, int], dict[str, str]] = {}
-    membership_idx: dict[int, dict[str, str]] = {}
-    suite_step_idx: dict[tuple[int, str], dict] = {}
-    node_patches: dict[tuple[int, int, str], dict] = {}
-    membership_patches: dict[int, dict[str, dict]] = {}
+    """加载工作台仍需的 occurrence 变量索引；旧档案覆盖已删除。"""
+    rows = await db.execute(select(AppProfileSuiteCaseVariableOverride).where(
+        AppProfileSuiteCaseVariableOverride.profile_id == profile_id,
+        AppProfileSuiteCaseVariableOverride.deleted_at.is_(None),
+    ))
     occurrence_variables: dict[int, list[dict[str, str]]] = {}
-    for row in occurrence_variable_rows:
-        occurrence_variables.setdefault(row.suite_case_id, []).append(
-            {"name": row.name, "value": row.value}
-        )
-    for row in node_rows:
-        if row.target_type == "suite_step" and row.suite_id is not None:
-            suite_step_idx[(row.suite_id, str(row.node_key))] = row.patch
-        elif row.suite_id is not None and row.case_id is not None:
-            node_key = str(row.node_key)
-            node_idx.setdefault((row.suite_id, row.case_id), {})[node_key] = row.target_type
-            node_patches[(row.suite_id, row.case_id, node_key)] = deepcopy(row.patch)
-            if row.suite_case_id is not None:
-                membership_idx.setdefault(row.suite_case_id, {})[node_key] = row.target_type
-                membership_patches.setdefault(row.suite_case_id, {})[node_key] = deepcopy(row.patch)
-    return {
-        "element": [row.element_id for row in element_rows],
-        "variable": [row.name for row in variable_rows],
-        "node": node_idx,
-        "node_patches": node_patches,
-        "membership": membership_idx,
-        "membership_patches": membership_patches,
-        "occurrence_variables": occurrence_variables,
-        "suite_step": suite_step_idx,
-    }
+    for row in rows.scalars().all():
+        occurrence_variables.setdefault(row.suite_case_id, []).append({"name": row.name, "value": row.value})
+    return {"occurrence_variables": occurrence_variables}
 
 
 async def suite_memberships(db: AsyncSession, suite_id: int) -> list[TestSuiteCase]:
@@ -358,16 +303,7 @@ async def case_counts(db: AsyncSession, project_id: int) -> dict[int, int]:
 
 
 async def override_counts(db: AsyncSession, profile_id: int) -> dict[int, int]:
-    rows = await db.execute(
-        select(AppProfileNodeOverride.suite_id, func.count(AppProfileNodeOverride.id)).where(
-            AppProfileNodeOverride.profile_id == profile_id,
-            AppProfileNodeOverride.deleted_at.is_(None),
-            AppProfileNodeOverride.suite_id.is_not(None),
-        ).group_by(AppProfileNodeOverride.suite_id)
-    )
-    counts = {
-        suite_id: count for suite_id, count in rows.tuples().all() if suite_id is not None
-    }
+    counts: dict[int, int] = {}
     occurrence_rows = await db.execute(
         select(TestSuiteCase.suite_id, func.count(AppProfileSuiteCaseVariableOverride.id))
         .join(

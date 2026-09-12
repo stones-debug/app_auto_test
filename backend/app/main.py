@@ -323,7 +323,11 @@ if _FRONTEND_DIST.exists():
         async def favicon():
             return FileResponse(_favicon, media_type="image/svg+xml")
 
-    @app.get("/{full_path:path}", include_in_schema=False)
+    @app.api_route(
+        "/{full_path:path}",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+        include_in_schema=False,
+    )
     async def spa_fallback(full_path: str):
         # /api、/ws 由路由处理，未匹配的返回 404 而非回退 index.html
         if full_path.startswith(("api", "ws")):

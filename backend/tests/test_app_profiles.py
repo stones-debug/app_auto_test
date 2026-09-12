@@ -184,6 +184,7 @@ async def test_skip_batch(client: AsyncClient):
     assert bad.status_code == 422
 
 
+@pytest.mark.skip(reason="Step 69 removes legacy profile capability override APIs")
 async def test_overrides(client: AsyncClient):
     """元素/变量/节点覆盖 upsert + restore + 非法 patch 拒绝。"""
     token = await _register(client, OWNER)
@@ -278,6 +279,7 @@ async def test_overrides(client: AsyncClient):
     assert counted.json()["override_counts"]["variable"] == 2
 
 
+@pytest.mark.skip(reason="Step 69 removes legacy profile capability override APIs")
 async def test_node_override_api_rejects_variable_overrides(client: AsyncClient):
     """节点覆盖只允许正常节点字段，变量必须走 occurrence API。"""
     token = await _register(client, {"username": f"pytest_var_{uuid.uuid4().hex[:8]}", "email": f"var_{uuid.uuid4().hex[:8]}@tl-tek.com", "password": "test123"})
@@ -309,6 +311,7 @@ async def test_node_override_api_rejects_variable_overrides(client: AsyncClient)
     assert unknown.status_code == 422
 
 
+@pytest.mark.skip(reason="Step 69 removes legacy profile capability override APIs")
 async def test_node_override_uses_exact_duplicate_occurrence(client: AsyncClient):
     token = await _register(client, OWNER)
     h = {"Authorization": f"Bearer {token}"}
@@ -358,6 +361,7 @@ async def test_node_override_uses_exact_duplicate_occurrence(client: AsyncClient
     assert restored.status_code == 204
 
 
+@pytest.mark.skip(reason="Step 69 removes legacy profile capability override APIs")
 async def test_element_override_smart(client: AsyncClient):
     """smart 元素覆盖 upsert 成功返回完整 config；缺 config/普通带 config 被拒。
 
@@ -557,9 +561,6 @@ async def test_workspace_nodes_enforce_project_and_inherit_parent_skip(client: A
     assert node["effective_status"] == "skipped"
     assert node["status_source"] == "inherited"
     assert node["registry_key"] == "sleep"
-    assert node["override_template"] == {"params": {"duration": 1}}
-    assert "action" not in node["override_template"]
-    assert "order" not in node["override_template"]
 
 
 async def test_shared_case_skip_is_scoped_to_selected_suite(client: AsyncClient):
@@ -803,8 +804,6 @@ async def test_suite_steps_workspace_query(client: AsyncClient):
     assert item["effective_status"] == "enabled"
     assert item["status_source"] == "none"
     assert item["registry_key"] == "sleep"
-    assert item["override_template"] == {"params": {"duration": 1}}
-    assert "action" not in item["override_template"]
 
     teardown = await client.get(f"/api/app-profiles/{profile_id}/suite-steps/{suite_id}?phase=suite_teardown", headers=h)
     assert teardown.status_code == 200
@@ -849,6 +848,7 @@ async def test_suite_steps_workspace_query(client: AsyncClient):
     assert bad.status_code == 422
 
 
+@pytest.mark.skip(reason="Step 69 removes legacy profile capability override APIs")
 async def test_workspace_step_element_name_uses_node_patch_and_missing_fallback(client: AsyncClient):
     """工作台批量返回步骤元素；普通与套件步骤均使用生效的 element_id。"""
     token = await _register(client, {"username": f"pytest_element_{uuid.uuid4().hex[:8]}", "email": f"element_{uuid.uuid4().hex[:8]}@tl-tek.com", "password": "test123"})
@@ -922,6 +922,7 @@ async def test_workspace_step_element_name_uses_node_patch_and_missing_fallback(
     assert (suite_after.json()["items"][0]["element_id"], suite_after.json()["items"][0]["element_name"]) == (second, "覆盖元素")
 
 
+@pytest.mark.skip(reason="Step 69 removes legacy profile capability override APIs")
 async def test_suite_step_override_roundtrip(client: AsyncClient):
     """套件步骤覆盖 upsert + restore + 非法 patch 拒绝。"""
     token = await _register(client, OWNER)
@@ -977,6 +978,7 @@ async def test_suite_step_override_roundtrip(client: AsyncClient):
     assert after.json()["items"][0]["override_count"] == 0
 
 
+@pytest.mark.skip(reason="Step 69 removes legacy profile capability override APIs")
 async def test_differences_suite_step(client: AsyncClient):
     """差异清单包含套件步骤的跳过（前置）与覆盖（后置）行。"""
     token = await _register(client, OWNER)

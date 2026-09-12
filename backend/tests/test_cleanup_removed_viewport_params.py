@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.models import AppProfile, AppProfileNodeOverride, Project
+from app.models import Project
 from app.models.case import TestCase as _TestCaseModel
 from app.models.case import TestSuite as _TestSuiteModel
 from scripts import cleanup_removed_viewport_params as cleanup
@@ -20,15 +20,13 @@ class _ScalarResult:
 
 
 class _FakeSession:
-    def __init__(self, *, cases, suites, overrides, projects, profiles):
+    def __init__(self, *, cases, suites, projects):
         self.cases = cases
         self.suites = suites
-        self.overrides = overrides
         self.projects = projects
-        self.profiles = profiles
         self.commits = 0
         self.rollbacks = 0
-        self._snapshot = copy.deepcopy((cases, suites, overrides, projects, profiles))
+        self._snapshot = copy.deepcopy((cases, suites, projects))
 
     async def __aenter__(self):
         return self
@@ -47,19 +45,10 @@ class _FakeSession:
             rows = self.suites
             if is_project_filtered:
                 rows = [row for row in rows if row.project_id == 7]
-        elif entity is AppProfileNodeOverride:
-            rows = [row for row in self.overrides if row.deleted_at is None]
-            if is_project_filtered:
-                profile_ids = {profile.id for profile in self.profiles if profile.project_id == 7}
-                rows = [row for row in rows if row.profile_id in profile_ids]
         elif entity is Project:
             rows = self.projects
             if " IN " in str(statement.whereclause):
                 rows = [row for row in rows if row.id == 7]
-        elif entity is AppProfile:
-            rows = self.profiles
-            if " IN " in str(statement.whereclause):
-                rows = [row for row in rows if row.id == 11]
         else:  # pragma: no cover - catches a changed query shape
             raise AssertionError(f"unexpected query entity: {entity}")
         return _ScalarResult(rows)
@@ -69,12 +58,10 @@ class _FakeSession:
 
     async def rollback(self):
         self.rollbacks += 1
-        cases, suites, overrides, projects, profiles = copy.deepcopy(self._snapshot)
+        cases, suites, projects = copy.deepcopy(self._snapshot)
         self.cases[:] = cases
         self.suites[:] = suites
-        self.overrides[:] = overrides
         self.projects[:] = projects
-        self.profiles[:] = profiles
 
 
 def _session_factory(monkeypatch, session):
@@ -83,7 +70,6 @@ def _session_factory(monkeypatch, session):
 
 def _fixture_session():
     project = SimpleNamespace(id=7, test_asset_revision=3)
-    profile = SimpleNamespace(id=11, project_id=7, revision=4)
     case = SimpleNamespace(
         id=1,
         project_id=7,
@@ -105,33 +91,24 @@ def _fixture_session():
         setup_steps=[{"params": {"viewport_mode": "self"}}],
         teardown_steps=[{"name": "keep", "viewport_element_id": "business-field"}],
     )
-    override = SimpleNamespace(
-        id=3,
-        profile_id=11,
-        patch={"params": {"viewport_mode": "parent", "keep": True}},
-        deleted_at=None,
-    )
-    return _FakeSession(
-        cases=[case], suites=[suite], overrides=[override], projects=[project], profiles=[profile]
-    )
+    return _FakeSession(cases=[case], suites=[suite], projects=[project])
 
 
 @pytest.mark.asyncio
 async def test_dry_run_rolls_back_and_apply_updates_each_revision_once(monkeypatch):
     dry_session = _fixture_session()
-    original = copy.deepcopy((dry_session.cases, dry_session.suites, dry_session.overrides))
+    original = copy.deepcopy((dry_session.cases, dry_session.suites))
     _session_factory(monkeypatch, dry_session)
 
     dry_stats = await cleanup.run()
 
     assert dry_session.commits == 0
     assert dry_session.rollbacks == 1
-    assert (dry_session.cases, dry_session.suites, dry_session.overrides) == original
+    assert (dry_session.cases, dry_session.suites) == original
     assert dry_session.projects[0].test_asset_revision == 3
-    assert dry_session.profiles[0].revision == 4
-    assert dry_stats["deleted_fields"] == 5
+    assert dry_stats["deleted_fields"] == 4
     assert dry_stats["project_revisions_bumped"] == 1
-    assert dry_stats["profile_revisions_bumped"] == 1
+    assert dry_stats["profile_revisions_bumped"] == 0
 
     apply_session = _fixture_session()
     _session_factory(monkeypatch, apply_session)
@@ -139,35 +116,27 @@ async def test_dry_run_rolls_back_and_apply_updates_each_revision_once(monkeypat
 
     assert apply_session.commits == 1
     assert apply_session.rollbacks == 0
-    assert apply_stats["affected_rows"] == 3
+    assert apply_stats["affected_rows"] == 2
     assert apply_session.projects[0].test_asset_revision == 4
-    assert apply_session.profiles[0].revision == 5
     assert "viewport_mode" not in apply_session.cases[0].flow_nodes[0]["params"]
     assert "viewport_element_id" not in apply_session.cases[0].flow_nodes[0]["params"]["nested"][0]
     assert "viewport_element_id" not in apply_session.cases[0].steps[0]["parameters"]
     assert "viewport_mode" not in apply_session.suites[0].setup_steps[0]["params"]
     assert apply_session.suites[0].teardown_steps[0]["viewport_element_id"] == "business-field"
-    assert apply_session.overrides[0].patch == {"params": {"keep": True}}
 
 
 @pytest.mark.asyncio
-async def test_empty_override_is_soft_deleted_and_second_run_is_idempotent(monkeypatch):
+async def test_second_public_scan_is_idempotent(monkeypatch):
     session = _fixture_session()
-    session.cases = []
-    session.suites = []
-    session.overrides[0].patch = {"parameters": {"viewport_element_id": "old"}}
     _session_factory(monkeypatch, session)
 
     first = await cleanup.run(apply=True, project_id=7)
-    assert first["deleted_fields"] == 1
-    assert session.overrides[0].deleted_at is not None
-    assert session.profiles[0].revision == 5
+    assert first["deleted_fields"] == 4
 
-    # A second scan sees the now-empty override but has nothing left to remove.
+    # A second scan sees the cleaned public nodes and has nothing left to remove.
     second = await cleanup.run(apply=True, project_id=7)
     assert second["deleted_fields"] == 0
     assert second["affected_rows"] == 0
-    assert session.profiles[0].revision == 5
 
 
 def test_clean_value_only_removes_fields_inside_parameter_objects():
@@ -194,10 +163,9 @@ def test_project_id_is_validated():
 
 
 @pytest.mark.asyncio
-async def test_project_filter_does_not_touch_other_project_or_profile(monkeypatch):
+async def test_project_filter_does_not_touch_other_project(monkeypatch):
     session = _fixture_session()
     other_project = SimpleNamespace(id=8, test_asset_revision=12)
-    other_profile = SimpleNamespace(id=12, project_id=8, revision=9)
     other_case = SimpleNamespace(
         id=8,
         project_id=8,
@@ -210,25 +178,15 @@ async def test_project_filter_does_not_touch_other_project_or_profile(monkeypatc
         setup_steps=[{"params": {"viewport_element_id": "keep"}}],
         teardown_steps=[],
     )
-    other_override = SimpleNamespace(
-        id=8,
-        profile_id=12,
-        patch={"params": {"viewport_mode": "parent"}},
-        deleted_at=None,
-    )
     session.projects.append(other_project)
-    session.profiles.append(other_profile)
     session.cases.append(other_case)
     session.suites.append(other_suite)
-    session.overrides.append(other_override)
     _session_factory(monkeypatch, session)
 
     stats = await cleanup.run(apply=True, project_id=7)
 
-    assert stats["affected_rows"] == 3
+    assert stats["affected_rows"] == 2
     assert "viewport_mode" not in session.cases[0].flow_nodes[0]["params"]
     assert session.cases[1].flow_nodes[0]["params"]["viewport_mode"] == "parent"
     assert session.suites[1].setup_steps[0]["params"]["viewport_element_id"] == "keep"
-    assert session.overrides[1].patch["params"]["viewport_mode"] == "parent"
     assert other_project.test_asset_revision == 12
-    assert other_profile.revision == 9

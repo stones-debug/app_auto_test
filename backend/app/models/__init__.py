@@ -3,12 +3,9 @@ from app.models.agent import Agent, AgentUser, Device, DevicePreference, UserAge
 from app.models.app_profile import (
     AppProfile,
     AppProfileAuditLog,
-    AppProfileElementOverride,
-    AppProfileNodeOverride,
     AppProfileRelease,
     AppProfileSkipRule,
     AppProfileSuiteCaseVariableOverride,
-    AppProfileVariableOverride,
     ExecutionExclusion,
 )
 from app.models.case import TestCase, TestSuite, TestSuiteCase
@@ -38,12 +35,9 @@ __all__ = [
     "UserAgentKey",
     "AppProfile",
     "AppProfileAuditLog",
-    "AppProfileElementOverride",
-    "AppProfileNodeOverride",
     "AppProfileSuiteCaseVariableOverride",
     "AppProfileRelease",
     "AppProfileSkipRule",
-    "AppProfileVariableOverride",
     "ExecutionExclusion",
     "TestCase",
     "TestSuite",

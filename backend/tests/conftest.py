@@ -51,11 +51,8 @@ from app.models import (  # noqa: E402
     AgentUser,
     AppProfile,
     AppProfileAuditLog,
-    AppProfileElementOverride,
-    AppProfileNodeOverride,
     AppProfileRelease,
     AppProfileSkipRule,
-    AppProfileVariableOverride,
     Device,
     DevicePreference,
     Execution,
@@ -249,21 +246,6 @@ async def _cleanup_test_data():
                             AppProfileAuditLog.project_id.in_(project_ids),
                             AppProfileAuditLog.profile_id.in_(profile_id_subq),
                         )
-                    )
-                )
-                await session.execute(
-                    delete(AppProfileNodeOverride).where(
-                        AppProfileNodeOverride.profile_id.in_(profile_id_subq)
-                    )
-                )
-                await session.execute(
-                    delete(AppProfileElementOverride).where(
-                        AppProfileElementOverride.profile_id.in_(profile_id_subq)
-                    )
-                )
-                await session.execute(
-                    delete(AppProfileVariableOverride).where(
-                        AppProfileVariableOverride.profile_id.in_(profile_id_subq)
                     )
                 )
                 await session.execute(

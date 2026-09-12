@@ -13,13 +13,8 @@ from sqlalchemy import select
 from app.core.database import SessionLocal
 from app.main import app
 from app.models import (
-    AppProfile,
-    AppProfileElementOverride,
-    AppProfileNodeOverride,
-    AppProfileRelease,
-    AppProfileSkipRule,
-    AppProfileVariableOverride,
-    Execution,
+    AppProfile,    AppProfileRelease,
+    AppProfileSkipRule,    Execution,
     ExecutionCase,
     Project,
     TestCase,
@@ -34,7 +29,6 @@ from app.services.profile_resolver import (
     ProfileRuleError,
     ResolutionRequest,
     _select_steps_for_run,
-    validate_node_patch,
     variable_references,
 )
 from app.utils.element_refs import collect_element_ids
@@ -212,7 +206,6 @@ async def test_step_skip_and_override(client):
         suite_case_id = await _membership_id(db, suite_id, case_id)
         db.add(AppProfileSkipRule(profile_id=profile_id, target_type="step", suite_case_id=suite_case_id, node_key=K2, reason_code="unsupported", reason_note="n"))
         # 覆盖 K1(setup launch_app) 的 params.package
-        db.add(AppProfileNodeOverride(profile_id=profile_id, target_type="step", suite_id=suite_id, case_id=case_id, suite_case_id=await _membership_id(db, suite_id, case_id), node_key=K1, patch={"params": {"package": "patched_pkg"}}))
         await db.commit()
         result = await resolve_compat(
             ResolutionRequest(
@@ -227,91 +220,10 @@ async def test_step_skip_and_override(client):
     steps = result.suites[0].cases[0].steps_snapshot
     assert len(steps) == 1  # K2 被跳过
     assert steps[0]["source_key"] == K1
-    assert steps[0]["params"]["package"] == "patched_pkg"
+    assert steps[0]["params"]["package"] == "com.v"
     other_steps = result.suites[1].cases[0].steps_snapshot
     assert [step["source_key"] for step in other_steps] == [K1, K2]
     assert other_steps[0]["params"]["package"] == "com.v"
-
-
-async def test_suite_step_override_applied_to_snapshot(client):
-    """套件步骤覆盖（target_type='suite_step'）必须加载并作用到套件前置步快照。
-
-    回归：解析器曾用 target_type == 'step' and case_id is None 判断套件步覆盖，
-    而 DB 保存的类型是 suite_step，导致 suite_step_overrides 永远为空，
-    覆盖的 params 不生效（现有测试仅覆盖保存/查询/恢复，未验证解析快照）。
-    """
-    base = await _base(client)
-    case_id = await _setup_case_with_steps(client, base, "套件步覆盖用例")
-    async with SessionLocal() as db:
-        profile_id = await _make_profile(db, base)
-        suite_setup_key = str(uuid.uuid4())
-        suite = SuiteModel(
-            project_id=base["project_id"],
-            name="套件步覆盖套件",
-            setup_steps=[{"order": 1, "key": suite_setup_key, "action": "sleep", "params": {"duration": 1}}],
-            teardown_steps=[],
-        )
-        db.add(suite)
-        await db.flush()
-        db.add(SuiteCaseModel(suite_id=suite.id, case_id=case_id, sort_order=1))
-        await db.flush()
-        # 保存的口径与 API 一致：target_type='suite_step'（case_id 恒空）
-        db.add(
-            AppProfileNodeOverride(
-                profile_id=profile_id,
-                target_type="suite_step",
-                suite_id=suite.id,
-                case_id=None,
-                node_key=suite_setup_key,
-                patch={"params": {"duration": 5}},
-            )
-        )
-        await db.commit()
-        result = await resolve_compat(
-            ResolutionRequest(
-                project_id=base["project_id"], profile_id=profile_id, release_id=await _release_id(db, profile_id),
-                target_type="suite", target_ids=[suite.id],
-                expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
-                run_options={"use_pre_steps": True},
-            ),
-            db,
-        )
-    assert len(result.suites) == 1
-    assert len(result.suites[0].setup_steps_snapshot) == 1
-    assert result.suites[0].setup_steps_snapshot[0]["source_key"] == suite_setup_key
-    # 覆盖必须生效（此前 suite_step_overrides 为空时保持 duration=1）
-    assert result.suites[0].setup_steps_snapshot[0]["params"]["duration"] == 5
-
-
-def test_node_variable_override_is_rejected_for_all_node_types():
-    source = {"key": K1, "action": "launch_app", "params": {"package": "${pkg}"}}
-    with pytest.raises(ProfileRuleError, match="不允许覆盖字段"):
-        validate_node_patch("step", source, {"variable_overrides": {"pkg": "x"}})
-    assertion = {"key": K2, "type": "text_equals", "params": {"expected": "${pkg}"}}
-    with pytest.raises(ProfileRuleError, match="不允许覆盖字段"):
-        validate_node_patch("assertion", assertion, {"variable_overrides": {"pkg": "x"}})
-
-
-async def test_variable_override_priority(client):
-    """变量优先级：执行参数 > APP档案 > 套件 > 用例。"""
-    base = await _base(client)
-    case_id = await _setup_case_with_steps(client, base, "变量用例")
-    async with SessionLocal() as db:
-        profile_id = await _make_profile(db, base)
-        db.add(AppProfileVariableOverride(profile_id=profile_id, name="pkg", value="from_profile"))
-        await db.commit()
-        result = await resolve_compat(
-            ResolutionRequest(
-                project_id=base["project_id"], profile_id=profile_id, release_id=await _release_id(db, profile_id),
-                target_type="case", target_ids=[case_id],
-                expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
-                run_options={"use_pre_steps": True},
-                execution_variables={"pkg": "from_exec"},
-            ),
-            db,
-        )
-    step0 = result.cases[0].steps_snapshot[0]
-    assert step0["params"]["package"] == "from_exec"
 
 
 async def test_variable_scope_priority_is_consistent_for_suite_setup_and_case(client):
@@ -376,16 +288,7 @@ async def test_variable_scope_priority_is_consistent_for_suite_setup_and_case(cl
         assert result.suites[0].setup_steps_snapshot[0]["params"]["package"] == "from_suite"
         assert result.suites[0].cases[0].steps_snapshot[0]["params"]["package"] == "from_suite"
 
-        db.add(AppProfileVariableOverride(profile_id=profile_id, name="pkg", value="from_profile"))
-        profile = await db.get(AppProfile, profile_id)
-        assert profile is not None
-        profile.revision = 2
-        await db.commit()
-        result = await resolve_with(expected_profile_revision=2)
-        assert result.suites[0].setup_steps_snapshot[0]["params"]["package"] == "from_profile"
-        assert result.suites[0].cases[0].steps_snapshot[0]["params"]["package"] == "from_profile"
-
-        result = await resolve_with(expected_profile_revision=2, execution_variables={"pkg": "from_execution"})
+        result = await resolve_with(execution_variables={"pkg": "from_execution"})
         assert result.suites[0].setup_steps_snapshot[0]["params"]["package"] == "from_execution"
         assert result.suites[0].cases[0].steps_snapshot[0]["params"]["package"] == "from_execution"
 
@@ -643,118 +546,6 @@ async def test_preview_allows_directly_soft_deleted_element_referenced_by_case(c
     snap = result.cases[0].elements_snapshot[str(element_id)]
     assert snap["locator_type"] == "resource_id"
     assert snap["locator_value"] == "login_btn"
-
-
-async def test_element_override(client):
-    """元素覆盖：快照定位器使用档案覆盖值。"""
-    base = await _base(client)
-    el = await client.post(
-        f"/api/projects/{base['project_id']}/elements",
-        headers=base["headers"],
-        json={"name": "按钮", "locator_type": "id", "locator_value": "common_id"},
-    )
-    element_id = el.json()["id"]
-    resp = await client.post(
-        f"/api/projects/{base['project_id']}/cases",
-        headers=base["headers"],
-        json={"name": "元素覆盖用例", "steps": [{"key": str(uuid.uuid4()), "order": 1, "action": "click", "element_id": element_id, "params": {"wait_timeout": 5}}]},
-    )
-    case_id = resp.json()["id"]
-    async with SessionLocal() as db:
-        profile_id = await _make_profile(db, base)
-        db.add(AppProfileElementOverride(profile_id=profile_id, element_id=element_id, locator_type="resource_id", locator_value="dvr_id"))
-        await db.commit()
-        result = await resolve_compat(
-            ResolutionRequest(
-                project_id=base["project_id"], profile_id=profile_id, release_id=await _release_id(db, profile_id),
-                target_type="case", target_ids=[case_id],
-                expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
-            ),
-            db,
-        )
-    elements = result.cases[0].elements_snapshot
-    assert elements[str(element_id)]["locator_type"] == "resource_id"
-    assert elements[str(element_id)]["locator_value"] == "dvr_id"
-
-
-async def test_element_override_to_smart_keeps_config_raw(client):
-    """普通元素被档案覆盖为 smart：快照写 locator_type='smart'+locator_config，
-    ${device_name} 保持未渲染（raw 透传，不在后端求值）。"""
-    base = await _base(client)
-    el = await client.post(
-        f"/api/projects/{base['project_id']}/elements",
-        headers=base["headers"],
-        json={"name": "按钮", "locator_type": "id", "locator_value": "common_id"},
-    )
-    element_id = el.json()["id"]
-    resp = await client.post(
-        f"/api/projects/{base['project_id']}/cases",
-        headers=base["headers"],
-        json={"name": "覆盖为智能用例", "steps": [{"key": str(uuid.uuid4()), "order": 1, "action": "click", "element_id": element_id, "params": {"wait_timeout": 5}}]},
-    )
-    case_id = resp.json()["id"]
-    smart_config = {
-        "version": 1,
-        "alternatives": [
-            {"target": [{"attribute": "text", "operator": "equals", "value": "${device_name}"}]}
-        ],
-    }
-    async with SessionLocal() as db:
-        profile_id = await _make_profile(db, base)
-        db.add(
-            AppProfileElementOverride(
-                profile_id=profile_id,
-                element_id=element_id,
-                locator_type="smart",
-                locator_value=None,
-                locator_config=smart_config,
-            )
-        )
-        await db.commit()
-        result = await resolve_compat(
-            ResolutionRequest(
-                project_id=base["project_id"], profile_id=profile_id, release_id=await _release_id(db, profile_id),
-                target_type="case", target_ids=[case_id],
-                expected_profile_revision=1, expected_test_asset_revision=await _asset_revision(db, base["project_id"]),
-            ),
-            db,
-        )
-    snap = result.cases[0].elements_snapshot[str(element_id)]
-    assert snap["locator_type"] == "smart"
-    assert snap["locator_value"] is None
-    assert snap["locator_config"] == smart_config
-    assert snap["locator_config"]["alternatives"][0]["target"][0]["value"] == "${device_name}"
-
-    # 全链：materialize_snapshot 固化 → _build_suites_payload 下发，config 保持未渲染
-    from app.services import worker_service
-    from app.services.execution_snapshot import materialize_snapshot
-
-    async with SessionLocal() as db:
-        execution = Execution(
-            project_id=base["project_id"],
-            type="case",
-            case_id=case_id,
-            status="queued",
-            parameters={},
-            app_profile_id=profile_id,
-            profile_revision=result.profile_revision,
-            test_asset_revision=result.test_asset_revision,
-        )
-        db.add(execution)
-        await db.flush()
-        await materialize_snapshot(db, execution, result)
-        await db.commit()
-        await db.refresh(execution)
-        payload = await worker_service._build_suites_payload(db, execution)
-
-    assert len(payload) == 1
-    case_payload = payload[0]["cases"][0]
-    payload_snap = case_payload["elements_snapshot"][str(element_id)]
-    assert payload_snap["locator_type"] == "smart"
-    assert payload_snap["locator_value"] is None
-    assert payload_snap["platform"] == "both"
-    # 固化后的 payload 仍保持 ${device_name} 未渲染
-    assert payload_snap["locator_config"]["alternatives"][0]["target"][0]["value"] == "${device_name}"
 
 
 async def test_smart_element_passthrough_without_override(client):

@@ -5,7 +5,6 @@ from hashlib import sha256
 from io import BytesIO
 from types import SimpleNamespace
 from typing import Any
-from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -15,9 +14,6 @@ from sqlalchemy import update
 from app.core.database import SessionLocal
 from app.main import app
 from app.models import (
-    AppProfile,
-    AppProfileElementOverride,
-    AppProfileNodeOverride,
     Execution,
     ExecutionCase,
     ExecutionSuite,
@@ -237,29 +233,7 @@ async def test_element_delete_rejects_suite_and_profile_references(client: Async
             setup_steps=[{"action": "click", "element_id": element_id}],
             teardown_steps=[{"action": "clear", "element_id": element_id}],
         )
-        profile = AppProfile(
-            project_id=project_id, name="删除保护档案", code=f"delete-{uuid4().hex[:8]}"
-        )
-        db.add_all([suite, profile])
-        await db.flush()
-        db.add_all(
-            [
-                AppProfileElementOverride(
-                    profile_id=profile.id,
-                    element_id=element_id,
-                    locator_type="id",
-                    locator_value="profile-id",
-                ),
-                AppProfileNodeOverride(
-                    profile_id=profile.id,
-                    suite_id=suite.id,
-                    target_type="suite_step",
-                    case_id=None,
-                    node_key=uuid4(),
-                    patch={"params": {"value_element_id": element_id}},
-                ),
-            ]
-        )
+        db.add(suite)
         await db.flush()
         revision_before = project.test_asset_revision
         await db.commit()
@@ -268,14 +242,9 @@ async def test_element_delete_rejects_suite_and_profile_references(client: Async
     assert deleted.status_code == 409
     detail = deleted.json()["detail"]
     assert detail["code"] == "ELEMENT_IN_USE"
-    assert {item["asset_type"] for item in detail["context"]["references"]} == {
-        "suite",
-        "profile",
-    }
+    assert {item["asset_type"] for item in detail["context"]["references"]} == {"suite"}
     assert {item["reference_type"] for item in detail["context"]["references"]} == {
         "suite_setup_or_teardown",
-        "element_override",
-        "node_override",
     }
 
     async with SessionLocal() as db:
@@ -312,32 +281,7 @@ async def test_element_delete_ignores_deleted_assets_and_execution_snapshots(
             setup_steps=[{"element_id": element_id}],
             teardown_steps=[],
         )
-        profile = AppProfile(
-            project_id=project_id,
-            name="已删除档案",
-            code=f"removed-{uuid4().hex[:8]}",
-            deleted_at=deleted_at,
-        )
-        db.add_all([case, suite, profile])
-        await db.flush()
-        db.add_all(
-            [
-                AppProfileElementOverride(
-                    profile_id=profile.id,
-                    element_id=element_id,
-                    locator_type="id",
-                    locator_value="deleted-profile-id",
-                ),
-                AppProfileNodeOverride(
-                    profile_id=profile.id,
-                    suite_id=suite.id,
-                    target_type="suite_step",
-                    case_id=None,
-                    node_key=uuid4(),
-                    patch={"element_id": element_id},
-                ),
-            ]
-        )
+        db.add_all([case, suite])
         await db.flush()
         execution = Execution(project_id=project_id, type="case", status="passed", parameters={})
         db.add(execution)

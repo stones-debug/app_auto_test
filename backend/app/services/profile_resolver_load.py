@@ -5,7 +5,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AppProfileElementOverride, TestCase, TestElement, TestSuite, Variable
+from app.models import TestCase, TestElement, TestSuite, Variable
 from app.repositories.app_profiles import resolution as resolution_repo
 from app.services.profile_resolver_nodes import ProfileRuleError, render_value
 from app.services.random_variables import resolve_rows
@@ -67,13 +67,6 @@ async def prepare_load_context(
         element_ids.update(collect_element_ids(suite.setup_steps, suite.teardown_steps))
     for case in cases.values():
         element_ids.update(collect_element_ids(case.flow_nodes or case.steps))
-    for bucket in ("membership_step_overrides", "membership_assertion_overrides"):
-        for patches in config.get(bucket, {}).values():
-            for patch in patches.values():
-                element_ids.update(collect_element_ids(patch))
-    for (suite_id, _node_key), patch in config.get("suite_step_overrides", {}).items():
-        if suite_id in suite_ids:
-            element_ids.update(collect_element_ids(patch))
     rows = await resolution_repo.load_by_ids(db, project_id=project_id, ids=element_ids)
     context.elements = {element.id: element for element in rows}
     return context
@@ -131,39 +124,36 @@ async def merge_variables(
     )
     membership_overrides = membership_overrides or {}
     occurrence_profile_overrides = occurrence_profile_overrides or {}
-    profile_overrides = config["variable_overrides"]
     user_overrides = config.get("user_variable_overrides", {})
     execution_variables = {str(key): value for key, value in execution_variables.items()}
     membership_names = set(membership_overrides)
     occurrence_names = set(occurrence_profile_overrides)
-    profile_names = set(profile_overrides)
     case_names = {variable.name for variable in case_rows}
     suite_names = {variable.name for variable in suite_rows}
     project_names = {variable.name for variable in loaded if variable.scope == "project"}
     merged = resolve_rows(
         [variable for variable in loaded if variable.scope == "global"], cache, ("global",),
-        skip_names=project_names | case_names | suite_names | membership_names | profile_names | occurrence_names | set(execution_variables),
+        skip_names=project_names | case_names | suite_names | membership_names | occurrence_names | set(execution_variables),
         value_overrides=user_overrides,
     )
     merged.update(resolve_rows(
         [variable for variable in loaded if variable.scope == "project"], cache,
-        ("project", project_id), skip_names=case_names | suite_names | membership_names | profile_names | occurrence_names | set(execution_variables),
+        ("project", project_id), skip_names=case_names | suite_names | membership_names | occurrence_names | set(execution_variables),
         value_overrides=user_overrides,
     ))
     if context is not None and case is not None:
         merged.update(resolve_rows(
             case_rows, cache,
             ("case", suite_id, case.id, case_occurrence if case_occurrence is not None else case.id),
-            skip_names=suite_names | membership_names | profile_names | occurrence_names | set(execution_variables),
+            skip_names=suite_names | membership_names | occurrence_names | set(execution_variables),
             value_overrides=user_overrides,
         ))
     merged.update(resolve_rows(
         suite_rows, cache, ("suite", suite_id),
-        skip_names=membership_names | profile_names | occurrence_names | set(execution_variables),
+        skip_names=membership_names | occurrence_names | set(execution_variables),
         value_overrides=user_overrides,
     ))
     merged.update(membership_overrides)
-    merged.update(profile_overrides)
     merged.update(execution_variables)
     # APP occurrence 能力变量是最高优先级，不能被执行参数突破。
     merged.update(occurrence_profile_overrides)
@@ -191,7 +181,7 @@ async def merge_suite_variables(
     cache = context.variable_cache if context is not None else {}
     user_overrides = config.get("user_variable_overrides", {})
     suite_names = {variable.name for variable in loaded if variable.scope == "suite"}
-    higher_names = suite_names | set(config["variable_overrides"]) | set(execution_variables)
+    higher_names = suite_names | set(execution_variables)
     merged = resolve_rows(
         [variable for variable in loaded if variable.scope == "global"], cache, ("global",),
         skip_names=higher_names | {variable.name for variable in loaded if variable.scope == "project"},
@@ -204,10 +194,9 @@ async def merge_suite_variables(
     ))
     merged.update(resolve_rows(
         [variable for variable in loaded if variable.scope == "suite"], cache,
-        ("suite", suite_id), skip_names=set(config["variable_overrides"]) | set(execution_variables),
+        ("suite", suite_id), skip_names=set(execution_variables),
         value_overrides=user_overrides,
     ))
-    merged.update(config["variable_overrides"])
     merged.update(execution_variables)
     return merged
 
@@ -216,7 +205,6 @@ async def resolve_element_snapshots(
     db: AsyncSession,
     project_id: int,
     steps: list[dict],
-    element_overrides: dict[int, AppProfileElementOverride],
     variables: dict,
     runtime_variables: set[str] | frozenset[str] = frozenset(),
     preloaded_elements: dict[int, TestElement] | None = None,
@@ -242,22 +230,21 @@ async def resolve_element_snapshots(
     if found != ids:
         raise ProfileRuleError("PROFILE_ELEMENT_MISSING", f"步骤/断言引用的元素不存在、已删除或不属于该项目: {sorted(ids - found)}")
     return {
-        str(element.id): element_snapshot(element, element_overrides.get(element.id), variables, runtime_variables)
+        str(element.id): element_snapshot(element, variables, runtime_variables)
         for element in rows
     }
 
 
 def element_snapshot(
     element: TestElement,
-    override: AppProfileElementOverride | None,
     variables: dict,
     runtime_variables: set[str] | frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
-    locator_type = override.locator_type if override else element.locator_type
+    locator_type = element.locator_type
     if locator_type == "smart":
-        locator_config = override.locator_config if override else element.locator_config
+        locator_config = element.locator_config
         return {"name": element.name, "platform": element.platform, "locator_type": "smart", "locator_config": locator_config or None, "locator_value": None}
-    locator_value = override.locator_value if override else element.locator_value
+    locator_value = element.locator_value
     return {
         "name": element.name,
         "platform": element.platform,

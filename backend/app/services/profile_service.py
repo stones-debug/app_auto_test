@@ -22,7 +22,7 @@ from app.services.profile_revision import RevisionConflictError, bump_profile_re
 
 
 def to_dict(profile: AppProfile, counts: dict[str, Any] | None = None) -> dict:
-    counts = counts or {"release_count": 0, "skip_counts": {"suite": 0, "case": 0, "step": 0, "assertion": 0}, "override_counts": {"element": 0, "variable": 0, "node": 0}}
+    counts = counts or {"release_count": 0, "skip_counts": {"suite": 0, "case": 0, "step": 0, "assertion": 0}, "override_counts": {"variable": 0}}
     return {
         "id": profile.id, "project_id": profile.project_id, "name": profile.name,
         "code": profile.code, "description": profile.description, "status": profile.status,

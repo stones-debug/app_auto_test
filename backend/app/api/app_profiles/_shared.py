@@ -1,6 +1,5 @@
 """APP 档案路由共享的纯组装、权限和 Repository 适配函数。"""
 
-from copy import deepcopy
 from datetime import UTC, datetime
 
 from fastapi import Depends, Request, status
@@ -89,11 +88,11 @@ def _node_item(
     suite_case_id: int | None = None,
 ) -> dict:
     effective_rule = inherited_rule or rule
-    effective = "skipped" if effective_rule else ("overridden" if overridden else "enabled")
-    source = "inherited" if inherited_rule else ("direct" if rule else ("override" if overridden else "none"))
+    effective = "skipped" if effective_rule else "enabled"
+    source = "inherited" if inherited_rule else ("direct" if rule else "none")
     reason = {"code": effective_rule.reason_code, "note": effective_rule.reason_note or ""} if effective_rule else None
     element_id, element_name = _element_info(node, element_names)
-    return {"node_type": node_type, "id": None, "suite_case_id": suite_case_id, "node_key": node_key, "element_id": element_id, "element_name": element_name, "name": node.get("description") or node.get("action") or node.get("type") or "", "registry_key": node.get("action") if node_type == "step" else node.get("type") or node.get("assertion_type"), "phase": node.get("phase"), "order": node.get("order"), "effective_status": effective, "status_source": source, "reason": reason, "override_count": 1 if overridden else 0, "override_template": _node_override_template(node), "has_children": False, "updated_at": None}
+    return {"node_type": node_type, "id": None, "suite_case_id": suite_case_id, "node_key": node_key, "element_id": element_id, "element_name": element_name, "name": node.get("description") or node.get("action") or node.get("type") or "", "registry_key": node.get("action") if node_type == "step" else node.get("type") or node.get("assertion_type"), "phase": node.get("phase"), "order": node.get("order"), "effective_status": effective, "status_source": source, "reason": reason, "override_count": 0, "has_children": False, "updated_at": None}
 
 
 async def _broadcast_config(profile: AppProfile, user_id: int | None = None) -> None:
@@ -104,11 +103,11 @@ def _suite_step_item(
     suite_id: int, node_key: str, node: dict, phase: str, rule, overridden: bool = False,
     element_names: dict[int, str] | None = None,
 ) -> dict:
-    effective = "skipped" if rule else ("overridden" if overridden else "enabled")
-    source = "direct" if rule else ("override" if overridden else "none")
+    effective = "skipped" if rule else "enabled"
+    source = "direct" if rule else "none"
     reason = {"code": rule.reason_code, "note": rule.reason_note or ""} if rule else None
     element_id, element_name = _element_info(node, element_names)
-    return {"node_type": "suite_step", "id": suite_id, "node_key": node_key, "element_id": element_id, "element_name": element_name, "name": node.get("description") or node.get("action") or node.get("type") or "", "registry_key": node.get("action"), "phase": phase, "order": node.get("order"), "effective_status": effective, "status_source": source, "reason": reason, "override_count": 1 if overridden else 0, "override_template": _node_override_template(node), "has_children": False, "updated_at": None}
+    return {"node_type": "suite_step", "id": suite_id, "node_key": node_key, "element_id": element_id, "element_name": element_name, "name": node.get("description") or node.get("action") or node.get("type") or "", "registry_key": node.get("action"), "phase": phase, "order": node.get("order"), "effective_status": effective, "status_source": source, "reason": reason, "override_count": 0, "has_children": False, "updated_at": None}
 
 
 def _sort_workspace(items: list[dict], sort_by: str, sort_order: str) -> list[dict]:
@@ -125,11 +124,6 @@ def require_profile_manager_by_profile():
             raise api_error(status.HTTP_403_FORBIDDEN, "PROFILE_MANAGER_REQUIRED", "需要 Owner/Admin 权限")
         return perm
     return _checker
-
-
-def _node_override_template(node: dict) -> dict:
-    from app.services.profile_resolver import NODE_PATCH_ALLOWED
-    return {key: deepcopy(value) for key, value in node.items() if key in NODE_PATCH_ALLOWED and value is not None}
 
 
 def _release_out(release: AppProfileRelease) -> dict:

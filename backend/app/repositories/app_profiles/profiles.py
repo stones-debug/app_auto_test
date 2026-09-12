@@ -10,12 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import (
     AppProfile,
     AppProfileAuditLog,
-    AppProfileElementOverride,
-    AppProfileNodeOverride,
     AppProfileRelease,
     AppProfileSkipRule,
     AppProfileSuiteCaseVariableOverride,
-    AppProfileVariableOverride,
     Execution,
     Project,
 )
@@ -163,7 +160,7 @@ async def profile_counts(db: AsyncSession, profile_ids: list[int]) -> dict[int, 
         profile_id: {
             "release_count": 0,
             "skip_counts": {"suite": 0, "case": 0, "step": 0, "assertion": 0},
-            "override_counts": {"element": 0, "variable": 0, "node": 0},
+            "override_counts": {"variable": 0},
         }
         for profile_id in profile_ids
     }
@@ -184,12 +181,7 @@ async def profile_counts(db: AsyncSession, profile_ids: list[int]) -> dict[int, 
     for profile_id, target_type, count in rows.all():
         if target_type in result[profile_id]["skip_counts"]:
             result[profile_id]["skip_counts"][target_type] = count
-    for model, key in (
-        (AppProfileElementOverride, "element"),
-        (AppProfileVariableOverride, "variable"),
-        (AppProfileSuiteCaseVariableOverride, "variable"),
-        (AppProfileNodeOverride, "node"),
-    ):
+    for model, key in ((AppProfileSuiteCaseVariableOverride, "variable"),):
         rows = await db.execute(
             select(model.profile_id, func.count())
             .where(model.profile_id.in_(profile_ids), model.deleted_at.is_(None))
@@ -228,9 +220,7 @@ AUDIT_ACTIONS = frozenset(
     {
         "profile_create", "profile_update", "profile_disable",
         "release_create", "release_update", "release_disable",
-        "skip_batch", "restore_batch", "element_override_upsert", "element_override_restore",
-        "variable_override_upsert", "variable_override_restore", "node_override_upsert", "node_override_restore",
-        "node_override_batch", "occurrence_variable_override_batch",
+        "skip_batch", "restore_batch", "occurrence_variable_override_batch",
         "user_variable_override_batch",
     }
 )

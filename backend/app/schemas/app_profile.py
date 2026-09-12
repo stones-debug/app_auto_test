@@ -6,9 +6,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.schemas.element import LOCATOR_TYPE_RE, _validate_locator
-from app.schemas.smart_locator import SmartLocatorConfig
-
 _REASON_CODES = {"unsupported", "not_adapted", "deprecated", "environment_limit", "other"}
 
 
@@ -180,57 +177,7 @@ class SkipBatchResponse(BaseModel):
     results: list[SkipBatchResultItem]
 
 
-# ---------- 覆盖（方案 §4.6） ----------
-
-
-class ElementOverrideUpsert(BaseModel):
-    request_id: str | None = None
-    expected_revision: int = Field(ge=1)
-    locator_type: str = Field(min_length=1, max_length=50, pattern=LOCATOR_TYPE_RE)
-    locator_value: str | None = None
-    locator_config: SmartLocatorConfig | None = None
-
-    @model_validator(mode="after")
-    def _validate_locator(self):
-        _validate_locator(self.locator_type, self.locator_value, self.locator_config)
-        return self
-
-
-class ElementOverrideDelete(BaseModel):
-    request_id: str | None = None
-    expected_revision: int = Field(ge=1)
-
-
-class VariableOverrideUpsert(BaseModel):
-    request_id: str | None = None
-    expected_revision: int = Field(ge=1)
-    value: str = Field(default="")
-    description: str | None = Field(default=None, max_length=500)
-
-
-class VariableOverrideDelete(BaseModel):
-    request_id: str | None = None
-    expected_revision: int = Field(ge=1)
-
-
-class NodeOverridePatch(BaseModel):
-    request_id: str | None = None
-    expected_revision: int = Field(ge=1)
-    patch: dict[str, Any] = Field(default_factory=dict)
-
-    @field_validator("patch")
-    @classmethod
-    def _patch_not_empty(cls, v: dict) -> dict:
-        if not v:
-            raise ValueError("patch 不能为空")
-        return v
-
-
-class NodeOverrideDelete(BaseModel):
-    request_id: str | None = None
-    expected_revision: int = Field(ge=1)
-
-
+# ---------- occurrence 变量覆盖（方案 §10.20） ----------
 class ProfileVariableReference(BaseModel):
     """同名变量在某个步骤/断言节点上的引用与覆盖。"""
 
@@ -334,7 +281,6 @@ class WorkspaceNode(BaseModel):
     status_source: str
     reason: dict[str, str] | None = None
     override_count: int = 0
-    override_template: dict[str, Any] | None = None
     child_count: int = 0
     difference_count: int = 0
     has_children: bool = False
