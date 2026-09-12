@@ -53,6 +53,55 @@ def format_for_log(value: Any) -> str:
         return repr(sanitized)
 
 
+def sanitize_agent_message_for_log(value: Any) -> Any:
+    """Return a safe, type-aware projection of an Agent protocol message.
+
+    Execution payloads intentionally contain real values for the Agent.  They
+    must never be copied into application logs, even when a message is malformed
+    or a future protocol field is not covered by the generic key markers.
+    """
+    if not isinstance(value, Mapping):
+        return sanitize_for_log(value)
+    message_type = value.get("type")
+    if message_type == "start_test":
+        suites = value.get("suites")
+        suite_summary = []
+        if isinstance(suites, list):
+            for suite in suites:
+                if isinstance(suite, Mapping):
+                    suite_summary.append({
+                        key: suite.get(key)
+                        for key in ("execution_suite_id", "suite_id", "suite_order", "is_virtual")
+                        if key in suite
+                    } | {
+                        "case_count": len(suite.get("cases") or [])
+                        if isinstance(suite.get("cases"), list) else 0,
+                    })
+        return sanitize_for_log({
+            key: value.get(key)
+            for key in ("type", "execution_id", "protocol_version", "device")
+            if key in value
+        } | {
+            "parameters": {"keys": sorted((value.get("parameters") or {}).keys())}
+            if isinstance(value.get("parameters"), Mapping) else {},
+            "suites": suite_summary,
+        })
+
+    def redact(item: Any, *, key: object | None = None) -> Any:
+        if key is not None and str(key).lower() in {
+            "actual", "actual_value", "expected", "expected_value",
+            "error", "error_message", "message", "log", "variables",
+        }:
+            return "<redacted>"
+        if isinstance(item, Mapping):
+            return {str(k): redact(v, key=k) for k, v in item.items()}
+        if isinstance(item, list):
+            return [redact(v) for v in item]
+        return sanitize_for_log(item, key=key)
+
+    return redact(value)
+
+
 def sanitize_request_body_for_log(path: str, value: Any) -> Any:
     """Apply endpoint-specific redaction before generic request logging.
 
@@ -61,7 +110,11 @@ def sanitize_request_body_for_log(path: str, value: Any) -> Any:
     redaction cannot identify it.  Keep request ids and variable ids visible,
     but never put update values into the request log.
     """
-    if not path.rstrip("/").endswith("/my-variables") or not isinstance(value, Mapping):
+    if not isinstance(value, Mapping):
+        return value
+    if path.rstrip("/").startswith("/internal/ws/agents/") and value.get("type") == "start_test":
+        return sanitize_agent_message_for_log(value)
+    if not path.rstrip("/").endswith("/my-variables"):
         return value
     def sanitize_payload(payload: Any) -> Any:
         if not isinstance(payload, Mapping):

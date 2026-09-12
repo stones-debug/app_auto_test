@@ -5,6 +5,8 @@ import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+from request_logging import sensitive_log_context
+
 from .actions import ACTION_REGISTRY
 from .assertion_wait import verify_with_wait
 from .assertions import ASSERTION_REGISTRY
@@ -37,6 +39,14 @@ Message = (
 SendFn = Callable[[Message], Awaitable[None]]
 
 logger = logging.getLogger(__name__)
+REDACTED = "<redacted>"
+
+
+def _safe_result_value(value, sensitive_paths) -> str | None:
+    """Mask result/error fields using resolver-provided path metadata only."""
+    if value is None:
+        return None
+    return REDACTED if isinstance(sensitive_paths, list) and sensitive_paths else str(value)
 
 
 # 用例步骤阶段归一化：后端快照五值 → 本地分桶的三段（setup/main/teardown）。
@@ -102,10 +112,14 @@ def _upload_screenshot_in_thread(uploader, execution_id: int, path: str, session
 
 
 class RunnerReporter:
-    def __init__(self, send: SendFn, execution_id: int, session_token: str | None = None) -> None:
+    def __init__(
+        self, send: SendFn, execution_id: int, session_token: str | None = None,
+        *, sensitive_execution: bool = False,
+    ) -> None:
         self.send = send
         self.execution_id = execution_id
         self.session_token = session_token
+        self.sensitive_execution = sensitive_execution
 
     async def log(
         self,
@@ -118,7 +132,7 @@ class RunnerReporter:
             "execution_id": self.execution_id,
             "session_token": self.session_token,
             "level": level,
-            "message": message,
+            "message": REDACTED if self.sensitive_execution and level in {"ERROR", "WARN"} else message,
         }
         if step_order is not None:
             msg["step_order"] = step_order
@@ -138,6 +152,7 @@ class RunnerReporter:
         actual_value: str | None = None,
         error_message: str | None = None,
         screenshot_path: str | None = None,
+        sensitive_parameter_paths: list[str] | None = None,
     ) -> None:
         # Step 6.2：step_order 必须能转为大于 0 的 int，否则为协议错误；
         # StepResultMessage.step_order 保持 int，不放宽消息类型。
@@ -159,8 +174,8 @@ class RunnerReporter:
             "action": action,
             "status": status,
             "duration": duration,
-            "actual_value": actual_value,
-            "error_message": error_message,
+            "actual_value": _safe_result_value(actual_value, sensitive_parameter_paths),
+            "error_message": _safe_result_value(error_message, sensitive_parameter_paths),
             "screenshot_path": screenshot_path,
         }
         if execution_case_id is not None:
@@ -208,12 +223,15 @@ class RunnerReporter:
         error_message: str | None = None, screenshot_path: str | None = None,
         attempt_count: int | None = None, execution_case_id: int | None = None,
         kind: str | None = None, execution_suite_id: int | None = None,
+        sensitive_parameter_paths: list[str] | None = None,
     ) -> None:
         msg: NodeResultMessage = {
             "type": "node_result", "execution_id": self.execution_id,
             "session_token": self.session_token, "execution_node_id": execution_node_id,
-            "status": status, "duration": duration, "actual_value": actual_value,
-            "expected_value": expected_value, "error_message": error_message,
+            "status": status, "duration": duration,
+            "actual_value": _safe_result_value(actual_value, sensitive_parameter_paths),
+            "expected_value": _safe_result_value(expected_value, sensitive_parameter_paths),
+            "error_message": _safe_result_value(error_message, sensitive_parameter_paths),
             "screenshot_path": screenshot_path,
         }
         if attempt_count is not None:
@@ -273,6 +291,7 @@ class TestRunner:
         screenshots_dir: Path | None = None,
         session_token: str | None = None,
         uploader=None,
+        sensitive_variable_names: list[str] | None = None,
     ) -> None:
         self.driver = driver
         self.send = send
@@ -282,6 +301,7 @@ class TestRunner:
         self.screenshots_dir = screenshots_dir
         self.session_token = session_token
         self.uploader = uploader
+        self.sensitive_variable_names = set(sensitive_variable_names or [])
         self._last_action_finished_at: float | None = None
 
     async def _wait_for_action_interval(self) -> None:
@@ -397,9 +417,12 @@ class TestRunner:
                         effective["element_id"] = step["element_id"]
                     await self._wait_for_action_interval()
                     try:
-                        result = await asyncio.to_thread(
-                            _run_action_in_thread, action_cls, self.driver, context, effective
-                        )
+                        with sensitive_log_context(
+                            self.sensitive_variable_names, self.parameters.get("variables", {})
+                        ):
+                            result = await asyncio.to_thread(
+                                _run_action_in_thread, action_cls, self.driver, context, effective
+                            )
                     finally:
                         self._last_action_finished_at = time.monotonic()
             except StopRequested:
@@ -438,20 +461,26 @@ class TestRunner:
                         # V2 步骤后断言没有统一节点的等待字段，保持历史单次验证行为；
                         # 只有明确带等待字段时才启用硬超时轮询。
                         if "max_wait_seconds" not in assertion:
-                            assertion_result = await asyncio.to_thread(
-                                _run_assertion_in_thread,
-                                assertion_cls,
-                                self.driver,
-                                context,
-                                effective,
-                            )
+                            with sensitive_log_context(
+                                self.sensitive_variable_names, self.parameters.get("variables", {})
+                            ):
+                                assertion_result = await asyncio.to_thread(
+                                    _run_assertion_in_thread,
+                                    assertion_cls,
+                                    self.driver,
+                                    context,
+                                    effective,
+                                )
                         else:
-                            assertion_result = await verify_with_wait(
-                                verify_once,
-                                max_wait_seconds=float(assertion["max_wait_seconds"]),
-                                should_stop=self.should_stop,
-                                on_interrupt=lambda: asyncio.to_thread(self.driver.interrupt),
-                            )
+                            with sensitive_log_context(
+                                self.sensitive_variable_names, self.parameters.get("variables", {})
+                            ):
+                                assertion_result = await verify_with_wait(
+                                    verify_once,
+                                    max_wait_seconds=float(assertion["max_wait_seconds"]),
+                                    should_stop=self.should_stop,
+                                    on_interrupt=lambda: asyncio.to_thread(self.driver.interrupt),
+                                )
                     except StopRequested:
                         raise
                     except Exception as exc:
@@ -472,6 +501,7 @@ class TestRunner:
                         assertion_result["error_message"] = failure_message
                     expected_value = assertion_result.get("expected")
                     actual_value = assertion_result.get("actual")
+                    assertion_paths = assertion.get("sensitive_parameter_paths")
                     execution_assertion_id = int(assertion.get("execution_assertion_id") or 0)
                     if execution_assertion_id <= 0:
                         raise ValueError("协议快照缺少有效 execution_assertion_id")
@@ -479,13 +509,12 @@ class TestRunner:
                         "execution_assertion_id": execution_assertion_id,
                         "type": str(assertion.get("type") or ""),
                         "assertion_order": int(assertion.get("order") or assertion_index),
-                        "expected": "" if expected_value is None else str(expected_value),
-                        "actual": "" if actual_value is None else str(actual_value),
+                        "expected": _safe_result_value(expected_value, assertion_paths) or "",
+                        "actual": _safe_result_value(actual_value, assertion_paths) or "",
                         "status": str(assertion_result.get("status") or "failed"),
                         "error_message": (
-                            str(assertion_result["error_message"])
-                            if assertion_result.get("error_message")
-                            else None
+                            _safe_result_value(assertion_result["error_message"], assertion_paths)
+                            if assertion_result.get("error_message") else None
                         ),
                     }
                     assertion_results.append(item)
@@ -518,6 +547,7 @@ class TestRunner:
                 actual_value=result.get("actual_value"),
                 error_message=result.get("error_message"),
                 screenshot_path=result.get("screenshot_path"),
+                sensitive_parameter_paths=step.get("sensitive_parameter_paths"),
             )
             step_status = result.get("status", "passed")
             if step_status == "passed":
@@ -525,7 +555,10 @@ class TestRunner:
                 log_message = f"{phase_label} {step_order} {action_name} 执行通过（{duration}ms）"
             else:
                 log_level = "ERROR"
-                error_message = str(result.get("error_message") or "未知错误")
+                error_message = _safe_result_value(
+                    result.get("error_message") or "未知错误",
+                    step.get("sensitive_parameter_paths"),
+                ) or "未知错误"
                 log_message = (
                     f"{phase_label} {step_order} {action_name} 执行失败（{duration}ms）：{error_message}"
                 )
@@ -600,12 +633,15 @@ class TestRunner:
                     def interrupt_driver():
                         return asyncio.to_thread(self.driver.interrupt)
 
-                    result = await verify_with_wait(
-                        verify_once,
-                        max_wait_seconds=float(node.get("max_wait_seconds", 10)),
-                        should_stop=self.should_stop,
-                        on_interrupt=interrupt_driver,
-                    )
+                    with sensitive_log_context(
+                        self.sensitive_variable_names, self.parameters.get("variables", {})
+                    ):
+                        result = await verify_with_wait(
+                            verify_once,
+                            max_wait_seconds=float(node.get("max_wait_seconds", 10)),
+                            should_stop=self.should_stop,
+                            on_interrupt=interrupt_driver,
+                        )
                     failure_message = _assertion_failure_message(
                         result,
                         expected_fallback=(node.get("params") or node.get("parameters") or {}).get("expected"),
@@ -625,9 +661,12 @@ class TestRunner:
                             effective.setdefault("element_id", node["element_id"])
                         await self._wait_for_action_interval()
                         try:
-                            result = await asyncio.to_thread(
-                                _run_action_in_thread, action_cls, self.driver, context, effective
-                            )
+                            with sensitive_log_context(
+                                self.sensitive_variable_names, self.parameters.get("variables", {})
+                            ):
+                                result = await asyncio.to_thread(
+                                    _run_action_in_thread, action_cls, self.driver, context, effective
+                                )
                         finally:
                             self._last_action_finished_at = time.monotonic()
             except StopRequested:
@@ -655,6 +694,7 @@ class TestRunner:
                 execution_suite_id=execution_suite_id,
                 execution_case_id=execution_case_id,
                 kind=str(kind),
+                sensitive_parameter_paths=node.get("sensitive_parameter_paths"),
             )
             await reporter.log(
                 "INFO" if status == "passed" else "ERROR",
@@ -669,6 +709,14 @@ class TestRunner:
         return (aggregate_statuses(statuses) if statuses else None), False, blocked
 
     async def run_case(self, case: dict, reporter: RunnerReporter | None = None) -> str:
+        """Run a case while protecting all Agent logs for this execution."""
+        with sensitive_log_context(
+            self.sensitive_variable_names,
+            self.parameters.get("variables", {}),
+        ):
+            return await self._run_case(case, reporter)
+
+    async def _run_case(self, case: dict, reporter: RunnerReporter | None = None) -> str:
         execution_case_id = int(case.get("execution_case_id") or 0)
         if execution_case_id <= 0:
             raise ValueError("协议 V2 快照缺少有效 execution_case_id")
@@ -679,7 +727,10 @@ class TestRunner:
             self.screenshots_dir,
             self.should_stop,
         )
-        reporter = reporter or RunnerReporter(self.send, self.execution_id, self.session_token)
+        reporter = reporter or RunnerReporter(
+            self.send, self.execution_id, self.session_token,
+            sensitive_execution=bool(self.sensitive_variable_names),
+        )
         case_status = "passed"
 
         all_steps = case.get("flow_snapshot") or case.get("steps_snapshot") or []
@@ -729,12 +780,23 @@ class TestRunner:
         return case_status
 
     async def run_suite(self, suite: dict) -> str:
+        """Run a suite with task-local redaction for its complete lifetime."""
+        with sensitive_log_context(
+            self.sensitive_variable_names,
+            self.parameters.get("variables", {}),
+        ):
+            return await self._run_suite(suite)
+
+    async def _run_suite(self, suite: dict) -> str:
         """执行一个套件：套件前置 → 用例循环 → 套件后置，上报 suite_status 终态。
 
         停止（StopRequested/CancelledError）不在此收敛，由上层 _run_execution
         统一收敛当前/未开始套件（当前→stopped，未开始→skipped）后上报 execution_result。
         """
-        reporter = RunnerReporter(self.send, self.execution_id, self.session_token)
+        reporter = RunnerReporter(
+            self.send, self.execution_id, self.session_token,
+            sensitive_execution=bool(self.sensitive_variable_names),
+        )
         suite_id = int(suite.get("execution_suite_id") or 0)
         if suite_id <= 0:
             raise ValueError("协议 V2 快照缺少有效 execution_suite_id")
@@ -799,7 +861,10 @@ class TestRunner:
 
     async def skip_suite(self, suite: dict) -> None:
         """停止收敛：未开始的套件整体标记 skipped（套件 + 其用例）。"""
-        reporter = RunnerReporter(self.send, self.execution_id, self.session_token)
+        reporter = RunnerReporter(
+            self.send, self.execution_id, self.session_token,
+            sensitive_execution=bool(self.sensitive_variable_names),
+        )
         suite_id = int(suite.get("execution_suite_id") or 0)
         await reporter.suite_status(suite_id, "skipped")
         for case in suite.get("cases") or []:
@@ -807,5 +872,8 @@ class TestRunner:
 
     async def stop_suite(self, suite: dict) -> None:
         """停止收敛：当前正在执行的套件标记 stopped（用例终态由后端收敛）。"""
-        reporter = RunnerReporter(self.send, self.execution_id, self.session_token)
+        reporter = RunnerReporter(
+            self.send, self.execution_id, self.session_token,
+            sensitive_execution=bool(self.sensitive_variable_names),
+        )
         await reporter.suite_status(int(suite.get("execution_suite_id") or 0), "stopped")

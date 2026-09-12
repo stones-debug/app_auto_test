@@ -132,3 +132,25 @@ async def test_truncated_profile_variable_preview_is_redacted(caplog):
     )
 
     assert "private-preview-value" not in caplog.records[0].message
+
+
+@pytest.mark.asyncio
+async def test_start_test_request_log_keeps_only_safe_metadata(caplog):
+    secret = "execution-secret-value"
+    body = json.dumps({
+        "type": "start_test",
+        "execution_id": 9,
+        "parameters": {"variables": {"password": secret}},
+        "suites": [{"execution_suite_id": 11, "cases": [{"params": {"text": secret}}]}],
+    }).encode()
+    caplog.set_level("INFO", logger="app.request")
+
+    await _run_middleware(
+        _scope("application/json", path="/internal/ws/agents/3/send"),
+        [{"type": "http.request", "body": body, "more_body": False}],
+    )
+
+    message = caplog.records[0].message
+    assert secret not in message
+    assert '"execution_id":9' in message
+    assert '"case_count":1' in message

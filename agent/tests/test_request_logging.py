@@ -14,7 +14,7 @@ import logging
 import pytest
 import websockets
 
-from request_logging import format_for_log, sanitize_for_log
+from request_logging import format_for_log, sanitize_agent_message_for_log, sanitize_for_log
 from ws_client import AgentWSClient
 
 MACHINE_PSK = "psk-plaintext-should-never-appear"
@@ -27,7 +27,7 @@ REGISTER_PAYLOAD = {
     "hostname": "qa-host-01",
     "platform": "windows",
     "version": "1.2.3",
-    "protocol_version": "3.3.0",
+    "protocol_version": "3.4.0",
 }
 
 
@@ -46,7 +46,7 @@ def test_agent_key_redacted_but_harmless_fields_kept():
     assert sanitized["agent_key"] == "<redacted>"
     assert sanitized["agent_id"] == "install-abc"
     assert sanitized["hostname"] == "qa-host-01"
-    assert sanitized["protocol_version"] == "3.3.0"
+    assert sanitized["protocol_version"] == "3.4.0"
 
 
 def test_sensitive_marker_covers_key_name_variants():
@@ -65,6 +65,18 @@ def test_http_body_with_agent_key_is_redacted():
 def test_nested_payload_is_redacted_recursively():
     rendered = format_for_log({"outer": {"agent_key": MACHINE_PSK}, "list": [{"agent_key": MACHINE_PSK}]})
     assert MACHINE_PSK not in rendered
+
+
+def test_start_test_message_log_never_contains_execution_values():
+    secret = "nested-execution-secret"
+    rendered = format_for_log(sanitize_agent_message_for_log({
+        "type": "start_test",
+        "execution_id": 7,
+        "parameters": {"variables": {"username": secret}},
+        "suites": [{"execution_suite_id": 8, "cases": [{"params": {"text": secret}}]}],
+    }))
+    assert secret not in rendered
+    assert '"case_count":1' in rendered
 
 
 async def test_ws_client_connect_does_not_log_machine_psk(caplog: pytest.LogCaptureFixture):

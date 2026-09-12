@@ -45,7 +45,7 @@ from app.services.execution_summary import (
     merge_execution_status,
     rate_percent,
 )
-from app.services.profile_resolver_nodes import runtime_variable_names
+from app.services.profile_resolver_nodes import runtime_variable_names, sensitive_parameter_paths
 from app.services.random_variables import resolve_rows
 
 logger = logging.getLogger("worker")
@@ -268,6 +268,7 @@ async def build_case_snapshot(
     *,
     use_pre_steps: bool = False,
     use_post_steps: bool = False,
+    sensitive_names: set[str] | frozenset[str] | None = None,
 ) -> dict:
     """构建不可变快照，并按运行选项选择前置/后置阶段。
 
@@ -296,6 +297,17 @@ async def build_case_snapshot(
         for raw_step in phase_steps:
             phase_order += 1
             step = render_value(deepcopy(raw_step), variable_map, runtime_variables)
+            step["sensitive_parameter_paths"] = sensitive_parameter_paths(
+                raw_step, sensitive_names or set()
+            )
+            rendered_assertions = step.get("assertions")
+            raw_assertions = raw_step.get("assertions") if isinstance(raw_step, dict) else None
+            if isinstance(rendered_assertions, list) and isinstance(raw_assertions, list):
+                for rendered_assertion, raw_assertion in zip(rendered_assertions, raw_assertions, strict=True):
+                    if isinstance(rendered_assertion, dict) and isinstance(raw_assertion, dict):
+                        rendered_assertion["sensitive_parameter_paths"] = sensitive_parameter_paths(
+                            raw_assertion, sensitive_names or set()
+                        )
             selected_steps.append(
                 {
                     **step,
@@ -366,6 +378,7 @@ def _suite_step_snapshots(
     variable_map: dict,
     phase: str,
     runtime_variables: set[str] | None = None,
+    sensitive_names: set[str] | frozenset[str] | None = None,
 ) -> list[dict]:
     available_runtime_variables = runtime_variables if runtime_variables is not None else set()
     snapshots: list[dict] = []
@@ -374,6 +387,9 @@ def _suite_step_snapshots(
         key=lambda item: _numeric_order(item.get("order")),
     ):
         node = render_value(deepcopy(raw_node), variable_map, available_runtime_variables)
+        node["sensitive_parameter_paths"] = sensitive_parameter_paths(
+            raw_node, sensitive_names or set()
+        )
         snapshots.append({
             **node,
             "phase": phase,
@@ -398,6 +414,7 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
     created: list[ExecutionCase] = []
     # §10.6 固定顺序：global → project → case → suite → 执行参数。
     execution_variables = parameters.get("variables") or {}
+    sensitive_names = set(execution.sensitive_variable_names or [])
     # 基础两层与执行参数在循环外求一次值；套件变量随套件切换，逐层叠加即可，
     # 避免"先复制完整映射再用低优先级覆盖高优先级"的逆序写法。
     base_map = await build_base_variable_map(db, execution, excluded_names=set(execution_variables))
@@ -420,12 +437,18 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
         suite_variable_map = {**base_map, **suite_variables, **execution_variables}
         suite_runtime_variables: set[str] = set()
         setup_snapshot = (
-            _suite_step_snapshots(suite.setup_steps, suite_variable_map, "suite_setup", suite_runtime_variables)
+            _suite_step_snapshots(
+                suite.setup_steps, suite_variable_map, "suite_setup", suite_runtime_variables,
+                sensitive_names,
+            )
             if suite is not None
             else []
         )
         teardown_snapshot = (
-            _suite_step_snapshots(suite.teardown_steps, suite_variable_map, "suite_teardown", suite_runtime_variables)
+            _suite_step_snapshots(
+                suite.teardown_steps, suite_variable_map, "suite_teardown", suite_runtime_variables,
+                sensitive_names,
+            )
             if suite is not None
             else []
         )
@@ -493,6 +516,7 @@ async def _materialize_unprofiled_tree(db: AsyncSession, execution: Execution) -
                 db, case, variable_map,
                 use_pre_steps=bool(parameters.get("use_pre_steps")),
                 use_post_steps=bool(parameters.get("use_post_steps")),
+                sensitive_names=sensitive_names,
             )
             exec_case = ExecutionCase(
                 execution_id=execution.id, execution_suite_id=exec_suite.id, case_id=case.id,
@@ -1310,6 +1334,7 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
                 "action": st.action,
                 "order": st.step_order,
                 "params": st.parameters or {},
+                "sensitive_parameter_paths": st.sensitive_parameter_paths or [],
                 "source_key": st.source_key,
                 "source_order": st.source_order,
                 "continue_on_failure": st.continue_on_failure,
@@ -1337,6 +1362,7 @@ async def _build_suites_payload(db: AsyncSession, execution: Execution) -> list[
                 "order": node.node_order,
                 "action": node.action,
                 "params": node.parameters or {},
+                "sensitive_parameter_paths": node.sensitive_parameter_paths or [],
                 "source_key": node.node_key,
                 "element_id": node.element_id,
                 "continue_on_failure": node.continue_on_failure,

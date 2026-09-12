@@ -19,6 +19,7 @@ from app.models import (
 )
 from app.services.execution_summary import merge_runtime_status
 from app.services.screenshot_store import validate_object_key
+from app.services.sensitive_snapshot import REDACTED
 from app.services.worker_service import min_agent_version, protocol_version
 
 TERMINAL_STATES = {"passed", "failed", "error", "stopped", "skipped", "cancelled"}
@@ -158,6 +159,13 @@ def _fill_if_present(target: object, field: str, value: object) -> None:
         setattr(target, field, value)
 
 
+def _safe_result_value(value: object, paths: object) -> str | None:
+    """Mask result fields when the prebuilt node/step path metadata is non-empty."""
+    if value is None:
+        return None
+    return REDACTED if isinstance(paths, list) and paths else str(value)
+
+
 # Agent 对断言的 pass/fail 与 passed/failed 两种写法都存在，比较严重度时统一
 _ASSERTION_STATUS_ALIASES = {"pass": "passed", "fail": "failed"}
 
@@ -178,13 +186,18 @@ async def _upsert_assertion(
     existing = await db.get(ExecutionAssertion, assertion_id)
     if existing is None or existing.execution_step_id != execution_step_id:
         return False
+    sensitive_paths = existing.sensitive_parameter_paths or []
     existing.assertion_type = data.get("type") or data.get("assertion_type") or existing.assertion_type
     expected = data.get("expected") if data.get("expected") is not None else data.get("expected_value")
     if expected is not None:
-        existing.expected_value = str(expected)
+        safe_expected = _safe_result_value(expected, sensitive_paths)
+        existing.expected_value = str(safe_expected)
+        data["expected"] = str(safe_expected)
     actual = data.get("actual") if data.get("actual") is not None else data.get("actual_value")
     if actual is not None:
-        existing.actual_value = str(actual)
+        safe_actual = _safe_result_value(actual, sensitive_paths)
+        existing.actual_value = str(safe_actual)
+        data["actual"] = str(safe_actual)
     if data.get("status"):
         incoming = str(data["status"])
         # 与步骤/节点同口径：已终态的断言不被晚到/重投消息回退。
@@ -193,7 +206,10 @@ async def _upsert_assertion(
         if _merge_step_status(_assertion_status_key(existing.status), _assertion_status_key(incoming)) == _assertion_status_key(incoming):
             existing.status = incoming
     if data.get("error_message") is not None:
-        existing.error_message = data["error_message"]
+        existing.error_message = str(
+            _safe_result_value(data["error_message"], sensitive_paths)
+        )
+        data["error_message"] = existing.error_message
     return True
 
 
@@ -369,10 +385,16 @@ async def handle_log(db: AsyncSession, agent_id: int, payload: dict) -> dict | N
     execution = await _bound_execution(db, agent_id, execution_id, payload.get("session_token"))
     if execution is None:
         return
+    message = payload.get("message") or ""
+    # The wire protocol has no node id for logs.  Avoid scanning the snapshot
+    # (and avoid leaking a value from an old Agent) by using the execution-level
+    # sensitivity marker as a conservative boundary.
+    if execution.sensitive_variable_names:
+        message = REDACTED
     log = ExecutionLog(
         execution_id=execution.id,
         level=payload.get("level") or "INFO",
-        message=payload.get("message") or "",
+        message=message,
         source="agent",
     )
     db.add(log)
@@ -450,8 +472,14 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
     if step.status in TERMINAL_STATES and step.finished_at is None:
         step.finished_at = now
     _fill_if_present(step, "duration", payload.get("duration"))
-    _fill_if_present(step, "actual_value", payload.get("actual_value"))
-    _fill_if_present(step, "error_message", payload.get("error_message"))
+    _fill_if_present(
+        step, "actual_value",
+        _safe_result_value(payload.get("actual_value"), step.sensitive_parameter_paths),
+    )
+    _fill_if_present(
+        step, "error_message",
+        _safe_result_value(payload.get("error_message"), step.sensitive_parameter_paths),
+    )
     if screenshot_path is not None:
         step.screenshot_path = screenshot_path
     await db.flush()
@@ -492,8 +520,8 @@ async def handle_step_result(db: AsyncSession, agent_id: int, payload: dict) -> 
         "status": step.status,
         "case_status": parent_status,
         "duration": step.duration,
-        "actual_value": step.actual_value,
-        "error_message": step.error_message,
+        "actual_value": _safe_result_value(step.actual_value, step.sensitive_parameter_paths),
+        "error_message": _safe_result_value(step.error_message, step.sensitive_parameter_paths),
         "screenshot_url": step.screenshot_path,
         "artifact_id": f"step:{step.id}" if step.screenshot_path else None,
         "timestamp": now.isoformat(),
@@ -565,9 +593,18 @@ async def handle_node_result(db: AsyncSession, agent_id: int, payload: dict) -> 
     if node.status in TERMINAL_STATES and node.finished_at is None:
         node.finished_at = now
     _fill_if_present(node, "duration", payload.get("duration"))
-    _fill_if_present(node, "actual_value", payload.get("actual_value"))
-    node.expected_value = payload.get("expected_value") or node.expected_value
-    _fill_if_present(node, "error_message", payload.get("error_message"))
+    _fill_if_present(
+        node, "actual_value",
+        _safe_result_value(payload.get("actual_value"), node.sensitive_parameter_paths),
+    )
+    if payload.get("expected_value") is not None:
+        node.expected_value = str(
+            _safe_result_value(payload.get("expected_value"), node.sensitive_parameter_paths)
+        )
+    _fill_if_present(
+        node, "error_message",
+        _safe_result_value(payload.get("error_message"), node.sensitive_parameter_paths),
+    )
     attempt_count = payload.get("attempt_count")
     if isinstance(attempt_count, int):
         node.attempt_count = attempt_count
@@ -593,8 +630,10 @@ async def handle_node_result(db: AsyncSession, agent_id: int, payload: dict) -> 
         "type": "node_result", "execution_id": execution_id, "execution_node_id": node.id,
         "execution_case_id": case.id if case else None, "execution_suite_id": suite.id if suite else None,
         "node_order": node.node_order, "kind": node.kind, "status": node.status,
-        "duration": node.duration, "actual_value": node.actual_value,
-        "expected_value": node.expected_value, "error_message": node.error_message,
+        "duration": node.duration,
+        "actual_value": _safe_result_value(node.actual_value, node.sensitive_parameter_paths),
+        "expected_value": _safe_result_value(node.expected_value, node.sensitive_parameter_paths),
+        "error_message": _safe_result_value(node.error_message, node.sensitive_parameter_paths),
         "attempt_count": node.attempt_count, "screenshot_url": node.screenshot_path,
         "artifact_id": f"node:{node.id}" if node.screenshot_path else None,
         "timestamp": now.isoformat(),
@@ -697,7 +736,9 @@ async def handle_case_status(db: AsyncSession, agent_id: int, payload: dict) -> 
         if parent_case.started_at is None:
             parent_case.started_at = now
     if payload.get("error_message") is not None:
-        parent_case.error_message = payload["error_message"]
+        parent_case.error_message = (
+            REDACTED if execution.sensitive_variable_names else payload["error_message"]
+        )
     await db.flush()
     return {
         "type": "case_status",
@@ -706,7 +747,10 @@ async def handle_case_status(db: AsyncSession, agent_id: int, payload: dict) -> 
         "case_id": parent_case.case_id,
         "status": parent_case.status,
         "duration": parent_case.duration,
-        "error_message": parent_case.error_message,
+        "error_message": (
+            REDACTED if execution.sensitive_variable_names and parent_case.error_message
+            else parent_case.error_message
+        ),
         "timestamp": now.isoformat(),
     }
 
@@ -741,7 +785,9 @@ async def handle_suite_status(db: AsyncSession, agent_id: int, payload: dict) ->
         if suite.started_at is None:
             suite.started_at = now
     if payload.get("error_message") is not None:
-        suite.error_message = payload["error_message"]
+        suite.error_message = (
+            REDACTED if execution.sensitive_variable_names else payload["error_message"]
+        )
     await db.flush()
     return {
         "type": "suite_status",
@@ -750,7 +796,10 @@ async def handle_suite_status(db: AsyncSession, agent_id: int, payload: dict) ->
         "suite_id": suite.suite_id,
         "status": suite.status,
         "duration": suite.duration,
-        "error_message": suite.error_message,
+        "error_message": (
+            REDACTED if execution.sensitive_variable_names and suite.error_message
+            else suite.error_message
+        ),
         "timestamp": now.isoformat(),
     }
 
@@ -878,7 +927,10 @@ async def handle_execution_result(db: AsyncSession, agent_id: int, payload: dict
     if execution.started_at is not None:
         execution.duration = int((now - execution.started_at).total_seconds() * 1000)
     await _settle_execution_cases(db, execution.id, status, now)
-    error_message = payload.get("error_message")
+    error_message = (
+        REDACTED if execution.sensitive_variable_names and payload.get("error_message") else
+        payload.get("error_message")
+    )
     if forced_termination_message:
         db.add(
             ExecutionLog(

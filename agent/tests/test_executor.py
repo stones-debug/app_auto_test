@@ -15,7 +15,7 @@ from executor import (
 )
 from executor.driver import MockElement, StaleObjectException
 from executor.status import aggregate_statuses
-from executor.test_runner import _assertion_failure_message
+from executor.test_runner import RunnerReporter, _assertion_failure_message
 
 
 def _make_case(steps, assertions=None, elements=None) -> dict:
@@ -83,6 +83,81 @@ async def test_registries_loaded():
     assert "element_exists" in ASSERTION_REGISTRY
     assert "regex_match" in ASSERTION_REGISTRY
     assert "number_compare" in ASSERTION_REGISTRY
+
+
+async def test_runner_reporter_masks_sensitive_result_but_runner_keeps_real_params():
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    reporter = RunnerReporter(send, 1)
+    await reporter.node_result(
+        2,
+        status="failed",
+        duration=1,
+        actual_value="secret-value",
+        expected_value="secret-expected",
+        error_message="secret-error",
+        sensitive_parameter_paths=["params.text"],
+    )
+
+    assert sent[0]["actual_value"] == "<redacted>"
+    assert sent[0]["expected_value"] == "<redacted>"
+    assert sent[0]["error_message"] == "<redacted>"
+
+
+async def test_sensitive_action_value_is_hidden_from_action_and_thread_logs(monkeypatch, caplog):
+    secret = "action-secret-value"
+    action_logger = logging.getLogger("agent.test_sensitive_action")
+    seen_values = []
+
+    class SecretAction:
+        async def execute(self, _driver, _context, params):
+            seen_values.append(params["value"])
+            action_logger.info("action params=%s", params)
+
+            def threaded_log():
+                action_logger.info("thread args=%s", {"nested": [params["value"]]})
+
+            await asyncio.to_thread(threaded_log)
+            try:
+                raise RuntimeError(f"action failed: {params['value']}")
+            except RuntimeError:
+                action_logger.exception(
+                    "action exception=%s",
+                    {"nested": [params["value"]], "other": "safe-value"},
+                )
+                raise
+
+    monkeypatch.setitem(ACTION_REGISTRY, "test_sensitive_action", SecretAction)
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    runner = TestRunner(
+        MockDriver(), send, 1,
+        parameters={"variables": {"secret": secret}},
+        sensitive_variable_names=["secret"],
+    )
+    case = _make_case([
+        {
+            "action": "test_sensitive_action",
+            "phase": "main",
+            "order": 1,
+            "params": {"value": "${secret}"},
+            "sensitive_parameter_paths": ["params.value"],
+        }
+    ])
+
+    with caplog.at_level(logging.INFO):
+        await runner.run_case(case)
+
+    assert secret not in caplog.text
+    assert seen_values == [secret]
+    assert sent
+    assert all(secret not in repr(message) for message in sent)
 
 
 async def test_mock_driver_input_get_text():

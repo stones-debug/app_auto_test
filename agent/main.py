@@ -310,6 +310,7 @@ class AgentApp:
                 screenshots_dir=screenshots_dir,
                 session_token=session_token,
                 uploader=self.uploader,
+                sensitive_variable_names=message.get("sensitive_variable_names") or [],
             )
             suite_statuses: list[str] = []
             for suite in suites:
@@ -342,8 +343,15 @@ class AgentApp:
             await self._send_execution_result_safe(execution_id, session_token, "stopped")
             logger.info("execution=%s 已停止", execution_id)
         except Exception as exc:
-            logger.exception("execution=%s 异常", execution_id)
-            await self._send_execution_result_safe(execution_id, session_token, "error", str(exc))
+            if message.get("sensitive_variable_names"):
+                logger.error("execution=%s 异常（敏感执行，详情已隐藏）", execution_id)
+                error_message = "<redacted>"
+            else:
+                logger.exception("execution=%s 异常", execution_id)
+                error_message = str(exc)
+            await self._send_execution_result_safe(
+                execution_id, session_token, "error", error_message
+            )
         finally:
             # 清理顺序固定：driver.quit → 清 runtime.driver → release Appium → 从 map 删除
             if driver is not None:

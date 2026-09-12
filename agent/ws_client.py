@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable
 
 import websockets
 
-from request_logging import format_for_log
+from request_logging import format_for_log, sanitize_agent_message_for_log
 
 logger = logging.getLogger("agent.ws")
 
@@ -28,7 +28,7 @@ class AgentWSClient:
         url: str,
         agent_key: KeyProvider,
         agent_id: str,
-        version: str = "3.3.0",
+        version: str = "3.4.0",
         protocol_version: str | None = None,
         heartbeat_interval: int = 30,
     ) -> None:
@@ -76,7 +76,11 @@ class AgentWSClient:
         try:
             await ws.send(json.dumps(register_payload, ensure_ascii=False))
             reply = json.loads(await ws.recv())
-            logger.info("WS 响应 %s params=%s", self.url, format_for_log(reply))
+            logger.info(
+                "WS 响应 %s params=%s",
+                self.url,
+                format_for_log(sanitize_agent_message_for_log(reply)),
+            )
             if reply.get("status") != "ok":
                 raise AuthError(f"注册失败: {reply}")
             self._registered.set()
@@ -100,7 +104,11 @@ class AgentWSClient:
         步骤顺序，也不会因一次 ConnectionClosed 把整次执行异常终止。
         """
         encoded = json.dumps(payload, ensure_ascii=False)
-        logger.info("WS 请求发送 %s params=%s", self.url, format_for_log(payload))
+        logger.info(
+            "WS 请求发送 %s params=%s",
+            self.url,
+            format_for_log(sanitize_agent_message_for_log(payload)),
+        )
         while not self._stop.is_set():
             try:
                 await asyncio.wait_for(self._registered.wait(), timeout=1)
@@ -169,7 +177,11 @@ class AgentWSClient:
                 message = json.loads(raw)
             except json.JSONDecodeError:
                 continue
-            logger.info("WS 响应接收 %s params=%s", self.url, format_for_log(message))
+            logger.info(
+                "WS 响应接收 %s params=%s",
+                self.url,
+                format_for_log(sanitize_agent_message_for_log(message)),
+            )
             msg_type = message.get("type")
             if msg_type == "ping":
                 await self.send({"type": "pong"})

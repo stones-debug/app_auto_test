@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.core.config import settings
-from app.core.request_logging import format_for_log
+from app.core.request_logging import format_for_log, sanitize_agent_message_for_log
 from app.schemas.ws import validate_agent_message
 from app.services import ws_ingest_service
 from app.ws.managers import agent_manager, execution_manager, profile_config_manager
@@ -134,7 +134,7 @@ async def agent_ws(websocket: WebSocket, _legacy_db=None):
             if not isinstance(data, dict):
                 await websocket.send_json({"type": "error", "code": "PROTOCOL_ERROR", "message": "消息必须是 JSON 对象"})
                 continue
-            logger.info("WS 请求 /ws/agent params=%s", format_for_log(data))
+            logger.info("WS 请求 /ws/agent params=%s", format_for_log(sanitize_agent_message_for_log(data)))
             try:
                 valid = validate_agent_message(data)
             except Exception:
@@ -164,7 +164,7 @@ async def agent_ws(websocket: WebSocket, _legacy_db=None):
                 else:
                     reply = await ws_ingest_service.handle_agent_message(current_agent_id, valid)
                 if reply is not None:
-                    logger.info("WS 响应 /ws/agent params=%s", format_for_log(reply))
+                    logger.info("WS 响应 /ws/agent params=%s", format_for_log(sanitize_agent_message_for_log(reply)))
                     await websocket.send_json(reply)
             except WebSocketDisconnect:
                 raise

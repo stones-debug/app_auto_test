@@ -3,11 +3,11 @@
 # so non-ASCII comments/messages would corrupt parsing. Keep this file ASCII.
 #
 # Usage:
-#   powershell -ExecutionPolicy Bypass -File packaging\publish.ps1 -Version 3.3.0 -ReleaseDir ..\backend\data\agent-releases
+#   powershell -ExecutionPolicy Bypass -File packaging\publish.ps1 -Version 3.4.0 -ReleaseDir ..\backend\data\agent-releases
 #
 # Flow: self-check -> PyInstaller onedir -> copy vendor platform-tools -> Inno Setup -> SHA-256 -> latest.json (atomic) -> copy to release dir
 param(
-    [string]$Version = "3.3.0",
+    [string]$Version = "3.4.0",
     [string]$ReleaseDir = "",
     [switch]$SkipBuild
 )

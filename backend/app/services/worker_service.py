@@ -457,6 +457,7 @@ async def run_reserved_execution(
             payload = {
                 "type": "start_test", "execution_id": execution.id,
                 "session_token": execution.session_token, "parameters": execution.parameters,
+                "sensitive_variable_names": execution.sensitive_variable_names or [],
                 "protocol_version": protocol_version(),
                 "device": {"udid": device.udid, "platform": device.platform},
                 "suites": await _build_suites_payload(payload_db, execution),

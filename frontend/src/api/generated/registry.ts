@@ -34,7 +34,7 @@ export interface AssertionMeta {
   fields: ParamField[]
 }
 
-export const PROTOCOL_VERSION = "3.3.0"
+export const PROTOCOL_VERSION = "3.4.0"
 
 export const ACTIONS: ActionMeta[] = [
   { value: 'launch_app', label: '启动 APP', needsElement: false, fields: [

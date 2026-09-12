@@ -1197,6 +1197,71 @@ async def test_suites_payload_injects_execution_node_ids(client: AsyncClient):
         assert int(sent_assertion.get("order") or 0) == sent_order
 
 
+async def test_suites_payload_carries_sensitive_metadata_for_all_execution_shapes(client: AsyncClient):
+    """Worker 下发只增加敏感元数据，绝不复制敏感值到元数据字段。"""
+    _token, case_id = await _setup_case(client)
+    _agent_id, device_id = await _create_agent_device()
+    execution_id = await _create_execution(
+        client, _token, case_id,
+        {"variables": {"btn_id": "button", "secret": "value"}},
+        device_id,
+    )
+
+    async with SessionLocal() as db:
+        execution = await db.get(Execution, execution_id)
+        assert execution is not None
+        execution.sensitive_variable_names = ["secret"]
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        await db.commit()
+        ec = await db.scalar(select(ExecutionCase).where(ExecutionCase.execution_id == execution_id))
+        suite = await db.scalar(select(ExecutionSuite).where(ExecutionSuite.execution_id == execution_id))
+        assert ec is not None and suite is not None
+        step = await db.scalar(select(ExecutionStep).where(ExecutionStep.execution_case_id == ec.id))
+        assertion = await db.scalar(
+            select(ExecutionAssertion).join(ExecutionStep).where(ExecutionStep.execution_case_id == ec.id)
+        )
+        node = await db.scalar(select(ExecutionNode).where(ExecutionNode.execution_case_id == ec.id))
+        assert step is not None and assertion is not None and node is not None
+        step.sensitive_parameter_paths = ["params.value"]
+        assertion.sensitive_parameter_paths = ["params.expected"]
+        node.sensitive_parameter_paths = ["params.value"]
+        flow_snapshot = [dict(item) for item in (ec.flow_snapshot or [])]
+        assert flow_snapshot
+        flow_snapshot[0]["sensitive_parameter_paths"] = ["params.value"]
+        ec.flow_snapshot = flow_snapshot
+        steps_snapshot = [dict(item) for item in (ec.steps_snapshot or [])]
+        assert steps_snapshot
+        steps_snapshot[0]["sensitive_parameter_paths"] = ["params.value"]
+        assertions_snapshot = [dict(item) for item in (steps_snapshot[0].get("assertions") or [])]
+        assert assertions_snapshot
+        assertions_snapshot[0]["sensitive_parameter_paths"] = ["params.expected"]
+        steps_snapshot[0]["assertions"] = assertions_snapshot
+        ec.steps_snapshot = steps_snapshot
+        suite.setup_steps_snapshot = [{"order": 1, "action": "sleep", "params": {"duration": 1}}]
+        suite.teardown_steps_snapshot = [{"order": 1, "action": "sleep", "params": {"duration": 1}}]
+        db.add(ExecutionStep(
+            execution_suite_id=suite.id, phase="suite_setup", step_order=1,
+            action="sleep", parameters={"duration": 1},
+            sensitive_parameter_paths=["params.duration"], status="pending",
+        ))
+        db.add(ExecutionStep(
+            execution_suite_id=suite.id, phase="suite_teardown", step_order=1,
+            action="sleep", parameters={"duration": 1},
+            sensitive_parameter_paths=["params.duration"], status="pending",
+        ))
+        await db.commit()
+
+        payload = await worker_service._build_suites_payload(db, execution)
+        assert execution.sensitive_variable_names == ["secret"]
+        suite_payload = payload[0]
+        assert suite_payload["setup_steps"][0]["sensitive_parameter_paths"] == ["params.duration"]
+        assert suite_payload["teardown_steps"][0]["sensitive_parameter_paths"] == ["params.duration"]
+        case_payload = suite_payload["cases"][0]
+        assert case_payload["flow_snapshot"][0]["sensitive_parameter_paths"] == ["params.value"]
+        assert case_payload["steps_snapshot"][0]["sensitive_parameter_paths"] == ["params.value"]
+        assert case_payload["steps_snapshot"][0]["assertions"][0]["sensitive_parameter_paths"] == ["params.expected"]
+
+
 async def test_suites_payload_carries_suite_step_continue_on_failure(client: AsyncClient):
     """协议 V2：套件步的 continue_on_failure 必须经 ExecutionStep 行固化并下发。
 

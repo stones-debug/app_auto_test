@@ -436,6 +436,81 @@ async def test_handle_log_step_result_execution_result(client: AsyncClient):
     await execution_manager.disconnect(execution_id, front)
 
 
+async def test_sensitive_ws_result_fields_are_redacted_and_retries_preserve_evidence(client: AsyncClient):
+    _token, _case_id, execution_id = await _setup_case_execution(client)
+    async with SessionLocal() as db:
+        agent_id = await _create_agent()
+        execution = await db.get(Execution, execution_id)
+        await worker_service.create_execution_cases_from_execution(db, execution)
+        await _bind_execution_to_agent(db, execution_id, agent_id)
+        execution = await db.get(Execution, execution_id)
+        execution.sensitive_variable_names = ["secret"]
+        execution_case, steps, assertions = await _snapshot_ids(db, execution_id)
+        step = steps[0]
+        step.sensitive_parameter_paths = ["params.value"]
+        assertion = assertions[0]
+        assertion.sensitive_parameter_paths = ["params.expected"]
+        node = await db.scalar(
+            select(ExecutionNode).where(ExecutionNode.execution_case_id == execution_case.id)
+        )
+        assert node is not None
+        node.sensitive_parameter_paths = ["params.value"]
+        await db.commit()
+
+    front = FakeWebSocket()
+    await execution_manager.connect(execution_id, front)
+    secret = "ws-secret-value"
+    async with SessionLocal() as db:
+        log_reply = await handlers.handle_log(
+            db, agent_id,
+            {"execution_id": execution_id, "session_token": "sess-token", "message": secret},
+        )
+        assert log_reply["message"] == "<redacted>"
+        stored_log = (await db.execute(select(ExecutionLog).where(ExecutionLog.execution_id == execution_id))).scalars().first()
+        assert stored_log is not None and stored_log.message == "<redacted>"
+
+        step_reply = await handlers.handle_step_result(
+            db, agent_id,
+            {"execution_id": execution_id, "session_token": "sess-token",
+             "execution_case_id": execution_case.id, "execution_step_id": step.id,
+             "step_order": 1, "status": "failed", "actual_value": secret,
+             "error_message": f"error: {secret}"},
+        )
+        assert secret not in repr(step_reply)
+        stored_step = await db.get(ExecutionStep, step.id)
+        assert stored_step is not None and secret not in repr(stored_step.__dict__)
+
+        node_reply = await handlers.handle_node_result(
+            db, agent_id,
+            {"execution_id": execution_id, "session_token": "sess-token",
+             "execution_node_id": node.id, "status": "failed", "actual_value": secret,
+             "expected_value": secret, "error_message": secret},
+        )
+        assert secret not in repr(node_reply)
+
+        assertion_reply = await handlers.handle_assertion_result(
+            db, agent_id,
+            {"execution_id": execution_id, "session_token": "sess-token",
+             "execution_step_id": step.id,
+             "assertions": [{"execution_assertion_id": assertion.id, "type": "text_equals",
+                              "status": "fail", "expected": secret, "actual": secret,
+                              "error_message": secret}]},
+        )
+        assert secret not in repr(assertion_reply)
+        stored_assertion = await db.get(ExecutionAssertion, assertion.id)
+        assert stored_assertion is not None and secret not in repr(stored_assertion.__dict__)
+        retry = await handlers.handle_step_result(
+            db, agent_id,
+            {"execution_id": execution_id, "session_token": "sess-token",
+             "execution_case_id": execution_case.id, "execution_step_id": step.id,
+             "step_order": 1, "status": "failed"},
+        )
+        assert retry is not None and retry["actual_value"] == "<redacted>"
+
+    assert all(secret not in repr(message) for message in front.sent)
+    await execution_manager.disconnect(execution_id, front)
+
+
 async def test_step_result_rejects_unsafe_screenshot_path(client: AsyncClient):
     """CR-01：Agent 回传的恶意 screenshot_path 不得入库。"""
     token, case_id, execution_id = await _setup_case_execution(client)
