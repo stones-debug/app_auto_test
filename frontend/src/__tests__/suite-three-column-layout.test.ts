@@ -72,6 +72,13 @@ describe('套件页三栏布局（左区 │ 套件详情）', () => {
     expect(main).toMatch(/min-width:\s*0/)
   })
 
+  it('空态和加载态保留视口高度，避免分组切换时父布局塌缩导致滚动跳动', () => {
+    expect(cssRule(suiteSource, '.suite-layout')).toMatch(/min-height:\s*calc\(100vh - 120px\)/)
+    expect(cssRule(suiteSource, '.suite-sidebar')).toMatch(/height:\s*calc\(100vh - 120px\)/)
+    expect(cssRule(suiteSource, '.suite-main')).toMatch(/min-height:\s*calc\(100vh - 120px\)/)
+    expect(cssRule(suiteSource, '.detail-loading')).toMatch(/min-height:\s*220px/)
+  })
+
   it('左区两列吸顶：layout 不设 align-items（否则 .suite-left 不撑满行高，sticky 失效）', () => {
     const layout = cssRule(suiteSource, '.suite-layout')
     expect(layout).toMatch(/display:\s*flex/)

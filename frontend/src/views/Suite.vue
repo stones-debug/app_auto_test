@@ -697,6 +697,7 @@ onMounted(() => {
   min-width: 0;
   display: flex;
   flex-direction: column;
+  height: calc(100vh - 120px);
   max-height: calc(100vh - 120px);
   background: var(--card-bg);
   border: 1px solid var(--border);
@@ -728,6 +729,7 @@ onMounted(() => {
 .suite-layout {
   display: flex;
   gap: 16px;
+  min-height: calc(100vh - 120px);
 }
 
 /*
@@ -755,6 +757,7 @@ onMounted(() => {
 .suite-main {
   flex: 1;
   min-width: 0;
+  min-height: calc(100vh - 120px);
 }
 
 /*
