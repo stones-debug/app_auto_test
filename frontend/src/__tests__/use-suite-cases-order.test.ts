@@ -17,6 +17,12 @@ import { useSuiteCases } from '@/composables/useSuiteCases'
 
 const item = (caseId: number): SuiteCase => ({ id: caseId, case_id: caseId, case_name: `case-${caseId}`, module_name: null, sort_order: caseId, variable_count: 0, variables_preview: [] })
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise })
+  return { promise, resolve }
+}
+
 beforeEach(() => {
   reorder.mockReset()
   list.mockReset()
@@ -91,5 +97,24 @@ describe('useSuiteCases 编排排序', () => {
     resolveRequest()
     await moving
     expect(state.suiteCases.value.map((entry) => entry.case_id)).toEqual([9, 8])
+  })
+
+  it('快速切换套件时旧用例列表回包不覆盖当前套件', async () => {
+    const active = ref<number | null>(1)
+    const state = useSuiteCases(1, active)
+    const first = deferred<SuiteCase[]>()
+    const second = deferred<SuiteCase[]>()
+    list.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+
+    const oldLoad = state.loadSuiteCases(1)
+    active.value = 2
+    const currentLoad = state.loadSuiteCases(2)
+    second.resolve([item(20)])
+    await currentLoad
+    expect(state.suiteCases.value.map((entry) => entry.id)).toEqual([20])
+
+    first.resolve([item(10)])
+    await oldLoad
+    expect(state.suiteCases.value.map((entry) => entry.id)).toEqual([20])
   })
 })

@@ -50,6 +50,7 @@ const suiteCaseState = useSuiteCases(projectId, suiteList.activeSuite, async (pr
   }
 })
 loadSuiteData = async (id) => {
+  resetDetail()
   await suiteDetailState.selectSuite(id)
   await suiteCaseState.loadSuiteCases(id)
 }
@@ -77,7 +78,10 @@ async function onModuleSelect(key: string) {
   // 切换模块会换掉当前套件；未保存的步骤先确认，避免静默丢失
   if (!(await confirmDiscardSteps())) return
   selectedModule.value = parseModuleKey(key)
-  await setModuleKey(selectedModule.value)
+  const moduleLoad = setModuleKey(selectedModule.value)
+  resetDetail()
+  await suiteCaseState.loadSuiteCases(null)
+  await moduleLoad
 }
 
 function onKeywordInput() {
@@ -508,7 +512,7 @@ onMounted(() => {
               </span>
             </div>
           </div>
-          <template v-if="filteredSuites.length === 0">
+          <template v-if="!loadingSuites && filteredSuites.length === 0">
             <div v-if="keyword" class="no-match v2-aux">没有找到与「{{ keyword }}」匹配的套件</div>
             <EmptyState v-else :title="selectedModule === 'all' ? '还没创建套件' : '该模块下暂无套件'"
               description="套件用于批量编排用例，并可配置前后置步骤与变量。" :action-label="canWriteAssets ? '新建套件' : undefined"

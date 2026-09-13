@@ -17,6 +17,7 @@ export function useSuiteDetail(onSaved?: () => Promise<void>) {
   const varEditing = ref<{ id: number; value: string; is_sensitive: boolean; sensitive_value_changed: boolean } | null>(null)
   const savingVar = ref(false)
   let stepsLoaded = false
+  let requestSeq = 0
 
   function onSetupStepsChange(steps: Step[]) {
     setupSteps.value = steps
@@ -29,9 +30,11 @@ export function useSuiteDetail(onSaved?: () => Promise<void>) {
   }
 
   async function selectSuite(id: number, opts?: { preserveSteps?: boolean }) {
+    const seq = ++requestSeq
     loadingDetail.value = true
     try {
       const detail = await getSuite(id)
+      if (seq !== requestSeq) return
       if (opts?.preserveSteps) {
         suiteDetail.value = { ...detail, setup_steps: setupSteps.value, teardown_steps: teardownSteps.value }
       } else {
@@ -39,11 +42,13 @@ export function useSuiteDetail(onSaved?: () => Promise<void>) {
         setupSteps.value = (detail.setup_steps ?? []).map((step) => normalizeStep({ ...step, phase: 'setup' }))
         teardownSteps.value = (detail.teardown_steps ?? []).map((step) => normalizeStep({ ...step, phase: 'teardown' }))
       }
-      suiteVars.value = await listVariables({ scope: 'suite', suite_id: id })
+      const variables = await listVariables({ scope: 'suite', suite_id: id })
+      if (seq !== requestSeq) return
+      suiteVars.value = variables
       varEditing.value = null
       stepsLoaded = true
     } finally {
-      loadingDetail.value = false
+      if (seq === requestSeq) loadingDetail.value = false
     }
   }
 
@@ -148,11 +153,14 @@ export function useSuiteDetail(onSaved?: () => Promise<void>) {
   }
 
   function reset() {
+    requestSeq += 1
+    loadingDetail.value = false
     suiteDetail.value = null
     setupSteps.value = []
     teardownSteps.value = []
     suiteVars.value = []
     varEditing.value = null
+    stepsLoaded = false
     markSaved()
   }
 

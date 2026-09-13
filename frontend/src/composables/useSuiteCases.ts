@@ -40,6 +40,7 @@ export function useSuiteCases(
   const persistedOrder = ref<number[]>([])
   const casesRefreshVersion = ref(0)
   let reorderRequestId = 0
+  let loadRequestId = 0
 
   const filteredCases = computed(() => {
     const kw = addKeyword.value.trim().toLowerCase()
@@ -66,7 +67,16 @@ export function useSuiteCases(
   }
 
   async function loadSuiteCases(id: number | null = activeSuite.value) {
-    suiteCases.value = id ? await listSuiteCases(id) : []
+    const requestId = ++loadRequestId
+    if (!id) {
+      suiteCases.value = []
+      persistedOrder.value = []
+      casesRefreshVersion.value += 1
+      return
+    }
+    const cases = await listSuiteCases(id)
+    if (requestId !== loadRequestId || activeSuite.value !== id) return
+    suiteCases.value = cases
     persistedOrder.value = suiteCases.value.map((item) => item.id)
     casesRefreshVersion.value += 1
   }
