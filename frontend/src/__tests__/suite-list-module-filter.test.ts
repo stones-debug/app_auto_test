@@ -25,16 +25,6 @@ function pageOf(items: Suite[], total = items.length) {
   return { total, page: 1, page_size: SUITE_LIST_PAGE_SIZE, items }
 }
 
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  let reject!: (error: unknown) => void
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise
-    reject = rejectPromise
-  })
-  return { promise, resolve, reject }
-}
-
 beforeEach(() => {
   listSuitesMock.mockReset()
   listSuitesMock.mockResolvedValue(pageOf([suite(1)]))
@@ -127,45 +117,5 @@ describe('筛选变化后的选中套件', () => {
     await list.loadSuites()
     expect(onSelect).not.toHaveBeenCalled()
     expect(list.activeSuite.value).toBe(1)
-  })
-
-  it('模块切换请求期间清空上一分组，完成后再显示目标分组首个套件', async () => {
-    listSuitesMock.mockResolvedValueOnce(pageOf([suite(1)]))
-    const list = useSuiteList(1)
-    await list.loadSuites()
-
-    const next = deferred<ReturnType<typeof pageOf>>()
-    listSuitesMock.mockReturnValueOnce(next.promise)
-    const change = list.setModuleKey('7')
-
-    expect(list.suites.value).toEqual([])
-    expect(list.activeSuite.value).toBeNull()
-    expect(list.loadingSuites.value).toBe(true)
-
-    next.resolve(pageOf([suite(7)]))
-    await change
-    expect(list.suites.value.map((item) => item.id)).toEqual([7])
-    expect(list.activeSuite.value).toBe(7)
-  })
-
-  it('快速切换模块时旧回包不覆盖最新列表，也不提前结束 loading', async () => {
-    const first = deferred<ReturnType<typeof pageOf>>()
-    const second = deferred<ReturnType<typeof pageOf>>()
-    listSuitesMock.mockReset()
-    listSuitesMock.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
-    const list = useSuiteList(1)
-
-    const oldChange = list.setModuleKey('1')
-    const newestChange = list.setModuleKey('2')
-    second.resolve(pageOf([suite(2)]))
-    await newestChange
-    expect(list.suites.value.map((item) => item.id)).toEqual([2])
-    expect(list.activeSuite.value).toBe(2)
-    expect(list.loadingSuites.value).toBe(false)
-
-    first.resolve(pageOf([suite(1)]))
-    await oldChange
-    expect(list.suites.value.map((item) => item.id)).toEqual([2])
-    expect(list.activeSuite.value).toBe(2)
   })
 })

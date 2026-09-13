@@ -24,8 +24,6 @@ export function useSuiteList(projectId: number, onSelect?: (id: number) => Promi
   const moduleKey = ref<ModuleKey>('all')
   /** 结果被 200 上限截断时为 true：此后的排序/计数只对该子集成立 */
   const truncated = ref(false)
-  // 快速切换模块时只接受最后一次列表请求，避免旧分组回包覆盖当前分组。
-  let requestSeq = 0
 
   const filteredSuites = computed(() => {
     const base = [...suites.value]
@@ -51,7 +49,6 @@ export function useSuiteList(projectId: number, onSelect?: (id: number) => Promi
   }
 
   async function loadSuites() {
-    const seq = ++requestSeq
     loadingSuites.value = true
     try {
       const data = await listSuites(projectId, {
@@ -60,7 +57,6 @@ export function useSuiteList(projectId: number, onSelect?: (id: number) => Promi
         keyword: keyword.value.trim() || undefined,
         ...moduleFilterParams(moduleKey.value),
       })
-      if (seq !== requestSeq) return
       suites.value = data.items
       truncated.value = data.total > data.items.length
       const stillVisible = suites.value.some((suite) => suite.id === activeSuite.value)
@@ -70,16 +66,12 @@ export function useSuiteList(projectId: number, onSelect?: (id: number) => Promi
         else activeSuite.value = null
       }
     } finally {
-      if (seq === requestSeq) loadingSuites.value = false
+      loadingSuites.value = false
     }
   }
 
   async function setModuleKey(key: ModuleKey) {
     moduleKey.value = key
-    // 请求完成前不展示上一分组的列表或选中项，避免空态/详情与当前分组错配。
-    suites.value = []
-    activeSuite.value = null
-    truncated.value = false
     await loadSuites()
   }
 
