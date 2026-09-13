@@ -342,6 +342,7 @@ function isActive(key: string) {
 .content {
   padding: var(--content-padding);
   overflow: auto;
+  scrollbar-gutter: stable;
   background: var(--bg);
 }
 </style>

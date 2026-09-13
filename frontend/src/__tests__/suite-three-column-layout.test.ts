@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 const suiteSource = readFileSync(resolve(process.cwd(), 'src/views/Suite.vue'), 'utf8')
 const caseSource = readFileSync(resolve(process.cwd(), 'src/views/Case.vue'), 'utf8')
+const appShellSource = readFileSync(resolve(process.cwd(), 'src/components/AppShell.vue'), 'utf8')
 
 /** 取出源码里第一个同名 CSS 规则的声明体（媒体查询内的同名规则排在后面，不会被取到） */
 function cssRule(source: string, selector: string) {
@@ -74,9 +75,14 @@ describe('套件页三栏布局（左区 │ 套件详情）', () => {
 
   it('空态和加载态保留视口高度，避免分组切换时父布局塌缩导致滚动跳动', () => {
     expect(cssRule(suiteSource, '.suite-layout')).toMatch(/min-height:\s*calc\(100vh - 120px\)/)
-    expect(cssRule(suiteSource, '.suite-sidebar')).toMatch(/height:\s*calc\(100vh - 120px\)/)
+    expect(cssRule(suiteSource, '.suite-sidebar')).toMatch(/height:\s*calc\(100vh - 136px\)/)
+    expect(cssRule(suiteSource, '.suite-sidebar')).toMatch(/max-height:\s*calc\(100vh - 136px\)/)
     expect(cssRule(suiteSource, '.suite-main')).toMatch(/min-height:\s*calc\(100vh - 120px\)/)
     expect(cssRule(suiteSource, '.detail-loading')).toMatch(/min-height:\s*220px/)
+  })
+
+  it('页面内容滚动槽保持稳定，分组切换不改变三栏可用宽度', () => {
+    expect(cssRule(appShellSource, '.content')).toMatch(/scrollbar-gutter:\s*stable/)
   })
 
   it('左区两列吸顶：layout 不设 align-items（否则 .suite-left 不撑满行高，sticky 失效）', () => {

@@ -697,8 +697,8 @@ onMounted(() => {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 120px);
-  max-height: calc(100vh - 120px);
+  height: calc(100vh - 136px);
+  max-height: calc(100vh - 136px);
   background: var(--card-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
